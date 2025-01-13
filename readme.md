@@ -38,6 +38,6 @@ Example usage to run PRFC: bug_id: The bug you want to fix. skip_v: Skip the pat
 python experiment.py --bug_id Chart-1 \
                --skip_v \
                --re_rank \
-               --re_rank 
+               --perfect
 ```
 
