@@ -1,0 +1,921 @@
+File: awaitility/src/main/java/org/awaitility/core/Uninterruptibles.java
+Patch:
+@@ -112,10 +112,10 @@ static <V> V getUninterruptibly(Future<V> future, long timeout, TimeUnit unit)
+     }
+ 
+     /**
+-     * Shuts down an executor service uninterruptibly
++     * Shuts down an executor service uninterruptedly
+      * Note that this method is created by Johan Haleby and is thus not covered by the Guava license
+      *
+-     * @param executor The executor service to shutdown
++     * @param executor The executor service to shut down
+      * @param timeout The timeout amount
+      * @param unit The time unit
+      */
+@@ -128,7 +128,7 @@ static void shutdownUninterruptibly(ExecutorService executor, long timeout, Time
+ 
+             while (true) {
+                 try {
+-                    if (!executor.awaitTermination(remainingNanos, unit)) {
++                    if (!executor.awaitTermination(remainingNanos, NANOSECONDS)) {
+                         executor.shutdownNow();
+                     }
+                     break;
+
+File: awaitility/src/main/java/org/awaitility/core/ConditionAwaiter.java
+Patch:
+@@ -74,7 +74,7 @@ public <T> void await(final ConditionEvaluationHandler<T> conditionEvaluationHan
+         final Duration minWaitTime = conditionSettings.getMinWaitTime();
+         final Duration holdPredicateWaitTime = conditionSettings.getHoldPredicateTime();
+ 
+-        long pollingStartedNanos = System.nanoTime() - pollDelay.toMillis();
++        long pollingStartedNanos = System.nanoTime() - pollDelay.toNanos();
+ 
+         int pollCount = 0;
+         boolean succeededBeforeTimeout = false;
+
+File: awaitility/src/main/java/org/awaitility/core/ConditionAwaiter.java
+Patch:
+@@ -152,10 +152,12 @@ public <T> void await(final ConditionEvaluationHandler<T> conditionEvaluationHan
+                         // don't init trace and move on.
+                     }
+                 }
++                conditionEvaluationHandler.handleTimeout(message, false);
+                 throw new ConditionTimeoutException(message, cause);
+             } else if (evaluationDuration.compareTo(minWaitTime) < 0) {
+                 String message = String.format("Condition was evaluated in %s which is earlier than expected minimum timeout %s",
+                         formatAsString(evaluationDuration), formatAsString(minWaitTime));
++                conditionEvaluationHandler.handleTimeout(message, true);
+                 throw new ConditionTimeoutException(message);
+             }
+         } catch (Throwable e) {
+
+File: awaitility/src/main/java/org/awaitility/core/ConditionAwaiter.java
+Patch:
+@@ -24,6 +24,7 @@
+ import static java.util.concurrent.TimeUnit.MILLISECONDS;
+ import static java.util.concurrent.TimeUnit.NANOSECONDS;
+ import static org.awaitility.classpath.ClassPathResolver.existInCP;
++import static org.awaitility.core.Uninterruptibles.sleepUninterruptibly;
+ 
+ abstract class ConditionAwaiter implements UncaughtExceptionHandler {
+     private final ExecutorService executor;
+@@ -58,7 +59,6 @@ abstract class ConditionAwaiter implements UncaughtExceptionHandler {
+      *
+      * @param conditionEvaluationHandler The conditionEvaluationHandler
+      */
+-    @SuppressWarnings("deprecation")
+     public <T> void await(final ConditionEvaluationHandler<T> conditionEvaluationHandler) {
+         final Duration pollDelay = conditionSettings.getPollDelay();
+         final Duration maxWaitTime = conditionSettings.getMaxWaitTime();
+@@ -79,7 +79,7 @@ public <T> void await(final ConditionEvaluationHandler<T> conditionEvaluationHan
+ 
+             conditionEvaluationHandler.start();
+             if (!pollDelay.isZero()) {
+-                Thread.sleep(pollDelay.getValueInMS());
++                sleepUninterruptibly(pollDelay.getValueInNS(), NANOSECONDS);
+             }
+             Duration pollInterval = pollDelay;
+             while (maxWaitTime.compareTo(evaluationDuration) > 0) {
+@@ -93,7 +93,7 @@ public <T> void await(final ConditionEvaluationHandler<T> conditionEvaluationHan
+                     break;
+                 }
+                 pollInterval = conditionSettings.getPollInterval().next(pollCount, pollInterval);
+-                Thread.sleep(pollInterval.getValueInMS());
++                sleepUninterruptibly(pollInterval.getValueInNS(), NANOSECONDS);
+                 evaluationDuration = calculateConditionEvaluationDuration(pollDelay, pollingStartedNanos);
+             }
+             evaluationDuration = calculateConditionEvaluationDuration(pollDelay, pollingStartedNanos);
+
+File: awaitility/src/main/java/org/awaitility/core/ConditionFactory.java
+Patch:
+@@ -694,7 +694,7 @@ protected boolean matchesSafely(T item) {
+      * {@link java.lang.AssertionError} instances thrown by the supplier are treated as an assertion failure and proper error message is propagated on timeout.
+      * Other exceptions are rethrown immediately as an execution errors.
+      * <p>&nbsp;</p>
+-     * Why technically it is completely valid to use plain Runnable class in Java 7 code, the resulting expression is very verbose and can decrease
++     * While technically it is completely valid to use plain Runnable class in Java 7 code, the resulting expression is very verbose and can decrease
+      * the readability of the test case, e.g.
+      * <p>&nbsp;</p>
+      * <pre>
+
+File: awaitility/src/main/java/org/awaitility/core/Function.java
+Patch:
+@@ -1,7 +1,7 @@
+ package org.awaitility.core;
+ 
+ /**
+- * A function (because Awaitility doesn't use Java 8)
++ * A function (because Awaitility doesn't require Java 8)
+  *
+  * @param <T> the type of the input to the function
+  * @param <R> the type of the result of the function
+
+File: awaitility-java8-test/src/test/java/org/awaitility/AwaitilityJava8Test.java
+Patch:
+@@ -83,7 +83,7 @@ public void run() {
+     @Test(timeout = 2000)
+     public void awaitAssertJAssertionDisplaysOriginalErrorMessageAndTimeoutWhenConditionTimeoutExceptionOccurs() {
+         exception.expect(ConditionTimeoutException.class);
+-        exception.expectMessage(startsWith("Condition defined as a lambda expression in " + AwaitilityJava8Test.class.getName()));
++        exception.expectMessage(startsWith("Assertion condition defined as a lambda expression in " + AwaitilityJava8Test.class.getName()));
+         exception.expectMessage(endsWith("expected:<[1]> but was:<[0]> within 120 milliseconds."));
+ 
+         new Asynch(fakeRepository).perform();
+@@ -100,7 +100,7 @@ public void awaitJUnitAssertionAsLambda() {
+     @Test(timeout = 2000)
+     public void awaitJUnitAssertionDisplaysOriginalErrorMessageAndTimeoutWhenConditionTimeoutExceptionOccurs() {
+         exception.expect(ConditionTimeoutException.class);
+-        exception.expectMessage(startsWith("Condition defined as a lambda expression in " + AwaitilityJava8Test.class.getName()));
++        exception.expectMessage(startsWith("Assertion condition defined as a lambda expression in " + AwaitilityJava8Test.class.getName()));
+         exception.expectMessage(endsWith("expected:<1> but was:<0> within 120 milliseconds."));
+ 
+         with().pollInterval(10, MILLISECONDS).then().await().atMost(120, MILLISECONDS).untilAsserted(
+
+File: awaitility/src/main/java/org/awaitility/core/CallableCondition.java
+Patch:
+@@ -36,7 +36,7 @@ class CallableCondition implements Condition<Void> {
+      * @param matcher  a {@link java.util.concurrent.Callable} object.
+      * @param settings a {@link org.awaitility.core.ConditionSettings} object.
+      */
+-    public CallableCondition(final Callable<Boolean> matcher, ConditionSettings settings) {
++    CallableCondition(final Callable<Boolean> matcher, ConditionSettings settings) {
+         conditionEvaluationHandler = new ConditionEvaluationHandler<Object>(null, settings);
+         ConditionEvaluationWrapper conditionEvaluationWrapper = new ConditionEvaluationWrapper(matcher, settings, conditionEvaluationHandler);
+         conditionAwaiter = new ConditionAwaiter(conditionEvaluationWrapper, settings) {
+
+File: awaitility/src/main/java/org/awaitility/core/ConditionFactory.java
+Patch:
+@@ -657,12 +657,12 @@ public <T> T until(final Callable<T> supplier, final Matcher<? super T> matcher)
+      * <p>&nbsp;</p>
+      * If your condition calls a method that throws a checked exception then please wrap it in {@link org.awaitility.Awaitility#matches(ThrowingRunnable)}.
+      *
+-     * @param supplier the supplier that is responsible for executing the assertion and throwing AssertionError on failure.
++     * @param assertion the supplier that is responsible for executing the assertion and throwing AssertionError on failure.
+      * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+      * @since 1.6.0
+      */
+-    public void untilAsserted(final Runnable supplier) {
+-        until(new AssertionCondition(supplier, generateConditionSettings()));
++    public void untilAsserted(final Runnable assertion) {
++        until(new AssertionCondition(assertion, generateConditionSettings()));
+     }
+ 
+     /**
+
+File: awaitility/src/test/java/org/awaitility/AwaitilityTest.java
+Patch:
+@@ -351,6 +351,4 @@ public List<Integer> call() throws Exception {
+             }
+         };
+     }
+-
+-
+-}
++}
+\ No newline at end of file
+
+File: awaitility/src/main/java/org/awaitility/core/AbstractHamcrestCondition.java
+Patch:
+@@ -46,15 +46,15 @@ public AbstractHamcrestCondition(final Callable<T> supplier, final Matcher<? sup
+ 
+         conditionEvaluationHandler = new ConditionEvaluationHandler<T>(matcher, settings);
+         final ConditionEvaluator callable = new ConditionEvaluator() {
+-            public boolean eval(Duration pollInterval) throws Exception{
++            public ConditionEvaluationResult eval(Duration pollInterval) throws Exception{
+                 lastResult = supplier.call();
+                 boolean matches = matcher.matches(lastResult);
+                 if (matches) {
+                     conditionEvaluationHandler.handleConditionResultMatch(getMatchMessage(supplier, matcher), lastResult, pollInterval);
+                 } else {
+                     conditionEvaluationHandler.handleConditionResultMismatch(getMismatchMessage(supplier, matcher), lastResult, pollInterval);
+                 }
+-                return matches;
++                return new ConditionEvaluationResult(matches);
+ 
+             }
+         };
+
+File: awaitility/src/main/java/org/awaitility/core/AssertionCondition.java
+Patch:
+@@ -50,15 +50,15 @@ public AssertionCondition(final Runnable supplier, final ConditionSettings setti
+         conditionEvaluationHandler = new ConditionEvaluationHandler<Object>(null, settings);
+ 
+         final ConditionEvaluator callable = new ConditionEvaluator() {
+-            public boolean eval(Duration pollInterval) throws Exception {
++            public ConditionEvaluationResult eval(Duration pollInterval) throws Exception {
+                 try {
+                     supplier.run();
+                     conditionEvaluationHandler.handleConditionResultMatch(getMatchMessage(supplier, settings.getAlias()), null, pollInterval);
+-                    return true;
++                    return new ConditionEvaluationResult(true);
+                 } catch (AssertionError e) {
+                     lastExceptionMessage = e.getMessage();
+                     conditionEvaluationHandler.handleConditionResultMismatch(getMismatchMessage(supplier, lastExceptionMessage, settings.getAlias()), null, pollInterval);
+-                    return false;
++                    return new ConditionEvaluationResult(false, e);
+                 }
+             }
+         };
+
+File: awaitility/src/main/java/org/awaitility/core/CallableCondition.java
+Patch:
+@@ -96,15 +96,15 @@ private static class ConditionEvaluationWrapper implements ConditionEvaluator {
+             this.conditionEvaluationHandler = conditionEvaluationHandler;
+         }
+ 
+-        public boolean eval(Duration pollInterval) throws Exception {
++        public ConditionEvaluationResult eval(Duration pollInterval) throws Exception {
+             boolean conditionFulfilled = matcher.call();
+             if (conditionFulfilled) {
+                 conditionEvaluationHandler.handleConditionResultMatch(getMatchMessage(matcher, settings.getAlias()), true, pollInterval);
+             } else {
+                 conditionEvaluationHandler.handleConditionResultMismatch(getMismatchMessage(matcher, settings.getAlias()), false, pollInterval);
+ 
+             }
+-            return conditionFulfilled;
++            return new ConditionEvaluationResult(conditionFulfilled);
+         }
+ 
+         private String getMatchMessage(Callable<Boolean> matcher, String conditionAlias) {
+
+File: awaitility/src/main/java/org/awaitility/core/ConditionEvaluator.java
+Patch:
+@@ -22,5 +22,5 @@ interface ConditionEvaluator {
+     /**
+      * @param pollInterval The poll interval for the for this evaluation round
+      */
+-    boolean eval(Duration pollInterval) throws Exception;
++    ConditionEvaluationResult eval(Duration pollInterval) throws Exception;
+ }
+
+File: awaitility/src/main/java/org/awaitility/core/AbstractHamcrestCondition.java
+Patch:
+@@ -61,8 +61,7 @@ public boolean eval(Duration pollInterval) throws Exception{
+         conditionAwaiter = new ConditionAwaiter(callable, settings) {
+             @Override
+             protected String getTimeoutMessage() {
+-                // Use "return getMismatchMessage(supplier, matcher);" to more descriptive message
+-                return String.format("%s expected %s but was <%s>", getCallableDescription(supplier), HamcrestToStringFilter.filter(matcher), lastResult);
++                return getMismatchMessage(supplier, matcher);
+             }
+         };
+     }
+
+File: awaitility/src/main/java/org/awaitility/constraint/AtMostWaitConstraint.java
+Patch:
+@@ -6,9 +6,9 @@ public class AtMostWaitConstraint implements WaitConstraint {
+ 
+     private final Duration atMostDuration;
+ 
+-    public static AtMostWaitConstraint FOREVER = new AtMostWaitConstraint(Duration.FOREVER);
++    public static final AtMostWaitConstraint FOREVER = new AtMostWaitConstraint(Duration.FOREVER);
+ 
+-    public static AtMostWaitConstraint TEN_SECONDS = new AtMostWaitConstraint(Duration.TEN_SECONDS);
++    public static final AtMostWaitConstraint TEN_SECONDS = new AtMostWaitConstraint(Duration.TEN_SECONDS);
+ 
+     public AtMostWaitConstraint(Duration atMostDuration) {
+         this.atMostDuration = atMostDuration;
+
+File: awaitility/src/main/java/org/awaitility/core/ConditionEvaluationLogger.java
+Patch:
+@@ -52,10 +52,10 @@ public void conditionEvaluated(EvaluatedCondition<Object> condition) {
+         long remainingTime = timeUnit.convert(condition.getRemainingTimeInMS(), MILLISECONDS);
+         String timeUnitAsString = timeUnit.toString().toLowerCase();
+         if (condition.isSatisfied()) {
+-            System.out.printf("%s after %d %s (remaining time %d %s, last poll interval was %d %s)\n", description, elapsedTime, timeUnitAsString, remainingTime, timeUnitAsString,
++            System.out.printf("%s after %d %s (remaining time %d %s, last poll interval was %d %s)%n", description, elapsedTime, timeUnitAsString, remainingTime, timeUnitAsString,
+                     condition.getPollInterval().getValue(), condition.getPollInterval().getTimeUnitAsString());
+         } else {
+-            System.out.printf("%s (elapsed time %d %s, remaining time %d %s (last poll interval was %d %s))\n", description, elapsedTime,
++            System.out.printf("%s (elapsed time %d %s, remaining time %d %s (last poll interval was %d %s))%n", description, elapsedTime,
+                     timeUnitAsString, remainingTime, timeUnitAsString, condition.getPollInterval().getValue(),
+                     condition.getPollInterval().getTimeUnitAsString());
+         }
+
+File: awaitility/src/test/java/org/awaitility/AwaitilityTest.java
+Patch:
+@@ -475,11 +475,11 @@ public List<Integer> call() throws Exception {
+     private abstract class AssertExceptionThrownInAnotherThreadButNeverCaughtByAnyThreadTest {
+         public AssertExceptionThrownInAnotherThreadButNeverCaughtByAnyThreadTest() throws Exception {
+             ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+-            System.setErr(new PrintStream(byteArrayOutputStream, true));
++            System.setErr(new PrintStream(byteArrayOutputStream, true, "UTF-8"));
+             try {
+                 testLogic();
+             } finally {
+-                String errorMessage = byteArrayOutputStream.toString();
++                String errorMessage = byteArrayOutputStream.toString("UTF-8");
+                 try {
+                     assertTrue(errorMessage.contains("Illegal state!"));
+                 } finally {
+
+File: awaitility/src/test/java/org/awaitility/ConditionEvaluationListenerTest.java
+Patch:
+@@ -139,9 +139,9 @@ public void conditionResultsCanBeLoggedToSystemOut() {
+                 .conditionEvaluationListener(new ConditionEvaluationListener<Integer>() {
+                     public void conditionEvaluated(EvaluatedCondition<Integer> condition) {
+                         if (condition.isSatisfied()) {
+-                            System.out.printf("%s (in %ds)\n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000);
++                            System.out.printf("%s (in %ds)%n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000);
+                         } else {
+-                            System.out.printf("%s (elapsed time %ds, remaining time %ds)\n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000, condition.getRemainingTimeInMS() / 1000);
++                            System.out.printf("%s (elapsed time %ds, remaining time %ds)%n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000, condition.getRemainingTimeInMS() / 1000);
+                         }
+                     }
+                 })
+@@ -156,7 +156,7 @@ public void conditionResultsCanBeBuffered() {
+         with()
+                 .conditionEvaluationListener(new ConditionEvaluationListener<Integer>() {
+                     public void conditionEvaluated(EvaluatedCondition<Integer> condition) {
+-                        String msg = String.format("%s (elapsed time %ds, remaining time %ds)\n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000, condition.getRemainingTimeInMS() / 1000);
++                        String msg = String.format("%s (elapsed time %ds, remaining time %ds)%n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000, condition.getRemainingTimeInMS() / 1000);
+                         buffer.add(msg);
+                     }
+                 })
+
+File: awaitility/src/test/java/org/awaitility/DeadlockDetectionTest.java
+Patch:
+@@ -85,10 +85,9 @@ public void run() {
+ 
+         } catch (ConditionTimeoutException e) {
+             // check that the thrown exception has a DeadlockException attached to it
+-            DeadlockException cause = (DeadlockException) e.getCause();
++            Throwable cause = e.getCause();
+             assertTrue(cause instanceof DeadlockException);
+-            assertEquals(2, cause.getThreadInfos().length);
+-
++            assertEquals(2, ((DeadlockException) cause).getThreadInfos().length);
+         } finally {
+             // interrupt both threads to clean up the JVM
+             t1.interrupt();
+
+File: awaitility/src/main/java/org/awaitility/constraint/AtMostWaitConstraint.java
+Patch:
+@@ -6,9 +6,9 @@ public class AtMostWaitConstraint implements WaitConstraint {
+ 
+     private final Duration atMostDuration;
+ 
+-    public static AtMostWaitConstraint FOREVER = new AtMostWaitConstraint(Duration.FOREVER);
++    public static final AtMostWaitConstraint FOREVER = new AtMostWaitConstraint(Duration.FOREVER);
+ 
+-    public static AtMostWaitConstraint TEN_SECONDS = new AtMostWaitConstraint(Duration.TEN_SECONDS);
++    public static final AtMostWaitConstraint TEN_SECONDS = new AtMostWaitConstraint(Duration.TEN_SECONDS);
+ 
+     public AtMostWaitConstraint(Duration atMostDuration) {
+         this.atMostDuration = atMostDuration;
+
+File: awaitility/src/main/java/org/awaitility/core/ConditionEvaluationLogger.java
+Patch:
+@@ -52,10 +52,10 @@ public void conditionEvaluated(EvaluatedCondition<Object> condition) {
+         long remainingTime = timeUnit.convert(condition.getRemainingTimeInMS(), MILLISECONDS);
+         String timeUnitAsString = timeUnit.toString().toLowerCase();
+         if (condition.isSatisfied()) {
+-            System.out.printf("%s after %d %s (remaining time %d %s, last poll interval was %d %s)\n", description, elapsedTime, timeUnitAsString, remainingTime, timeUnitAsString,
++            System.out.printf("%s after %d %s (remaining time %d %s, last poll interval was %d %s)%n", description, elapsedTime, timeUnitAsString, remainingTime, timeUnitAsString,
+                     condition.getPollInterval().getValue(), condition.getPollInterval().getTimeUnitAsString());
+         } else {
+-            System.out.printf("%s (elapsed time %d %s, remaining time %d %s (last poll interval was %d %s))\n", description, elapsedTime,
++            System.out.printf("%s (elapsed time %d %s, remaining time %d %s (last poll interval was %d %s))%n", description, elapsedTime,
+                     timeUnitAsString, remainingTime, timeUnitAsString, condition.getPollInterval().getValue(),
+                     condition.getPollInterval().getTimeUnitAsString());
+         }
+
+File: awaitility/src/test/java/org/awaitility/AwaitilityTest.java
+Patch:
+@@ -475,11 +475,11 @@ public List<Integer> call() throws Exception {
+     private abstract class AssertExceptionThrownInAnotherThreadButNeverCaughtByAnyThreadTest {
+         public AssertExceptionThrownInAnotherThreadButNeverCaughtByAnyThreadTest() throws Exception {
+             ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+-            System.setErr(new PrintStream(byteArrayOutputStream, true));
++            System.setErr(new PrintStream(byteArrayOutputStream, true, "UTF-8"));
+             try {
+                 testLogic();
+             } finally {
+-                String errorMessage = byteArrayOutputStream.toString();
++                String errorMessage = byteArrayOutputStream.toString("UTF-8");
+                 try {
+                     assertTrue(errorMessage.contains("Illegal state!"));
+                 } finally {
+
+File: awaitility/src/test/java/org/awaitility/ConditionEvaluationListenerTest.java
+Patch:
+@@ -139,9 +139,9 @@ public void conditionResultsCanBeLoggedToSystemOut() {
+                 .conditionEvaluationListener(new ConditionEvaluationListener<Integer>() {
+                     public void conditionEvaluated(EvaluatedCondition<Integer> condition) {
+                         if (condition.isSatisfied()) {
+-                            System.out.printf("%s (in %ds)\n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000);
++                            System.out.printf("%s (in %ds)%n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000);
+                         } else {
+-                            System.out.printf("%s (elapsed time %ds, remaining time %ds)\n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000, condition.getRemainingTimeInMS() / 1000);
++                            System.out.printf("%s (elapsed time %ds, remaining time %ds)%n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000, condition.getRemainingTimeInMS() / 1000);
+                         }
+                     }
+                 })
+@@ -156,7 +156,7 @@ public void conditionResultsCanBeBuffered() {
+         with()
+                 .conditionEvaluationListener(new ConditionEvaluationListener<Integer>() {
+                     public void conditionEvaluated(EvaluatedCondition<Integer> condition) {
+-                        String msg = String.format("%s (elapsed time %ds, remaining time %ds)\n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000, condition.getRemainingTimeInMS() / 1000);
++                        String msg = String.format("%s (elapsed time %ds, remaining time %ds)%n", condition.getDescription(), condition.getElapsedTimeInMS() / 1000, condition.getRemainingTimeInMS() / 1000);
+                         buffer.add(msg);
+                     }
+                 })
+
+File: awaitility/src/test/java/org/awaitility/DeadlockDetectionTest.java
+Patch:
+@@ -85,10 +85,9 @@ public void run() {
+ 
+         } catch (ConditionTimeoutException e) {
+             // check that the thrown exception has a DeadlockException attached to it
+-            DeadlockException cause = (DeadlockException) e.getCause();
++            Throwable cause = e.getCause();
+             assertTrue(cause instanceof DeadlockException);
+-            assertEquals(2, cause.getThreadInfos().length);
+-
++            assertEquals(2, ((DeadlockException) cause).getThreadInfos().length);
+         } finally {
+             // interrupt both threads to clean up the JVM
+             t1.interrupt();
+
+File: awaitility-java8-test/src/test/java/org/awaitility/AwaitilityJava8Test.java
+Patch:
+@@ -164,7 +164,7 @@ public void loggingIntermediaryHandlerLogsToSystemOut() {
+         await().until(matches(() -> stringEquals("test", "test")));
+     }
+ 
+-    private void stringEquals(String first, String second) throws Exception {
++    private void stringEquals(String first, String second) {
+         Assertions.assertThat(first).isEqualTo(second);
+     }
+ }
+
+File: awaitility/src/main/java/org/awaitility/core/FieldSupplierBuilder.java
+Patch:
+@@ -104,7 +104,7 @@ public T call() throws Exception {
+         }
+ 
+         public T call() throws Exception {
+-            return (T) ((T) foundField == null ? WhiteboxImpl.getInternalState(object, expectedFieldType) : foundField
++            return (T) (foundField == null ? WhiteboxImpl.getInternalState(object, expectedFieldType) : foundField
+                     .get(object));
+         }
+     }
+
+File: awaitility/src/main/java/org/awaitility/reflect/AssignableToFieldTypeMatcherStrategy.java
+Patch:
+@@ -31,6 +31,6 @@ public AssignableToFieldTypeMatcherStrategy(Class<?> fieldType) {
+     /** {@inheritDoc} */
+     @Override
+     public boolean matches(Field field) {
+-        return expectedFieldType.isAssignableFrom((Class<?>) field.getType());
++        return expectedFieldType.isAssignableFrom(field.getType());
+     }
+ }
+
+File: awaitility/src/main/java/org/awaitility/core/ConditionAwaiter.java
+Patch:
+@@ -80,8 +80,6 @@ public <T> void await(final ConditionEvaluationHandler<T> conditionEvaluationHan
+                 if (maxWaitTime == Duration.FOREVER) {
+                     latch.await();
+                     finishedBeforeTimeout = true;
+-                } else if (maxWaitTime == Duration.SAME_AS_POLL_INTERVAL) {
+-                    throw new IllegalStateException("Cannot use 'SAME_AS_POLL_INTERVAL' as maximum wait time.");
+                 } else {
+                     finishedBeforeTimeout = latch.await(maxTimeout, maxTimeoutUnit);
+                 }
+
+File: awaitility/src/main/java/org/awaitility/Duration.java
+Patch:
+@@ -333,7 +333,9 @@ public String toString() {
+ 
+     public int compareTo(Duration other) {
+         if (other == null) return 1;
+-        return Long.compare(getValueInMS(), other.getValueInMS());
++        long x = getValueInMS();
++        long y = other.getValueInMS();
++        return (x < y) ? -1 : ((x == y) ? 0 : 1);
+     }
+ 
+     private static abstract class BiFunction {
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/ConditionFactory.java
+Patch:
+@@ -733,11 +733,10 @@ public V call() {
+      * }
+      * </pre>
+      *
+-     * @param <T>                the generic type
+      * @param conditionEvaluator the condition evaluator
+      * @throws com.jayway.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+      */
+-    public <T> void until(Callable<Boolean> conditionEvaluator) {
++    public void until(Callable<Boolean> conditionEvaluator) {
+         until(new CallableCondition(conditionEvaluator, generateConditionSettings()));
+     }
+ 
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/ConditionFactory.java
+Patch:
+@@ -733,11 +733,10 @@ public V call() {
+      * }
+      * </pre>
+      *
+-     * @param <T>                the generic type
+      * @param conditionEvaluator the condition evaluator
+      * @throws com.jayway.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+      */
+-    public <T> void until(Callable<Boolean> conditionEvaluator) {
++    public void until(Callable<Boolean> conditionEvaluator) {
+         until(new CallableCondition(conditionEvaluator, generateConditionSettings()));
+     }
+ 
+
+File: awaitility/src/main/java/com/jayway/awaitility/pollinterval/FibonacciPollInterval.java
+Patch:
+@@ -106,7 +106,7 @@ public static FibonacciPollInterval fibonacci(TimeUnit timeUnit) {
+      * @return A new instance of {@link FibonacciPollInterval}.
+      */
+     public static FibonacciPollInterval fibonacci(int offset, TimeUnit timeUnit) {
+-        return new FibonacciPollInterval(timeUnit);
++        return new FibonacciPollInterval(offset, timeUnit);
+     }
+ 
+     /**
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/AssertionCondition.java
+Patch:
+@@ -28,7 +28,7 @@ public class AssertionCondition implements Condition<Void> {
+     private final ConditionAwaiter conditionAwaiter;
+ 
+     private String lastExceptionMessage;
+-    private final ConditionEvaluationHandler<String> conditionEvaluationHandler;
++    private final ConditionEvaluationHandler<Object> conditionEvaluationHandler;
+ 
+     /**
+      * <p>Constructor for AssertionCondition.</p>
+@@ -41,7 +41,7 @@ public AssertionCondition(final Runnable supplier, final ConditionSettings setti
+             throw new IllegalArgumentException("You must specify a supplier (was null).");
+         }
+ 
+-        conditionEvaluationHandler = new ConditionEvaluationHandler<String>(null, settings);
++        conditionEvaluationHandler = new ConditionEvaluationHandler<Object>(null, settings);
+ 
+         final Callable<Boolean> callable = new Callable<Boolean>() {
+             public Boolean call() throws Exception {
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/CallableHamcrestCondition.java
+Patch:
+@@ -65,6 +65,7 @@ private String generateFieldSupplierErrorMessage(Callable<T> supplier) {
+         final String expectedFieldName = fieldSupplier.getExpectedFieldName();
+         final Class<?> expectedFieldType = fieldSupplier.getExpectedFieldType();
+         final Object object = fieldSupplier.getObject();
++        final Class<?> objectClass = object instanceof Class ? (Class<?>) object : object.getClass();
+ 
+         StringBuilder builder = new StringBuilder();
+         if (expectedFieldName == null) {
+@@ -80,7 +81,7 @@ private String generateFieldSupplierErrorMessage(Callable<T> supplier) {
+         } else {
+ 
+             try {
+-                final Field declaredField = object.getClass().getDeclaredField(expectedFieldName);
++                final Field declaredField = objectClass.getDeclaredField(expectedFieldName);
+                 builder.append("Field ");
+                 builder.append(declaredField);
+             } catch (Exception e) {
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/ConditionTimeoutException.java
+Patch:
+@@ -2,10 +2,13 @@
+ 
+ /**
+  * A runtime exception thrown by Awaitility when a condition was not fulfilled within the specified threshold.
++ *
+  */
+ public class ConditionTimeoutException extends RuntimeException {
+ 
+     /**
++     * <p>Constructor for ConditionTimeoutException.</p>
++     *
+      * @param message A description of why the timeout occurred.
+      */
+     public ConditionTimeoutException(String message) {
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/HamcrestToStringFilter.java
+Patch:
+@@ -45,4 +45,4 @@ static String filter(Matcher<?> matcher) {
+ 		}
+ 		return matcherToString;
+ 	}
+-}
+\ No newline at end of file
++}
+
+File: awaitility/src/main/java/com/jayway/awaitility/spi/Timeout.java
+Patch:
+@@ -25,5 +25,6 @@
+  */
+ public class Timeout {
+ 
++    /** Constant <code>timeout_message="null"</code> */
+     public static String timeout_message = null;
+ }
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/ConditionAwaiter.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import com.jayway.awaitility.Duration;
+ 
++import java.beans.Introspector;
+ import java.lang.Thread.UncaughtExceptionHandler;
+ import java.util.concurrent.*;
+ 
+@@ -75,8 +76,8 @@ public void await() {
+                     final String maxWaitTimeLowerCase = maxWaitTime.getTimeUnitAsString();
+                     final String message;
+                     if (conditionSettings.hasAlias()) {
+-                        message = String.format("Condition with alias '%s' didn't complete within %s %s.",
+-                                conditionSettings.getAlias(), timeout, maxWaitTimeLowerCase);
++                        message = String.format("Condition with alias '%s' didn't complete within %s %s because %s.",
++                                conditionSettings.getAlias(), timeout, maxWaitTimeLowerCase, Introspector.decapitalize(getTimeoutMessage()));
+                     } else {
+                         message = String.format("%s within %s %s.", getTimeoutMessage(), timeout, maxWaitTimeLowerCase);
+                     }
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/ConditionFactory.java
+Patch:
+@@ -104,7 +104,7 @@ public ConditionFactory(String alias, Duration timeout, Duration pollInterval, D
+      *            the catch uncaught exceptions
+      */
+     public ConditionFactory(Duration timeout, Duration pollInterval, Duration pollDelay, boolean catchUncaughtExceptions) {
+-        this(null, timeout, pollInterval, pollInterval, catchUncaughtExceptions);
++        this(null, timeout, pollInterval, pollDelay, catchUncaughtExceptions);
+     }
+ 
+     /**
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/ConditionAwaiter.java
+Patch:
+@@ -51,7 +51,7 @@ public void run() {
+ 				}
+ 			}
+ 		};
+-		executor.scheduleAtFixedRate(poller, conditionSettings.getPollDelay().getValueInMS(), conditionSettings
++		executor.scheduleWithFixedDelay(poller, conditionSettings.getPollDelay().getValueInMS(), conditionSettings
+ 				.getPollInterval().getValueInMS(), TimeUnit.MILLISECONDS);
+ 	}
+ 
+
+File: awaitility/src/test/java/com/jayway/awaitility/AwaitilityTest.java
+Patch:
+@@ -133,7 +133,7 @@ public void foreverConditionWithHamcrestMatchersWithDirectBlock() throws Excepti
+     @Test(timeout = 2000)
+     public void foreverConditionWithHamcrestCollectionMatchersWithDirectBlock() throws Exception {
+         new Asynch(fakeRepository).perform();
+-        await().forever().until(valueAsList(), contains(1));
++        await().forever().until(valueAsList(), hasItem(1));
+         assertEquals(1, fakeRepository.getValue());
+     }
+ 
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/AbstractHamcrestCondition.java
+Patch:
+@@ -25,7 +25,7 @@ abstract class AbstractHamcrestCondition<T> implements Condition {
+ 
+ 	private T lastResult;
+ 
+-	public AbstractHamcrestCondition(final Callable<T> supplier, final Matcher<T> matcher, ConditionSettings settings) {
++	public AbstractHamcrestCondition(final Callable<T> supplier, final Matcher<? super T> matcher, ConditionSettings settings) {
+ 		if (supplier == null) {
+ 			throw new IllegalArgumentException("You must specify a supplier (was null).");
+ 		}
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/CallableHamcrestCondition.java
+Patch:
+@@ -25,7 +25,7 @@
+ 
+ class CallableHamcrestCondition<T> extends AbstractHamcrestCondition<T> {
+ 
+-    public CallableHamcrestCondition(final Callable<T> supplier, final Matcher<T> matcher, ConditionSettings settings) {
++    public CallableHamcrestCondition(final Callable<T> supplier, final Matcher<? super T> matcher, ConditionSettings settings) {
+         super(supplier, matcher, settings);
+     }
+ 
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/ProxyHamcrestCondition.java
+Patch:
+@@ -22,7 +22,7 @@
+ 
+ class ProxyHamcrestCondition<T> extends AbstractHamcrestCondition<T> {
+ 
+-	public ProxyHamcrestCondition(final MethodCaller<T> supplier, final Matcher<T> matcher, ConditionSettings settings) {
++	public ProxyHamcrestCondition(final MethodCaller<T> supplier, final Matcher<? super T> matcher, ConditionSettings settings) {
+ 		super(supplier, matcher, settings);
+ 	}
+ 
+
+File: awaitility/src/main/java/com/jayway/awaitility/Awaitility.java
+Patch:
+@@ -358,7 +358,7 @@ public static <S> S to(S object) {
+      * Await until an instance field matches something. E.g.
+      *
+      * <pre>
+-     * await().until(fieldIn(service).withName("fieldName").andOfType(int.class), greaterThan(2));
++     * await().until(fieldIn(service).ofType(int.class).andWithName("fieldName"), greaterThan(2));
+      * </pre>
+      *
+      * Here Awaitility waits until a field with name <code>fieldName</code> and of the <code>int.class</code>
+@@ -377,7 +377,7 @@ public static FieldSupplierBuilder fieldIn(Object object) {
+      * Await until a static field matches something. E.g.
+      *
+      * <pre>
+-     * await().until(fieldIn(Service.class).withName("fieldName").andOfType(int.class), greaterThan(2));
++     * await().until(fieldIn(Service.class).ofType(int.class).andWithName("fieldName"), greaterThan(2));
+      * </pre>
+      *
+      * Here Awaitility waits until a static field with name <code>fieldName</code> and of the
+
+File: awaitility/src/main/java/com/jayway/awaitility/reflect/WhiteboxImpl.java
+Patch:
+@@ -150,7 +150,7 @@ private static boolean hasFieldProperModifier(Object object, Field field) {
+ 
+     /**
+      * Get the value of a field using reflection. This method will traverse the
+-     * super class hierarchy until the first field of type <tt>fieldType</tt> is
++     * super class hierarchy untilCall the first field of type <tt>fieldType</tt> is
+      * found. The value of this field will be returned.
+      * 
+      * @param <T>
+
+File: awaitility/src/test/java/com/jayway/awaitility/core/MethodCallRecorderTest.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package com.jayway.awaitility.core;
+ 
+-import static com.jayway.awaitility.Awaitility.callTo;
++import static com.jayway.awaitility.Awaitility.to;
+ import static org.junit.Assert.assertEquals;
+ 
+ import org.junit.Before;
+@@ -44,7 +44,7 @@ public void exceptionIfNoMethodWasRecorded() throws Exception {
+ 	}
+ 
+ 	private void recordCall(FakeRepository service) {
+-		callTo(service).getValue();
++		to(service).getValue();
+ 	}
+ 
+ 	private void suggestGarbageCollection() throws InterruptedException {
+
+File: awaitility/src/main/java/com/jayway/awaitility/core/FieldSupplierBuilder.java
+Patch:
+@@ -85,7 +85,7 @@ public T call() throws Exception {
+         }
+ 
+         public Type call() throws Exception {
+-            return WhiteboxImpl.getInternalState(object, expectedFieldName);
++            return (Type) WhiteboxImpl.getInternalState(object, expectedFieldName);
+         }
+     }
+ 
+
+File: src/main/java/com/jayway/awaitility/Awaitility.java
+Patch:
+@@ -141,6 +141,7 @@ public static void reset() {
+ 		defaultTimeout = Duration.TEN_SECONDS;
+ 		defaultCatchUncaughtExceptions = false;
+ 		Thread.setDefaultUncaughtExceptionHandler(null);
++		MethodCallRecorder.reset();
+ 	}
+ 
+ 	/**
+
+File: src/main/java/com/jayway/awaitility/core/ConditionFactory.java
+Patch:
+@@ -334,6 +334,7 @@ public ConditionFactory dontCatchUncaughtExceptions() {
+ 	public <T> void until(T ignore, final Matcher<T> matcher) throws Exception {
+ 		final MethodCaller<T> supplier = new MethodCaller<T>(MethodCallRecorder.getLastTarget(), MethodCallRecorder
+ 				.getLastMethod(), MethodCallRecorder.getLastArgs());
++		MethodCallRecorder.reset();
+ 		final ProxyHamcrestCondition<T> proxyCondition = new ProxyHamcrestCondition<T>(supplier, matcher, generateConditionSettings());
+ 		until(proxyCondition);
+ 	}
+
+File: src/main/java/com/jayway/awaitility/core/AbstractHamcrestCondition.java
+Patch:
+@@ -41,7 +41,7 @@ public Boolean call() throws Exception {
+ 		conditionAwaiter = new ConditionAwaiter(callable, settings) {
+ 			@Override
+ 			protected String getTimeoutMessage() {
+-				return AbstractHamcrestCondition.this.getTimeoutMessage(supplier, HamcrestToStringFilter.filter(matcher)) + " but was <" + lastResult + ">";
++				return String.format("%s expected %s but was <%s>", getCallableDescription(supplier), HamcrestToStringFilter.filter(matcher), lastResult);
+ 			}
+ 		};
+ 	}
+@@ -50,5 +50,5 @@ public void await() throws Exception {
+ 		conditionAwaiter.await();
+ 	}
+ 
+-	abstract String getTimeoutMessage(Callable<T> supplier, String matcherDescription);
++	abstract String getCallableDescription(final Callable<T> supplier);
+ }
+
+File: src/test/java/com/jayway/awaitility/AwaitilityTest.java
+Patch:
+@@ -255,7 +255,7 @@ public void awaitWithSameAsPollIntervalThrowsIllegalStateException() throws Exce
+ 	public void awaitDisplaysSupplierAndMatcherNameWhenTimeoutExceptionOccurs() throws Exception {
+ 		exception.expect(TimeoutException.class);
+ 		exception.expectMessage(FakeRepositoryValue.class.getName()
+-				+ " was not a value greater than <0> within 20 milliseconds.");
++				+ " was not a value greater than <0> but got <null> within 20 milliseconds.");
+ 
+ 		await().atMost(20, MILLISECONDS).until(value(), greaterThan(0));
+ 	}
+@@ -287,7 +287,7 @@ public void awaitDisplaysMethodInvocationNameAndMatcherNameWhenUsingCallToAndTim
+ 			throws Exception {
+ 		exception.expect(TimeoutException.class);
+ 		exception.expectMessage(FakeRepositoryImpl.class.getName()
+-				+ ".getValue() was not a value greater than <0> within 50 milliseconds.");
++				+ ".getValue() was not a value greater than <0> but got <null> within 50 milliseconds.");
+ 
+ 		new Asynch(fakeRepository).perform();
+ 		with().timeout(50, MILLISECONDS).await().until(callTo(fakeRepository).getValue(), greaterThan(0));
+@@ -298,7 +298,7 @@ public void awaitDisplaysMethodDeclaringTheSupplierWhenSupplierIsAnonymousClassA
+ 			throws Exception {
+ 		exception.expect(TimeoutException.class);
+ 		exception.expectMessage(String.format(
+-				"Condition returned by method \"valueAsAnonymous\" in class %s was not %s within 20 milliseconds.",
++				"Condition returned by method \"valueAsAnonymous\" in class %s was not %s but got <null> within 20 milliseconds.",
+ 				AwaitilityTest.class.getName(), equalTo(2).toString()));
+ 
+ 		await().atMost(20, MILLISECONDS).until(valueAsAnonymous(), equalTo(2));
+
+File: src/test/java/com/jayway/awaitility/DemoTest.java
+Patch:
+@@ -23,6 +23,8 @@
+ 
+ import java.util.concurrent.Callable;
+ 
++import org.hamcrest.Matchers;
++import org.junit.Assert;
+ import org.junit.Test;
+ 
+ public class DemoTest {
+
+File: src/main/java/com/jayway/awaitility/core/CallableCondition.java
+Patch:
+@@ -22,12 +22,12 @@ class CallableCondition implements Condition {
+ 
+ 	private final ConditionAwaiter conditionAwaiter;
+ 
+-	@SuppressWarnings("unchecked")
+ 	public CallableCondition(Callable<Boolean> matcher, ConditionSettings settings) {
+ 		final String timeoutMessage;
+ 		if (matcher == null) {
+ 			timeoutMessage = "";
+ 		} else {
++			@SuppressWarnings("rawtypes")
+ 			final Class<? extends Callable> type = matcher.getClass();
+ 			final Method enclosingMethod = type.getEnclosingMethod();
+ 			if (type.isAnonymousClass() && enclosingMethod != null) {
+
+File: src/main/java/com/jayway/awaitility/synchronizer/AwaitConditionImpl.java
+Patch:
+@@ -70,6 +70,8 @@ public void await() throws Exception {
+ 			if (maxWaitTime == Duration.FOREVER) {
+ 				latch.await();
+ 				finishedBeforeTimeout = true;
++			} else if (maxWaitTime == Duration.SAME_AS_POLL_INTERVAL) {
++				throw new IllegalStateException("Cannot use 'SAME_AS_POLL_INTERVAL' as maximum wait time.");
+ 			} else {
+ 				finishedBeforeTimeout = latch.await(timeout, maxWaitTime.getTimeUnit());
+ 			}
+
+File: src/main/java/com/jayway/awaitility/synchronizer/Duration.java
+Patch:
+@@ -33,7 +33,8 @@ public class Duration {
+ 	public static final Duration ONE_MINUTE = new Duration(60, SECONDS);
+ 	public static final Duration TWO_MINUTES = new Duration(120, SECONDS);
+ 	public static final Duration FIVE_MINUTES = new Duration(300, SECONDS);
+-	public static final Duration TEN_MINUTES = new Duration(600, SECONDS);;
++	public static final Duration TEN_MINUTES = new Duration(600, SECONDS);
++	public static final Duration SAME_AS_POLL_INTERVAL = new Duration();
+ 
+ 	private final long value;
+ 	private final TimeUnit unit;
+
+File: src/main/java/com/jayway/concurrenttest/synchronizer/Duration.java
+Patch:
+@@ -14,7 +14,7 @@ public enum Duration implements DurationSpecification {
+             SECONDS)), TWO_SECONDS(new DurationSpecificationImpl(2, SECONDS)), FIVE_SECONDS(new DurationSpecificationImpl(5, SECONDS)), TEN_SECONDS(
+             new DurationSpecificationImpl(10, SECONDS)), ONE_MINUTE(new DurationSpecificationImpl(1, MINUTES)), TWO_MINUTES(
+             new DurationSpecificationImpl(2, MINUTES)), FIVE_MINUTES(new DurationSpecificationImpl(5, MINUTES)), TEN_MINUTES(
+-            new DurationSpecificationImpl(110, MINUTES));
++            new DurationSpecificationImpl(10, MINUTES));
+ 
+     private final DurationSpecification duration;
+ 
+

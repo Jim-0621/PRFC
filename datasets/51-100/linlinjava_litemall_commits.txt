@@ -1,0 +1,2025 @@
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminCategoryController.java
+Patch:
+@@ -56,6 +56,7 @@ public Object list() {
+                 subCategoryVo.setKeywords(subCategory.getKeywords());
+                 subCategoryVo.setName(subCategory.getName());
+                 subCategoryVo.setLevel(subCategory.getLevel());
++                subCategoryVo.setPid(subCategory.getPid());
+ 
+                 children.add(subCategoryVo);
+             }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/shiro/AdminWebSessionManager.java
+Patch:
+@@ -29,6 +29,8 @@ protected Serializable getSessionId(ServletRequest request, ServletResponse resp
+             request.setAttribute(ShiroHttpServletRequest.REFERENCED_SESSION_ID_SOURCE, REFERENCED_SESSION_ID_SOURCE);
+             request.setAttribute(ShiroHttpServletRequest.REFERENCED_SESSION_ID, id);
+             request.setAttribute(ShiroHttpServletRequest.REFERENCED_SESSION_ID_IS_VALID, Boolean.TRUE);
++            // 参考 https://blog.csdn.net/narutots/article/details/120363843
++            request.setAttribute(ShiroHttpServletRequest.SESSION_ID_URL_REWRITING_ENABLED, this.isSessionIdUrlRewritingEnabled());
+             return id;
+         } else {
+             return super.getSessionId(request, response);
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAftersaleController.java
+Patch:
+@@ -183,7 +183,7 @@ public Object refund(@RequestBody LitemallAftersale aftersale) {
+         wxPayRefundRequest.setOutRefundNo("refund_" + order.getOrderSn());
+         // 元转成分
+         Integer totalFee = aftersaleOne.getAmount().multiply(new BigDecimal(100)).intValue();
+-        wxPayRefundRequest.setTotalFee(totalFee);
++        wxPayRefundRequest.setTotalFee(order.getActualPrice().multiply(new BigDecimal(100)).intValue());
+         wxPayRefundRequest.setRefundFee(totalFee);
+ 
+         WxPayRefundResult wxPayRefundResult;
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAftersaleController.java
+Patch:
+@@ -183,7 +183,7 @@ public Object refund(@RequestBody LitemallAftersale aftersale) {
+         wxPayRefundRequest.setOutRefundNo("refund_" + order.getOrderSn());
+         // 元转成分
+         Integer totalFee = aftersaleOne.getAmount().multiply(new BigDecimal(100)).intValue();
+-        wxPayRefundRequest.setTotalFee(totalFee);
++        wxPayRefundRequest.setTotalFee(order.getActualPrice().multiply(new BigDecimal(100)).intValue());
+         wxPayRefundRequest.setRefundFee(totalFee);
+ 
+         WxPayRefundResult wxPayRefundResult;
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminOrderController.java
+Patch:
+@@ -46,8 +46,8 @@ public class AdminOrderController {
+     @RequiresPermissionsDesc(menu = {"商场管理", "订单管理"}, button = "查询")
+     @GetMapping("/list")
+     public Object list(Integer userId, String orderSn,
+-                       @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime start,
+-                       @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime end,
++                       @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime start,
++                       @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime end,
+                        @RequestParam(required = false) List<Short> orderStatusArray,
+                        @RequestParam(defaultValue = "1") Integer page,
+                        @RequestParam(defaultValue = "10") Integer limit,
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxCartController.java
+Patch:
+@@ -469,8 +469,7 @@ public Object checkout(@LoginUser Integer userId, Integer cartId, Integer addres
+         int tmpCouponLength = 0;
+         List<LitemallCouponUser> couponUserList = couponUserService.queryAll(userId);
+         for(LitemallCouponUser couponUser : couponUserList){
+-            tmpUserCouponId = couponUser.getId();
+-            LitemallCoupon coupon = couponVerifyService.checkCoupon(userId, couponUser.getCouponId(), tmpUserCouponId, checkedGoodsPrice);
++            LitemallCoupon coupon = couponVerifyService.checkCoupon(userId, couponUser.getCouponId(), couponUser.getId(), checkedGoodsPrice);
+             if(coupon == null){
+                 continue;
+             }
+@@ -479,6 +478,7 @@ public Object checkout(@LoginUser Integer userId, Integer cartId, Integer addres
+             if(tmpCouponPrice.compareTo(coupon.getDiscount()) == -1){
+                 tmpCouponPrice = coupon.getDiscount();
+                 tmpCouponId = coupon.getId();
++                tmpUserCouponId = couponUser.getId();
+             }
+         }
+         // 获取优惠券减免金额，优惠券可用数量
+@@ -541,4 +541,4 @@ else if (couponId.equals(0)) {
+         data.put("checkedGoodsList", checkedGoodsList);
+         return ResponseUtil.ok(data);
+     }
+-}
+\ No newline at end of file
++}
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/WxGrouponRuleService.java
+Patch:
+@@ -32,7 +32,7 @@ public List<GrouponRuleVo> queryList(Integer page, Integer size) {
+ 
+ 
+     public List<GrouponRuleVo> queryList(Integer page, Integer size, String sort, String order) {
+-        Page<LitemallGrouponRules> grouponRulesList = (Page)grouponRulesService.queryList(page, size, sort, order);
++        Page<LitemallGrouponRules> grouponRulesList = (Page<LitemallGrouponRules>)grouponRulesService.queryList(page, size, sort, order);
+ 
+         Page<GrouponRuleVo> grouponList = new Page<GrouponRuleVo>();
+         grouponList.setPages(grouponRulesList.getPages());
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxCouponController.java
+Patch:
+@@ -139,7 +139,7 @@ public Object selectlist(@LoginUser Integer userId, Integer cartId, Integer grou
+         if (cartId == null || cartId.equals(0)) {
+             checkedGoodsList = cartService.queryByUidAndChecked(userId);
+         } else {
+-            LitemallCart cart = cartService.findById(cartId);
++            LitemallCart cart = cartService.findById(userId, cartId);
+             if (cart == null) {
+                 return ResponseUtil.badArgumentValue();
+             }
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxFootprintController.java
+Patch:
+@@ -54,7 +54,7 @@ public Object delete(@LoginUser Integer userId, @RequestBody String body) {
+         if (footprintId == null) {
+             return ResponseUtil.badArgument();
+         }
+-        LitemallFootprint footprint = footprintService.findById(footprintId);
++        LitemallFootprint footprint = footprintService.findById(userId, footprintId);
+ 
+         if (footprint == null) {
+             return ResponseUtil.badArgumentValue();
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxGrouponController.java
+Patch:
+@@ -87,7 +87,7 @@ public Object detail(@LoginUser Integer userId, @NotNull Integer grouponId) {
+             return ResponseUtil.unlogin();
+         }
+ 
+-        LitemallGroupon groupon = grouponService.queryById(grouponId);
++        LitemallGroupon groupon = grouponService.queryById(userId, grouponId);
+         if (groupon == null) {
+             return ResponseUtil.badArgumentValue();
+         }
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/notify/config/NotifyAutoConfiguration.java
+Patch:
+@@ -48,7 +48,6 @@ else if(smsConfig.getActive().equals("aliyun")) {
+         return notifyService;
+     }
+ 
+-    @Bean
+     public JavaMailSender mailSender() {
+         NotifyProperties.Mail mailConfig = properties.getMail();
+         JavaMailSenderImpl mailSender = new JavaMailSenderImpl();
+@@ -69,7 +68,6 @@ public JavaMailSender mailSender() {
+         return mailSender;
+     }
+ 
+-    @Bean
+     public TencentSmsSender tencentSmsSender() {
+         NotifyProperties.Sms smsConfig = properties.getSms();
+         TencentSmsSender smsSender = new TencentSmsSender();
+@@ -79,7 +77,6 @@ public TencentSmsSender tencentSmsSender() {
+         return smsSender;
+     }
+ 
+-    @Bean
+     public AliyunSmsSender aliyunSmsSender() {
+         NotifyProperties.Sms smsConfig = properties.getSms();
+         AliyunSmsSender smsSender = new AliyunSmsSender();
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminGrouponController.java
+Patch:
+@@ -48,12 +48,12 @@ public class AdminGrouponController {
+     @RequiresPermissions("admin:groupon:read")
+     @RequiresPermissionsDesc(menu = {"推广管理", "团购管理"}, button = "详情")
+     @GetMapping("/listRecord")
+-    public Object listRecord(String grouponId,
++    public Object listRecord(String grouponRuleId,
+                              @RequestParam(defaultValue = "1") Integer page,
+                              @RequestParam(defaultValue = "10") Integer limit,
+                              @Sort @RequestParam(defaultValue = "add_time") String sort,
+                              @Order @RequestParam(defaultValue = "desc") String order) {
+-        List<LitemallGroupon> grouponList = grouponService.querySelective(grouponId, page, limit, sort, order);
++        List<LitemallGroupon> grouponList = grouponService.querySelective(grouponRuleId, page, limit, sort, order);
+ 
+         List<Map<String, Object>> groupons = new ArrayList<>();
+         for (LitemallGroupon groupon : grouponList) {
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/service/AdminGoodsService.java
+Patch:
+@@ -187,7 +187,7 @@ public Object update(GoodsAllinone goodsAllinone) {
+                 attributeService.add(attribute);
+             }
+             else if(attribute.getDeleted()){
+-                attributeService.deleteByGid(attribute.getId());
++                attributeService.deleteById(attribute.getId());
+             }
+             else if(attribute.getUpdateTime() == null){
+                 attributeService.updateById(attribute);
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxGrouponController.java
+Patch:
+@@ -274,8 +274,8 @@ public Object my(@LoginUser Integer userId, @RequestParam(defaultValue = "0") In
+         }
+ 
+         Map<String, Object> result = new HashMap<>();
+-        result.put("count", grouponVoList.size());
+-        result.put("data", grouponVoList);
++        result.put("total", grouponVoList.size());
++        result.put("list", grouponVoList);
+ 
+         return ResponseUtil.ok(result);
+     }
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxCouponController.java
+Patch:
+@@ -104,8 +104,8 @@ private List<CouponVo> change(List<LitemallCouponUser> couponList) {
+             couponVo.setName(coupon.getName());
+             couponVo.setDesc(coupon.getDesc());
+             couponVo.setTag(coupon.getTag());
+-            couponVo.setMin(coupon.getMin().toPlainString());
+-            couponVo.setDiscount(coupon.getDiscount().toPlainString());
++            couponVo.setMin(coupon.getMin());
++            couponVo.setDiscount(coupon.getDiscount());
+             couponVo.setStartTime(couponUser.getStartTime());
+             couponVo.setEndTime(couponUser.getEndTime());
+ 
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminGoodsController.java
+Patch:
+@@ -27,6 +27,7 @@ public class AdminGoodsController {
+     /**
+      * 查询商品
+      *
++     * @param goodsId
+      * @param goodsSn
+      * @param name
+      * @param page
+@@ -38,12 +39,12 @@ public class AdminGoodsController {
+     @RequiresPermissions("admin:goods:list")
+     @RequiresPermissionsDesc(menu = {"商品管理", "商品管理"}, button = "查询")
+     @GetMapping("/list")
+-    public Object list(String goodsSn, String name,
++    public Object list(Integer goodsId, String goodsSn, String name,
+                        @RequestParam(defaultValue = "1") Integer page,
+                        @RequestParam(defaultValue = "10") Integer limit,
+                        @Sort @RequestParam(defaultValue = "add_time") String sort,
+                        @Order @RequestParam(defaultValue = "desc") String order) {
+-        return adminGoodsService.list(goodsSn, name, page, limit, sort, order);
++        return adminGoodsService.list(goodsId, goodsSn, name, page, limit, sort, order);
+     }
+ 
+     @GetMapping("/catAndBrand")
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/WxOrderService.java
+Patch:
+@@ -613,7 +613,7 @@ public Object payNotify(HttpServletRequest request, HttpServletResponse response
+         }
+ 
+         // 检查这个订单是否已经处理过
+-        if (OrderUtil.isPayStatus(order) && order.getPayId() != null) {
++        if (OrderUtil.hasPayed(order)) {
+             return WxPayNotifyResponse.success("订单已经处理成功!");
+         }
+ 
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/storage/TencentStorage.java
+Patch:
+@@ -77,7 +77,7 @@ private COSClient getCOSClient() {
+     }
+ 
+     private String getBaseUrl() {
+-        return "https://" + bucketName + ".cos-website." + region + ".myqcloud.com/";
++        return "https://" + bucketName + ".cos." + region + ".myqcloud.com/";
+     }
+ 
+     @Override
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/config/CorsConfig.java
+Patch:
+@@ -10,6 +10,7 @@
+ public class CorsConfig {
+     // 当前跨域请求最大有效时长。这里默认30天
+     private long maxAge = 30 * 24 * 60 * 60;
++
+     private CorsConfiguration buildConfig() {
+         CorsConfiguration corsConfiguration = new CorsConfiguration();
+         corsConfiguration.addAllowedOrigin("*"); // 1 设置访问源地址
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/notify/TencentSmsSender.java
+Patch:
+@@ -35,7 +35,7 @@ public SmsResult send(String phone, String content) {
+             smsResult.setResult(result);
+             return smsResult;
+         } catch (HTTPException | IOException e) {
+-            e.printStackTrace();
++            logger.error(e.getMessage(), e);
+         }
+ 
+         return null;
+@@ -52,7 +52,7 @@ public SmsResult sendWithTemplate(String phone, int templateId, String[] params)
+             smsResult.setResult(result);
+             return smsResult;
+         } catch (HTTPException | IOException e) {
+-            e.printStackTrace();
++            logger.error(e.getMessage(), e);
+         }
+ 
+         return null;
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/notify/WxTemplateSender.java
+Patch:
+@@ -47,7 +47,8 @@ public void sendWechatMsg(String touser, String templatId, String[] parms, Strin
+         sendMsg(touser, templatId, parms, page, "", "");
+     }
+ 
+-    private void sendMsg(String touser, String templatId, String[] parms, String page, String color, String emphasisKeyword) {
++    private void sendMsg(String touser, String templatId, String[] parms, String page, String color,
++                         String emphasisKeyword) {
+         LitemallUserFormid userFormid = formIdService.queryByOpenId(touser);
+         if (userFormid == null)
+             return;
+@@ -68,7 +69,7 @@ private void sendMsg(String touser, String templatId, String[] parms, String pag
+                 logger.warn("更新数据已失效");
+             }
+         } catch (Exception e) {
+-            e.printStackTrace();
++            logger.error(e.getMessage(), e);
+         }
+     }
+ 
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/validator/OrderValidator.java
+Patch:
+@@ -1,16 +1,17 @@
+ package org.linlinjava.litemall.core.validator;
+ 
++import com.google.common.collect.Lists;
++
+ import javax.validation.ConstraintValidator;
+ import javax.validation.ConstraintValidatorContext;
+-import java.util.ArrayList;
+ import java.util.List;
+ 
+ public class OrderValidator implements ConstraintValidator<Order, String> {
+     private List<String> valueList;
+ 
+     @Override
+     public void initialize(Order order) {
+-        valueList = new ArrayList<String>();
++        valueList = Lists.newArrayList();
+         for (String val : order.accepts()) {
+             valueList.add(val.toUpperCase());
+         }
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/validator/SortValidator.java
+Patch:
+@@ -1,16 +1,17 @@
+ package org.linlinjava.litemall.core.validator;
+ 
++import com.google.common.collect.Lists;
++
+ import javax.validation.ConstraintValidator;
+ import javax.validation.ConstraintValidatorContext;
+-import java.util.ArrayList;
+ import java.util.List;
+ 
+ public class SortValidator implements ConstraintValidator<Sort, String> {
+     private List<String> valueList;
+ 
+     @Override
+     public void initialize(Sort sort) {
+-        valueList = new ArrayList<String>();
++        valueList = Lists.newArrayList();
+         for (String val : sort.accepts()) {
+             valueList.add(val.toUpperCase());
+         }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/Application.java
+Patch:
+@@ -6,7 +6,8 @@
+ import org.springframework.scheduling.annotation.EnableScheduling;
+ import org.springframework.transaction.annotation.EnableTransactionManagement;
+ 
+-@SpringBootApplication(scanBasePackages = {"org.linlinjava.litemall.db", "org.linlinjava.litemall.core", "org.linlinjava.litemall.admin"})
++@SpringBootApplication(scanBasePackages = {"org.linlinjava.litemall.db", "org.linlinjava.litemall.core", "org" +
++        ".linlinjava.litemall.admin"})
+ @MapperScan("org.linlinjava.litemall.db.dao")
+ @EnableTransactionManagement
+ @EnableScheduling
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/annotation/RequiresPermissionsDesc.java
+Patch:
+@@ -1,7 +1,5 @@
+ package org.linlinjava.litemall.admin.annotation;
+ 
+-import org.apache.shiro.authz.annotation.RequiresPermissions;
+-
+ import java.lang.annotation.ElementType;
+ import java.lang.annotation.Retention;
+ import java.lang.annotation.RetentionPolicy;
+@@ -11,5 +9,6 @@
+ @Retention(RetentionPolicy.RUNTIME)
+ public @interface RequiresPermissionsDesc {
+     String[] menu();
++
+     String button();
+ }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/config/Swagger2Configuration.java
+Patch:
+@@ -13,9 +13,9 @@
+ /**
+  * swagger在线文档配置<br>
+  * 项目启动后可通过地址：http://host:ip/swagger-ui.html 查看在线文档
+- * @version 2018-07-24
+  *
+  * @author enilu
++ * @version 2018-07-24
+  */
+ 
+ @Configuration
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/job/CouponJob.java
+Patch:
+@@ -11,6 +11,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.scheduling.annotation.Scheduled;
+ import org.springframework.stereotype.Component;
++
+ import java.util.List;
+ 
+ /**
+@@ -35,13 +36,13 @@ public void checkCouponExpired() {
+         logger.info("系统开启任务检查优惠券是否已经过期");
+ 
+         List<LitemallCoupon> couponList = couponService.queryExpired();
+-        for(LitemallCoupon coupon : couponList){
++        for (LitemallCoupon coupon : couponList) {
+             coupon.setStatus(CouponConstant.STATUS_EXPIRED);
+             couponService.updateById(coupon);
+         }
+ 
+         List<LitemallCouponUser> couponUserList = couponUserService.queryExpired();
+-        for(LitemallCouponUser couponUser : couponUserList){
++        for (LitemallCouponUser couponUser : couponUserList) {
+             couponUser.setStatus(CouponUserConstant.STATUS_EXPIRED);
+             couponUserService.update(couponUser);
+         }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/util/Permission.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import org.apache.shiro.authz.annotation.RequiresPermissions;
+ import org.linlinjava.litemall.admin.annotation.RequiresPermissionsDesc;
+-import org.springframework.web.bind.annotation.RequestMapping;
+ 
+ public class Permission {
+     private RequiresPermissions requiresPermissions;
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAddressController.java
+Patch:
+@@ -31,7 +31,7 @@ public class AdminAddressController {
+     private LitemallRegionService regionService;
+ 
+     @RequiresPermissions("admin:address:list")
+-    @RequiresPermissionsDesc(menu={"用户管理" , "收货地址"}, button="查询")
++    @RequiresPermissionsDesc(menu = {"用户管理", "收货地址"}, button = "查询")
+     @GetMapping("/list")
+     public Object list(Integer userId, String name,
+                        @RequestParam(defaultValue = "1") Integer page,
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAuthController.java
+Patch:
+@@ -16,9 +16,7 @@
+ import org.linlinjava.litemall.core.util.JacksonUtil;
+ import org.linlinjava.litemall.core.util.ResponseUtil;
+ import org.linlinjava.litemall.db.domain.LitemallAdmin;
+-import org.linlinjava.litemall.db.domain.LitemallLog;
+ import org.linlinjava.litemall.db.service.LitemallAdminService;
+-import org.linlinjava.litemall.db.service.LitemallLogService;
+ import org.linlinjava.litemall.db.service.LitemallPermissionService;
+ import org.linlinjava.litemall.db.service.LitemallRoleService;
+ import org.springframework.beans.factory.annotation.Autowired;
+@@ -153,7 +151,7 @@ private Collection<String> toAPI(Set<String> permissions) {
+                 apis.clear();
+                 apis.add("*");
+                 return apis;
+-//                return systemPermissionsMap.values();
++                //                return systemPermissionsMap.values();
+ 
+             }
+         }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminCollectController.java
+Patch:
+@@ -29,7 +29,7 @@ public class AdminCollectController {
+ 
+ 
+     @RequiresPermissions("admin:collect:list")
+-    @RequiresPermissionsDesc(menu={"用户管理" , "用户收藏"}, button="查询")
++    @RequiresPermissionsDesc(menu = {"用户管理", "用户收藏"}, button = "查询")
+     @GetMapping("/list")
+     public Object list(String userId, String valueId,
+                        @RequestParam(defaultValue = "1") Integer page,
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminCommentController.java
+Patch:
+@@ -25,7 +25,7 @@ public class AdminCommentController {
+     private LitemallCommentService commentService;
+ 
+     @RequiresPermissions("admin:comment:list")
+-    @RequiresPermissionsDesc(menu={"商品管理" , "评论管理"}, button="查询")
++    @RequiresPermissionsDesc(menu = {"商品管理", "评论管理"}, button = "查询")
+     @GetMapping("/list")
+     public Object list(String userId, String valueId,
+                        @RequestParam(defaultValue = "1") Integer page,
+@@ -37,7 +37,7 @@ public Object list(String userId, String valueId,
+     }
+ 
+     @RequiresPermissions("admin:comment:delete")
+-    @RequiresPermissionsDesc(menu={"商品管理" , "评论管理"}, button="删除")
++    @RequiresPermissionsDesc(menu = {"商品管理", "评论管理"}, button = "删除")
+     @PostMapping("/delete")
+     public Object delete(@RequestBody LitemallComment comment) {
+         Integer id = comment.getId();
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminFeedbackController.java
+Patch:
+@@ -32,14 +32,15 @@ public class AdminFeedbackController {
+     private LitemallFeedbackService feedbackService;
+ 
+     @RequiresPermissions("admin:feedback:list")
+-    @RequiresPermissionsDesc(menu={"用户管理" , "意见反馈"}, button="查询")
++    @RequiresPermissionsDesc(menu = {"用户管理", "意见反馈"}, button = "查询")
+     @GetMapping("/list")
+     public Object list(Integer userId, String username,
+                        @RequestParam(defaultValue = "1") Integer page,
+                        @RequestParam(defaultValue = "10") Integer limit,
+                        @Sort @RequestParam(defaultValue = "add_time") String sort,
+                        @Order @RequestParam(defaultValue = "desc") String order) {
+-        List<LitemallFeedback> feedbackList = feedbackService.querySelective(userId, username, page, limit, sort, order);
++        List<LitemallFeedback> feedbackList = feedbackService.querySelective(userId, username, page, limit, sort,
++                order);
+         return ResponseUtil.okList(feedbackList);
+     }
+ }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminFootprintController.java
+Patch:
+@@ -28,14 +28,15 @@ public class AdminFootprintController {
+     private LitemallFootprintService footprintService;
+ 
+     @RequiresPermissions("admin:footprint:list")
+-    @RequiresPermissionsDesc(menu={"用户管理" , "用户足迹"}, button="查询")
++    @RequiresPermissionsDesc(menu = {"用户管理", "用户足迹"}, button = "查询")
+     @GetMapping("/list")
+     public Object list(String userId, String goodsId,
+                        @RequestParam(defaultValue = "1") Integer page,
+                        @RequestParam(defaultValue = "10") Integer limit,
+                        @Sort @RequestParam(defaultValue = "add_time") String sort,
+                        @Order @RequestParam(defaultValue = "desc") String order) {
+-        List<LitemallFootprint> footprintList = footprintService.querySelective(userId, goodsId, page, limit, sort, order);
++        List<LitemallFootprint> footprintList = footprintService.querySelective(userId, goodsId, page, limit, sort,
++                order);
+         return ResponseUtil.okList(footprintList);
+     }
+ }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminHistoryController.java
+Patch:
+@@ -26,14 +26,15 @@ public class AdminHistoryController {
+     private LitemallSearchHistoryService searchHistoryService;
+ 
+     @RequiresPermissions("admin:history:list")
+-    @RequiresPermissionsDesc(menu={"用户管理" , "搜索历史"}, button="查询")
++    @RequiresPermissionsDesc(menu = {"用户管理", "搜索历史"}, button = "查询")
+     @GetMapping("/list")
+     public Object list(String userId, String keyword,
+                        @RequestParam(defaultValue = "1") Integer page,
+                        @RequestParam(defaultValue = "10") Integer limit,
+                        @Sort @RequestParam(defaultValue = "add_time") String sort,
+                        @Order @RequestParam(defaultValue = "desc") String order) {
+-        List<LitemallSearchHistory> historyList = searchHistoryService.querySelective(userId, keyword, page, limit, sort, order);
++        List<LitemallSearchHistory> historyList = searchHistoryService.querySelective(userId, keyword, page, limit,
++                sort, order);
+         return ResponseUtil.okList(historyList);
+     }
+ }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminIndexController.java
+Patch:
+@@ -51,14 +51,14 @@ public Object admin2() {
+     }
+ 
+     @RequiresPermissions("index:permission:read")
+-    @RequiresPermissionsDesc(menu={"其他" , "权限测试"}, button="权限读")
++    @RequiresPermissionsDesc(menu = {"其他", "权限测试"}, button = "权限读")
+     @GetMapping("/read")
+     public Object read() {
+         return ResponseUtil.ok("hello world, this is admin service");
+     }
+ 
+     @RequiresPermissions("index:permission:write")
+-    @RequiresPermissionsDesc(menu={"其他" , "权限测试"}, button="权限写")
++    @RequiresPermissionsDesc(menu = {"其他", "权限测试"}, button = "权限写")
+     @PostMapping("/write")
+     public Object write() {
+         return ResponseUtil.ok("hello world, this is admin service");
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminRegionController.java
+Patch:
+@@ -36,7 +36,7 @@ public Object list() {
+         List<RegionVo> regionVoList = new ArrayList<>();
+ 
+         List<LitemallRegion> provinceList = regionService.queryByPid(0);
+-        for(LitemallRegion province : provinceList){
++        for (LitemallRegion province : provinceList) {
+             RegionVo provinceVO = new RegionVo();
+             provinceVO.setId(province.getId());
+             provinceVO.setName(province.getName());
+@@ -45,7 +45,7 @@ public Object list() {
+ 
+             List<LitemallRegion> cityList = regionService.queryByPid(province.getId());
+             List<RegionVo> cityVOList = new ArrayList<>();
+-            for(LitemallRegion city : cityList){
++            for (LitemallRegion city : cityList) {
+                 RegionVo cityVO = new RegionVo();
+                 cityVO.setId(city.getId());
+                 cityVO.setName(city.getName());
+@@ -54,7 +54,7 @@ public Object list() {
+ 
+                 List<LitemallRegion> areaList = regionService.queryByPid(city.getId());
+                 List<RegionVo> areaVOList = new ArrayList<>();
+-                for(LitemallRegion area : areaList){
++                for (LitemallRegion area : areaList) {
+                     RegionVo areaVO = new RegionVo();
+                     areaVO.setId(area.getId());
+                     areaVO.setName(area.getName());
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminStatController.java
+Patch:
+@@ -26,7 +26,7 @@ public class AdminStatController {
+     private StatService statService;
+ 
+     @RequiresPermissions("admin:stat:user")
+-    @RequiresPermissionsDesc(menu={"统计管理" , "用户统计"}, button="查询")
++    @RequiresPermissionsDesc(menu = {"统计管理", "用户统计"}, button = "查询")
+     @GetMapping("/user")
+     public Object statUser() {
+         List<Map> rows = statService.statUser();
+@@ -38,7 +38,7 @@ public Object statUser() {
+     }
+ 
+     @RequiresPermissions("admin:stat:order")
+-    @RequiresPermissionsDesc(menu={"统计管理" , "订单统计"}, button="查询")
++    @RequiresPermissionsDesc(menu = {"统计管理", "订单统计"}, button = "查询")
+     @GetMapping("/order")
+     public Object statOrder() {
+         List<Map> rows = statService.statOrder();
+@@ -51,7 +51,7 @@ public Object statOrder() {
+     }
+ 
+     @RequiresPermissions("admin:stat:goods")
+-    @RequiresPermissionsDesc(menu={"统计管理" , "商品统计"}, button="查询")
++    @RequiresPermissionsDesc(menu = {"统计管理", "商品统计"}, button = "查询")
+     @GetMapping("/goods")
+     public Object statGoods() {
+         List<Map> rows = statService.statGoods();
+
+File: litemall-admin-api/src/test/java/org/linlinjava/litemall/admin/PermissionTest.java
+Patch:
+@@ -2,9 +2,9 @@
+ 
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+-import org.linlinjava.litemall.admin.vo.PermVo;
+ import org.linlinjava.litemall.admin.util.Permission;
+ import org.linlinjava.litemall.admin.util.PermissionUtil;
++import org.linlinjava.litemall.admin.vo.PermVo;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.context.ApplicationContext;
+
+File: litemall-core/src/test/java/org/linlinjava/litemall/core/util/bcrypt/BCryptTest.java
+Patch:
+@@ -91,7 +91,7 @@ public void testHashpw() {
+ 
+   @PrepareForTest({BCrypt.class, SecureRandom.class})
+   @Test
+-  public void testGensalt() {
++  public void testGensalt() throws Exception {
+     PowerMockito.whenNew(SecureRandom.class).withNoArguments()
+         .thenReturn(PowerMockito.mock(SecureRandom.class));
+     Assert.assertEquals("$2a$10$......................", BCrypt.gensalt());
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/config/CorsConfig.java
+Patch:
+@@ -8,11 +8,14 @@
+ 
+ @Configuration
+ public class CorsConfig {
++    // 当前跨域请求最大有效时长。这里默认30天
++    private long maxAge = 30 * 24 * 60 * 60;
+     private CorsConfiguration buildConfig() {
+         CorsConfiguration corsConfiguration = new CorsConfiguration();
+         corsConfiguration.addAllowedOrigin("*"); // 1 设置访问源地址
+         corsConfiguration.addAllowedHeader("*"); // 2 设置访问源请求头
+         corsConfiguration.addAllowedMethod("*"); // 3 设置访问源请求方法
++        corsConfiguration.setMaxAge(maxAge);
+         return corsConfiguration;
+     }
+ 
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/CaptchaCodeManager.java
+Patch:
+@@ -5,12 +5,13 @@
+ import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.Map;
++import java.util.concurrent.ConcurrentHashMap;
+ 
+ /**
+  * 缓存系统中的验证码
+  */
+ public class CaptchaCodeManager {
+-    private static Map<String, CaptchaItem> captchaCodeCache = new HashMap<>();
++    private static ConcurrentHashMap<String, CaptchaItem> captchaCodeCache = new ConcurrentHashMap<>();
+ 
+     /**
+      * 添加到缓存
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/HomeCacheManager.java
+Patch:
+@@ -3,6 +3,7 @@
+ import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.Map;
++import java.util.concurrent.ConcurrentHashMap;
+ 
+ /**
+  * 简单缓存的数据
+@@ -13,7 +14,7 @@ public class HomeCacheManager {
+     public static final String CATALOG = "catalog";
+     public static final String GOODS = "goods";
+ 
+-    private static Map<String, Map<String, Object>> cacheDataList = new HashMap<>();
++    private static ConcurrentHashMap<String, Map<String, Object>> cacheDataList = new ConcurrentHashMap<>();
+ 
+     /**
+      * 缓存首页数据
+@@ -66,7 +67,7 @@ public static boolean hasData(String cacheKey) {
+      * 清除所有缓存
+      */
+     public static void clearAll() {
+-        cacheDataList = new HashMap<>();
++        cacheDataList = new ConcurrentHashMap<>();
+     }
+ 
+     /**
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallOrderService.java
+Patch:
+@@ -64,7 +64,7 @@ public String generateOrderSn(Integer userId) {
+         String now = df.format(LocalDate.now());
+         String orderSn = now + getRandomNum(6);
+         while (countByOrderSn(userId, orderSn) != 0) {
+-            orderSn = getRandomNum(6);
++            orderSn = now + getRandomNum(6);
+         }
+         return orderSn;
+     }
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/WxOrderService.java
+Patch:
+@@ -318,7 +318,7 @@ public Object submit(Integer userId, String body) {
+         BigDecimal integralPrice = new BigDecimal(0.00);
+ 
+         // 订单费用
+-        BigDecimal orderTotalPrice = checkedGoodsPrice.add(freightPrice).subtract(couponPrice);
++        BigDecimal orderTotalPrice = checkedGoodsPrice.add(freightPrice).subtract(couponPrice).max(new BigDecimal(0.00));
+         // 最终支付费用
+         BigDecimal actualPrice = orderTotalPrice.subtract(integralPrice);
+ 
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxCartController.java
+Patch:
+@@ -495,7 +495,8 @@ else if (couponId.equals(0)) {
+         BigDecimal integralPrice = new BigDecimal(0.00);
+ 
+         // 订单费用
+-        BigDecimal orderTotalPrice = checkedGoodsPrice.add(freightPrice).subtract(couponPrice);
++        BigDecimal orderTotalPrice = checkedGoodsPrice.add(freightPrice).subtract(couponPrice).max(new BigDecimal(0.00));
++
+         BigDecimal actualPrice = orderTotalPrice.subtract(integralPrice);
+ 
+         Map<String, Object> data = new HashMap<>();
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxCatalogController.java
+Patch:
+@@ -119,6 +119,9 @@ public Object queryAll() {
+     public Object current(@NotNull Integer id) {
+         // 当前分类
+         LitemallCategory currentCategory = categoryService.findById(id);
++        if(currentCategory == null){
++            return ResponseUtil.badArgumentValue();
++        }
+         List<LitemallCategory> currentSubCategory = categoryService.queryByPid(currentCategory.getId());
+ 
+         Map<String, Object> data = new HashMap<String, Object>();
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/WxOrderService.java
+Patch:
+@@ -278,7 +278,7 @@ public Object submit(Integer userId, String body) {
+         }
+ 
+         // 收货地址
+-        LitemallAddress checkedAddress = addressService.findById(addressId);
++        LitemallAddress checkedAddress = addressService.query(userId, addressId);
+         if (checkedAddress == null) {
+             return ResponseUtil.badArgument();
+         }
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAddressController.java
+Patch:
+@@ -103,7 +103,7 @@ public Object detail(@LoginUser Integer userId, @NotNull Integer id) {
+ 			return ResponseUtil.unlogin();
+ 		}
+ 
+-		LitemallAddress address = addressService.findById(id);
++		LitemallAddress address = addressService.query(userId, id);
+ 		if (address == null) {
+ 			return ResponseUtil.badArgumentValue();
+ 		}
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxCartController.java
+Patch:
+@@ -397,7 +397,7 @@ public Object checkout(@LoginUser Integer userId, Integer cartId, Integer addres
+             }
+ 
+         } else {
+-            checkedAddress = addressService.findById(addressId);
++            checkedAddress = addressService.query(userId, addressId);
+             // 如果null, 则报错
+             if (checkedAddress == null) {
+                 return ResponseUtil.badArgumentValue();
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallRoleService.java
+Patch:
+@@ -37,12 +37,12 @@ public Set<String> queryByIds(Integer[] roleIds) {
+ 
+     }
+ 
+-    public List<LitemallRole> querySelective(String roleName, Integer page, Integer size, String sort, String order) {
++    public List<LitemallRole> querySelective(String name, Integer page, Integer size, String sort, String order) {
+         LitemallRoleExample example = new LitemallRoleExample();
+         LitemallRoleExample.Criteria criteria = example.createCriteria();
+ 
+-        if (!StringUtils.isEmpty(roleName)) {
+-            criteria.andNameEqualTo("%" + roleName + "%");
++        if (!StringUtils.isEmpty(name)) {
++            criteria.andNameLike("%" + name + "%");
+         }
+         criteria.andDeletedEqualTo(false);
+ 
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/job/CouponJob.java
+Patch:
+@@ -27,6 +27,8 @@ public class CouponJob {
+ 
+     /**
+      * 每隔一个小时检查
++     * TODO
++     * 注意，因为是相隔一个小时检查，因此导致优惠券真正超时时间可能比设定时间延迟1个小时
+      */
+     @Scheduled(fixedDelay = 60 * 60 * 1000)
+     public void checkCouponExpired() {
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/service/AdminGoodsService.java
+Patch:
+@@ -197,7 +197,6 @@ public Object update(GoodsAllinone goodsAllinone) {
+             product.setGoodsId(goods.getId());
+             productService.add(product);
+         }
+-        qCodeService.createGoodShareImage(goods.getId().toString(), goods.getPicUrl(), goods.getName());
+ 
+         return ResponseUtil.ok();
+     }
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/storage/StorageService.java
+Patch:
+@@ -43,7 +43,7 @@ public void setStorage(Storage storage) {
+      * @param contentType   文件类型
+      * @param fileName      文件索引名
+      */
+-    public String store(InputStream inputStream, long contentLength, String contentType, String fileName) {
++    public LitemallStorage store(InputStream inputStream, long contentLength, String contentType, String fileName) {
+         String key = generateKey(fileName);
+         storage.store(inputStream, contentLength, contentType, key);
+ 
+@@ -56,7 +56,7 @@ public String store(InputStream inputStream, long contentLength, String contentT
+         storageInfo.setUrl(url);
+         litemallStorageService.add(storageInfo);
+ 
+-        return url;
++        return storageInfo;
+     }
+ 
+     private String generateKey(String originalFilename) {
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/util/AdminResponseCode.java
+Patch:
+@@ -19,4 +19,6 @@ public class AdminResponseCode {
+     public static final Integer USER_MOBILE_EXIST = 634;
+     public static final Integer ROLE_NAME_EXIST = 640;
+     public static final Integer ROLE_SUPER_SUPERMISSION = 641;
++    public static final Integer ROLE_USER_EXIST = 642;
++
+ }
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/service/WxOrderService.java
+Patch:
+@@ -207,6 +207,7 @@ public Object detail(Integer userId, Integer orderId) {
+         orderVo.put("mobile", order.getMobile());
+         orderVo.put("address", order.getAddress());
+         orderVo.put("goodsPrice", order.getGoodsPrice());
++        orderVo.put("couponPrice", order.getCouponPrice());
+         orderVo.put("freightPrice", order.getFreightPrice());
+         orderVo.put("actualPrice", order.getActualPrice());
+         orderVo.put("orderStatusText", OrderUtil.orderStatusText(order));
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminCouponController.java
+Patch:
+@@ -50,7 +50,7 @@ public Object list(String name, Short type, Short status,
+         return ResponseUtil.ok(data);
+     }
+ 
+-    @RequiresPermissions("admin:coupon:list")
++    @RequiresPermissions("admin:coupon:listuser")
+     @RequiresPermissionsDesc(menu={"推广管理" , "优惠券管理"}, button="查询用户")
+     @GetMapping("/listuser")
+     public Object listuser(Integer userId, Integer couponId, Short status,
+
+File: litemall-admin-api/src/test/java/org/linlinjava/litemall/admin/PermissionTest.java
+Patch:
+@@ -3,6 +3,7 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.linlinjava.litemall.admin.util.PermVo;
++import org.linlinjava.litemall.admin.util.Permission;
+ import org.linlinjava.litemall.admin.util.PermissionUtil;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.boot.test.context.SpringBootTest;
+@@ -23,7 +24,8 @@ public class PermissionTest {
+     @Test
+     public void test() {
+         final String basicPackage = "org.linlinjava.litemall.admin";
+-        List<PermVo> permVoList = PermissionUtil.listPermissions(context, basicPackage);
++        List<Permission> permissionList = PermissionUtil.listPermission(context, basicPackage);
++        List<PermVo> permVoList = PermissionUtil.listPermVo(permissionList);
+         permVoList.stream().forEach(System.out::println);
+     }
+ }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAddressController.java
+Patch:
+@@ -3,6 +3,7 @@
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.apache.shiro.authz.annotation.RequiresPermissions;
++import org.linlinjava.litemall.admin.annotation.RequiresPermissionsDesc;
+ import org.linlinjava.litemall.core.util.ResponseUtil;
+ import org.linlinjava.litemall.core.validator.Order;
+ import org.linlinjava.litemall.core.validator.Sort;
+@@ -53,6 +54,7 @@ private Map<String, Object> toVo(LitemallAddress address) {
+     }
+ 
+     @RequiresPermissions("admin:address:list")
++    @RequiresPermissionsDesc(menu={"用户管理" , "收货地址"}, button="查询")
+     @GetMapping("/list")
+     public Object list(Integer userId, String name,
+                        @RequestParam(defaultValue = "1") Integer page,
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallCartService.java
+Patch:
+@@ -114,7 +114,7 @@ public void deleteById(Integer id) {
+ 
+     public boolean checkExist(Integer goodsId) {
+         LitemallCartExample example = new LitemallCartExample();
+-        example.or().andGoodsIdEqualTo(goodsId).andCheckedEqualTo(true);
++        example.or().andGoodsIdEqualTo(goodsId).andCheckedEqualTo(true).andDeletedEqualTo(false);
+         return cartMapper.countByExample(example) != 0;
+     }
+ }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/config/ShiroConfig.java
+Patch:
+@@ -76,6 +76,7 @@ public AuthorizationAttributeSourceAdvisor authorizationAttributeSourceAdvisor(S
+     @DependsOn("lifecycleBeanPostProcessor")
+     public static DefaultAdvisorAutoProxyCreator defaultAdvisorAutoProxyCreator() {
+         DefaultAdvisorAutoProxyCreator creator = new DefaultAdvisorAutoProxyCreator();
++        creator.setProxyTargetClass(true);
+         return creator;
+     }
+ }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdController.java
+Patch:
+@@ -52,7 +52,7 @@ private Object validate(LitemallAd ad) {
+         if (StringUtils.isEmpty(name)) {
+             return ResponseUtil.badArgument();
+         }
+-        String content = ad.getName();
++        String content = ad.getContent();
+         if (StringUtils.isEmpty(content)) {
+             return ResponseUtil.badArgument();
+         }
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAuthController.java
+Patch:
+@@ -199,7 +199,7 @@ public Object registerCaptcha(@RequestBody String body) {
+             return ResponseUtil.badArgumentValue();
+         }
+ 
+-        if (notifyService.isSmsEnable()) {
++        if (!notifyService.isSmsEnable()) {
+             return ResponseUtil.fail(404, "小程序后台验证码服务不支持");
+         }
+         String code = CharUtil.getRandomNum(6);
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAuthController.java
+Patch:
+@@ -244,11 +244,11 @@ public Object register(@RequestBody String body, HttpServletRequest request) {
+         String username = JacksonUtil.parseString(body, "username");
+         String password = JacksonUtil.parseString(body, "password");
+         String mobile = JacksonUtil.parseString(body, "mobile");
+-        String captcha = JacksonUtil.parseString(body, "captcha");
+         String code = JacksonUtil.parseString(body, "code");
++        String wxCode = JacksonUtil.parseString(body, "wxCode");
+ 
+         if (StringUtils.isEmpty(username) || StringUtils.isEmpty(password) || StringUtils.isEmpty(mobile)
+-            || StringUtils.isEmpty(captcha) || StringUtils.isEmpty(code)) {
++            || StringUtils.isEmpty(wxCode) || StringUtils.isEmpty(code)) {
+             return ResponseUtil.badArgument();
+         }
+ 
+@@ -272,7 +272,7 @@ public Object register(@RequestBody String body, HttpServletRequest request) {
+ 
+         String openId = null;
+         try {
+-            WxMaJscode2SessionResult result = this.wxService.getUserService().getSessionInfo(code);
++            WxMaJscode2SessionResult result = this.wxService.getUserService().getSessionInfo(wxCode);
+             openId = result.getOpenid();
+         } catch (Exception e) {
+             e.printStackTrace();
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxOrderController.java
+Patch:
+@@ -942,8 +942,9 @@ public Object comment(@LoginUser Integer userId, @RequestBody String body) {
+         // 1. 创建评价
+         LitemallComment comment = new LitemallComment();
+         comment.setUserId(userId);
++        comment.setType((byte)0);
+         comment.setValueId(orderGoods.getGoodsId());
+-        comment.setType((byte)1);
++        comment.setStar(star.shortValue());
+         comment.setContent(content);
+         comment.setHasPicture(hasPicture);
+         comment.setPicUrls(picUrls.toArray(new String[]{}));
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminCategoryController.java
+Patch:
+@@ -65,7 +65,7 @@ private Object validate(LitemallCategory category) {
+         }
+ 
+         Integer pid = category.getPid();
+-        if(pid == null){
++        if(level.equals("L2") && (pid == null)){
+             return ResponseUtil.badArgument();
+         }
+ 
+@@ -82,7 +82,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallCategory
+             return error;
+         }
+         categoryService.add(category);
+-        return ResponseUtil.ok();
++        return ResponseUtil.ok(category);
+     }
+ 
+     @GetMapping("/read")
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallBrandService.java
+Patch:
+@@ -83,6 +83,8 @@ public void add(LitemallBrand brand) {
+     }
+ 
+     public List<LitemallBrand> all() {
+-        return brandMapper.selectByExample(new LitemallBrandExample());
++        LitemallBrandExample example = new LitemallBrandExample();
++        example.or().andDeletedEqualTo(false);
++        return brandMapper.selectByExample(example);
+     }
+ }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdminController.java
+Patch:
+@@ -81,7 +81,7 @@ private Object validate(LitemallAdmin admin) {
+         if(StringUtils.isEmpty(name)){
+             return ResponseUtil.badArgument();
+         }
+-        if(RegexUtil.isUsername(name)){
++        if(!RegexUtil.isUsername(name)){
+             return ResponseUtil.fail(402, "管理员名称不符合规定");
+         }
+         String password = admin.getPassword();
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminUserController.java
+Patch:
+@@ -68,7 +68,7 @@ private Object validate(LitemallUser user) {
+         if(StringUtils.isEmpty(user)){
+             return ResponseUtil.badArgument();
+         }
+-        if(RegexUtil.isUsername(username)){
++        if(!RegexUtil.isUsername(username)){
+             return ResponseUtil.fail(402, "用户名不符合规定");
+         }
+         String password = user.getPassword();
+@@ -79,7 +79,7 @@ private Object validate(LitemallUser user) {
+         if(StringUtils.isEmpty(mobile)){
+             return ResponseUtil.badArgument();
+         }
+-        if(RegexUtil.isMobileExact(mobile)){
++        if(!RegexUtil.isMobileExact(mobile)){
+             return ResponseUtil.fail(402, "用户手机号码格式不正确");
+         }
+         return null;
+
+File: litemall-core/src/test/java/org/linlinjava/litemall/core/ExpressTest.java
+Patch:
+@@ -4,6 +4,7 @@
+ import org.junit.runner.RunWith;
+ import org.linlinjava.litemall.core.express.ExpressService;
+ import org.linlinjava.litemall.core.express.dao.ExpressInfo;
++import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
+ import org.springframework.test.context.web.WebAppConfiguration;
+@@ -12,10 +13,11 @@
+ @RunWith(SpringJUnit4ClassRunner.class)
+ @SpringBootTest(classes = Application.class)
+ public class ExpressTest {
++    @Autowired
++    private ExpressService expressService;
+ 
+     @Test
+     public void test() {
+-        ExpressService expressService = new ExpressService();
+         ExpressInfo ei = null;
+         try {
+             ei = expressService.getExpressInfo("YTO", "800669400640887922");
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallAddressService.java
+Patch:
+@@ -29,8 +29,8 @@ public int add(LitemallAddress address) {
+         return addressMapper.insertSelective(address);
+     }
+ 
+-    public int updateId(LitemallAddress address) {
+-        return addressMapper.updateWithVersionByPrimaryKeySelective(address.getVersion(), address);
++    public int update(LitemallAddress address) {
++        return addressMapper.updateByPrimaryKeySelective(address);
+     }
+ 
+     public void delete(Integer id) {
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAddressController.java
+Patch:
+@@ -209,11 +209,11 @@ public Object save(@LoginUser Integer userId, @RequestBody LitemallAddress addre
+             addressService.add(address);
+         } else {
+             address.setUserId(userId);
+-            if(addressService.updateId(address) == 0){
+-                return ResponseUtil.updatedDateExpired();
++            if(addressService.update(address) == 0){
++                return ResponseUtil.updatedDataFailed();
+             }
+         }
+-        return ResponseUtil.ok(address);
++        return ResponseUtil.ok(address.getId());
+     }
+ 
+     /**
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAddressController.java
+Patch:
+@@ -144,23 +144,23 @@ private Object validate(LitemallAddress address) {
+         if(pid == null){
+             return ResponseUtil.badArgument();
+         }
+-        if(addressService.findById(pid) == null){
++        if(regionService.findById(pid) == null){
+             return ResponseUtil.badArgumentValue();
+         }
+ 
+         Integer cid = address.getCityId();
+         if(cid == null){
+             return ResponseUtil.badArgument();
+         }
+-        if(addressService.findById(cid) == null){
++        if(regionService.findById(cid) == null){
+             return ResponseUtil.badArgumentValue();
+         }
+ 
+         Integer aid = address.getAreaId();
+         if(aid == null){
+             return ResponseUtil.badArgument();
+         }
+-        if(addressService.findById(aid) == null){
++        if(regionService.findById(aid) == null){
+             return ResponseUtil.badArgumentValue();
+         }
+ 
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxGrouponController.java
+Patch:
+@@ -68,7 +68,7 @@ public Object detail(@LoginUser Integer userId, @NotNull Integer grouponId) {
+         Map<String, Object> orderVo = new HashMap<String, Object>();
+         orderVo.put("id", order.getId());
+         orderVo.put("orderSn", order.getOrderSn());
+-        orderVo.put("addTime", LocalDate.now());
++        orderVo.put("addTime", order.getAddTime());
+         orderVo.put("consignee", order.getConsignee());
+         orderVo.put("mobile", order.getMobile());
+         orderVo.put("address", order.getAddress());
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxOrderController.java
+Patch:
+@@ -227,7 +227,7 @@ public Object detail(@LoginUser Integer userId, @NotNull Integer orderId) {
+         Map<String, Object> orderVo = new HashMap<String, Object>();
+         orderVo.put("id", order.getId());
+         orderVo.put("orderSn", order.getOrderSn());
+-        orderVo.put("addTime", LocalDate.now());
++        orderVo.put("addTime", order.getAddTime());
+         orderVo.put("consignee", order.getConsignee());
+         orderVo.put("mobile", order.getMobile());
+         orderVo.put("address", order.getAddress());
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxOrderController.java
+Patch:
+@@ -315,6 +315,9 @@ public Object submit(@LoginUser Integer userId, @RequestBody String body) {
+ 
+         // 收货地址
+         LitemallAddress checkedAddress = addressService.findById(addressId);
++        if(checkedAddress == null){
++            return ResponseUtil.badArgument();
++        }
+ 
+         // 获取可用的优惠券信息
+         // 使用优惠券减免的金额
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallTopicService.java
+Patch:
+@@ -15,7 +15,7 @@
+ public class LitemallTopicService {
+     @Resource
+     private LitemallTopicMapper topicMapper;
+-    private Column[] columns = new Column[]{Column.id, Column.title, Column.subtitle, Column.picUrl, Column.readCount};
++    private Column[] columns = new Column[]{Column.id, Column.title, Column.subtitle, Column.price, Column.picUrl, Column.readCount};
+ 
+     public List<LitemallTopic> queryList(int offset, int limit) {
+         LitemallTopicExample example = new LitemallTopicExample();
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/system/SystemInistService.java
+Patch:
+@@ -16,6 +16,8 @@
+ class SystemInistService {
+     private SystemInistService systemInistService;
+     @Autowired
++    private ConfigService configService;
++    @Autowired
+     private Environment environment;
+ 
+     @PostConstruct
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/storage/StorageService.java
+Patch:
+@@ -95,7 +95,7 @@ public void delete(String keyName) {
+         storage.delete(keyName);
+     }
+ 
+-    public String generateUrl(String keyName) {
++    private String generateUrl(String keyName) {
+         return storage.generateUrl(keyName);
+     }
+ }
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallGoodsService.java
+Patch:
+@@ -17,7 +17,7 @@ public class LitemallGoodsService {
+     @Resource
+     private LitemallGoodsMapper goodsMapper;
+ 
+-    Column[] columns = new Column[]{Column.id, Column.name, Column.brief, Column.picUrl, Column.counterPrice, Column.retailPrice};
++    Column[] columns = new Column[]{Column.id, Column.name, Column.brief, Column.picUrl, Column.isHot, Column.isNew, Column.counterPrice, Column.retailPrice};
+ 
+     /**
+      * 获取热卖商品
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxGoodsController.java
+Patch:
+@@ -189,7 +189,7 @@ public Object category(@NotNull Integer id) {
+         if (cur.getPid() == 0) {
+             parent = cur;
+             children = categoryService.queryByPid(cur.getId());
+-            cur = children.size()>0?children.get(0):cur;
++            cur = children.size() > 0 ? children.get(0) : cur;
+         } else {
+             parent = categoryService.findById(cur.getPid());
+             children = categoryService.queryByPid(cur.getPid());
+@@ -258,8 +258,7 @@ public Object list(Integer categoryId, Integer brandId, String keyword, Boolean
+         List<LitemallCategory> categoryList = null;
+         if (goodsCatIds.size() != 0) {
+             categoryList = categoryService.queryL2ByIds(goodsCatIds);
+-        }
+-        else {
++        } else {
+             categoryList = new ArrayList<>(0);
+         }
+ 
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxHomeController.java
+Patch:
+@@ -96,7 +96,7 @@ public Object index() {
+         data.put("topicList", topicList);
+ 
+         //优惠专区
+-        List<LitemallGrouponRules> grouponRules = grouponRulesService.queryByIndex(0, 4);
++        List<LitemallGrouponRules> grouponRules = grouponRulesService.queryByIndex(0, 5);
+         List<LitemallGoods> grouponGoods = new ArrayList<>();
+         List<Map<String, Object>> grouponList = new ArrayList<>();
+         for (LitemallGrouponRules rule : grouponRules) {
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxOrderController.java
+Patch:
+@@ -71,7 +71,6 @@ public class WxOrderController {
+ 
+     @Autowired
+     private PlatformTransactionManager txManager;
+-
+     @Autowired
+     private LitemallUserService userService;
+     @Autowired
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxGoodsController.java
+Patch:
+@@ -259,6 +259,9 @@ public Object list(Integer categoryId, Integer brandId, String keyword, Boolean
+         if (goodsCatIds.size() != 0) {
+             categoryList = categoryService.queryL2ByIds(goodsCatIds);
+         }
++        else {
++            categoryList = new ArrayList<>(0);
++        }
+ 
+         Map<String, Object> data = new HashMap<>();
+         data.put("goodsList", goodsList);
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxGoodsController.java
+Patch:
+@@ -183,7 +183,7 @@ public Object category(@NotNull Integer id) {
+         if (cur.getPid() == 0) {
+             parent = cur;
+             children = categoryService.queryByPid(cur.getId());
+-            cur = children.get(0);
++            cur = children.size()>0?children.get(0):cur;
+         } else {
+             parent = categoryService.findById(cur.getPid());
+             children = categoryService.queryByPid(cur.getPid());
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxGoodsController.java
+Patch:
+@@ -236,7 +236,7 @@ public Object list(Integer categoryId, Integer brandId, String keyword, Boolean
+                        @LoginUser Integer userId,
+                        @RequestParam(defaultValue = "1") Integer page,
+                        @RequestParam(defaultValue = "10") Integer size,
+-                       @Sort(accepts = {"add_time", "retail_price"}) @RequestParam(defaultValue = "add_time") String sort,
++                       @Sort(accepts = {"add_time", "retail_price", "name"}) @RequestParam(defaultValue = "add_time") String sort,
+                        @Order @RequestParam(defaultValue = "desc") String order) {
+ 
+         //添加到搜索历史
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/storage/QiniuStorage.java
+Patch:
+@@ -58,7 +58,7 @@ public void setBucketName(String bucketName) {
+     }
+ 
+     /**
+-     * 阿里云OSS对象存储简单上传实现
++     * 七牛云OSS对象存储简单上传实现
+      */
+     @Override
+     public void store(InputStream inputStream, long contentLength, String contentType, String keyName) {
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/storage/config/StorageAutoConfiguration.java
+Patch:
+@@ -21,7 +21,6 @@ public StorageAutoConfiguration(StorageProperties properties) {
+     @Bean
+     public StorageService storageService() {
+         StorageService storageService = new StorageService();
+-        Map<String, Storage> supportedStorage = new HashMap<String, Storage>(3);
+         String active = this.properties.getActive();
+         storageService.setActive(active);
+         if(active.equals("local")){
+@@ -34,7 +33,7 @@ else if(active.equals("tencent")){
+             storageService.setStorage(tencentStorage());
+         }
+         else if(active.equals("qiniu")){
+-            storageService.setStorage(tencentStorage());
++            storageService.setStorage(qiniuStorage());
+         }
+         else{
+             throw  new RuntimeException("当前存储模式 " + active + " 不支持");
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxCartController.java
+Patch:
+@@ -14,6 +14,7 @@
+ import org.springframework.web.bind.annotation.*;
+ 
+ import java.math.BigDecimal;
++import java.time.LocalDateTime;
+ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.List;
+@@ -140,6 +141,7 @@ public Object add(@LoginUser Integer userId, @RequestBody LitemallCart cart) {
+             cart.setSpecifications(product.getSpecifications());
+             cart.setUserId(userId);
+             cart.setChecked(true);
++            cart.setAddTime(LocalDateTime.now());
+             cartService.add(cart);
+         }
+         else{
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAuthController.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+-import org.hibernate.validator.constraints.NotEmpty;
+ import org.linlinjava.litemall.admin.dao.AdminToken;
+ import org.linlinjava.litemall.admin.annotation.LoginAdmin;
+ import org.linlinjava.litemall.admin.service.AdminTokenManager;
+@@ -19,8 +18,6 @@
+ import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+-
+-import javax.validation.constraints.NotNull;
+ import java.util.List;
+ 
+ @RestController
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxGoodsController.java
+Patch:
+@@ -230,7 +230,7 @@ public Object list(Integer categoryId, Integer brandId, String keyword, Boolean
+                        @LoginUser Integer userId,
+                        @RequestParam(defaultValue = "1") Integer page,
+                        @RequestParam(defaultValue = "10") Integer size,
+-                       @Sort @RequestParam(defaultValue = "add_time") String sort,
++                       @Sort(accepts = {"add_time", "retail_price"}) @RequestParam(defaultValue = "add_time") String sort,
+                        @Order @RequestParam(defaultValue = "desc") String order){
+ 
+         //添加到搜索历史
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxSearchController.java
+Patch:
+@@ -1,6 +1,5 @@
+ package org.linlinjava.litemall.wx.web;
+ 
+-import org.hibernate.validator.constraints.NotEmpty;
+ import org.linlinjava.litemall.db.domain.LitemallKeyword;
+ import org.linlinjava.litemall.db.domain.LitemallSearchHistory;
+ import org.linlinjava.litemall.db.service.LitemallKeywordService;
+@@ -11,6 +10,7 @@
+ import org.springframework.validation.annotation.Validated;
+ import org.springframework.web.bind.annotation.*;
+ 
++import javax.validation.constraints.NotEmpty;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminRegionController.java
+Patch:
+@@ -44,7 +44,7 @@ public Object list(@LoginAdmin Integer adminId,
+                        String name, Integer code,
+                        @RequestParam(defaultValue = "1") Integer page,
+                        @RequestParam(defaultValue = "10") Integer limit,
+-                       @Sort @RequestParam(defaultValue = "add_time") String sort,
++                       @Sort (accepts={"id"}) @RequestParam(defaultValue = "id") String sort,
+                        @Order @RequestParam(defaultValue = "desc") String order){
+         if(adminId == null){
+             return ResponseUtil.unlogin();
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxGoodsController.java
+Patch:
+@@ -230,7 +230,8 @@ public Object list(Integer categoryId, Integer brandId, String keyword, Boolean
+                        @LoginUser Integer userId,
+                        @RequestParam(defaultValue = "1") Integer page,
+                        @RequestParam(defaultValue = "10") Integer size,
+-                       @Sort String sort, @Order String order) {
++                       @Sort @RequestParam(defaultValue = "add_time") String sort,
++                       @Order @RequestParam(defaultValue = "desc") String order){
+ 
+         //添加到搜索历史
+         if (userId != null && !StringUtils.isNullOrEmpty(keyword)) {
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxOrderController.java
+Patch:
+@@ -591,7 +591,7 @@ public Object payNotify(HttpServletRequest request, HttpServletResponse response
+                     order.getAddress()
+             };
+ 
+-            notifyService.notifyWxTemplate(result.getOpenid(), NotifyType.PAY_SUCCEED, parms, "/pages/index/index?orderId=" + order.getId());
++            notifyService.notifyWxTemplate(result.getOpenid(), NotifyType.PAY_SUCCEED, parms, "pages/index/index?orderId=" + order.getId());
+ 
+             return WxPayNotifyResponse.success("处理成功!");
+         } catch (Exception e) {
+
+File: litemall-core/src/main/java/org/linlinjava/litemall/core/notify/NotifyService.java
+Patch:
+@@ -45,7 +45,7 @@ public void notifySms(String phoneNumber, String message) {
+      */
+     @Async
+     public void notifySmsTemplate(String phoneNumber, NotifyType notifyType, String[] params) {
+-        if (wxTemplateSender == null)
++        if (smsSender == null)
+             return;
+ 
+         int templateId = Integer.parseInt(getTemplateId(notifyType, smsTemplate));
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAuthController.java
+Patch:
+@@ -326,7 +326,6 @@ public Object reset(@RequestBody String body, HttpServletRequest request) {
+             user = userList.get(0);
+         }
+ 
+-        // TODO 重新生成的密码无法登陆
+         BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+         String encodedPassword = encoder.encode(password);
+         user.setPassword(encodedPassword);
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminGoodsController.java
+Patch:
+@@ -1,11 +1,9 @@
+ package org.linlinjava.litemall.admin.web;
+ 
+-import io.swagger.models.auth.In;
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ import org.linlinjava.litemall.admin.annotation.LoginAdmin;
+ import org.linlinjava.litemall.admin.dao.GoodsAllinone;
+-import org.linlinjava.litemall.admin.dao.Product;
+ import org.linlinjava.litemall.admin.util.CatVo;
+ import org.linlinjava.litemall.db.domain.*;
+ import org.linlinjava.litemall.db.service.*;
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAddressController.java
+Patch:
+@@ -11,6 +11,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.List;
+@@ -154,6 +155,7 @@ public Object save(@LoginUser Integer userId, @RequestBody LitemallAddress addre
+ 
+         if (address.getId() == null || address.getId().equals(0)) {
+             address.setId(null);
++            address.setAddTime(LocalDateTime.now());
+             address.setUserId(userId);
+             addressService.add(address);
+         } else {
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxOrderController.java
+Patch:
+@@ -553,8 +553,8 @@ public Object payNotify(HttpServletRequest request, HttpServletResponse response
+ 
+             //TODO 发送邮件和短信通知，这里采用异步发送
+             // 订单支付成功以后，会发送短信给用户，以及发送邮件给管理员
+-            litemallNotifyService.notifyMailMessage("订单通知", order.toString());
+-            litemallNotifyService.notifySMSTemplate(order.getMobile(), new String[]{""}, NotifyUtils.NotifyType.PAY_COMPLATED);
++            litemallNotifyService.notifyMailMessage("新订单通知", order.toString());
++            litemallNotifyService.notifySMSTemplate(order.getMobile(), NotifyUtils.NotifyType.PAY_SUCCEED, new String[]{orderSn});
+ 
+             return WxPayNotifyResponse.success("处理成功!");
+         } catch (Exception e) {
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdController.java
+Patch:
+@@ -9,6 +9,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -45,6 +46,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallAd ad){
+         if(adminId == null){
+             return ResponseUtil.unlogin();
+         }
++        ad.setAddTime(LocalDateTime.now());
+         adService.add(ad);
+         return ResponseUtil.ok(ad);
+     }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAddressController.java
+Patch:
+@@ -11,6 +11,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.List;
+@@ -83,6 +84,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallAddress a
+             return ResponseUtil.fail(403, "手机号格式不正确");
+         }
+ 
++        address.setAddTime(LocalDateTime.now());
+         addressService.add(address);
+ 
+         Map<String, Object> addressVo = toVo(address);
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminAdminController.java
+Patch:
+@@ -9,6 +9,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.List;
+@@ -72,6 +73,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallAdmin adm
+         BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+         String encodedPassword = encoder.encode(rawPassword);
+         admin.setPassword(encodedPassword);
++        admin.setAddTime(LocalDateTime.now());
+ 
+         adminService.add(admin);
+         return ResponseUtil.ok(admin);
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminBrandController.java
+Patch:
+@@ -9,6 +9,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -45,6 +46,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallBrand bra
+         if(adminId == null){
+             return ResponseUtil.unlogin();
+         }
++        brand.setAddTime(LocalDateTime.now());
+         brandService.add(brand);
+         return ResponseUtil.ok(brand);
+     }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminCategoryController.java
+Patch:
+@@ -9,6 +9,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -45,6 +46,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallCategory
+         if(adminId == null){
+             return ResponseUtil.unlogin();
+         }
++        category.setAddTime(LocalDateTime.now());
+         categoryService.add(category);
+         return ResponseUtil.ok();
+     }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminCommentController.java
+Patch:
+@@ -9,6 +9,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -45,6 +46,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallComment c
+         if(adminId == null){
+             return ResponseUtil.unlogin();
+         }
++        comment.setAddTime(LocalDateTime.now());
+         commentService.add(comment);
+         return ResponseUtil.ok(comment);
+     }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminGoodsSpecificationController.java
+Patch:
+@@ -9,6 +9,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -45,6 +46,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallGoodsSpec
+         if(adminId == null){
+             return ResponseUtil.unlogin();
+         }
++        goodsSpecification.setAddTime(LocalDateTime.now());
+         goodsSpecificationService.add(goodsSpecification);
+         return ResponseUtil.ok(goodsSpecification);
+     }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminKeywordController.java
+Patch:
+@@ -9,6 +9,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -45,6 +46,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallKeyword k
+         if(adminId == null){
+             return ResponseUtil.unlogin();
+         }
++        keywords.setAddTime(LocalDateTime.now());
+         keywordService.add(keywords);
+         return ResponseUtil.ok(keywords);
+     }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminProductController.java
+Patch:
+@@ -13,6 +13,7 @@
+ import org.springframework.web.bind.annotation.*;
+ 
+ import java.math.BigDecimal;
++import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -85,6 +86,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallProduct l
+         product.setGoodsNumber(0);
+         product.setRetailPrice(new BigDecimal(0.00));
+         product.setGoodsSpecificationIds(goodsSpecificationIds);
++        product.setAddTime(LocalDateTime.now());
+         productService.add(product);
+ 
+         return ResponseUtil.ok();
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminTopicController.java
+Patch:
+@@ -9,6 +9,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -45,6 +46,7 @@ public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallTopic top
+         if(adminId == null){
+             return ResponseUtil.unlogin();
+         }
++        topic.setAddTime(LocalDateTime.now());
+         topicService.add(topic);
+         return ResponseUtil.ok(topic);
+     }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminUserController.java
+Patch:
+@@ -10,6 +10,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
++import java.time.LocalDateTime;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -57,7 +58,7 @@ public Object username(String username){
+     @PostMapping("/create")
+     public Object create(@LoginAdmin Integer adminId, @RequestBody LitemallUser user){
+         logger.debug(user);
+-
++        user.setAddTime(LocalDateTime.now());
+         userService.add(user);
+         return ResponseUtil.ok(user);
+     }
+
+File: litemall-admin-api/src/main/java/org/linlinjava/litemall/admin/web/AdminOrderController.java
+Patch:
+@@ -231,7 +231,7 @@ public void checkOrderUnpaid() {
+      * 早点清理未付款情况，这里八天再确认是可以的。
+      *
+      * TODO
+-     * 目前自动确认是基于管理后台管理员所设置的商品快递到达时间，见orderService.queryUnconfirm。
++     * 目前自动确认是基于管理后台管理员所设置的商品快递时间，见orderService.queryUnconfirm。
+      * 那么在实际业务上有可能存在商品寄出以后商品因为一些原因快递最终没有到达，
+      * 也就是商品快递失败而shipEndTime一直是空的情况，因此这里业务可能需要扩展，以防止订单一直
+      * 处于发货状态。
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallOrderService.java
+Patch:
+@@ -153,7 +153,7 @@ public List<LitemallOrder> queryUnpaid() {
+ 
+     public List<LitemallOrder> queryUnconfirm() {
+         LitemallOrderExample example = new LitemallOrderExample();
+-        example.or().andOrderStatusEqualTo(OrderUtil.STATUS_SHIP).andShipEndTimeIsNotNull().andDeletedEqualTo(false);
++        example.or().andOrderStatusEqualTo(OrderUtil.STATUS_SHIP).andShipStartTimeIsNotNull().andDeletedEqualTo(false);
+         return orderMapper.selectByExample(example);
+     }
+ 
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAuthController.java
+Patch:
+@@ -237,6 +237,7 @@ public Object register(@RequestBody String body, HttpServletRequest request) {
+         user.setStatus("可用");
+         user.setLastLoginTime(LocalDateTime.now());
+         user.setLastLoginIp(IpUtil.client(request));
++        user.setAddTime(LocalDateTime.now());
+         userService.add(user);
+ 
+ 
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxOrderController.java
+Patch:
+@@ -341,6 +341,7 @@ public Object submit(@LoginUser Integer userId, @RequestBody String body) {
+                 orderGoods.setNumber(cartGoods.getNumber());
+                 orderGoods.setGoodsSpecificationIds(cartGoods.getGoodsSpecificationIds());
+                 orderGoods.setGoodsSpecificationValues(cartGoods.getGoodsSpecificationValues());
++                orderGoods.setAddTime(LocalDateTime.now());
+ 
+                 // 添加订单商品表项
+                 orderGoodsService.add(orderGoods);
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxAddressController.java
+Patch:
+@@ -153,7 +153,7 @@ public Object save(@LoginUser Integer userId, @RequestBody LitemallAddress addre
+             address.setUserId(userId);
+             addressService.update(address);
+         }
+-        return ResponseUtil.ok();
++        return ResponseUtil.ok(address.getId());
+     }
+ 
+     /**
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxCartController.java
+Patch:
+@@ -357,7 +357,6 @@ public Object checked(@LoginUser Integer userId, @RequestBody String body) {
+ 
+     /**
+      * 购物车商品删除
+-     * 如果原来没有勾选，则设置勾选状态；如果商品已经勾选，则设置非勾选状态。
+      *
+      * @param userId 用户ID
+      * @param body 购物车商品信息， { productIds: xxx }
+@@ -381,11 +380,11 @@ public Object delete(@LoginUser Integer userId, @RequestBody String body) {
+         
+         List<Integer> productIds = JacksonUtil.parseIntegerList(body, "productIds");
+ 
+-        if(productIds == null){
++        if(productIds == null || productIds.size() == 0){
+             return ResponseUtil.badArgument();
+         }
+ 
+-        cartService.delete(productIds, 1);
++        cartService.delete(productIds, userId);
+         return index(userId);
+     }
+ 
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxCartController.java
+Patch:
+@@ -515,11 +515,12 @@ public Object checkout(@LoginUser Integer userId, Integer cartId, Integer addres
+         BigDecimal orderTotalPrice = checkedGoodsPrice.add(freightPrice).subtract(couponPrice);
+         BigDecimal actualPrice = orderTotalPrice.subtract(integralPrice);
+ 
+-        Map<String, Object> data = new HashMap();
++        Map<String, Object> data = new HashMap<>();
+         data.put("addressId", addressId);
+         data.put("checkedAddress", checkedAddress);
+         data.put("couponId", couponId);
+         data.put("checkedCoupon", 0);
++        data.put("couponList", "");
+         data.put("goodsTotalPrice", checkedGoodsPrice);
+         data.put("freightPrice", freightPrice);
+         data.put("couponPrice", couponPrice);
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/domain/LitemallOrder.java
+Patch:
+@@ -183,7 +183,7 @@ public class LitemallOrder {
+      *
+      * @mbg.generated Sat Apr 07 10:22:31 CST 2018
+      */
+-    private Date shipEndTime;
++    private LocalDateTime shipEndTime;
+ 
+     /**
+      *
+@@ -685,7 +685,7 @@ public void setShipStartTime(LocalDateTime shipStartTime) {
+      *
+      * @mbg.generated Sat Apr 07 10:22:31 CST 2018
+      */
+-    public Date getShipEndTime() {
++    public LocalDateTime getShipEndTime() {
+         return shipEndTime;
+     }
+ 
+@@ -697,7 +697,7 @@ public Date getShipEndTime() {
+      *
+      * @mbg.generated Sat Apr 07 10:22:31 CST 2018
+      */
+-    public void setShipEndTime(Date shipEndTime) {
++    public void setShipEndTime(LocalDateTime shipEndTime) {
+         this.shipEndTime = shipEndTime;
+     }
+ 
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallKeywordService.java
+Patch:
+@@ -54,7 +54,7 @@ public List<LitemallKeyword> querySelective(String keyword, String url, Integer
+         criteria.andDeletedEqualTo(false);
+ 
+         PageHelper.startPage(page, limit);
+-        return keywordsMapper.selectByExampleSelective(example);
++        return keywordsMapper.selectByExample(example);
+     }
+ 
+     public int countSelective(String keyword, String url, Integer page, Integer limit, String sort, String order) {
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/util/OrderUtil.java
+Patch:
+@@ -28,7 +28,7 @@ public class OrderUtil {
+     public static final Short STATUS_PAY = 201;
+     public static final Short STATUS_SHIP= 301;
+     public static final Short STATUS_CONFIRM = 401;
+-    public static final Short STATUS_CANCEL= 201;
++    public static final Short STATUS_CANCEL= 102;
+     public static final Short STATUS_REFUND = 202;
+     public static final Short STATUS_AUTO_CONFIRM= 402;
+ 
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallAdminService.java
+Patch:
+@@ -16,9 +16,9 @@ public class LitemallAdminService {
+     @Resource
+     private LitemallAdminMapper adminMapper;
+ 
+-    public List<LitemallAdmin> findAdmin(String username, String password) {
++    public List<LitemallAdmin> findAdmin(String username) {
+         LitemallAdminExample example = new LitemallAdminExample();
+-        example.or().andUsernameEqualTo(username).andPasswordEqualTo(password);
++        example.or().andUsernameEqualTo(username);
+         return adminMapper.selectByExample(example);
+     }
+ 
+
+File: litemall-wx-api/src/main/java/org/linlinjava/litemall/wx/web/WxSearchController.java
+Patch:
+@@ -55,7 +55,9 @@ public Object helper(String keyword) {
+             return ResponseUtil.fail402();
+         }
+ 
+-        List<LitemallKeyword> keywordsList = keywordsService.queryByKeyword(keyword);
++        Integer page = 1;
++        Integer size = 10;
++        List<LitemallKeyword> keywordsList = keywordsService.queryByKeyword(keyword, page, size);
+         String[] keys = new String[keywordsList.size()];
+         int index = 0;
+         for (LitemallKeyword key : keywordsList) {
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallOrderGoodsService.java
+Patch:
+@@ -25,7 +25,6 @@ public List<LitemallOrderGoods> queryByOid(Integer orderId) {
+     public List<LitemallOrderGoods> findByOidAndGid(Integer orderId, Integer goodsId) {
+         LitemallOrderGoodsExample example = new LitemallOrderGoodsExample();
+         example.or().andOrderIdEqualTo(orderId).andGoodsIdEqualTo(goodsId);
+-        List<LitemallOrderGoods> orderGoodsList = orderGoodsMapper.selectByExample(example);
+         return orderGoodsMapper.selectByExample(example);
+     }
+ 
+
+File: litemall-db/src/main/java/org/linlinjava/litemall/db/service/LitemallCommentService.java
+Patch:
+@@ -18,6 +18,7 @@ public class LitemallCommentService {
+ 
+     public List<LitemallComment> queryGoodsByGid(Integer id, int offset, int limit) {
+         LitemallCommentExample example = new LitemallCommentExample();
++        example.setOrderByClause(LitemallComment.Column.addTime.desc());
+         example.or().andValueIdEqualTo(id).andTypeIdEqualTo((byte)0);
+         PageHelper.startPage(offset, limit);
+         return commentMapper.selectByExample(example);
+@@ -31,6 +32,7 @@ public int countGoodsByGid(Integer id, int offset, int limit) {
+ 
+     public List<LitemallComment> query(Byte typeId, Integer valueId, Integer showType, Integer offset, Integer limit) {
+         LitemallCommentExample example = new LitemallCommentExample();
++        example.setOrderByClause(LitemallComment.Column.addTime.desc());
+         if(showType == 0) {
+             example.or().andValueIdEqualTo(valueId).andTypeIdEqualTo(typeId);
+         }
+@@ -70,6 +72,7 @@ public void update(LitemallComment comment) {
+ 
+     public List<LitemallComment> querySelective(String userId, String valueId, Integer page, Integer size, String sort, String order) {
+         LitemallCommentExample example = new LitemallCommentExample();
++        example.setOrderByClause(LitemallComment.Column.addTime.desc());
+         LitemallCommentExample.Criteria criteria = example.createCriteria();
+ 
+         if(!StringUtils.isEmpty(userId)){
+

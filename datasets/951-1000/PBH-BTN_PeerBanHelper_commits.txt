@@ -1,0 +1,1569 @@
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/IPBlackList.java
+Patch:
+@@ -311,6 +311,9 @@ private void reloadConfig() {
+ 
+     @Override
+     public @NotNull CheckResult shouldBanPeer(@NotNull Torrent torrent, @NotNull Peer peer, @NotNull Downloader downloader, @NotNull ExecutorService ruleExecuteExecutor) {
++        if (isHandShaking(peer)) {
++            return handshaking();
++        }
+         return getCache().readCacheButWritePassOnly(this, peer.getPeerAddress().getIp(), () -> {
+             PeerAddress peerAddress = peer.getPeerAddress();
+             if (ports.contains(peerAddress.getPort())) {
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/IPBlackRuleList.java
+Patch:
+@@ -124,6 +124,9 @@ public ReloadResult reloadModule() throws Exception {
+ 
+     @Override
+     public @NotNull CheckResult shouldBanPeer(@NotNull Torrent torrent, @NotNull Peer peer, @NotNull Downloader downloader, @NotNull ExecutorService ruleExecuteExecutor) {
++        if (isHandShaking(peer)) {
++            return handshaking();
++        }
+         return getCache().readCacheButWritePassOnly(this, peer.getPeerAddress().getIp(), () -> {
+             String ip = peer.getPeerAddress().getIp();
+             List<IPBanResult> results = new ArrayList<>();
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/PTRBlacklist.java
+Patch:
+@@ -100,6 +100,9 @@ public void reloadConfig() {
+ 
+     @Override
+     public @NotNull CheckResult shouldBanPeer(@NotNull Torrent torrent, @NotNull Peer peer, @NotNull Downloader downloader, @NotNull ExecutorService ruleExecuteExecutor) {
++        if (isHandShaking(peer)) {
++            return handshaking();
++        }
+         var reverseDnsLookupString = peer.getPeerAddress().getAddress().toReverseDNSLookupString();
+         return getCache().readCache(this, reverseDnsLookupString, () -> {
+             Optional<String> ptr;
+
+File: src/main/java/com/ghostchu/peerbanhelper/database/DatabaseHelper.java
+Patch:
+@@ -43,7 +43,7 @@ private void createTables() throws SQLException {
+ 
+     private void performUpgrade() throws SQLException {
+         Dao<MetadataEntity, String> metadata = DaoManager.createDao(getDataSource(), MetadataEntity.class);
+-        MetadataEntity version = metadata.createIfNotExists(new MetadataEntity("version", "7"));
++        MetadataEntity version = metadata.createIfNotExists(new MetadataEntity("version", "9"));
+         int v = Integer.parseInt(version.getValue());
+         if (v < 3) {
+             try {
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/jcef/JCEFAppFactory.java
+Patch:
+@@ -60,7 +60,7 @@ public static CefAppBuilder createBuilder(File dataDir, String locale) {
+         });
+         var b = new StringJoiner(" ");
+         builder.getJcefArgs().forEach(b::add);
+-        log.info("JCEF App created with args: {}", b);
++        log.debug("JCEF App created with args: {}", b);
+         return builder;
+     }
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/gui/impl/swing/SwingGuiImpl.java
+Patch:
+@@ -74,7 +74,7 @@ private void updateGuiStuff() {
+ 
+         // taskbar
+         if (Main.getServer().isGlobalPaused()) {
+-            taskbarControl().updateProgress(mainWindow, Taskbar.State.PAUSED, 100.0f);
++            taskbarControl().updateProgress(mainWindow, Taskbar.State.PAUSED, 1.0f);
+         } else {
+             taskbarControl().updateProgress(mainWindow, Taskbar.State.OFF, -1.0f);
+         }
+
+File: src/main/java/com/ghostchu/peerbanhelper/metric/impl/persist/PersistMetrics.java
+Patch:
+@@ -99,7 +99,8 @@ public void recordPeerBan(PeerAddress address, BanMetadata metadata) {
+                         null,
+                         metadata.getTorrent().getHash(),
+                         metadata.getTorrent().getName(),
+-                        metadata.getTorrent().getSize()
++                        metadata.getTorrent().getSize(),
++                        metadata.getTorrent().isPrivateTorrent()
+                 ));
+                 ModuleEntity module = moduleDao.createIfNotExists(new ModuleEntity(
+                         null,
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHEasterEggController.java
+Patch:
+@@ -67,14 +67,14 @@ public boolean isConfigurable() {
+     public void onEnable() {
+         javalinWebContainer.javalin()
+                 .get("/api/egg", this::handleEgg)
+-                .get("/api/neuro", this::neuro) // AI VTuber made by Vedal on Twitch: https://www.twitch.tv/vedal987
+-                .get("/api/neurosama", this::neuro);
++                .get("/api/egg/neuro", this::neuro) // AI VTuber made by Vedal on Twitch: https://www.twitch.tv/vedal987
++                .get("/api/egg/neurosama", this::neuro);
+     }
+ 
+ 
+     private void neuro(Context context) {
+         // Yeeeeet, Neuro!
+-        var imageStream = Main.class.getResourceAsStream("/assets/other/neuro.png");
++        var imageStream = Main.class.getResourceAsStream("/assets/other/Neuro.png");
+         if (imageStream == null) {
+             context.status(HttpStatus.NOT_FOUND);
+             context.result("You killed Neuro! How dare you!?");
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/IPBlackRuleList.java
+Patch:
+@@ -135,7 +135,6 @@ public ReloadResult reloadModule() throws Exception {
+                     if (match) {
+                         return new CheckResult(getClass(), PeerAction.BAN, banDuration, new TranslationComponent(ipBanResult.ruleName()), new TranslationComponent(Lang.MODULE_IBL_MATCH_IP_RULE, ipBanResult.ruleName(), ip, Optional.ofNullable(ipBanResult.matchResult().comment()).orElse(new TranslationComponent(Lang.MODULE_IBL_COMMENT_UNKNOWN))));
+                     }
+-                    return pass();
+                 } catch (Exception e) {
+                     log.error(tlUI(Lang.IP_BAN_RULE_MATCH_ERROR), e);
+                     return pass();
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/BtnNetworkOnline.java
+Patch:
+@@ -100,7 +100,7 @@ private void status(Context context) {
+         }
+ 
+         info.put("configSuccess", btnNetwork.getConfigSuccess());
+-        info.put("configResult", tl(locale(context), btnNetwork.getConfigResult()));
++        info.put("configResult", btnNetwork.getConfigResult() == null ? null : tl(locale(context), btnNetwork.getConfigResult()));
+         var abilities = new ArrayList<>();
+         for (Map.Entry<Class<? extends BtnAbility>, BtnAbility> entry : btnNetwork.getAbilities().entrySet()) {
+             Map<String, Object> abilityStatus = new HashMap<>();
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/IPBlackRuleList.java
+Patch:
+@@ -131,7 +131,7 @@ public ReloadResult reloadModule() throws Exception {
+             for (IPBanResult ipBanResult : results) {
+                 try {
+                     if (ipBanResult == null) return pass();
+-                    boolean match = ipBanResult.matchResult().result() == MatchResultEnum.TRUE || ipBanResult.matchResult().result() == MatchResultEnum.DEFAULT;
++                    boolean match = ipBanResult.matchResult().result() == MatchResultEnum.TRUE;
+                     if (match) {
+                         return new CheckResult(getClass(), PeerAction.BAN, banDuration, new TranslationComponent(ipBanResult.ruleName()), new TranslationComponent(Lang.MODULE_IBL_MATCH_IP_RULE, ipBanResult.ruleName(), ip, Optional.ofNullable(ipBanResult.matchResult().comment()).orElse(new TranslationComponent(Lang.MODULE_IBL_COMMENT_UNKNOWN))));
+                     }
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/matcher/IPMatcher.java
+Patch:
+@@ -49,7 +49,7 @@ public long size() {
+             new MatchResult(MatchResultEnum.DEFAULT, new TranslationComponent("IPs set is null"));
+         }
+         if (ips.elementContains(ip)) {
+-            return new MatchResult(MatchResultEnum.DEFAULT, new TranslationComponent(ips.get(ip)));
++            return new MatchResult(MatchResultEnum.TRUE, new TranslationComponent(ips.get(ip)));
+         }
+         return new MatchResult(MatchResultEnum.DEFAULT, new TranslationComponent("Given IP not in IPs set"));
+     }
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/ClientNameBlacklist.java
+Patch:
+@@ -91,9 +91,9 @@ private void reloadConfig() {
+ 
+     @Override
+     public @NotNull CheckResult shouldBanPeer(@NotNull Torrent torrent, @NotNull Peer peer, @NotNull Downloader downloader, @NotNull ExecutorService ruleExecuteExecutor) {
+-//        if (isHandShaking(peer) && (peer.getClientName() == null || peer.getClientName().isBlank())) {
+-//            return handshaking();
+-//        }
++        if (isHandShaking(peer) && (peer.getClientName() == null || peer.getClientName().isBlank())) {
++            return handshaking();
++        }
+         //return getCache().readCache(this, peer.getClientName(), () -> {
+         RuleMatchResult matchResult = RuleParser.matchRule(bannedPeers, peer.getClientName());
+         if (matchResult.hit()) {
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/AbstractJsonMatcher.java
+Patch:
+@@ -24,8 +24,8 @@ public AbstractJsonMatcher(JsonObject rule) {
+             content = "";
+         }
+         if (condition != null) {
+-            if (condition.match(content) == MatchResult.FALSE) {
+-                return MatchResult.FALSE;
++            if (condition.match(content).result() == MatchResultEnum.FALSE) {
++                return new MatchResult(MatchResultEnum.FALSE, "Condition not met: " + condition.toPrintableText(Main.DEF_LOCALE) + " on " + toPrintableText(Main.DEF_LOCALE));
+             }
+         }
+         return match0(content);
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/RuleMatchResult.java
+Patch:
+@@ -1,4 +1,6 @@
+ package com.ghostchu.peerbanhelper.util.rule;
+ 
+-public record RuleMatchResult(boolean hit, Rule rule) {
++import org.jetbrains.annotations.Nullable;
++
++public record RuleMatchResult(boolean hit, Rule rule, @Nullable String comment) {
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/PTRBlacklist.java
+Patch:
+@@ -42,6 +42,7 @@ public class PTRBlacklist extends AbstractRuleFeatureModule implements Reloadabl
+     @Autowired
+     private DNSLookup dnsLookup;
+     private long banDuration;
++    @Autowired
+     private Laboratory laboratory;
+ 
+     @Override
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/dns/DNSLookup.java
+Patch:
+@@ -50,11 +50,11 @@ private void applyDnsServers(List<String> servers) {
+         for (String dns : servers) {
+             if (dns.startsWith("http")) {
+                 resolvers.add(new DohResolver(dns));
+-                log.info("Added DoH resolver: {}", dns);
++                log.debug("Added DoH resolver: {}", dns);
+             } else {
+                 try {
+                     resolvers.add(new SimpleResolver(dns));
+-                    log.info("Added resolver: {}", dns);
++                    log.debug("Added resolver: {}", dns);
+                 } catch (UnknownHostException e) {
+                     log.warn("Failed to add resolver: {}", dns, e);
+                 }
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/transmission/Transmission.java
+Patch:
+@@ -125,7 +125,7 @@ public DownloaderLoginResult login0() {
+ 
+     @Override
+     public List<Torrent> getTorrents() {
+-        RqTorrentGet torrent = new RqTorrentGet(Fields.ID, Fields.HASH_STRING, Fields.NAME, Fields.PEERS_CONNECTED, Fields.STATUS, Fields.TOTAL_SIZE, Fields.PEERS, Fields.RATE_DOWNLOAD, Fields.RATE_UPLOAD, Fields.PEER_LIMIT, Fields.PERCENT_DONE);
++        RqTorrentGet torrent = new RqTorrentGet(Fields.ID, Fields.HASH_STRING, Fields.NAME, Fields.PEERS_CONNECTED, Fields.STATUS, Fields.TOTAL_SIZE, Fields.PEERS, Fields.RATE_DOWNLOAD, Fields.RATE_UPLOAD, Fields.PEER_LIMIT, Fields.PERCENT_DONE, Fields.SIZE_WHEN_DONE);
+         TypedResponse<RsTorrentGet> rsp = client.execute(torrent);
+         return rsp.getArgs().getTorrents().stream()
+                 .filter(t -> t.getStatus() == Status.DOWNLOADING || t.getStatus() == Status.SEEDING)
+@@ -178,7 +178,7 @@ private void relaunchTorrents(Collection<Long> ids) {
+         RqTorrentGet torrentList = new RqTorrentGet(Fields.ID, Fields.HASH_STRING, Fields.NAME,
+                 Fields.PEERS_CONNECTED,
+                 Fields.STATUS, Fields.TOTAL_SIZE, Fields.PEERS, Fields.RATE_DOWNLOAD,
+-                Fields.RATE_UPLOAD, Fields.PEER_LIMIT, Fields.PERCENT_DONE, Fields.IS_PRIVATE);
++                Fields.RATE_UPLOAD, Fields.PEER_LIMIT, Fields.PERCENT_DONE, Fields.IS_PRIVATE, Fields.SIZE_WHEN_DONE);
+         TypedResponse<RsTorrentGet> rsp = client.execute(torrentList);
+         List<Long> torrents = rsp.getArgs().getTorrents().stream()
+                 .filter(t -> t.getStatus() != Status.STOPPED)
+
+File: src/main/java/com/ghostchu/peerbanhelper/push/impl/SmtpPushProvider.java
+Patch:
+@@ -16,7 +16,6 @@
+ import javax.mail.internet.AddressException;
+ import javax.mail.internet.InternetAddress;
+ import java.util.List;
+-import java.util.Locale;
+ import java.util.Objects;
+ 
+ @Slf4j
+@@ -40,7 +39,7 @@ public static SmtpPushProvider loadFromYaml(String name, ConfigurationSection se
+         var sender = section.getString("sender");
+         var senderName = section.getString("name", "PeerBanHelper");
+         var receivers = section.getStringList("receiver");
+-        var encryption = Encryption.valueOf(section.getString("encryption", "SSLTLS").toUpperCase(Locale.ROOT));
++        var encryption = section.getString("encryption", "SSLTLS");
+         var sendPartial = section.getBoolean("sendPartial", true);
+         Config config = new Config(section.getString("host"),
+                 section.getInt("port"), auth, username, password,
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHEasterEggController.java
+Patch:
+@@ -54,7 +54,7 @@ private void handleEgg(Context context) {
+                 context.redirect("https://www.bilibili.com/video/BV1by4y1F7nS");
+                 break;
+             case 5:
+-                context.redirect("https://www.bilibili.com/video/BV1ztzBY1EP");
++                context.redirect("https://www.bilibili.com/video/BV1ztzBY1EPy");
+                 break;
+             case 7:
+                 context.redirect("https://www.bilibili.com/video/BV15Z4y1Q7mz");
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHPushController.java
+Patch:
+@@ -153,7 +153,7 @@ private void handlePushProviderDelete(Context ctx, String pushProviderName) {
+             return;
+         }
+         PushProvider pushProvider = selected.get();
+-        pushManager.addPushProvider(pushProvider);
++        pushManager.removePushProvider(pushProvider);
+         try {
+             pushManager.savePushProviders();
+             ctx.json(new StdResp(true, tl(locale(ctx), Lang.PUSH_PROVIDER_API_REMOVE_SAVED), null));
+
+File: src/main/java/com/ghostchu/peerbanhelper/text/Lang.java
+Patch:
+@@ -447,7 +447,7 @@ public enum Lang {
+     LAB_EXPERIMENT_IPFS_TITLE, 
+     LAB_EXPERIMENT_IPFS_DESCRIPTION,
+     PORT_MAPPER_PORT_MAPPED_BUT_INTERNAL_ADDRESS,
+-    PORT_MAPPER_PORT_MAPPING
++    PORT_MAPPER_PORT_MAPPING,
+     PUSH_PROVIDER_API_ADD_FAILURE,
+     PUSH_PROVIDER_API_CREATED,
+     PUSH_PROVIDER_API_CREATION_FAILED_ALREADY_EXISTS,
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/biglybt/BiglyBT.java
+Patch:
+@@ -173,6 +173,7 @@ public List<Torrent> getTorrents() {
+                     detail.getName(),
+                     detail.getTorrent().getInfoHash(),
+                     detail.getTorrent().getSize(),
++                    detail.getTorrent().getSize() - detail.getStats().getRemainingBytes(), // 种子总大小 减去 (包含未选择文件的)尚未下载大小 等于 已下载内容大小
+                     detail.getStats().getCompletedInThousandNotation() / 1000d,
+                     detail.getStats().getRtUploadSpeed(),
+                     detail.getStats().getRtDownloadSpeed(),
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/bitcomet/BitComet.java
+Patch:
+@@ -293,6 +293,7 @@ public List<Torrent> getTorrents() {
+                 torrent.getTask().getTaskName(),
+                 torrent.getTaskDetail().getInfohash() != null ? torrent.getTaskDetail().getInfohash() : torrent.getTaskDetail().getInfohashV2(),
+                 torrent.getTaskDetail().getTotalSize(),
++                torrent.getTask().getSelectedDownloadedSize(),
+                 torrent.getTaskStatus().getDownloadPermillage() / 1000.0d,
+                 torrent.getTask().getUploadRate(),
+                 torrent.getTask().getDownloadRate(),
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/bitcomet/resp/BCTaskTorrentResponse.java
+Patch:
+@@ -145,8 +145,8 @@ public static class TaskDTO {
+         private long totalSize;
+ //        @SerializedName("selected_size")
+ //        private long selectedSize;
+-//        @SerializedName("selected_downloaded_size")
+-//        private long selectedDownloadedSize;
++        @SerializedName("selected_downloaded_size")
++        private long selectedDownloadedSize;
+         @SerializedName("download_rate")
+         private long downloadRate;
+         @SerializedName("upload_rate")
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/deluge/Deluge.java
+Patch:
+@@ -132,6 +132,7 @@ public List<Torrent> getTorrents() {
+                         activeTorrent.getInfoHash(),
+                         activeTorrent.getProgress() / 100.0d,
+                         activeTorrent.getSize(),
++                        activeTorrent.getCompletedSize(),
+                         activeTorrent.getUploadPayloadRate(),
+                         activeTorrent.getDownloadPayloadRate(),
+                         peers,
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/deluge/DelugeTorrent.java
+Patch:
+@@ -15,6 +15,7 @@ public final class DelugeTorrent implements Torrent {
+     private String hash;
+     private double progress;
+     private long size;
++    private long completedSize;
+     private long rtUploadSpeed;
+     private long rtDownloadSpeed;
+     private List<Peer> peers;
+
+File: src/main/java/com/ghostchu/peerbanhelper/text/Lang.java
+Patch:
+@@ -28,6 +28,7 @@ public enum Lang {
+     MODULE_IBL_MATCH_PORT,
+     MODULE_PID_MATCH_PEER_ID,
+     MODULE_PCB_EXCESSIVE_DOWNLOAD,
++    MODULE_PCB_EXCESSIVE_DOWNLOAD_INCOMPLETE,
+     MODULE_PCB_PEER_MORE_THAN_LOCAL_SKIP,
+     MODULE_PCB_PEER_BAN_INCORRECT_PROGRESS,
+     MODULE_PCB_PEER_BAN_REWIND,
+
+File: src/main/java/com/ghostchu/peerbanhelper/wrapper/TorrentWrapper.java
+Patch:
+@@ -11,6 +11,7 @@
+ public final class TorrentWrapper {
+     private String id;
+     private long size;
++    private long completedSize;
+     private String name;
+     private String hash;
+     private double progress;
+@@ -20,6 +21,7 @@ public final class TorrentWrapper {
+     public TorrentWrapper(Torrent torrent) {
+         this.id = torrent.getId();
+         this.size = torrent.getSize();
++        this.completedSize = torrent.getCompletedSize();
+         this.name = torrent.getName();
+         this.hash = torrent.getHash();
+         this.progress = torrent.getProgress();
+
+File: src/main/java/raccoonfink/deluge/responses/PBHActiveTorrentsResponse.java
+Patch:
+@@ -41,6 +41,8 @@ public static class ActiveTorrentsResponseDTO {
+         private Double progress;
+         @SerializedName("size")
+         private Long size;
++        @SerializedName("completed_size")
++        private Long completedSize;
+         @SerializedName("upload_payload_rate")
+         private Long uploadPayloadRate;
+         @SerializedName("download_payload_rate")
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/biglybt/BiglyBT.java
+Patch:
+@@ -72,7 +72,6 @@ public BiglyBT(String name, Config config, AlertManager alertManager) {
+                 .connectTimeout(Duration.of(10, ChronoUnit.SECONDS))
+                 .headersTimeout(Duration.of(10, ChronoUnit.SECONDS))
+                 .readTimeout(Duration.of(30, ChronoUnit.SECONDS))
+-                .requestTimeout(Duration.of(30, ChronoUnit.SECONDS))
+                 .cookieHandler(cm);
+         if (!config.isVerifySsl() && HTTPUtil.getIgnoreSslContext() != null) {
+             builder.sslContext(HTTPUtil.getIgnoreSslContext());
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/bitcomet/BitComet.java
+Patch:
+@@ -76,8 +76,7 @@ public BitComet(String name, Config config, AlertManager alertManager) {
+                 .followRedirects(HttpClient.Redirect.ALWAYS)
+                 .connectTimeout(Duration.of(15, ChronoUnit.SECONDS))
+                 .headersTimeout(Duration.of(15, ChronoUnit.SECONDS))
+-                .readTimeout(Duration.of(30, ChronoUnit.SECONDS))
+-                .requestTimeout(Duration.of(30, ChronoUnit.SECONDS));
++                .readTimeout(Duration.of(30, ChronoUnit.SECONDS));
+         if (!config.isVerifySsl() && HTTPUtil.getIgnoreSslContext() != null) {
+             builder.sslContext(HTTPUtil.getIgnoreSslContext());
+         }
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/qbittorrent/AbstractQbittorrent.java
+Patch:
+@@ -62,9 +62,8 @@ public AbstractQbittorrent(String name, QBittorrentConfig config, AlertManager a
+                 .version(HttpClient.Version.valueOf(config.getHttpVersion()))
+                 .followRedirects(HttpClient.Redirect.ALWAYS)
+                 .connectTimeout(Duration.of(10, ChronoUnit.SECONDS))
+-                .headersTimeout(Duration.of(10, ChronoUnit.SECONDS))
++                .headersTimeout(Duration.of(30, ChronoUnit.SECONDS))
+                 .readTimeout(Duration.of(30, ChronoUnit.SECONDS))
+-                .requestTimeout(Duration.of(30, ChronoUnit.SECONDS))
+                 .authenticator(new Authenticator() {
+                     @Override
+                     public PasswordAuthentication requestPasswordAuthenticationInstance(String host, InetAddress addr, int port, String protocol, String prompt, String scheme, URL url, RequestorType reqType) {
+
+File: src/main/java/cordelia/client/TrClient.java
+Patch:
+@@ -69,7 +69,6 @@ public TrClient(String url, String user, String password, boolean verifySSL, Htt
+                 .connectTimeout(Duration.of(10, ChronoUnit.SECONDS))
+                 .headersTimeout(Duration.of(10, ChronoUnit.SECONDS))
+                 .readTimeout(Duration.of(15, ChronoUnit.SECONDS))
+-                .requestTimeout(Duration.of(15, ChronoUnit.SECONDS))
+                 .authenticator(new Authenticator() {
+                     @Override
+                     public PasswordAuthentication requestPasswordAuthenticationInstance(String host, InetAddress addr, int port, String protocol, String prompt, String scheme, URL url, RequestorType reqType) {
+
+File: src/main/java/raccoonfink/deluge/DelugeServer.java
+Patch:
+@@ -43,7 +43,6 @@ public DelugeServer(final String url, final String password, boolean verifySSL,
+                 .followRedirects(HttpClient.Redirect.ALWAYS)
+                 .defaultHeader("Accept", "application/json")
+                 .defaultHeader("Content-Type", "application/json")
+-                .requestTimeout(Duration.of(15, ChronoUnit.SECONDS))
+                 .connectTimeout(Duration.of(10, ChronoUnit.SECONDS))
+                 .headersTimeout(Duration.of(10, ChronoUnit.SECONDS))
+                 .readTimeout(Duration.of(15, ChronoUnit.SECONDS))
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/ProgressCheatBlocker.java
+Patch:
+@@ -256,6 +256,7 @@ private void reloadConfig() {
+             // actualUploaded = -1 代表客户端不支持统计此 Peer 总上传量
+             if (actualUploaded != -1 && blockExcessiveClients) {
+                 long referenceSize = (completedSize > 0 && actualUploaded > completedSize) ? completedSize : torrentSize;
++                // 下载量超过种子大小或者超过已下载大小，检查
+                 if (actualUploaded > referenceSize) {
+                     long maxAllowedExcessiveThreshold = (long) (referenceSize * excessiveThreshold);
+                     if (actualUploaded > maxAllowedExcessiveThreshold) {
+@@ -269,8 +270,6 @@ private void reloadConfig() {
+                                 maxAllowedExcessiveThreshold));
+                     }
+                 }
+-            }
+-                }
+             }
+             // 如果客户端报告自己进度更多，则跳过检查
+             if (actualProgress <= clientProgress) {
+
+File: src/main/java/com/ghostchu/peerbanhelper/text/Lang.java
+Patch:
+@@ -420,7 +420,7 @@ public enum Lang {
+     MODULE_AMM_TRAFFIC_MONITORING_TRAFFIC_ALERT_DESCRIPTION,
+     DOWNLOADER_ALERT_TOO_MANY_FAILED_ATTEMPT_TITLE,
+     DOWNLOADER_ALERT_TOO_MANY_FAILED_ATTEMPT_DESCRIPTION, DOWNLOADER_ALERT_TOO_MANY_FAILED_ATTEMPT_DESCRIPTION_FALLBACK, PROGRAM_OUT_OF_MEMORY_TITLE, PROGRAM_OUT_OF_MEMORY_DESCRIPTION, BAN_PEER_EXCEPTION,
+-    PUSH_PROVIDER_TEST_TITLE, PUSH_PROVIDER_TEST_DESCRIPTION, PUSH_PROVIDER_TEST_SUCCESS, PUSH_PROVIDER_TEST_FAILED, PUSH_PROVIDER_TEST_ERROR, EXPRESS_RULE_ENGINE_DISALLOW_UNSAFE_SOURCE_ACCESS, BTN_RULES_SCRIPT_COMPILING, BTN_RULES_SCRIPT_COMPILED
++    PUSH_PROVIDER_TEST_TITLE, PUSH_PROVIDER_TEST_DESCRIPTION, PUSH_PROVIDER_TEST_SUCCESS, PUSH_PROVIDER_TEST_FAILED, PUSH_PROVIDER_TEST_ERROR, EXPRESS_RULE_ENGINE_DISALLOW_UNSAFE_SOURCE_ACCESS, BTN_RULES_SCRIPT_COMPILING, BTN_RULES_SCRIPT_COMPILED;
+ 
+     public String getKey() {
+         return name();
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/ExpressionRule.java
+Patch:
+@@ -245,7 +245,7 @@ public CheckResult handleResult(Expression expression, Object returns) {
+         }
+         if (returns instanceof String string) {
+             if (string.isBlank()) {
+-                return pass();
++                return null;
+             } else if (string.startsWith("@")) {
+                 return new CheckResult(getClass(), PeerAction.SKIP, banDuration,
+                         new TranslationComponent(Lang.USER_SCRIPT_RULE),
+
+File: src/main/java/com/ghostchu/peerbanhelper/AppConfig.java
+Patch:
+@@ -6,13 +6,15 @@
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.ComponentScan;
+ import org.springframework.context.annotation.Configuration;
++import org.springframework.scheduling.annotation.EnableScheduling;
+ 
+ import java.io.File;
+ 
+ @Configuration
+ @ComponentScan(value = "com.ghostchu.peerbanhelper", excludeFilters = @ComponentScan.Filter(IgnoreScan.class))
+ @ComponentScan(value = "com.ghostchu.lib.jni", excludeFilters = @ComponentScan.Filter(IgnoreScan.class))
+ @Slf4j
++@EnableScheduling
+ public class AppConfig {
+     @Bean
+     public BuildMeta buildMeta() {
+
+File: src/main/java/com/ghostchu/peerbanhelper/config/PBHConfigUpdater.java
+Patch:
+@@ -55,8 +55,8 @@ public void update(@NotNull Object configUpdateScript) {
+                     if (method.getParameterCount() == 0) {
+                         method.invoke(configUpdateScript);
+                     } else {
+-                        if (method.getParameterCount() == 1 && (method.getParameterTypes()[0] == int.class || method.getParameterTypes()[0] == Integer.class)) {
+-                            method.invoke(configUpdateScript, current);
++                        if (method.getParameterCount() == 1 && (method.getParameterTypes()[0] == YamlConfiguration.class)) {
++                            method.invoke(configUpdateScript, bundle);
+                         }
+                     }
+                 } catch (Exception e) {
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/bitcomet/BCEndpoint.java
+Patch:
+@@ -22,7 +22,8 @@ public enum BCEndpoint {
+     IP_FILTER_CLEAR("/api/config/ipfilter/clear"),
+     IP_FILTER_QUERY_IMPORTING("/api/config/ipfilter/query"),
+     GET_REMOTE_ACCESS_CONFIG("/api/config/remote_access/get"),
+-    SET_REMOTE_ACCESS_CONFIG("/api/config/remote_access/set");
++    SET_REMOTE_ACCESS_CONFIG("/api/config/remote_access/set"),
++    TASK_UNBAN_PEERS("/api/task/peers/unban_peers");
+     private final String endpoint;
+ 
+     BCEndpoint(String endpoint) {
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/qbittorrent/AbstractQbittorrent.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.ghostchu.peerbanhelper.downloader.impl.qbittorrent;
+ 
+ import com.ghostchu.peerbanhelper.Main;
++import com.ghostchu.peerbanhelper.alert.AlertManager;
+ import com.ghostchu.peerbanhelper.downloader.AbstractDownloader;
+ import com.ghostchu.peerbanhelper.downloader.DownloaderLoginResult;
+ import com.ghostchu.peerbanhelper.downloader.DownloaderStatistics;
+@@ -50,8 +51,8 @@ public abstract class AbstractQbittorrent extends AbstractDownloader {
+     protected final QBittorrentConfig config;
+     protected final Cache<String, Boolean> isPrivateCache;
+ 
+-    public AbstractQbittorrent(String name, QBittorrentConfig config) {
+-        super(name);
++    public AbstractQbittorrent(String name, QBittorrentConfig config, AlertManager alertManager) {
++        super(name, alertManager);
+         this.config = config;
+         this.apiEndpoint = config.getEndpoint() + "/api/v2";
+         CookieManager cm = new CookieManager();
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHPlusController.java
+Patch:
+@@ -68,11 +68,11 @@ private void handleLicensePut(Context ctx) throws IOException {
+     }
+ 
+     private void handle(Context context) {
+-        String key = null;
++        String key;
+         if (activationManager.getKeyText().length() > 10) {
+             key = activationManager.getKeyText().substring(0, 10) + "******";
+         } else {
+-            key = activationManager.getKeyText();
++            key = "**********";
+         }
+         context.json(new StdResp(true, null,
+                 new ActiveInfo(activationManager.isActivated(),
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/Rule.java
+Patch:
+@@ -13,7 +13,7 @@ public interface Rule {
+     @NotNull
+     MatchResult match(@NotNull String content);
+ 
+-    Map<String, Object> metadata();
++    String metadata();
+ 
+     default TranslationComponent matcherName() {
+         return null;
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/RuleMatcher.java
+Patch:
+@@ -30,8 +30,9 @@ public RuleMatcher(String ruleId, String ruleName, List<T> ruleData) {
+ 
+     public abstract void setData(String ruleName, List<T> ruleData);
+ 
+-    public Map<String, Object> metadata() {
+-        return Map.of("id", ruleId, "rule", ruleName);
++    @Override
++    public String metadata() {
++        return ruleName;
+     }
+ 
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/matcher/StringContainsMatcher.java
+Patch:
+@@ -52,7 +52,7 @@ public String matcherIdentifier() {
+     }
+ 
+     @Override
+-    public Map<String, Object> metadata() {
+-        return Map.of("rule", rule);
++    public String metadata() {
++        return rule;
+     }
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/matcher/StringEndsWithMatcher.java
+Patch:
+@@ -52,7 +52,7 @@ public String matcherIdentifier() {
+     }
+ 
+     @Override
+-    public Map<String, Object> metadata() {
+-        return Map.of("rule", rule);
++    public String metadata() {
++        return rule;
+     }
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/matcher/StringEqualsMatcher.java
+Patch:
+@@ -50,7 +50,7 @@ public String matcherIdentifier() {
+     }
+ 
+     @Override
+-    public Map<String, Object> metadata() {
+-        return Map.of("rule", rule);
++    public String metadata() {
++        return rule;
+     }
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/matcher/StringLengthMatcher.java
+Patch:
+@@ -49,7 +49,7 @@ public String matcherIdentifier() {
+     }
+ 
+     @Override
+-    public Map<String, Object> metadata() {
+-        return Map.of("min", min, "max", max);
++    public String metadata() {
++        return String.format("min: %d, max: %d",min,max);
+     }
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/matcher/StringRegexMatcher.java
+Patch:
+@@ -51,7 +51,7 @@ public TranslationComponent matcherName() {
+     }
+ 
+     @Override
+-    public Map<String, Object> metadata() {
+-        return Map.of("rule", rule);
++    public String metadata() {
++        return rule.pattern();
+     }
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/matcher/StringStartsWithMatcher.java
+Patch:
+@@ -53,7 +53,7 @@ public TranslationComponent matcherName() {
+     }
+ 
+     @Override
+-    public Map<String, Object> metadata() {
+-        return Map.of("rule", rule);
++    public String metadata() {
++        return rule;
+     }
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/alert/AlertManager.java
+Patch:
+@@ -6,6 +6,7 @@
+ import com.ghostchu.peerbanhelper.push.PushManager;
+ import com.ghostchu.peerbanhelper.text.Lang;
+ import com.ghostchu.peerbanhelper.text.TranslationComponent;
++import com.ghostchu.peerbanhelper.util.CommonUtil;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.stereotype.Component;
+ 
+@@ -26,7 +27,7 @@ public class AlertManager {
+     public AlertManager(AlertDao alertDao, PushManager pushManager, PeerBanHelperServer peerBanHelperServer) {
+         this.alertDao = alertDao;
+         this.pushManager = pushManager;
+-        peerBanHelperServer.getScheduler().scheduleWithFixedDelay(this::cleanup, 0, 1, TimeUnit.DAYS);
++        CommonUtil.getScheduler().scheduleWithFixedDelay(this::cleanup, 0, 1, TimeUnit.DAYS);
+ 
+     }
+ 
+
+File: src/main/java/com/ghostchu/peerbanhelper/gui/impl/swing/SwingGuiImpl.java
+Patch:
+@@ -189,7 +189,7 @@ public void createNotification(Level level, String title, String description) {
+                 icon.displayMessage(title, description, TrayIcon.MessageType.INFO);
+             }
+             if (System.getProperty("os.name").contains("Windows")) {
+-                this.scheduled.schedule(this::refreshTrayIcon, 5, TimeUnit.SECONDS);
++                CommonUtil.getScheduler().schedule(this::refreshTrayIcon, 5, TimeUnit.SECONDS);
+             }
+         } else {
+             super.createNotification(level, title, description);
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHGeneralController.java
+Patch:
+@@ -118,7 +118,7 @@ private Map<String, Object> generatePbhData() {
+         pbh.put("commit_id", Main.getMeta().getCommit());
+         pbh.put("compile_time", compile_time);
+         pbh.put("release", release);
+-        pbh.put("uptime", System.currentTimeMillis() - Main.getStartupAt());
++        pbh.put("uptime", (System.currentTimeMillis() - Main.getStartupAt()) / 1000);
+         //pbh.put("data_dir", Main.getDataDirectory().getAbsolutePath());
+         //pbh.put("gui_available", Main.getGuiManager().isGuiAvailable());
+         //pbh.put("default_locale", Main.DEF_LOCALE);
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHMetricsController.java
+Patch:
+@@ -9,7 +9,7 @@
+ import com.ghostchu.peerbanhelper.util.MiscUtil;
+ import com.ghostchu.peerbanhelper.util.WebUtil;
+ import com.ghostchu.peerbanhelper.util.context.IgnoreScan;
+-import com.ghostchu.peerbanhelper.util.rule.AbstractMatcher;
++import com.ghostchu.peerbanhelper.util.rule.Rule;
+ import com.ghostchu.peerbanhelper.web.JavalinWebContainer;
+ import com.ghostchu.peerbanhelper.web.Role;
+ import com.ghostchu.peerbanhelper.web.wrapper.StdResp;
+@@ -181,7 +181,7 @@ private void handlePeerBans(Context ctx) throws Exception {
+     }
+     private void handleRules(Context ctx) {
+         String locale = locale(ctx);
+-        Map<AbstractMatcher.MatcherInfo, HitRateMetricRecorder> metric = new HashMap<>(getServer().getHitRateMetric().getHitRateMetric().asMap());
++        Map<Rule.RuleInfo, HitRateMetricRecorder> metric = new HashMap<>(getServer().getHitRateMetric().getHitRateMetric().asMap());
+         List<RuleData> dat = metric.entrySet().stream()
+                 .map(obj -> {
+                     TranslationComponent ruleType = obj.getKey().ruleType();
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/AbstractJsonMatcher.java
+Patch:
+@@ -20,19 +20,19 @@ public AbstractJsonMatcher(JsonObject rule) {
+ 
+     @Override
+     public @NotNull MatchResult match(@Nullable String content) {
+-        Main.getServer().getHitRateMetric().addQuery(matcherinfo);
++        Main.getServer().getHitRateMetric().addQuery(this);
+         if (content == null) {
+             content = "";
+         }
+         if (condition != null) {
+             if (condition.match(content) == MatchResult.FALSE) {
+-                Main.getServer().getHitRateMetric().addHit(matcherinfo);
++                Main.getServer().getHitRateMetric().addHit(this);
+                 return MatchResult.FALSE;
+             }
+         }
+         MatchResult r = match0(content);
+         if (r != MatchResult.DEFAULT) {
+-            Main.getServer().getHitRateMetric().addHit(matcherinfo);
++            Main.getServer().getHitRateMetric().addHit(this);
+         }
+         return r;
+     }
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/RuleMatcher.java
+Patch:
+@@ -30,6 +30,7 @@ public RuleMatcher(String ruleId, String ruleName, List<T> ruleData) {
+ 
+     public abstract void setData(String ruleName, List<T> ruleData);
+ 
++    @Override
+     public String metadata() {
+         return ruleName;
+     }
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/bitcomet/BitComet.java
+Patch:
+@@ -24,7 +24,6 @@
+ import inet.ipaddr.HostName;
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+-import org.bouncycastle.jce.provider.BouncyCastleProvider;
+ import org.bspfsystems.yamlconfiguration.configuration.ConfigurationSection;
+ import org.bspfsystems.yamlconfiguration.file.YamlConfiguration;
+ import org.jetbrains.annotations.NotNull;
+@@ -39,7 +38,6 @@
+ import java.net.http.HttpRequest;
+ import java.net.http.HttpResponse;
+ import java.nio.charset.StandardCharsets;
+-import java.security.Security;
+ import java.time.Duration;
+ import java.time.temporal.ChronoUnit;
+ import java.util.*;
+@@ -330,7 +328,7 @@ public List<Peer> getPeers(Torrent torrent) {
+                 peer.getDlSize() != null ? peer.getDlSize() : -1,
+                 peer.getUpRate(),
+                 peer.getUpSize() != null ? peer.getUpSize() : -1,
+-                peer.getPermillage() / 1000.0d, null)
++                peer.getPermillage() / 1000.0d, null, Collections.emptyList())
+         ).collect(Collectors.toList());
+     }
+ 
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/IPBlackList.java
+Patch:
+@@ -83,7 +83,7 @@ public void onEnable() {
+     }
+ 
+     private void handleCitiesDelete(Context context) throws IOException {
+-        if (regions.removeIf(city -> city.equals(context.bodyAsClass(UserCityRequest.class).city()))) {
++        if (cities.removeIf(city -> city.equals(context.bodyAsClass(UserCityRequest.class).city()))) {
+             //context.status(HttpStatus.OK);
+             context.json(new StdResp(true, tl(locale(context), Lang.OPERATION_EXECUTE_SUCCESSFULLY), null));
+         } else {
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/MultiDialingBlocker.java
+Patch:
+@@ -210,8 +210,6 @@ private Cache<String, Long> genPeerGroup() {
+                 maximumSize(PEER_MAX_NUM_PER_SUBNET).
+                 softValues().
+                 build();
+-
+-        getCache().invalidateAll();
+     }
+ 
+     /**
+
+File: src/main/java/com/ghostchu/peerbanhelper/config/MainConfigUpdateScript.java
+Patch:
+@@ -32,6 +32,7 @@ private void validate() {
+     @UpdateScript(version = 20)
+     public void addPushProvider(YamlConfiguration bundle) {
+         conf.set("push-notification", bundle.get("push-notification"));
++    }
+ 
+     @UpdateScript(version = 19)
+     public void telemetryErrorReporting() {
+
+File: src/main/java/com/ghostchu/peerbanhelper/Main.java
+Patch:
+@@ -88,8 +88,9 @@ public static void main(String[] args) {
+                 new Slf4jLogAppender(),
+                 Main.getDataDirectory().toPath(), "libraries"
+         );
++        boolean nogui = !Desktop.isDesktopSupported() || System.getProperty("pbh.nogui") != null || Arrays.stream(args).anyMatch(arg -> arg.equalsIgnoreCase("nogui"));
+         libraryManager.setLogLevel(LogLevel.ERROR);
+-        librariesLoader = new PBHLibrariesLoader(libraryManager, librariesPath);
++        librariesLoader = new PBHLibrariesLoader(libraryManager, librariesPath, nogui);
+         meta = buildMeta();
+         setupConfiguration();
+         mainConfigFile = new File(configDirectory, "config.yml");
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/bitcomet/crypto/BCAESTool.java
+Patch:
+@@ -10,6 +10,7 @@
+ import java.nio.charset.StandardCharsets;
+ import java.security.Provider;
+ import java.security.SecureRandom;
++import java.security.Security;
+ import java.util.Base64;
+ 
+ public class BCAESTool {
+
+File: src/main/java/com/ghostchu/peerbanhelper/database/dao/impl/PeerRecordDao.java
+Patch:
+@@ -22,7 +22,6 @@ public class PeerRecordDao extends AbstractPBHDao<PeerRecordEntity, Long> {
+     public PeerRecordDao(@Autowired Database database, TorrentDao torrentDao) throws SQLException {
+         super(database.getDataSource(), PeerRecordEntity.class);
+         this.torrentDao = torrentDao;
+-        setObjectCache(true);
+     }
+ 
+     public void syncPendingTasks(Deque<BatchHandleTasks> tasks) throws SQLException {
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/bitcomet/resp/BCTaskPeersResponse.java
+Patch:
+@@ -100,5 +100,7 @@ public static class PeersDTO {
+         private Long upSize;
+         @SerializedName("peer_id")
+         private String peerId;
++        @SerializedName("group")
++        private String group;
+     }
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/metric/HitRateMetric.java
+Patch:
+@@ -14,6 +14,8 @@ public class HitRateMetric {
+             CacheBuilder
+                     .newBuilder()
+                     .expireAfterAccess(3, TimeUnit.DAYS)
++                    .softValues()
++                    .weakKeys()
+                     .build();
+ 
+     @SneakyThrows
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/ActiveMonitoringModule.java
+Patch:
+@@ -137,7 +137,7 @@ private void writeJournal() {
+         }
+     }
+ 
+-    private void flush() {
++    public void flush() {
+         try {
+             try {
+                 peerRecordDao.syncPendingTasks(dataBuffer);
+
+File: src/main/java/com/ghostchu/peerbanhelper/pbhplus/ActivationManager.java
+Patch:
+@@ -36,6 +36,7 @@ public void load() {
+         if (keyText == null || keyText.isBlank()) {
+             return;
+         }
++        keyText = keyText.trim();
+         this.keyData = ActivationKeyUtil.fromKey(this.keyText);
+         if (keyData != null) {
+             if (this.isActivated()) {
+
+File: src/main/java/com/ghostchu/peerbanhelper/text/Lang.java
+Patch:
+@@ -346,7 +346,7 @@ public enum Lang {
+     PCB_DESCRIPTION_PEER_PROGRESS_CHEAT_TESTING,
+     IPDB_EXISTS_UPDATE_FAILED,
+     IPDB_RETRY_WITH_BACKUP_SOURCE,
+-    IPDB_UNGZIP_FAILED, DOWNLOADER_BC_FAILED_REQUEST_TORRENT_LIST, DOWNLOADER_BC_FAILED_REQUEST_PEERS_LIST_IN_TORRENT, DOWNLOADER_BC_FAILED_SAVE_BANLIST, DOWNLOADER_BC_CONFIG_IP_FILTER_SUCCESS, DOWNLOADER_BC_CONFIG_IP_FILTER_FAILED, DOWNLOADER_BC_CONFIG_IP_FILTER, DOWNLOADER_BC_VERSION_UNACCEPTABLE;
++    IPDB_UNGZIP_FAILED, DOWNLOADER_BC_FAILED_REQUEST_TORRENT_LIST, DOWNLOADER_BC_FAILED_REQUEST_PEERS_LIST_IN_TORRENT, DOWNLOADER_BC_FAILED_SAVE_BANLIST, DOWNLOADER_BC_CONFIG_IP_FILTER_SUCCESS, DOWNLOADER_BC_CONFIG_IP_FILTER_FAILED, DOWNLOADER_BC_CONFIG_IP_FILTER, DOWNLOADER_BC_VERSION_UNACCEPTABLE, DOWNLOADER_BC_DOWNLOAD_DEPENDENCIES_FAILED, JAVALIN_PORT_IN_USE, JAVALIN_PORT_REQUIRE_PRIVILEGES;
+ 
+     public String getKey() {
+         return name();
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/bitcomet/BitComet.java
+Patch:
+@@ -242,7 +242,9 @@ public List<Torrent> getTorrents() {
+             throw new IllegalStateException(tlUI(Lang.DOWNLOADER_BC_FAILED_REQUEST_TORRENT_LIST, request.statusCode(), request.body()));
+         }
+         var response = JsonUtil.standard().fromJson(request.body(), BCTaskListResponse.class);
+-        return response.getTasks().stream().map(torrent -> {
++        return response.getTasks().stream()
++                .filter(t -> t.getType().equals("BT"))
++                .map(torrent -> {
+                     try {
+                         Map<String, String> taskIds = new HashMap<>();
+                         taskIds.put("task_id", torrent.getTaskId().toString());
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/ActiveMonitoringModule.java
+Patch:
+@@ -137,7 +137,7 @@ private void writeJournal() {
+         }
+     }
+ 
+-    private void flush() {
++    public void flush() {
+         try {
+             try {
+                 peerRecordDao.syncPendingTasks(dataBuffer);
+
+File: src/main/java/com/ghostchu/peerbanhelper/database/Database.java
+Patch:
+@@ -48,7 +48,7 @@ public void setupDatabase(File file) throws SQLException {
+         if (System.getProperty("disableSQLitePragmaSettings") == null) {
+             try (var stmt = rawConnection.createStatement()) {
+                 stmt.executeUpdate("PRAGMA synchronous = NORMAL");
+-                stmt.executeUpdate("PRAGMA journal_mode = TRUNCATE");
++                stmt.executeUpdate("PRAGMA journal_mode = WAL");
+             } catch (Exception e) {
+                 log.warn("Unable to set SQLite optimized PRAGMA arguments", e);
+             }
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/qbittorrent/QBittorrent.java
+Patch:
+@@ -231,7 +231,7 @@ private void checkAndSetPrivateField(QBTorrent detail) {
+                 log.warn("Error fetching properties for torrent hash: {}, status: {}", hash, res.statusCode());
+             }
+         } catch (Exception e) {
+-            log.error("Error fetching properties for torrent hash: {}", hash, e);
++            log.warn("Error fetching properties for torrent hash: {}", hash, e);
+         }
+     }
+ 
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/qbittorrent/QBittorrentEE.java
+Patch:
+@@ -252,7 +252,7 @@ private void checkAndSetPrivateField(QBTorrent detail) {
+                 log.warn("Error fetching properties for torrent hash: {}, status: {}", hash, res.statusCode());
+             }
+         } catch (Exception e) {
+-            log.error("Error fetching properties for torrent hash: {}", hash, e);
++            log.warn("Error fetching properties for torrent hash: {}", hash, e);
+         }
+     }
+ 
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/qbittorrent/QBittorrent.java
+Patch:
+@@ -181,8 +181,7 @@ public List<Torrent> getTorrents() {
+                             isPrivateSemaphore.release();
+                         }
+                     }, isPrivateExecutorService));
+-                }
+-                if (detail.getPrivateTorrent()) {
++                } else if (detail.getPrivateTorrent()) {
+                     continue;
+                 }
+             }
+
+File: src/main/java/com/ghostchu/peerbanhelper/AppConfig.java
+Patch:
+@@ -11,6 +11,7 @@
+ 
+ @Configuration
+ @ComponentScan(value = "com.ghostchu.peerbanhelper", excludeFilters = @ComponentScan.Filter(IgnoreScan.class))
++@ComponentScan(value = "com.ghostchu.lib.jni", excludeFilters = @ComponentScan.Filter(IgnoreScan.class))
+ @Slf4j
+ public class AppConfig {
+     @Bean
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHMetadataController.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.ghostchu.peerbanhelper.module.impl.webapi;
+ 
+ import com.ghostchu.peerbanhelper.BuildMeta;
++import com.ghostchu.peerbanhelper.Main;
+ import com.ghostchu.peerbanhelper.module.AbstractFeatureModule;
+ import com.ghostchu.peerbanhelper.module.FeatureModule;
+ import com.ghostchu.peerbanhelper.module.ModuleManager;
+@@ -52,6 +53,7 @@ private void handleManifest(Context ctx) {
+         data.put("modules", moduleManager.getModules().stream()
+                 .filter(FeatureModule::isModuleEnabled)
+                 .map(f -> new ModuleRecord(f.getClass().getName(), f.getConfigName())).toList());
++        data.put("installationId", Main.getMainConfig().getString("installation-id", "not-initialized"));
+         ctx.json(new StdResp(true, null, data));
+     }
+ 
+
+File: src/main/java/com/ghostchu/peerbanhelper/btn/ability/BtnAbilitySubmitBans.java
+Patch:
+@@ -90,6 +90,9 @@ private List<BtnBan> generateBans() {
+             if (e.getValue().getBanAt() <= lastReport) {
+                 continue;
+             }
++            if(e.getValue().isBanForDisconnect()){
++                continue;
++            }
+             BtnBan btnBan = new BtnBan();
+             btnBan.setBtnBan(e.getValue().getContext().equals(BtnNetworkOnline.class.getName()));
+             btnBan.setPeer(e.getKey());
+
+File: src/main/java/com/ghostchu/peerbanhelper/database/table/ProgressCheatBlockerPersistEntity.java
+Patch:
+@@ -37,4 +37,6 @@ public final class ProgressCheatBlockerPersistEntity {
+     private String downloader;
+     @DatabaseField(canBeNull = false)
+     private Timestamp banDelayWindowEndAt;
++    @DatabaseField(canBeNull = false)
++    private long fastPcbTestExecuteAt;
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/PeerAction.java
+Patch:
+@@ -3,5 +3,6 @@
+ public enum PeerAction {
+     NO_ACTION,
+     BAN,
++    BAN_FOR_DISCONNECT,
+     SKIP
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/AutoRangeBan.java
+Patch:
+@@ -99,6 +99,9 @@ private void reloadConfig() {
+             peerAddress = peerAddress.toIPv4();
+         }
+         for (Map.Entry<PeerAddress, BanMetadata> bannedPeerEntry : getServer().getBannedPeers().entrySet()) {
++            if(bannedPeerEntry.getValue().isBanForDisconnect()){
++                continue;
++            }
+             PeerAddress bannedPeer = bannedPeerEntry.getKey();
+             IPAddress bannedAddress = bannedPeer.getAddress().withoutPrefixLength();
+             if (bannedAddress.isIPv4Convertible()) {
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/biglybt/BiglyBT.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.ghostchu.peerbanhelper.downloader.AbstractDownloader;
+ import com.ghostchu.peerbanhelper.downloader.DownloaderLoginResult;
+ import com.ghostchu.peerbanhelper.downloader.DownloaderStatistics;
++import com.ghostchu.peerbanhelper.downloader.impl.biglybt.network.ConnectorData;
+ import com.ghostchu.peerbanhelper.downloader.impl.biglybt.network.bean.clientbound.BanBean;
+ import com.ghostchu.peerbanhelper.downloader.impl.biglybt.network.bean.clientbound.BanListReplacementBean;
+ import com.ghostchu.peerbanhelper.downloader.impl.biglybt.network.wrapper.DownloadRecord;
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/qbittorrent/Preferences.java
+Patch:
+@@ -9,8 +9,8 @@
+ @NoArgsConstructor
+ @Data
+ public final class Preferences {
+-
+     @SerializedName("banned_IPs")
+     private String bannedIps;
+-
++    @SerializedName("shadow_ban_enabled")
++    private Boolean shadowBanEnabled;
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/ByteUtil.java
+Patch:
+@@ -1,5 +1,7 @@
+ package com.ghostchu.peerbanhelper.util;
+ 
++import java.nio.ByteBuffer;
++
+ public class ByteUtil {
+     public static String bytesToHex(byte[] bytes) {
+         StringBuilder sb = new StringBuilder();
+@@ -34,7 +36,6 @@ public static byte[] hexToByteArray(String inHex) {
+         }
+         return result;
+     }
+-    }
+ 
+     /**
+      * Hex字符串转byte
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/biglybt/BiglyBT.java
+Patch:
+@@ -13,6 +13,7 @@
+ import com.ghostchu.peerbanhelper.text.TranslationComponent;
+ import com.ghostchu.peerbanhelper.torrent.Torrent;
+ import com.ghostchu.peerbanhelper.torrent.TorrentImpl;
++import com.ghostchu.peerbanhelper.util.ByteUtil;
+ import com.ghostchu.peerbanhelper.util.HTTPUtil;
+ import com.ghostchu.peerbanhelper.util.json.JsonUtil;
+ import com.ghostchu.peerbanhelper.wrapper.BanMetadata;
+@@ -190,7 +191,7 @@ public List<Peer> getPeers(Torrent torrent) {
+             peersList.add(new PeerImpl(
+                     new PeerAddress(peer.getIp(), peer.getPort()),
+                     peer.getIp(),
+-                    peer.getPeerId(),
++                    new String(ByteUtil.hexToByteArray(peer.getPeerId()), StandardCharsets.ISO_8859_1),
+                     peer.getClient(),
+                     peer.getStats().getRtDownloadSpeed(),
+                     peer.getStats().getTotalReceived(),
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/IPBlackRuleList.java
+Patch:
+@@ -170,6 +170,9 @@ public SlimMsg updateRule(String locale, @NotNull ConfigurationSection rule, IPB
+             return new SlimMsg(false, tl(locale, Lang.IP_BAN_RULE_DISABLED, ruleId), 400);
+         }
+         String name = rule.getString("name", ruleId);
++        if(name.contains(".")){
++            throw new IllegalArgumentException("Illegal character (.) in name: " + name);
++        }
+         String url = rule.getString("url");
+         if (null != url && url.startsWith("http")) {
+             // 解析远程订阅
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/RuleSubController.java
+Patch:
+@@ -267,6 +267,9 @@ private void save(Context ctx, String ruleId, boolean isAdd) throws SQLException
+                 subUrl = ruleSubInfo.getSubUrl();
+             }
+         }
++        if(ruleName.contains(".")){
++            throw new IllegalArgumentException("Illegal character (.) in name: " + ruleName);
++        }
+         ConfigurationSection configurationSection = ipBlackRuleList.saveRuleSubInfo(new RuleSubInfoEntity(ruleId, isAdd || ruleSubInfo.isEnabled(), ruleName, subUrl, 0, 0));
+         assert configurationSection != null;
+         try {
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHMetricsController.java
+Patch:
+@@ -166,8 +166,9 @@ private void handleRules(Context ctx) {
+                     if (obj.getKey().matcherName() != null) {
+                         ruleType = obj.getKey().matcherName();
+                     }
+-                    dict.put(obj.getKey().matcherIdentifier(), tl(locale, ruleType));
+-                    return new RuleData(obj.getKey().matcherIdentifier(), obj.getValue().getHitCounter(), obj.getValue().getQueryCounter(), obj.getKey().metadata());
++                    // 返回特定计算值作为字典键，这样不需要修改前端
++                    dict.put(tl(locale, ruleType), tl(locale, ruleType));
++                    return new RuleData(tl(locale, ruleType), obj.getValue().getHitCounter(), obj.getValue().getQueryCounter(), obj.getKey().metadata());
+                 })
+                 .sorted((o1, o2) -> Long.compare(o2.getHit(), o1.getHit()))
+                 .toList();
+
+File: src/main/java/com/ghostchu/peerbanhelper/ipdb/IPDB.java
+Patch:
+@@ -159,7 +159,7 @@ private void queryGeoCN(InetAddress address, IPGeoData geoData) {
+                     case "物联网" -> new TranslationComponent(Lang.NET_TYPE_IOT);
+                     case "数据中心" -> new TranslationComponent(Lang.NET_TYPE_DATACENTER);
+                 }
+-                networkData.setNetType(component);
++                networkData.setNetType(tlUI(component));
+             }
+             geoData.setNetwork(networkData);
+         } catch (Exception e) {
+
+File: src/main/java/com/ghostchu/peerbanhelper/ipdb/IPGeoData.java
+Patch:
+@@ -1,6 +1,5 @@
+ package com.ghostchu.peerbanhelper.ipdb;
+ 
+-import com.ghostchu.peerbanhelper.text.TranslationComponent;
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+@@ -89,6 +88,6 @@ public static class NetworkData {
+         @Nullable
+         private String isp;
+         @Nullable
+-        private TranslationComponent netType;
++        private String netType;
+     }
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/wrapper/BakedBanMetadata.java
+Patch:
+@@ -43,4 +43,6 @@ public BakedBanMetadata(String locale, BanMetadata banMetadata) {
+     public int compareTo(@NotNull BakedBanMetadata o) {
+         return this.randomId.compareTo(o.randomId);
+     }
++
++    public
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/transmission/Transmission.java
+Patch:
+@@ -243,7 +243,7 @@ public static Transmission.Config readFromYaml(ConfigurationSection section) {
+ 
+         public YamlConfiguration saveToYaml() {
+             YamlConfiguration section = new YamlConfiguration();
+-            section.set("type", "qbittorrent");
++            section.set("type", "transmission");
+             section.set("endpoint", endpoint);
+             section.set("username", username);
+             section.set("password", password);
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/matcher/IPMatcher.java
+Patch:
+@@ -38,6 +38,7 @@ public IPMatcher(String ruleId, String ruleName, List<IPAddress> ruleData) {
+      * @param ruleData 规则数据
+      */
+     public void setData(String ruleName, List<IPAddress> ruleData) {
++        setRuleName(ruleName);
+         this.ips = new ArrayList<>();
+         this.subnets = new ArrayList<>();
+         ruleData.forEach(ipAddress -> {
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/rule/matcher/IPMatcher.java
+Patch:
+@@ -38,6 +38,7 @@ public IPMatcher(String ruleId, String ruleName, List<IPAddress> ruleData) {
+      * @param ruleData 规则数据
+      */
+     public void setData(String ruleName, List<IPAddress> ruleData) {
++        setRuleName(ruleName);
+         this.ips = new ArrayList<>();
+         this.subnets = new ArrayList<>();
+         ruleData.forEach(ipAddress -> {
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/rule/ExpressionRule.java
+Patch:
+@@ -92,7 +92,7 @@ public boolean needCheckHandshake() {
+                     log.warn(Lang.MODULE_EXPRESSION_RULE_TIMEOUT, maxScriptExecuteTime, timeoutException);
+                     continue;
+                 } catch (Exception ex) {
+-                    log.warn(Lang.MODULE_EXPRESSION_RULE_ERROR, ex);
++                    log.warn(Lang.MODULE_EXPRESSION_RULE_ERROR, expressionMetadata.name(), ex);
+                     continue;
+                 }
+             }
+
+File: src/main/java/com/ghostchu/peerbanhelper/PeerBanHelperServer.java
+Patch:
+@@ -306,7 +306,6 @@ public void banWave() {
+         try {
+             // 重置所有下载器状态为健康，这样后面失败就会对其降级
+             banWaveWatchDog.setLastOperation("Reset last status");
+-            downloaders.forEach(downloader -> downloader.setLastStatus(DownloaderLastStatus.HEALTHY));
+             // 声明基本集合
+             // 需要重启的种子列表
+             Map<Downloader, Collection<Torrent>> needRelaunched = new ConcurrentHashMap<>();
+@@ -431,6 +430,8 @@ public void updateDownloader(@NotNull Downloader downloader, boolean updateBanLi
+                 log.warn(Lang.ERR_CLIENT_LOGIN_FAILURE_SKIP, downloader.getName(), downloader.getEndpoint());
+                 downloader.setLastStatus(DownloaderLastStatus.ERROR);
+                 return;
++            } else {
++                downloader.setLastStatus(DownloaderLastStatus.HEALTHY);
+             }
+             downloader.setBanList(BAN_LIST.keySet(), added, removed);
+             downloader.relaunchTorrentIfNeeded(needToRelaunch);
+
+File: src/main/java/com/ghostchu/peerbanhelper/util/HTTPUtil.java
+Patch:
+@@ -152,7 +152,6 @@ public static <T> CompletableFuture<HttpResponse<T>> retryableSend(HttpClient cl
+     public static <T> CompletableFuture<HttpResponse<T>> retryableSendProgressTracking(HttpClient client, HttpRequest request, HttpResponse.BodyHandler<T> bodyHandler) {
+         bodyHandler = tracker.tracking(bodyHandler, HTTPUtil::onProgress);
+         HttpResponse.BodyHandler<T> finalBodyHandler = bodyHandler;
+-
+         return client.sendAsync(request, bodyHandler)
+                 .handleAsync((r, t) -> tryResend(client, request, finalBodyHandler, 1, r, t), executor)
+                 .thenCompose(Function.identity());
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/RuleSubController.java
+Patch:
+@@ -53,7 +53,7 @@ public void onEnable() {
+                     // 新增订阅规则
+                     .put("/api/sub/rule", ctx -> save(ctx, null, true), Role.USER_WRITE)
+                     // 更新订阅规则
+-                    .get("/api/sub/rule/update/{ruleId}", ctx -> ctx.json(update(ctx.pathParam("ruleId"))), Role.USER_READ)
++                    .post("/api/sub/rule/{ruleId}/update", ctx -> ctx.json(update(ctx.pathParam("ruleId"))), Role.USER_READ)
+                     // 查询订阅规则
+                     .get("/api/sub/rule/{ruleId}", ctx -> ctx.json(get(ctx.pathParam("ruleId"))), Role.USER_READ)
+                     // 修改订阅规则
+@@ -65,7 +65,7 @@ public void onEnable() {
+                     // 查询订阅规则列表
+                     .get("/api/sub/rules", ctx -> ctx.json(list()), Role.USER_READ)
+                     // 手动更新全部订阅规则
+-                    .get("/api/sub/rules/update", ctx -> ctx.json(updateAll()), Role.USER_WRITE)
++                    .post("/api/sub/rules/update", ctx -> ctx.json(updateAll()), Role.USER_WRITE)
+                     // 查询全部订阅规则更新日志
+                     .get("/api/sub/logs", ctx -> logs(ctx, null), Role.USER_READ)
+                     // 查询订阅规则更新日志
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHClientStatus.java
+Patch:
+@@ -36,7 +36,7 @@ public NanoHTTPD.Response handle(NanoHTTPD.IHTTPSession session) {
+         for (Downloader downloader : getServer().getDownloaders()) {
+             Map<String, Object> map = new HashMap<>(2);
+             map.put("name", downloader.getName());
+-            map.put("type", downloader.getDownloaderName());
++            map.put("type", downloader.getType());
+             map.put("endpoint", downloader.getEndpoint());
+             try {
+                 map.put("status", downloader.getLastStatus().name());
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHClientStatus.java
+Patch:
+@@ -36,6 +36,7 @@ public NanoHTTPD.Response handle(NanoHTTPD.IHTTPSession session) {
+         for (Downloader downloader : getServer().getDownloaders()) {
+             Map<String, Object> map = new HashMap<>(2);
+             map.put("name", downloader.getName());
++            map.put("type", downloader.getDownloaderName());
+             map.put("endpoint", downloader.getEndpoint());
+             try {
+                 map.put("status", downloader.getLastStatus().name());
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHClientStatus.java
+Patch:
+@@ -36,6 +36,7 @@ public NanoHTTPD.Response handle(NanoHTTPD.IHTTPSession session) {
+         for (Downloader downloader : getServer().getDownloaders()) {
+             Map<String, Object> map = new HashMap<>(2);
+             map.put("name", downloader.getName());
++            map.put("type", downloader.getDownloaderName());
+             map.put("endpoint", downloader.getEndpoint());
+             try {
+                 map.put("status", downloader.getLastStatus().name());
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/webapi/PBHBanLogs.java
+Patch:
+@@ -48,7 +48,7 @@ public NanoHTTPD.Response handle(NanoHTTPD.IHTTPSession session) {
+             map.put("pageIndex", pageIndex);
+             map.put("pageSize", pageSize);
+             map.put("results", db.queryBanLogs(null, null, pageIndex, pageSize));
+-            map.put("total", db.queryBanLogsCount(null,null));
++            map.put("total", db.queryBanLogsCount());
+             return HTTPUtil.cors(NanoHTTPD.newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "application/json", JsonUtil.prettyPrinting().toJson(map)));
+         } catch (SQLException e) {
+             log.error(Lang.WEB_BANLOGS_INTERNAL_ERROR, e);
+
+File: src/main/java/com/ghostchu/peerbanhelper/Main.java
+Patch:
+@@ -110,7 +110,7 @@ public static void main(String[] args) throws InterruptedException, IOException
+         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+             synchronized (shutdown){
+                 log.info(Lang.PBH_SHUTTING_DOWN);
+-                server.Shutdown();
++                server.shutdown();
+                 shutdown.notifyAll();
+             }
+         }));
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/AbstractFeatureModule.java
+Patch:
+@@ -26,14 +26,14 @@ public ConfigurationSection getConfig() {
+     private boolean register;
+ 
+     @Override
+-    public void Stop() {
++    public void stop() {
+         if (register) {
+             log.info(Lang.MODULE_UNREGISTER, getName());
+         }
+     }
+ 
+     @Override
+-    public void Register() {
++    public void register() {
+         register = true;
+         log.info(Lang.MODULE_REGISTER, getName());
+     }
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/FeatureModule.java
+Patch:
+@@ -17,7 +17,7 @@ public interface FeatureModule {
+ 
+     ConfigurationSection getConfig();
+ 
+-    void Stop();
++    void stop();
+ 
+-    void Register();
++    void register();
+ }
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/qbittorrent/QBittorrent.java
+Patch:
+@@ -42,6 +42,7 @@ public QBittorrent(String name, String endpoint, String username, String passwor
+         cm.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
+         HttpClient.Builder builder = HttpClient
+                 .newBuilder()
++                .version(HttpClient.Version.HTTP_1_1)
+                 .followRedirects(HttpClient.Redirect.ALWAYS)
+                 .connectTimeout(Duration.of(30, ChronoUnit.SECONDS))
+                 .authenticator(new Authenticator() {
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/ActiveProbing.java
+Patch:
+@@ -153,6 +153,7 @@ private BanResult httpTestPeer(PeerAddress address, String[] spilt) {
+         cm.setCookiePolicy(CookiePolicy.ACCEPT_NONE);
+         HttpClient.Builder builder = HttpClient
+                 .newBuilder()
++                .version(HttpClient.Version.HTTP_1_1)
+                 .followRedirects(HttpClient.Redirect.ALWAYS)
+                 .connectTimeout(Duration.of(timeout, ChronoUnit.MILLIS))
+                 .cookieHandler(cm);
+
+File: src/main/java/cordelia/client/TrClient.java
+Patch:
+@@ -64,6 +64,7 @@ public TrClient(String url, String user, String password, boolean verifySSL) {
+         cm.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
+         HttpClient.Builder builder = HttpClient
+                 .newBuilder()
++                .version(HttpClient.Version.HTTP_1_1)
+                 .followRedirects(HttpClient.Redirect.ALWAYS)
+                 .connectTimeout(Duration.of(30, ChronoUnit.SECONDS))
+                 .authenticator(new Authenticator() {
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/qbittorrent/QBittorrent.java
+Patch:
+@@ -42,6 +42,7 @@ public QBittorrent(String name, String endpoint, String username, String passwor
+         cm.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
+         HttpClient.Builder builder = HttpClient
+                 .newBuilder()
++                .version(HttpClient.Version.HTTP_1_1)
+                 .followRedirects(HttpClient.Redirect.ALWAYS)
+                 .connectTimeout(Duration.of(30, ChronoUnit.SECONDS))
+                 .authenticator(new Authenticator() {
+
+File: src/main/java/com/ghostchu/peerbanhelper/module/impl/ActiveProbing.java
+Patch:
+@@ -153,6 +153,7 @@ private BanResult httpTestPeer(PeerAddress address, String[] spilt) {
+         cm.setCookiePolicy(CookiePolicy.ACCEPT_NONE);
+         HttpClient.Builder builder = HttpClient
+                 .newBuilder()
++                .version(HttpClient.Version.HTTP_1_1)
+                 .followRedirects(HttpClient.Redirect.ALWAYS)
+                 .connectTimeout(Duration.of(timeout, ChronoUnit.MILLIS))
+                 .cookieHandler(cm);
+
+File: src/main/java/cordelia/client/TrClient.java
+Patch:
+@@ -64,6 +64,7 @@ public TrClient(String url, String user, String password, boolean verifySSL) {
+         cm.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
+         HttpClient.Builder builder = HttpClient
+                 .newBuilder()
++                .version(HttpClient.Version.HTTP_1_1)
+                 .followRedirects(HttpClient.Redirect.ALWAYS)
+                 .connectTimeout(Duration.of(30, ChronoUnit.SECONDS))
+                 .authenticator(new Authenticator() {
+
+File: src/main/java/com/ghostchu/peerbanhelper/text/Lang.java
+Patch:
+@@ -25,6 +25,7 @@ public class Lang {
+     public static String MODULE_PCB_PEER_MORE_THAN_LOCAL_SKIP = "客户端进度：%.2f%%，实际进度：%.2f%%，客户端的进度多于本地进度，跳过检测";
+     public static String MODULE_PCB_PEER_BAN_INCORRECT_PROGRESS = "客户端进度：%.2f%%，实际进度：%.2f%%，差值：%.2f%%";
+     public static String MODULE_PCB_PEER_BAN_REWIND = "客户端进度：%.2f%%，实际进度：%.2f%%，上次记录进度：%.2f%%，本次进度：%.2f%%，差值：%.2f%%";
++    public static String MODULE_PCB_SKIP_UNKNOWN_SIZE_TORRENT = "种子大小未知";
+     public static String MODULE_AP_PEER_BAN_PING = "Peer 发送了 ICMP 响应包";
+     public static String MODULE_AP_INVALID_RULE = "规则 {} 无效，请检查语法和拼写错误";
+     public static String MODULE_AP_BAN_PEER_CODE = "Peer 的 HTTP(S) 响应返回了预期状态码：%s";
+
+File: src/main/java/com/ghostchu/peerbanhelper/Main.java
+Patch:
+@@ -35,12 +35,10 @@ public static void main(String[] args) throws InterruptedException, IOException
+         LogManager.getLogManager().readConfiguration(Main.class.getResourceAsStream("/logging.properties"));
+         meta = new BuildMeta();
+         if (System.getProperties().getProperty("os.name").toUpperCase().contains("WINDOWS")) {
+-            //if(meta.isNativeImage() && !Boolean.parseBoolean(System.getProperty("disableChcpAutoDetect"))) {
+                 ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", "chcp", "65001").inheritIO();
+                 Process p = pb.start();
+                 p.waitFor();
+                 System.out.println("代码页已切换到 UTF-8 (65001)");
+-            //}
+         }
+         try (InputStream stream = Main.class.getResourceAsStream("/build-info.yml")) {
+             if (stream == null) {
+@@ -76,9 +74,10 @@ public static void main(String[] args) throws InterruptedException, IOException
+             String password = downloaderSection.getString("password");
+             String baUser = downloaderSection.getString("basic-auth.user");
+             String baPass = downloaderSection.getString("basic-auth.pass");
++            boolean verifySSL = downloaderSection.getBoolean("verify-ssl", true);
+             switch (downloaderSection.getString("type").toLowerCase(Locale.ROOT)) {
+                 case "qbittorrent" -> {
+-                    downloaderList.add(new QBittorrent(client, endpoint, username, password, baUser, baPass));
++                    downloaderList.add(new QBittorrent(client, endpoint, username, password, baUser, baPass,verifySSL));
+                     log.info(Lang.DISCOVER_NEW_CLIENT, "qBittorrent", client, endpoint);
+                 }
+                 case "transmission" -> {
+
+File: src/main/java/com/ghostchu/peerbanhelper/downloader/impl/qbittorrent/QBittorrent.java
+Patch:
+@@ -110,6 +110,8 @@ public List<Peer> getPeers(Torrent torrent) {
+         for (String s : peers.keySet()) {
+             JsonObject singlePeerObject = peers.getAsJsonObject(s);
+             SingleTorrentPeer singleTorrentPeer = JsonUtil.getGson().fromJson(singlePeerObject.toString(), SingleTorrentPeer.class);
++            System.out.println(resp.getBody());
++            System.out.println(singleTorrentPeer.toString());
+             peersList.add(singleTorrentPeer);
+         }
+         return peersList;
+
+File: src/main/java/com/ghostchu/peerbanhelper/Main.java
+Patch:
+@@ -18,7 +18,7 @@ public class Main {
+     public static void main(String[] args) throws InterruptedException {
+         log.info("PeerBanHelper - v1.0 - by Ghost_chu");
+         Unirest.config()
+-                .setDefaultHeader("User-Agent", "PeerBanHelper/1.0")
++                .setDefaultHeader("User-Agent", "PeerBanHelper/1.1")
+                 .enableCookieManagement(true);
+         List<Downloader> downloaderList = new ArrayList<>();
+         log.info("加载配置文件……");
+

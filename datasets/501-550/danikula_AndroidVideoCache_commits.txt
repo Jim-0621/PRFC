@@ -1,0 +1,369 @@
+File: test/src/test/java/com/danikula/videocache/file/FileCacheTest.java
+Patch:
+@@ -172,12 +172,14 @@ public void testTrimAfterCompletionForTotalSizeLru() throws Exception {
+         assertThat(deletedFile).doesNotExist();
+     }
+ 
+-    private void saveAndCompleteCache(DiskUsage diskUsage, byte[] data, File... files) throws ProxyCacheException, IOException {
++    private void saveAndCompleteCache(DiskUsage diskUsage, byte[] data, File... files) throws ProxyCacheException, IOException, InterruptedException {
+         for (File file : files) {
+             FileCache fileCache = new FileCache(file, diskUsage);
+             fileCache.append(data, data.length);
+             fileCache.complete();
+             assertThat(file).exists();
++            fileCache.close();
++            Thread.sleep(1000); // last modified date wrote in seconds.
+         }
+     }
+ 
+
+File: library/src/main/java/com/danikula/videocache/IgnoreHostProxySelector.java
+Patch:
+@@ -40,8 +40,7 @@ static void install(String hostToIgnore, int portToIgnore) {
+     @Override
+     public List<Proxy> select(URI uri) {
+         boolean ignored = hostToIgnore.equals(uri.getHost()) && portToIgnore == uri.getPort();
+-        List<Proxy> proxies = ignored ? NO_PROXY_LIST : defaultProxySelector.select(uri);
+-        return proxies;
++        return ignored ? NO_PROXY_LIST : defaultProxySelector.select(uri);
+     }
+ 
+     @Override
+
+File: library/src/main/java/com/danikula/videocache/HttpProxyCacheServer.java
+Patch:
+@@ -73,6 +73,7 @@ private HttpProxyCacheServer(Config config) {
+             InetAddress inetAddress = InetAddress.getByName(PROXY_HOST);
+             this.serverSocket = new ServerSocket(0, 8, inetAddress);
+             this.port = serverSocket.getLocalPort();
++            IgnoreHostProxySelector.install(PROXY_HOST, port);
+             CountDownLatch startSignal = new CountDownLatch(1);
+             this.waitConnectionThread = new Thread(new WaitRequestsRunnable(startSignal));
+             this.waitConnectionThread.start();
+
+File: library/src/main/java/com/danikula/videocache/Pinger.java
+Patch:
+@@ -75,9 +75,9 @@ boolean ping(int maxAttempts, int startTimeout) {
+     }
+ 
+     private List<Proxy> getDefaultProxies() {
+-        ProxySelector proxySelector = ProxySelector.getDefault();
+         try {
+-            return proxySelector.select(new URI("https://github.com"));
++            ProxySelector defaultProxySelector = ProxySelector.getDefault();
++            return defaultProxySelector.select(new URI(getPingUrl()));
+         } catch (URISyntaxException e) {
+             throw new IllegalStateException(e);
+         }
+
+File: library/src/main/java/com/danikula/videocache/ProxyCache.java
+Patch:
+@@ -103,7 +103,7 @@ private void notifyNewCacheDataAvailable(long cacheAvailable, long sourceAvailab
+ 
+     protected void onCacheAvailable(long cacheAvailable, long sourceLength) {
+         boolean zeroLengthSource = sourceLength == 0;
+-        int percents = zeroLengthSource ? 100 : (int) (cacheAvailable / sourceLength * 100);
++        int percents = zeroLengthSource ? 100 : (int) ((float) cacheAvailable / sourceLength * 100);
+         boolean percentsChanged = percents != percentsAvailable;
+         boolean sourceLengthKnown = sourceLength >= 0;
+         if (sourceLengthKnown && percentsChanged) {
+
+File: library/src/main/java/com/danikula/videocache/HttpProxyCacheServer.java
+Patch:
+@@ -20,6 +20,7 @@
+ import java.net.Socket;
+ import java.net.SocketException;
+ import java.util.Arrays;
++import java.util.Locale;
+ import java.util.Map;
+ import java.util.concurrent.Callable;
+ import java.util.concurrent.ConcurrentHashMap;
+@@ -141,7 +142,7 @@ public String getProxyUrl(String url) {
+     }
+ 
+     private String appendToProxyUrl(String url) {
+-        return String.format("http://%s:%d/%s", PROXY_HOST, port, ProxyCacheUtils.encode(url));
++        return String.format(Locale.US, "http://%s:%d/%s", PROXY_HOST, port, ProxyCacheUtils.encode(url));
+     }
+ 
+     public void registerCacheListener(CacheListener cacheListener, String url) {
+
+File: library/src/main/java/com/danikula/videocache/HttpProxyCacheServer.java
+Patch:
+@@ -299,7 +299,7 @@ private void closeSocketInput(Socket socket) {
+ 
+     private void closeSocketOutput(Socket socket) {
+         try {
+-            if (socket.isOutputShutdown()) {
++            if (!socket.isOutputShutdown()) {
+                 socket.shutdownOutput();
+             }
+         } catch (IOException e) {
+
+File: library/src/main/java/com/danikula/videocache/HttpProxyCacheServer.java
+Patch:
+@@ -299,7 +299,7 @@ private void closeSocketInput(Socket socket) {
+ 
+     private void closeSocketOutput(Socket socket) {
+         try {
+-            if (socket.isOutputShutdown()) {
++            if (!socket.isOutputShutdown()) {
+                 socket.shutdownOutput();
+             }
+         } catch (IOException e) {
+
+File: library/src/main/java/com/danikula/videocache/HttpProxyCacheServer.java
+Patch:
+@@ -359,7 +359,7 @@ public Boolean call() throws Exception {
+      */
+     public static final class Builder {
+ 
+-        private static final long DEFAULT_MAX_SIZE = 512 * 104 * 1024;
++        private static final long DEFAULT_MAX_SIZE = 512 * 1024 * 1024;
+ 
+         private File cacheRoot;
+         private FileNameGenerator fileNameGenerator;
+
+File: library/src/main/java/com/danikula/videocache/HttpProxyCacheServer.java
+Patch:
+@@ -91,7 +91,7 @@ private HttpProxyCacheServer(Config config) {
+ 
+     private void makeSureServerWorks() {
+         int maxPingAttempts = 3;
+-        int delay = 200;
++        int delay = 300;
+         int pingAttempts = 0;
+         while (pingAttempts < maxPingAttempts) {
+             try {
+@@ -107,7 +107,7 @@ private void makeSureServerWorks() {
+             pingAttempts++;
+             delay *= 2;
+         }
+-        Log.e(LOG_TAG, "Shutdown server… Error pinging server [attempt: " + pingAttempts + ", timeout: " + delay + "]. " +
++        Log.e(LOG_TAG, "Shutdown server… Error pinging server [attempts: " + pingAttempts + ", max timeout: " + delay / 2 + "]. " +
+                 "If you see this message, please, email me danikula@gmail.com");
+         shutdown();
+     }
+
+File: test/src/test/java/com/danikula/videocache/HttpProxyCacheServerTest.java
+Patch:
+@@ -211,9 +211,8 @@ public void testMaxFileCacheLimit() throws Exception {
+     }
+ 
+     private Pair<File, Response> readProxyData(String url, int offset) throws IOException {
+-        File externalCacheDir = RuntimeEnvironment.application.getExternalCacheDir();
+-        File file = file(externalCacheDir, url);
+-        HttpProxyCacheServer proxy = newProxy(externalCacheDir);
++        File file = file(cacheFolder, url);
++        HttpProxyCacheServer proxy = newProxy(cacheFolder);
+ 
+         Response response = readProxyResponse(proxy, url, offset);
+         proxy.shutdown();
+
+File: library/src/main/java/com/danikula/videocache/HttpProxyCache.java
+Patch:
+@@ -66,7 +66,7 @@ private String newResponseHeaders(GetRequest request) throws IOException, ProxyC
+                 .append(request.partial ? "HTTP/1.1 206 PARTIAL CONTENT\n" : "HTTP/1.1 200 OK\n")
+                 .append("Accept-Ranges: bytes\n")
+                 .append(lengthKnown ? String.format("Content-Length: %d\n", contentLength) : "")
+-                .append(addRange ? String.format("Content-Range: bytes %d-%d/%d\n", request.rangeOffset, length, length) : "")
++                .append(addRange ? String.format("Content-Range: bytes %d-%d/%d\n", request.rangeOffset, length - 1, length) : "")
+                 .append(mimeKnown ? String.format("Content-Type: %s\n", mime) : "")
+                 .append("\n") // headers end
+                 .toString();
+
+File: test/src/test/java/com/danikula/videocache/HttpProxyCacheServerTest.java
+Patch:
+@@ -125,7 +125,7 @@ public void testProxyPartialResponse() throws Exception {
+         assertThat(response.second.headers.containsKey("Accept-Ranges")).isTrue();
+         assertThat(response.second.headers.get("Accept-Ranges").get(0)).isEqualTo("bytes");
+         assertThat(response.second.headers.containsKey("Content-Range")).isTrue();
+-        String rangeHeader = String.format("bytes %d-%d/%d", offset, HTTP_DATA_BIG_SIZE, HTTP_DATA_BIG_SIZE);
++        String rangeHeader = String.format("bytes %d-%d/%d", offset, HTTP_DATA_BIG_SIZE - 1, HTTP_DATA_BIG_SIZE);
+         assertThat(response.second.headers.get("Content-Range").get(0)).isEqualTo(rangeHeader);
+         byte[] expectedData = Arrays.copyOfRange(loadAssetFile(ASSETS_DATA_BIG_NAME), offset, HTTP_DATA_BIG_SIZE);
+         assertThat(response.second.data).isEqualTo(expectedData);
+@@ -143,7 +143,7 @@ public void testProxyPartialResponseWithRedirect() throws Exception {
+         assertThat(response.second.headers.containsKey("Accept-Ranges")).isTrue();
+         assertThat(response.second.headers.get("Accept-Ranges").get(0)).isEqualTo("bytes");
+         assertThat(response.second.headers.containsKey("Content-Range")).isTrue();
+-        String rangeHeader = String.format("bytes %d-%d/%d", offset, HTTP_DATA_BIG_SIZE, HTTP_DATA_BIG_SIZE);
++        String rangeHeader = String.format("bytes %d-%d/%d", offset, HTTP_DATA_BIG_SIZE - 1, HTTP_DATA_BIG_SIZE);
+         assertThat(response.second.headers.get("Content-Range").get(0)).isEqualTo(rangeHeader);
+         byte[] expectedData = Arrays.copyOfRange(loadAssetFile(ASSETS_DATA_BIG_NAME), offset, HTTP_DATA_BIG_SIZE);
+         assertThat(response.second.data).isEqualTo(expectedData);
+
+File: library/src/main/java/com/danikula/videocache/ByteArraySource.java
+Patch:
+@@ -22,7 +22,7 @@ public int read(byte[] buffer) throws ProxyCacheException {
+     }
+ 
+     @Override
+-    public int available() throws ProxyCacheException {
++    public int length() throws ProxyCacheException {
+         return data.length;
+     }
+ 
+
+File: library/src/main/java/com/danikula/videocache/GetRequest.java
+Patch:
+@@ -63,9 +63,9 @@ private String findUri(String request) {
+     @Override
+     public String toString() {
+         return "GetRequest{" +
+-                "uri='" + uri + '\'' +
+-                ", rangeOffset=" + rangeOffset +
++                "rangeOffset=" + rangeOffset +
+                 ", partial=" + partial +
++                ", uri='" + uri + '\'' +
+                 '}';
+     }
+ }
+
+File: library/src/main/java/com/danikula/videocache/ProxyCache.java
+Patch:
+@@ -119,7 +119,7 @@ private void readSource() {
+         try {
+             offset = cache.available();
+             source.open(offset);
+-            sourceAvailable = source.available();
++            sourceAvailable = source.length();
+             byte[] buffer = new byte[ProxyCacheUtils.DEFAULT_BUFFER_SIZE];
+             int readBytes;
+             while ((readBytes = source.read(buffer)) != -1) {
+@@ -144,7 +144,7 @@ private void readSource() {
+ 
+     private void tryComplete() throws ProxyCacheException {
+         synchronized (stopLock) {
+-            if (!isStopped() && cache.available() == source.available()) {
++            if (!isStopped() && cache.available() == source.length()) {
+                 cache.complete();
+             }
+         }
+
+File: library/src/main/java/com/danikula/videocache/Source.java
+Patch:
+@@ -16,12 +16,12 @@ public interface Source {
+     void open(int offset) throws ProxyCacheException;
+ 
+     /**
+-     * Returns available bytes or <b>negative value</b> if available bytes count is unknown.
++     * Returns length bytes or <b>negative value</b> if length is unknown.
+      *
+-     * @return bytes available
++     * @return bytes length
+      * @throws ProxyCacheException if error occur while fetching source data.
+      */
+-    int available() throws ProxyCacheException;
++    int length() throws ProxyCacheException;
+ 
+     /**
+      * Read data to byte buffer from source with current offset.
+
+File: test/src/test/java/com/danikula/videocache/HttpProxyCacheServerTest.java
+Patch:
+@@ -98,7 +98,7 @@ public void testProxyFullResponseWithRedirect() throws Exception {
+ 
+     @Test
+     public void testProxyPartialResponse() throws Exception {
+-        int offset = 42000;
++        int offset = 18000;
+         Pair<File, Response> response = readProxyData(HTTP_DATA_BIG_URL, offset);
+ 
+         assertThat(response.second.code).isEqualTo(206);
+@@ -116,7 +116,7 @@ public void testProxyPartialResponse() throws Exception {
+ 
+     @Test
+     public void testProxyPartialResponseWithRedirect() throws Exception {
+-        int offset = 42000;
++        int offset = 18000;
+         Pair<File, Response> response = readProxyData(HTTP_DATA_BIG_URL_ONE_REDIRECT, offset);
+ 
+         assertThat(response.second.code).isEqualTo(206);
+
+File: test/src/test/java/com/danikula/videocache/HttpUrlSourceTest.java
+Patch:
+@@ -63,14 +63,14 @@ public void testHttpUrlSourceWithOffset() throws Exception {
+     @Test
+     public void testFetchContentLength() throws Exception {
+         Source source = new HttpUrlSource(HTTP_DATA_URL);
+-        assertThat(source.available()).isEqualTo(loadAssetFile(ASSETS_DATA_NAME).length);
++        assertThat(source.length()).isEqualTo(loadAssetFile(ASSETS_DATA_NAME).length);
+     }
+ 
+     @Test
+     public void testFetchInfoWithRedirect() throws Exception {
+         HttpUrlSource source = new HttpUrlSource(HTTP_DATA_URL_ONE_REDIRECT);
+         source.open(0);
+-        int available = source.available();
++        int available = source.length();
+         String mime = source.getMime();
+         source.close();
+ 
+
+File: test/src/test/java/com/danikula/videocache/support/AngryHttpUrlSource.java
+Patch:
+@@ -11,7 +11,7 @@
+ public class AngryHttpUrlSource implements Source {
+ 
+     @Override
+-    public int available() throws ProxyCacheException {
++    public int length() throws ProxyCacheException {
+         throw new IllegalStateException();
+     }
+ 
+
+File: sample/src/main/java/com/danikula/videocache/sample/VideoFragment.java
+Patch:
+@@ -4,6 +4,7 @@
+ import android.os.Handler;
+ import android.os.Message;
+ import android.support.v4.app.Fragment;
++import android.util.Log;
+ import android.widget.ProgressBar;
+ import android.widget.VideoView;
+ 
+@@ -77,6 +78,7 @@ public void onDestroy() {
+     @Override
+     public void onCacheAvailable(File file, String url, int percentsAvailable) {
+         progressBar.setSecondaryProgress(percentsAvailable);
++        Log.d(LOG_TAG, String.format("onCacheAvailable. percents: %d, file: %s, url: %s", percentsAvailable, file, url));
+     }
+ 
+     private void updateVideoProgress() {
+
+File: library/src/main/java/com/danikula/videocache/HttpUrlSource.java
+Patch:
+@@ -99,7 +99,7 @@ private void fetchContentInfo() throws ProxyCacheException {
+             inputStream = urlConnection.getInputStream();
+             Log.i(LOG_TAG, "Content info for `" + url + "`: mime: " + mime + ", content-length: " + available);
+         } catch (IOException e) {
+-            throw new ProxyCacheException("Error fetching Content-Length from " + url);
++            Log.e(LOG_TAG, "Error fetching info from " + url, e);
+         } finally {
+             ProxyCacheUtils.close(inputStream);
+             if (urlConnection != null) {
+
+File: sample/src/main/java/com/danikula/videocache/sample/MultipleVideosActivity.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.danikula.videocache.sample;
+ 
+ import android.os.Bundle;
+-import android.support.v4.app.Fragment;
+ import android.support.v4.app.FragmentActivity;
+ 
+ import org.androidannotations.annotations.EActivity;
+@@ -22,10 +21,9 @@ protected void onCreate(Bundle state) {
+     }
+ 
+     private void addVideoFragment(Video video, int containerViewId) {
+-        Fragment fragment = VideoFragment.build(video.url, video.getCacheFile(this).getAbsolutePath());
+         getSupportFragmentManager()
+                 .beginTransaction()
+-                .add(containerViewId, fragment)
++                .add(containerViewId, VideoFragment.build(this, video))
+                 .commit();
+     }
+ }
+

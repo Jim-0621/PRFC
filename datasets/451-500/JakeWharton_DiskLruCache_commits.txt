@@ -1,0 +1,164 @@
+File: src/test/java/com/jakewharton/disklrucache/DiskLruCacheTest.java
+Patch:
+@@ -47,7 +47,7 @@ public final class DiskLruCacheTest {
+   private File journalFile;
+   private File journalBkpFile;
+   private DiskLruCache cache;
+-  
++
+   @Rule public TemporaryFolder tempDir = new TemporaryFolder();
+ 
+   @Before public void setUp() throws Exception {
+@@ -485,7 +485,7 @@ public final class DiskLruCacheTest {
+     set("b", "bb", "bbbb"); // size 6
+     set("c", "c", "c"); // size 12
+     cache.setMaxSize(10);
+-    assertThat(cache.executorService.getTaskCount()).isEqualTo(1);
++    assertThat(cache.executorService.getQueue().size()).isEqualTo(1);
+     cache.executorService.purge();
+   }
+ 
+
+File: src/test/java/com/jakewharton/disklrucache/DiskLruCacheTest.java
+Patch:
+@@ -864,9 +864,9 @@ public final class DiskLruCacheTest {
+     set("a", "a", "a");
+     set("b", "b", "b");
+     DiskLruCache.Editor a = cache.get("a").edit();
+-    a.set(1, "a1");
++    a.set(0, "a1");
+     FileUtils.deleteDirectory(cacheDir);
+-    a.set(2, "a2");
++    a.set(1, "a2");
+     a.commit();
+     assertThat(cache.get("a")).isNull();
+   }
+
+File: src/test/java/com/jakewharton/disklrucache/DiskLruCacheTest.java
+Patch:
+@@ -864,9 +864,9 @@ public final class DiskLruCacheTest {
+     set("a", "a", "a");
+     set("b", "b", "b");
+     DiskLruCache.Editor a = cache.get("a").edit();
+-    a.set(1, "a1");
++    a.set(0, "a1");
+     FileUtils.deleteDirectory(cacheDir);
+-    a.set(2, "a2");
++    a.set(1, "a2");
+     a.commit();
+     assertThat(cache.get("a")).isNull();
+   }
+
+File: src/main/java/com/jakewharton/disklrucache/DiskLruCache.java
+Patch:
+@@ -586,7 +586,7 @@ public synchronized boolean remove(String key) throws IOException {
+ 
+     for (int i = 0; i < valueCount; i++) {
+       File file = entry.getCleanFile(i);
+-      if (!file.delete()) {
++      if (file.exists() && !file.delete()) {
+         throw new IOException("failed to delete " + file);
+       }
+       size -= entry.lengths[i];
+
+File: src/main/java/com/jakewharton/disklrucache/DiskLruCache.java
+Patch:
+@@ -586,7 +586,7 @@ public synchronized boolean remove(String key) throws IOException {
+ 
+     for (int i = 0; i < valueCount; i++) {
+       File file = entry.getCleanFile(i);
+-      if (!file.delete()) {
++      if (file.exists() && !file.delete()) {
+         throw new IOException("failed to delete " + file);
+       }
+       size -= entry.lengths[i];
+
+File: src/main/java/com/jakewharton/disklrucache/DiskLruCache.java
+Patch:
+@@ -586,7 +586,8 @@ public synchronized boolean remove(String key) throws IOException {
+ 
+     for (int i = 0; i < valueCount; i++) {
+       File file = entry.getCleanFile(i);
+-      if (!file.delete()) {
++      boolean fileExisted = file.exists();
++      if (fileExisted && !file.delete()) {
+         throw new IOException("failed to delete " + file);
+       }
+       size -= entry.lengths[i];
+
+File: src/main/java/com/jakewharton/disklrucache/DiskLruCache.java
+Patch:
+@@ -605,7 +605,7 @@ public synchronized boolean remove(String key) throws IOException {
+   }
+ 
+   /** Returns true if this cache has been closed. */
+-  public boolean isClosed() {
++  public synchronized boolean isClosed() {
+     return journalWriter == null;
+   }
+ 
+
+File: src/main/java/com/jakewharton/DiskLruCache.java
+Patch:
+@@ -244,13 +244,16 @@ private void readJournal() throws IOException {
+                         + magic + ", " + version + ", " + valueCountString + ", " + blank + "]");
+             }
+ 
++            int lineCount = 0;
+             while (true) {
+                 try {
+                     readJournalLine(reader.readLine());
++                    lineCount++;
+                 } catch (EOFException endOfJournal) {
+                     break;
+                 }
+             }
++            redundantOpCount = lineCount - lruEntries.size();
+         } finally {
+             IoUtils.closeQuietly(reader);
+         }
+
+File: src/main/java/com/jakewharton/Arrays.java
+Patch:
+@@ -5,7 +5,7 @@
+ /* From java.util.Arrays */
+ class Arrays {
+     @SuppressWarnings("unchecked")
+-    private static <T> T[] copyOfRange(T[] original, int start, int end) {
++    static <T> T[] copyOfRange(T[] original, int start, int end) {
+         int originalLength = original.length; // For exception priority compatibility.
+         if (start > end) {
+             throw new IllegalArgumentException();
+
+File: src/main/java/com/jakewharton/DiskLruCache.java
+Patch:
+@@ -32,7 +32,6 @@
+ import java.io.OutputStreamWriter;
+ import java.io.Writer;
+ import java.util.ArrayList;
+-import java.util.Arrays;
+ import java.util.Iterator;
+ import java.util.LinkedHashMap;
+ import java.util.Map;
+@@ -885,7 +884,7 @@ private void setLengths(String[] strings) throws IOException {
+         }
+ 
+         private IOException invalidLengths(String[] strings) throws IOException {
+-            throw new IOException("unexpected journal line: " + Arrays.toString(strings));
++            throw new IOException("unexpected journal line: " + java.util.Arrays.toString(strings));
+         }
+ 
+         public File getCleanFile(int i) {
+
+File: src/main/java/com/jakewharton/DiskLruCache.java
+Patch:
+@@ -72,7 +72,7 @@
+  *     <li>When an entry is being <strong>created</strong> it is necessary to
+  *         supply a full set of values; the empty value should be used as a
+  *         placeholder if necessary.
+- *     <li>When an entry is being <strong>created</strong>, it is not necessary
++ *     <li>When an entry is being <strong>edited</strong>, it is not necessary
+  *         to supply data for every value; values default to their previous
+  *         value.
+  * </ul>
+

@@ -1,0 +1,3042 @@
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -245,6 +245,8 @@ public void invalidateDanmaku(BaseDanmaku danmaku, boolean remeasure) {
+             if (mHandler != null) {
+                 mHandler.requestCancelCaching();
+                 mHandler.obtainMessage(CacheHandler.REBUILD_CACHE, danmaku).sendToTarget();
++                mHandler.sendEmptyMessage(CacheHandler.DISABLE_CANCEL_FLAG);
++                requestBuild(0);
+             }
+         }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/FakeDanmakuView.java
+Patch:
+@@ -103,6 +103,9 @@ public int accept(BaseDanmaku danmaku) {
+         @Override
+         public BaseDanmakuParser setDisplayer(IDisplayer disp) {
+             super.setDisplayer(disp);
++            if (mBaseParser == null || mBaseParser.getDisplayer() == null) {
++                return this;
++            }
+             mDispScaleX = mDispWidth / (float) mBaseParser.getDisplayer().getWidth();
+             mDispScaleY = mDispHeight / (float) mBaseParser.getDisplayer().getHeight();
+             if (mViewWidth <= 1) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/SimpleTextCacheStuffer.java
+Patch:
+@@ -8,7 +8,6 @@
+ import java.util.Map;
+ 
+ import master.flame.danmaku.danmaku.model.BaseDanmaku;
+-import master.flame.danmaku.danmaku.model.IDrawingCache;
+ 
+ /**
+  * Created by ch on 15-7-16.
+@@ -63,6 +62,9 @@ protected void drawStroke(BaseDanmaku danmaku, String lineText, Canvas canvas, f
+     }
+ 
+     protected void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float left, float top, TextPaint paint, boolean fromWorkerThread) {
++        if (fromWorkerThread) {
++            paint.setAlpha(255);
++        }
+         if (lineText != null) {
+             canvas.drawText(lineText, left, top, paint);
+         } else {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -164,7 +164,9 @@ public void quit() {
+ 
+     @Override
+     public void prepare() {
+-        assert (mParser != null);
++        if (mParser == null) {
++            return;
++        }
+         loadDanmakus(mParser);
+         mCacheManager.begin();
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -306,7 +306,9 @@ public void quit() {
+     }
+ 
+     public void prepare() {
+-        assert (mParser != null);
++        if (mParser == null) {
++            return;
++        }
+         loadDanmakus(mParser);
+         mLastBeginMills = mLastEndMills = 0;
+         if (mTaskListener != null) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/FakeDanmakuView.java
+Patch:
+@@ -276,6 +276,7 @@ public void prepare(BaseDanmakuParser parser, DanmakuContext config) {
+         }
+         super.prepare(newParser, configCopy);
+         handler.setIdleSleep(false);
++        handler.enableNonBlockMode(true);
+     }
+ 
+     public void setTimeRange(final long beginMills, final long endMills) {
+@@ -311,7 +312,7 @@ public void run() {
+         }
+         mFrameIntervalMills = 1000 / frameRate;
+         setCallback(this);
+-        long beginMills = Math.max(0, mExpectBeginMills - getConfig().mDanmakuFactory.MAX_DANMAKU_DURATION);
++        long beginMills = Math.max(0, mExpectBeginMills - getConfig().mDanmakuFactory.MAX_DANMAKU_DURATION * 3 / 2);
+         mOuterTimer = new DanmakuTimer(beginMills);
+         start(beginMills);
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/FakeDanmakuView.java
+Patch:
+@@ -223,12 +223,12 @@ public long drawDanmakus() {
+     @Override
+     public void release() {
+         mIsRelease = true;
++        super.release();
+         Bitmap bmp = mBufferBitmap;
+         mBufferBitmap = null;
+         if (bmp != null && !bmp.isRecycled()) {
+             bmp.recycle();
+         }
+-        super.release();
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DanmakuContext.java
+Patch:
+@@ -703,7 +703,8 @@ public DanmakuContext unregisterFilter(DanmakuFilters.BaseDanmakuFilter filter)
+     public DanmakuContext resetContext() {
+         mDisplayer = new AndroidDisplayer();
+         mGlobalFlagValues = new GlobalFlagValues();
+-        mDanmakuFilters = new DanmakuFilters();
++//        mDanmakuFilters = new DanmakuFilters();
++        mDanmakuFilters.clear();
+         mDanmakuFactory = DanmakuFactory.create();
+         return this;
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -255,7 +255,7 @@ public void definePaintParams(boolean fromWorkerThread) {
+             HAS_STROKE = CONFIG_HAS_STROKE;
+             HAS_SHADOW = CONFIG_HAS_SHADOW;
+             HAS_PROJECTION = CONFIG_HAS_PROJECTION;
+-            ANTI_ALIAS = fromWorkerThread && CONFIG_ANTI_ALIAS;
++            ANTI_ALIAS = CONFIG_ANTI_ALIAS;
+         }
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/FakeDanmakuView.java
+Patch:
+@@ -133,8 +133,8 @@ public int getViewHeight() {
+     @Override
+     public void prepare(BaseDanmakuParser parser, DanmakuContext config) {
+         config.updateMethod = 1;
+-        handler.setIdleSleep(false);
+         super.prepare(parser, config);
++        handler.setIdleSleep(false);
+     }
+ 
+     public void getFrameAtTime(final long beginMills, final long endMills, final int frameRate, final OnFrameAvailableListener onFrameAvailableListener) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -34,7 +34,6 @@
+ import master.flame.danmaku.danmaku.model.android.DanmakuContext;
+ import master.flame.danmaku.danmaku.parser.BaseDanmakuParser;
+ import master.flame.danmaku.danmaku.renderer.IRenderer.RenderingState;
+-import master.flame.danmaku.danmaku.util.AndroidUtils;
+ import master.flame.danmaku.danmaku.util.SystemClock;
+ import tv.cjump.jni.DeviceUtils;
+ 
+@@ -548,7 +547,7 @@ private IDrawTask createDrawTask(boolean useDrwaingCache, DanmakuTimer timer,
+         mDisp.resetSlopPixel(mContext.scaleTextSize);
+         mDisp.setHardwareAccelerated(isHardwareAccelerated);
+         IDrawTask task = useDrwaingCache ?
+-                new CacheManagingDrawTask(timer, mContext, taskListener, 1024 * 1024 * AndroidUtils.getMemoryClass(context) / 3)
++                new CacheManagingDrawTask(timer, mContext, taskListener)
+                 : new DrawTask(timer, mContext, taskListener);
+         task.setParser(mParser);
+         task.prepare();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/util/DanmakuUtils.java
+Patch:
+@@ -101,8 +101,8 @@ public static DrawingCache buildDanmakuDrawingCache(BaseDanmaku danmaku, IDispla
+         return cache;
+     }
+ 
+-    public static int getCacheSize(int w, int h) {
+-        return (w) * (h) * 4;
++    public static int getCacheSize(int w, int h, int bytesPerPixel) {
++        return (w) * (h) * bytesPerPixel;
+     }
+     
+     public final static boolean isDuplicate(BaseDanmaku obj1, BaseDanmaku obj2) {
+
+File: Sample/src/main/java/com/sample/MainActivity.java
+Patch:
+@@ -221,7 +221,6 @@ private void findViews() {
+         mContext = DanmakuContext.create();
+         mContext.setDanmakuStyle(IDisplayer.DANMAKU_STYLE_STROKEN, 3).setDuplicateMergingEnabled(false).setScrollSpeedFactor(1.2f).setScaleTextSize(1.2f)
+         .setCacheStuffer(new SpannedCacheStuffer(), mCacheStufferAdapter) // 图文混排使用SpannedCacheStuffer
+-        .setBPPOfCache(DanmakuContext.BMP_BPP_ARGB_4444)  // 设置缓存bitmap格式
+ //        .setCacheStuffer(new BackgroundCacheStuffer())  // 绘制背景使用BackgroundCacheStuffer
+         .setMaximumLines(maxLinesPair)
+         .preventOverlapping(overlappingEnablePair).setDanmakuMargin(40);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -239,7 +239,7 @@ public void addDanmaku(BaseDanmaku danmaku) {
+                         mHandler.obtainMessage(CacheHandler.BIND_CACHE, danmaku).sendToTarget();
+                     }
+                 } else {
+-                    mHandler.obtainMessage(CacheHandler.ADD_DANMAKKU, danmaku).sendToTarget();
++                    mHandler.obtainMessage(CacheHandler.ADD_DANMAKU, danmaku).sendToTarget();
+                 }
+             }
+         }
+@@ -499,7 +499,7 @@ public class CacheHandler extends Handler {
+ 
+             private static final int PREPARE = 0x1;
+ 
+-            public static final int ADD_DANMAKKU = 0x2;
++            public static final int ADD_DANMAKU = 0x2;
+ 
+             public static final int BUILD_CACHES = 0x3;
+ 
+@@ -568,7 +568,7 @@ public void handleMessage(Message msg) {
+                         }
+ //                        Log.i(TAG,"BUILD_CACHES:"+mCacheTimer.currMillisecond+":"+mTimer.currMillisecond);
+                         break;
+-                    case ADD_DANMAKKU:
++                    case ADD_DANMAKU:
+                         BaseDanmaku item = (BaseDanmaku) msg.obj;
+                         addDanmakuAndBuildCache(item);
+                         break;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -629,7 +629,7 @@ public RenderingState draw(Canvas canvas) {
+             if (danmakuSync != null) {
+                 do {
+                     boolean isSyncPlayingState = danmakuSync.isSyncPlayingState();
+-                    if (!isSyncPlayingState && !quitFlag) {
++                    if (!isSyncPlayingState && quitFlag) {
+                         break;
+                     }
+                     int syncState = danmakuSync.getSyncState();
+@@ -643,7 +643,7 @@ public RenderingState draw(Canvas canvas) {
+                             }
+                             drawTask.requestSync(fromTime, toTime, offset);
+                             timer.update(toTime);
+-                            mTimeBase = SystemClock.uptimeMillis() - toTime;
++                            mTimeBase -= offset;
+                             mRemainingTime = 0;
+                         }
+                     } else if (syncState == AbsDanmakuSync.SYNC_STATE_HALT) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -420,7 +420,6 @@ public int accept(BaseDanmaku danmaku) {
+                     return ACTION_REMOVE;
+                 }
+                 danmaku.setTimeOffset(offsetMills + danmaku.timeOffset);
+-                danmaku.isOffset = true;
+                 return ACTION_CONTINUE;
+             }
+         });
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/BaseDanmaku.java
+Patch:
+@@ -213,8 +213,6 @@ public abstract class BaseDanmaku {
+      * 标记是否首次显示，首次显示后将置为FIRST_SHOWN_RESET_FLAG
+      */
+     public int firstShownFlag = -1;
+-    private long realTime;
+-    public boolean isOffset;
+ 
+     public long getDuration() {
+         return duration.value;
+@@ -353,15 +351,17 @@ public long getTime() {
+ 
+     public long getActualTime() {
+         if (flags == null || flags.SYNC_TIME_OFFSET_RESET_FLAG != this.syncTimeOffsetResetFlag) {
++            this.timeOffset = 0;
+             return time;
+         }
+         return time + timeOffset;
+     }
+ 
+     public boolean isOffset() {
+         if (flags == null || flags.SYNC_TIME_OFFSET_RESET_FLAG != this.syncTimeOffsetResetFlag) {
++            this.timeOffset = 0;
+             return false;
+         }
+-        return isOffset;
++        return timeOffset != 0;
+     }
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -483,7 +483,7 @@ private int saveCanvas(BaseDanmaku danmaku, Canvas canvas, float left, float top
+         camera.rotateY(-danmaku.rotationY);
+         camera.rotateZ(-danmaku.rotationZ);
+         camera.getMatrix(matrix);
+-//        matrix.preTranslate(-left, -top);
++        matrix.preTranslate(-left, -top);
+         matrix.postTranslate(left , top);
+         camera.restore();
+         int count = canvas.save();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -134,7 +134,7 @@ public synchronized void addDanmaku(BaseDanmaku item) {
+         synchronized (danmakuList) {
+             added = danmakuList.addItem(item);
+         }
+-        if (!subAdded) {
++        if (!subAdded || !added) {
+             mLastBeginMills = mLastEndMills = 0;
+         }
+         if (added && mTaskListener != null) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -662,7 +662,8 @@ public RenderingState draw(Canvas canvas) {
+ 
+     private void redrawIfNeeded() {
+         if (quitFlag && mDanmakusVisible) {
+-            obtainMessage(UPDATE_WHEN_PAUSED).sendToTarget();
++            removeMessages(UPDATE_WHEN_PAUSED);
++            sendEmptyMessageDelayed(UPDATE_WHEN_PAUSED, 100);
+         }
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/SpecialDanmaku.java
+Patch:
+@@ -214,7 +214,7 @@ public void setAlphaData(int beginAlpha, int endAlpha, long alphaDuration) {
+         this.endAlpha = endAlpha;
+         this.deltaAlpha = endAlpha - beginAlpha;
+         this.alphaDuration = alphaDuration;
+-        if(deltaAlpha != 0 && beginAlpha != AlphaValue.MAX){
++        if(beginAlpha != AlphaValue.MAX){
+             alpha = beginAlpha;
+         }
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuView.java
+Patch:
+@@ -154,6 +154,9 @@ public void stop() {
+     }
+ 
+     private synchronized void stopDraw() {
++        if (this.handler == null) {
++            return;
++        }
+         DrawHandler handler = this.handler;
+         this.handler = null;
+         unlockCanvasAndPost();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -171,7 +171,7 @@ public void stop() {
+         stopDraw();
+     }
+ 
+-    private void stopDraw() {
++    private synchronized void stopDraw() {
+         if (handler != null) {
+             handler.quit();
+             handler = null;
+@@ -188,7 +188,7 @@ private void stopDraw() {
+         }
+     }
+     
+-    protected Looper getLooper(int type){
++    protected synchronized Looper getLooper(int type){
+         if (mHandlerThread != null) {
+             mHandlerThread.quit();
+             mHandlerThread = null;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -258,6 +258,8 @@ public void seek(long mills) {
+         mStartRenderTime = mills < 1000 ? 0 : mills;
+         mRenderingState.reset();
+         mRenderingState.endTime = mStartRenderTime;
++        mLastBeginMills = mLastEndMills = 0;
++
+         if (danmakuList != null) {
+             BaseDanmaku last = danmakuList.last();
+             if (last != null && !last.isTimeOut()) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/AcFunDanmakuParser.java
+Patch:
+@@ -80,7 +80,7 @@ private Danmakus _parse(JSONObject jsonObject, Danmakus danmakus) {
+                         // TODO : parse advance danmaku json
+                         continue;
+                     long time = (long) (Float.parseFloat(values[0]) * 1000); // 出现时间
+-                    int color = Integer.parseInt(values[1]) | 0xFF000000; // 颜色
++                    int color = (int) ((0x00000000ff000000 | Long.parseLong(values[1])) & 0x00000000ffffffff); // 颜色
+                     float textSize = Float.parseFloat(values[3]); // 字体大小
+                     BaseDanmaku item = mContext.mDanmakuFactory.createDanmaku(type, mContext);
+                     if (item != null) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/BiliDanmukuParser.java
+Patch:
+@@ -119,7 +119,7 @@ public void startElement(String uri, String localName, String qName, Attributes
+                     long time = (long) (Float.parseFloat(values[0]) * 1000); // 出现时间
+                     int type = Integer.parseInt(values[1]); // 弹幕类型
+                     float textSize = Float.parseFloat(values[2]); // 字体大小
+-                    int color = Integer.parseInt(values[3]) | 0xFF000000; // 颜色
++                    int color = (int) ((0x00000000ff000000 | Long.parseLong(values[3])) & 0x00000000ffffffff); // 颜色
+                     // int poolType = Integer.parseInt(values[5]); // 弹幕池类型（忽略
+                     item = mContext.mDanmakuFactory.createDanmaku(type, mContext);
+                     if (item != null) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -754,7 +754,7 @@ private long prepareCaches(boolean repositioned) {
+                     return 0;
+                 }
+                 long deltaTime = first.getActualTime() - mTimer.currMillisecond;
+-                long sleepTime = 30 + 10 * deltaTime / mContext.mDanmakuFactory.MAX_DANMAKU_DURATION;
++                long sleepTime = (deltaTime < 0 ? 30 : 30 + 10 * deltaTime / mContext.mDanmakuFactory.MAX_DANMAKU_DURATION);
+                 sleepTime = Math.min(100, sleepTime);
+                 if (repositioned) {
+                     sleepTime = 0;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DanmakuFilters.java
+Patch:
+@@ -127,7 +127,8 @@ private boolean needFilter(BaseDanmaku danmaku, int orderInScreen,
+                 return false;
+             }
+ 
+-            if (danmaku.getActualTime() - mLastSkipped.getActualTime() < (context.mDanmakuFactory.MAX_Duration_Scroll_Danmaku.value * mFilterFactor)) {
++            long gapTime = danmaku.getActualTime() - mLastSkipped.getActualTime();
++            if (gapTime >= 0 && gapTime < (context.mDanmakuFactory.MAX_Duration_Scroll_Danmaku.value * mFilterFactor)) {
+                 return true;
+             }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/BiliDanmukuParser.java
+Patch:
+@@ -105,7 +105,7 @@ public void startElement(String uri, String localName, String qName, Attributes
+             if (tagName.equals("d")) {
+                 // <d p="23.826000213623,1,25,16777215,1422201084,0,057075e9,757076900">我从未见过如此厚颜无耻之猴</d>
+                 // 0:时间(弹幕出现时间)
+-                // 1:类型(1从左至右滚动弹幕|6从右至左滚动弹幕|5顶端固定弹幕|4底端固定弹幕|7高级弹幕|8脚本弹幕)
++                // 1:类型(1从右至左滚动弹幕|6从左至右滚动弹幕|5顶端固定弹幕|4底端固定弹幕|7高级弹幕|8脚本弹幕)
+                 // 2:字号
+                 // 3:颜色
+                 // 4:时间戳 ?
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/BiliDanmukuParser.java
+Patch:
+@@ -105,7 +105,7 @@ public void startElement(String uri, String localName, String qName, Attributes
+             if (tagName.equals("d")) {
+                 // <d p="23.826000213623,1,25,16777215,1422201084,0,057075e9,757076900">我从未见过如此厚颜无耻之猴</d>
+                 // 0:时间(弹幕出现时间)
+-                // 1:类型(1从左至右滚动弹幕|6从右至左滚动弹幕|5顶端固定弹幕|4底端固定弹幕|7高级弹幕|8脚本弹幕)
++                // 1:类型(1从右至左滚动弹幕|6从左至右滚动弹幕|5顶端固定弹幕|4底端固定弹幕|7高级弹幕|8脚本弹幕)
+                 // 2:字号
+                 // 3:颜色
+                 // 4:时间戳 ?
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -168,7 +168,7 @@ public synchronized void removeAllDanmakus(boolean isClearDanmakusOnScreen) {
+     }
+ 
+     protected void onDanmakuRemoved(BaseDanmaku danmaku) {
+-        // TODO call callback here
++        // override by CacheManagingDrawTask
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/android/DanmakuRenderer.java
+Patch:
+@@ -22,6 +22,7 @@
+ import master.flame.danmaku.danmaku.model.IDanmakuIterator;
+ import master.flame.danmaku.danmaku.model.IDanmakus;
+ import master.flame.danmaku.danmaku.model.IDisplayer;
++import master.flame.danmaku.danmaku.model.IDrawingCache;
+ import master.flame.danmaku.danmaku.model.android.DanmakuContext;
+ import master.flame.danmaku.danmaku.renderer.IRenderer;
+ import master.flame.danmaku.danmaku.renderer.Renderer;
+@@ -98,7 +99,8 @@ public RenderingState draw(IDisplayer disp, IDanmakus danmakus, long startRender
+             }
+ 
+             if (drawItem.isLate()) {
+-                if (mCacheManager != null && !drawItem.hasDrawingCache()) {
++                IDrawingCache<?> cache = drawItem.getDrawingCache();
++                if (mCacheManager != null && (cache == null || cache.get() == null)) {
+                     mCacheManager.addDanmaku(drawItem);
+                 }
+                 break;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -263,6 +263,8 @@ public void run() {
+                 Boolean updateFlag = (Boolean) msg.obj;
+                 if (updateFlag != null && updateFlag) {
+                     mContext.mGlobalFlagValues.updateMeasureFlag();
++                    mContext.mGlobalFlagValues.updateVisibleFlag();
++                    drawTask.requestClearRetainer();
+                 }
+                 break;
+             case HIDE_DANMAKUS:
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/IDrawTask.java
+Patch:
+@@ -48,6 +48,8 @@ public interface IDrawTask {
+ 
+     public void requestClear();
+ 
++    void requestClearRetainer();
++
+     public void setParser(BaseDanmakuParser parser);
+ 
+     void invalidateDanmaku(BaseDanmaku item, boolean remeasure);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -289,11 +289,11 @@ public void run() {
+                 }
+                 quitFlag = true;
+                 syncTimerIfNeeded();
++                pausedPosition = timer.currMillisecond;
+                 if (mThread != null) {
+                     notifyRendering();
+                     quitUpdateThread();
+                 }
+-                pausedPosition = timer.currMillisecond;
+                 if (what == QUIT){
+                     if (this.drawTask != null){
+                         this.drawTask.quit();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -229,11 +229,11 @@ public void run() {
+                     Long position = (Long) msg.obj;
+                     long deltaMs = position - timer.currMillisecond;
+                     mTimeBase -= deltaMs;
+-                    timer.update(SystemClock.uptimeMillis() - mTimeBase);
++                    timer.update(position);
+                     mContext.mGlobalFlagValues.updateMeasureFlag();
+                     if (drawTask != null)
+-                        drawTask.seek(timer.currMillisecond);
+-                    pausedPosition = timer.currMillisecond;
++                        drawTask.seek(position);
++                    pausedPosition = position;
+                 }
+             case RESUME:
+                 quitFlag = false;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -235,7 +235,7 @@ public synchronized RenderingState draw(AbsDisplayer displayer) {
+     @Override
+     public void reset() {
+         if (danmakus != null)
+-            danmakus.clear();
++            danmakus = new Danmakus();
+         if (mRenderer != null)
+             mRenderer.clear();
+     }
+@@ -336,7 +336,7 @@ protected RenderingState drawDanmakus(AbsDisplayer disp, DanmakuTimer timer) {
+                 RenderingState renderingState = mRenderingState = mRenderer.draw(mDisp, danmakus, mStartRenderTime);
+                 if (renderingState.nothingRendered) {
+                     if(mLastDanmaku != null && mLastDanmaku.isTimeOut()) {
+-                        danmakus.clear();
++                        danmakus = new Danmakus();
+                         if (mTaskListener != null) {
+                             mTaskListener.onDanmakusDrawingFinished();
+                         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/util/DanmakuUtils.java
+Patch:
+@@ -46,7 +46,7 @@ public static boolean willHitInDuration(IDisplayer disp, BaseDanmaku d1, BaseDan
+             return false;
+         }
+         long dTime = d2.time - d1.time;
+-        if (dTime < 0)
++        if (dTime <= 0)
+             return true;
+         if (Math.abs(dTime) >= duration || d1.isTimeOut() || d2.isTimeOut()) {
+             return false;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -421,7 +421,7 @@ public Paint getUnderlinePaint(BaseDanmaku danmaku) {
+         return UNDERLINE_PAINT;
+     }
+ 
+-    private TextPaint getPaint(BaseDanmaku danmaku, boolean fromWorkerThread) {
++    private synchronized TextPaint getPaint(BaseDanmaku danmaku, boolean fromWorkerThread) {
+         TextPaint paint;
+         if (fromWorkerThread) {
+             paint = PAINT;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/SpannedCacheStuffer.java
+Patch:
+@@ -28,7 +28,7 @@ public void measure(BaseDanmaku danmaku, TextPaint paint, boolean fromWorkerThre
+             }
+             CharSequence text = danmaku.text;
+             if (text != null) {
+-                StaticLayout staticLayout = new StaticLayout(text, paint, (int) StaticLayout.getDesiredWidth(danmaku.text, paint), Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, true);
++                StaticLayout staticLayout = new StaticLayout(text, paint, (int) Math.ceil(StaticLayout.getDesiredWidth(danmaku.text, paint)), Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, true);
+                 danmaku.paintWidth = staticLayout.getWidth();
+                 danmaku.paintHeight = staticLayout.getHeight();
+                 danmaku.obj = new SoftReference<>(staticLayout);
+@@ -65,7 +65,7 @@ public void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float
+             CharSequence text = danmaku.text;
+             if (text != null) {
+                 if (requestRemeasure) {
+-                    staticLayout = new StaticLayout(text, paint, (int) StaticLayout.getDesiredWidth(danmaku.text, paint), Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, true);
++                    staticLayout = new StaticLayout(text, paint, (int) Math.ceil(StaticLayout.getDesiredWidth(danmaku.text, paint)), Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, true);
+                     danmaku.paintWidth = staticLayout.getWidth();
+                     danmaku.paintHeight = staticLayout.getHeight();
+                     danmaku.requestFlags &= ~BaseDanmaku.FLAG_REQUEST_REMEASURE;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -177,12 +177,14 @@ public void handleMessage(Message msg) {
+         int what = msg.what;
+         switch (what) {
+             case PREPARE:
++                mTimeBase = SystemClock.uptimeMillis();
+                 if (mParser == null || !mDanmakuView.isViewReady()) {
+                     sendEmptyMessageDelayed(PREPARE, 100);
+                 } else {
+                     prepare(new Runnable() {
+                         @Override
+                         public void run() {
++                            pausedPosition = 0;
+                             mReady = true;
+                             if (mCallback != null) {
+                                 mCallback.prepared();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -521,6 +521,7 @@ public void handleMessage(Message msg) {
+                             BaseDanmaku cacheitem = pair.first;
+                             if (pair.second) {
+                                 cacheitem.requestFlags |= BaseDanmaku.FLAG_REQUEST_REMEASURE;
++                                cacheitem.measureResetFlag++;
+                             }
+                             cacheitem.requestFlags |= BaseDanmaku.FLAG_REQUEST_INVALIDATE;
+                             if (!pair.second && cacheitem.hasDrawingCache() && !cacheitem.cache.hasReferences()) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/BaseDanmaku.java
+Patch:
+@@ -137,7 +137,7 @@ public abstract class BaseDanmaku {
+     /**
+      * 重置位 measure
+      */
+-    private int measureResetFlag = 0;
++    public int measureResetFlag = 0;
+ 
+     /**
+      * 绘制用缓存
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DrawingCacheHolder.java
+Patch:
+@@ -45,7 +45,7 @@ public void buildCache(int w, int h, int density, boolean checkSizeEquals) {
+         boolean reuse = checkSizeEquals ? (w == width && h == height) : (w <= width && h <= height);
+         if (reuse && bitmap != null) {
+ //            canvas.drawColor(Color.TRANSPARENT);
+-            canvas.setBitmap(null);
++//            canvas.setBitmap(null);
+             bitmap.eraseColor(Color.TRANSPARENT);
+             canvas.setBitmap(bitmap);
+             recycleBitmapArray();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DrawingCacheHolder.java
+Patch:
+@@ -45,7 +45,7 @@ public void buildCache(int w, int h, int density, boolean checkSizeEquals) {
+         boolean reuse = checkSizeEquals ? (w == width && h == height) : (w <= width && h <= height);
+         if (reuse && bitmap != null) {
+ //            canvas.drawColor(Color.TRANSPARENT);
+-            canvas.setBitmap(null);
++//            canvas.setBitmap(null);
+             bitmap.eraseColor(Color.TRANSPARENT);
+             canvas.setBitmap(bitmap);
+             recycleBitmapArray();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/SpannedCacheStuffer.java
+Patch:
+@@ -57,7 +57,7 @@ public void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float
+         SoftReference<StaticLayout> reference = (SoftReference<StaticLayout>) danmaku.obj;
+         StaticLayout staticLayout = reference.get();
+         if (staticLayout == null) {
+-            staticLayout = new StaticLayout(lineText, paint, (int) StaticLayout.getDesiredWidth(danmaku.text, paint), Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, true);
++            staticLayout = new StaticLayout(danmaku.text, paint, (int) StaticLayout.getDesiredWidth(danmaku.text, paint), Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, true);
+             danmaku.obj = new SoftReference<>(staticLayout);
+         }
+         boolean needRestore = false;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/BaseCacheStuffer.java
+Patch:
+@@ -37,7 +37,7 @@ public abstract class BaseCacheStuffer {
+      * @param top
+      * @param paint
+      */
+-    public abstract void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float left, float top, Paint paint);
++    public abstract void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float left, float top, TextPaint paint);
+ 
+     /**
+      * clear caches which created by this stuffer
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/SimpleTextCacheStuffer.java
+Patch:
+@@ -63,7 +63,7 @@ public void drawStroke(BaseDanmaku danmaku, String lineText, Canvas canvas, floa
+     }
+ 
+     @Override
+-    public void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float left, float top, Paint paint) {
++    public void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float left, float top, TextPaint paint) {
+         if (lineText != null) {
+             canvas.drawText(lineText, left, top, paint);
+         } else {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/BaseCacheStuffer.java
+Patch:
+@@ -37,7 +37,7 @@ public abstract class BaseCacheStuffer {
+      * @param top
+      * @param paint
+      */
+-    public abstract void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float left, float top, Paint paint);
++    public abstract void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float left, float top, TextPaint paint);
+ 
+     /**
+      * clear caches which created by this stuffer
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/SimpleTextCacheStuffer.java
+Patch:
+@@ -63,7 +63,7 @@ public void drawStroke(BaseDanmaku danmaku, String lineText, Canvas canvas, floa
+     }
+ 
+     @Override
+-    public void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float left, float top, Paint paint) {
++    public void drawText(BaseDanmaku danmaku, String lineText, Canvas canvas, float left, float top, TextPaint paint) {
+         if (lineText != null) {
+             canvas.drawText(lineText, left, top, paint);
+         } else {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/IDrawTask.java
+Patch:
+@@ -56,6 +56,8 @@ public interface TaskListener {
+         public void onDanmakuAdd(BaseDanmaku danmaku);
+ 
+         public void onDanmakuConfigChanged();
++
++        public void onDanmakusDrawingFinished();
+     }
+ 
+     public void requestHide();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/util/DanmakuUtils.java
+Patch:
+@@ -165,7 +165,7 @@ public final static int compare(BaseDanmaku obj1, BaseDanmaku obj2) {
+             return 1;
+         }
+ 
+-        int r = (String.valueOf(obj1.text)).compareTo((String)obj2.text);
++        int r = obj1.text.toString().compareTo(obj2.text.toString());
+         if (r != 0) {
+             return r;
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -392,6 +392,7 @@ public long hideAndPauseDrawTask() {
+     @Override
+     public void setOnDanmakuClickListener(OnDanmakuClickListener listener) {
+         mOnDanmakuClickListener = listener;
++        setClickable(null != listener);
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -402,6 +402,7 @@ public long hideAndPauseDrawTask() {
+     @Override
+     public void setOnDanmakuClickListener(OnDanmakuClickListener listener) {
+         mOnDanmakuClickListener = listener;
++        setClickable(null != listener);
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuView.java
+Patch:
+@@ -485,6 +485,7 @@ public void clearDanmakusOnScreen() {
+     @Override
+     public void setOnDanmakuClickListener(OnDanmakuClickListener listener) {
+         mOnDanmakuClickListener = listener;
++        setClickable(null != listener);
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -392,6 +392,7 @@ public long hideAndPauseDrawTask() {
+     @Override
+     public void setOnDanmakuClickListener(OnDanmakuClickListener listener) {
+         mOnDanmakuClickListener = listener;
++        setClickable(null != listener);
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -402,6 +402,7 @@ public long hideAndPauseDrawTask() {
+     @Override
+     public void setOnDanmakuClickListener(OnDanmakuClickListener listener) {
+         mOnDanmakuClickListener = listener;
++        setClickable(null != listener);
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuView.java
+Patch:
+@@ -485,6 +485,7 @@ public void clearDanmakusOnScreen() {
+     @Override
+     public void setOnDanmakuClickListener(OnDanmakuClickListener listener) {
+         mOnDanmakuClickListener = listener;
++        setClickable(null != listener);
+     }
+ 
+     @Override
+
+File: Sample/src/main/java/com/sample/MainActivity.java
+Patch:
+@@ -16,6 +16,7 @@
+ import android.text.TextPaint;
+ import android.text.style.BackgroundColorSpan;
+ import android.text.style.ImageSpan;
++import android.util.Log;
+ import android.view.Menu;
+ import android.view.View;
+ import android.widget.Button;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -304,7 +304,7 @@ protected boolean handleOnDanmakuConfigChanged(DanmakuGlobalConfig config, Danma
+             handled = false;
+         } else if (DanmakuConfigTag.MAXIMUN_LINES.equals(tag) || DanmakuConfigTag.OVERLAPPING_ENABLE.equals(tag)) {
+             if (mRenderer != null) {
+-                mRenderer.setVerifierEnabled(values != null);
++                mRenderer.setVerifierEnabled(DanmakuGlobalConfig.DEFAULT.isPreventOverlappingEnabled() || DanmakuGlobalConfig.DEFAULT.isMaxLinesLimited());
+             }
+             handled = true;
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/IRenderer.java
+Patch:
+@@ -25,7 +25,7 @@ public interface IRenderer {
+     
+     public static final int NOTHING_RENDERING = 0;
+     public static final int CACHE_RENDERING = 1;
+-    public static final int TEXT_RENDERING = 2;    
++    public static final int TEXT_RENDERING = 2;
+ 
+     public class Area {
+ 
+@@ -131,4 +131,6 @@ public void set(RenderingState other) {
+ 
+     public void release();
+ 
++    public void setVerifierEnabled(boolean enabled);
++
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/android/DanmakuRenderer.java
+Patch:
+@@ -76,7 +76,9 @@ public RenderingState draw(IDisplayer disp, IDanmakus danmakus, long startRender
+             }
+ 
+             if (drawItem.time < startRenderTime
+-                    || (drawItem.priority == 0 && drawItem.isFiltered())) {
++                    || (drawItem.priority == 0 && drawItem.isFiltered())
++                    || drawItem.isFilteredBy(DanmakuFilters.FILTER_TYPE_OVERLAPPING)
++                    || drawItem.isFilteredBy(DanmakuFilters.FILTER_TYPE_MAXIMUM_LINES)) {
+                 continue;
+             }
+             
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -108,7 +108,9 @@ public synchronized void addDanmaku(BaseDanmaku item) {
+         } else if (item.isLive) {
+             mLastBeginMills = mLastEndMills = 0;
+         }
+-        added = danmakuList.addItem(item);
++        synchronized (danmakuList) {
++            added = danmakuList.addItem(item);
++        }
+         if (added && mTaskListener != null) {
+             mTaskListener.onDanmakuAdd(item);
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -274,7 +274,7 @@ public void pause() {
+     public void resume() {
+         if (handler != null && handler.isPrepared())
+             handler.resume();
+-        else {
++        else if (handler == null) {
+             restart();
+         }
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -282,9 +282,9 @@ public void pause() {
+ 
+     @Override
+     public void resume() {
+-        if (handler != null && mHandlerThread != null && handler.isPrepared())
++        if (handler != null && handler.isPrepared())
+             handler.resume();
+-        else {
++        else if (handler == null) {
+             restart();
+         }
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuView.java
+Patch:
+@@ -316,7 +316,7 @@ public void pause() {
+     public void resume() {
+         if (handler != null && handler.isPrepared())
+             handler.resume();
+-        else {
++        else if (handler == null) {
+             restart();
+         }
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DanmakuGlobalConfig.java
+Patch:
+@@ -546,11 +546,12 @@ public DanmakuGlobalConfig setDuplicateMergingEnabled(boolean enable) {
+      * 如果需要定制其他样式请扩展{@link SimpleTextCacheStuffer}|{@link SpannedCacheStuffer}
+      * @param cacheStuffer
+      */
+-    public void setCacheStuffer(BaseCacheStuffer cacheStuffer) {
++    public DanmakuGlobalConfig setCacheStuffer(BaseCacheStuffer cacheStuffer) {
+         this.mCacheStuffer = cacheStuffer;
+         if (this.mCacheStuffer != null) {
+             AndroidDisplayer.setCacheStuffer(this.mCacheStuffer);
+         }
++        return this;
+     }
+     
+     public boolean isDuplicateMergingEnabled() {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DanmakuGlobalConfig.java
+Patch:
+@@ -533,6 +533,7 @@ public DanmakuGlobalConfig setScrollSpeedFactor(float p){
+     public DanmakuGlobalConfig setDuplicateMergingEnabled(boolean enable) {
+         if (mDuplicateMergingEnable != enable) {
+             mDuplicateMergingEnable = enable;
++            GlobalFlagValues.updateFilterFlag();
+             notifyConfigureChanged(DanmakuConfigTag.DUPLICATE_MERGING_ENABLED, enable);
+         }
+         return this;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -379,7 +379,7 @@ public void clear() {
+ 
+     @Override
+     public boolean isShown() {
+-        return !(handler == null || !isViewReady()) && handler.getVisibility();
++        return mDanmakuVisible && super.isShown();
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuView.java
+Patch:
+@@ -261,7 +261,7 @@ private void unlockCanvasAndPost() {
+     
+     @Override
+     protected void onDraw(Canvas canvas) {
+-        if (!mRequestRender) {
++        if ((!mDanmakuVisible) && (!mRequestRender)) {
+             super.onDraw(canvas);
+             return;
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -487,6 +487,7 @@ public void handleMessage(Message msg) {
+                         break;
+                     case CLEAR_ALL_CACHES:
+                         evictAll();
++                        mCacheTimer.update(mTimer.currMillisecond);
+                         mSeekedFlag = true;
+                         break;
+                     case CLEAR_OUTSIDE_CACHES:
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -746,6 +746,7 @@ public boolean isPause() {
+             public void requestBuildCacheAndDraw(long correctionTime) {
+                 removeMessages(CacheHandler.BUILD_CACHES);
+                 mSeekedFlag = true;
++                mCanelFlag = false;
+                 mCacheTimer.update(mTimer.currMillisecond + correctionTime);
+                 sendEmptyMessage(CacheHandler.BUILD_CACHES);
+             }
+@@ -771,6 +772,8 @@ public void requestClearAll() {
+             if (mHandler == null) {
+                 return;
+             }
++            mHandler.removeMessages(CacheHandler.BUILD_CACHES);
++            mHandler.requestCancelCaching();
+             mHandler.removeMessages(CacheHandler.CLEAR_ALL_CACHES);
+             mHandler.sendEmptyMessage(CacheHandler.CLEAR_ALL_CACHES);
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -430,7 +430,7 @@ private static void applyPaintConfig(BaseDanmaku danmaku, Paint paint,boolean st
+             if(stroke){
+                 paint.setStyle(HAS_PROJECTION ? Style.FILL : Style.STROKE);
+                 paint.setColor(danmaku.textShadowColor & 0x00FFFFFF);
+-                int alpha = HAS_PROJECTION ? (sProjectionAlpha * (DanmakuGlobalConfig.DEFAULT.transparency / AlphaValue.MAX))
++                int alpha = HAS_PROJECTION ? (int)(sProjectionAlpha * ((float)DanmakuGlobalConfig.DEFAULT.transparency / AlphaValue.MAX))
+                         : DanmakuGlobalConfig.DEFAULT.transparency;
+                 paint.setAlpha(alpha);
+             }else{
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuView.java
+Patch:
+@@ -229,7 +229,7 @@ private void lockCanvas() {
+         }
+         postInvalidateCompat();
+         synchronized (mDrawMonitor) {
+-            while (!mDrawFinished) {
++            while ((!mDrawFinished) && (handler != null)) {
+                 try {
+                     mDrawMonitor.wait(200);
+                 } catch (InterruptedException e) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -303,12 +303,11 @@ public void run() {
+ 
+     private void quitUpdateThread() {
+         if (mThread != null) {
+-            mThread.quit();
+             synchronized (drawTask) {
+                 drawTask.notifyAll();
+             }
++            mThread.quit();
+             try {
+-                mThread.interrupt();
+                 mThread.join();
+             } catch (InterruptedException e) {
+                 e.printStackTrace();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -303,11 +303,12 @@ public void run() {
+ 
+     private void quitUpdateThread() {
+         if (mThread != null) {
++            mThread.quit();
+             synchronized (drawTask) {
+                 drawTask.notifyAll();
+             }
+-            mThread.quit();
+             try {
++                mThread.interrupt();
+                 mThread.join();
+             } catch (InterruptedException e) {
+                 e.printStackTrace();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/JSONSource.java
+Patch:
+@@ -69,6 +69,7 @@ public JSONArray data(){
+ 	public void release() {
+ 		IOUtils.closeQuietly(mInput);
+ 		mInput = null;
++		mJSONArray = null;
+ 	}
+ 
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/IRenderer.java
+Patch:
+@@ -70,7 +70,6 @@ public class RenderingState {
+         public long endTime;
+         public boolean nothingRendered;
+         public long sysTime;
+-        public boolean inWaitingState;
+         public long cacheHitCount;
+         public long cacheMissCount;
+ 
+@@ -121,7 +120,6 @@ public void set(RenderingState other) {
+             endTime = other.endTime;
+             nothingRendered = other.nothingRendered;
+             sysTime = other.sysTime;
+-            inWaitingState = other.inWaitingState;
+             cacheHitCount = other.cacheHitCount;
+             cacheMissCount = other.cacheMissCount;
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/android/DanmakuRenderer.java
+Patch:
+@@ -94,9 +94,9 @@ public RenderingState draw(IDisplayer disp, IDanmakus danmakus, long startRender
+         }
+         
+         mRenderingState.nothingRendered = (mRenderingState.totalDanmakuCount == 0);
++        mRenderingState.endTime = drawItem != null ? drawItem.time : RenderingState.UNKNOWN_TIME;
+         if (mRenderingState.nothingRendered) {
+             mRenderingState.beginTime = RenderingState.UNKNOWN_TIME;
+-            mRenderingState.endTime = drawItem != null ? drawItem.time : RenderingState.UNKNOWN_TIME;
+         }
+         mRenderingState.incrementCount = mRenderingState.totalDanmakuCount - lastTotalDanmakuCount;
+         mRenderingState.consumingTime = mStartTimer.update(System.currentTimeMillis());
+
+File: DanmakuFlameMaster/src/main/java/tv/cjump/jni/NativeBitmapFactory.java
+Patch:
+@@ -22,7 +22,7 @@ public static boolean isInNativeAlloc() {
+     }
+ 
+     public static void loadLibs() {
+-        if (CpuInfo.isARMSimulatedByX86() || CpuInfo.supportX86() || CpuInfo.supportMips()) {
++        if (DeviceUtils.isARMSimulatedByX86() || DeviceUtils.supportX86() || DeviceUtils.supportMips()) {
+             nativeLibLoaded = false;
+             return;
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/IDanmakuView.java
+Patch:
+@@ -24,6 +24,8 @@ public interface IDanmakuView {
+ 
+     public long drawDanmakus();
+     
++    public boolean isHardwareAccelerated();
++
+     /**
+      * 
+      * @param type One of THREAD_TYPE_MAIN_THREAD, THREAD_TYPE_HIGH_PRIORITY, THREAD_TYPE_NORMAL_PRIORITY, or THREAD_TYPE_LOW_PRIORITY.
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -505,9 +505,6 @@ public void showDanmakus(Long position) {
+     public long hideDanmakus(boolean quitDrawTask) {
+         if (!mDanmakusVisible)
+             return timer.currMillisecond;
+-        if(mDanmakuView != null) {
+-            mDanmakuView.clear();
+-        }
+         removeMessages(SHOW_DANMAKUS);
+         removeMessages(HIDE_DANMAKUS);
+         obtainMessage(HIDE_DANMAKUS, quitDrawTask).sendToTarget();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -56,7 +56,7 @@ public CacheManagingDrawTask(DanmakuTimer timer, Context context, AbsDisplayer<?
+         NativeBitmapFactory.loadLibs();
+         mMaxCacheSize = maxCacheSize;
+         if (NativeBitmapFactory.isInNativeAlloc()) {
+-            mMaxCacheSize = maxCacheSize * 3;
++            mMaxCacheSize = maxCacheSize * 2;
+         }
+         mCacheManager = new CacheManager(maxCacheSize, MAX_CACHE_SCREEN_SIZE);
+     }
+@@ -544,8 +544,8 @@ private long prepareCaches(boolean repositioned) {
+                 BaseDanmaku last = danmakus.last();
+                 long sleepTime = 0;
+                 long deltaTime = first.time - mTimer.currMillisecond;
+-                if (deltaTime > DanmakuFactory.MAX_DANMAKU_DURATION) {
+-                    sleepTime = 30 * deltaTime / DanmakuFactory.MAX_DANMAKU_DURATION;
++                if (deltaTime > DanmakuFactory.MAX_DANMAKU_DURATION / 2) {
++                    sleepTime = 10 * deltaTime / DanmakuFactory.MAX_DANMAKU_DURATION;
+                     sleepTime = Math.min(100, sleepTime);
+                 }
+                 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -414,7 +414,7 @@ public void handleMessage(Message msg) {
+                         break;
+                     case BUILD_CACHES:
+                         removeMessages(BUILD_CACHES);
+-                        boolean repositioned = (mTaskListener != null || mSeekedFlag);
++                        boolean repositioned = ((mTaskListener != null && mReadyState == false) || mSeekedFlag);
+                         prepareCaches(repositioned);
+                         if (repositioned)
+                             mSeekedFlag = false;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -99,14 +99,14 @@ public void seek(long mills) {
+ 
+     @Override
+     public void start() {
++        super.start();
+         NativeBitmapFactory.loadLibs();
+         if (mCacheManager == null) {
+             mCacheManager = new CacheManager(mMaxCacheSize, MAX_CACHE_SCREEN_SIZE);
+             mCacheManager.begin();
+         } else {
+             mCacheManager.resume();
+         }
+-        DanmakuGlobalConfig.DEFAULT.registerConfigChangedCallback(this);
+     }
+ 
+     @Override
+@@ -118,7 +118,6 @@ public void quit() {
+             mCacheManager = null;
+         }
+         NativeBitmapFactory.releaseLibs();
+-        DanmakuGlobalConfig.DEFAULT.unregisterConfigChangedCallback(this);
+     }
+ 
+     @Override
+@@ -579,7 +578,8 @@ private long prepareCaches(boolean repositioned) {
+                     if (repositioned == false && (item.isTimeOut() || !item.isOutside())) {
+                         continue;
+                     }
+-                    boolean skip = DanmakuFilters.getDefault().filter(item , orderInScreen , sizeInScreen , null );
++                    boolean skip = DanmakuFilters.getDefault().filter(item, orderInScreen,
++                            sizeInScreen, null, true);
+ //Log.e("prepareCache", currScreenIndex+","+orderInScreen+"," + item.time+"skip:"+skip);
+                     if (skip) {
+                         continue;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -179,13 +179,14 @@ public void seek(long mills) {
+ 
+     @Override
+     public void start() {
+-
++        DanmakuGlobalConfig.DEFAULT.registerConfigChangedCallback(this);
+     }
+ 
+     @Override
+     public void quit() {
+         if (mRenderer != null)
+             mRenderer.release();
++        DanmakuGlobalConfig.DEFAULT.unregisterConfigChangedCallback(this);
+     }
+ 
+     public void prepare() {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/android/DanmakuRenderer.java
+Patch:
+@@ -34,11 +34,13 @@ public class DanmakuRenderer extends Renderer {
+     @Override
+     public void clear() {
+         DanmakusRetainer.clear();
++        DanmakuFilters.getDefault().clear();
+     }
+ 
+     @Override
+     public void release() {
+         DanmakusRetainer.release();
++        DanmakuFilters.getDefault().release();
+     }
+     
+     @Override
+@@ -59,7 +61,7 @@ public RenderingState draw(IDisplayer disp, IDanmakus danmakus, long startRender
+ 
+             if (drawItem.time < startRenderTime
+                     || (drawItem.priority == 0 && DanmakuFilters.getDefault().filter(drawItem,
+-                            orderInScreen, sizeInScreen, mStartTimer))) {
++                            orderInScreen, sizeInScreen, mStartTimer, false))) {
+                 continue;
+             }
+             
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -149,7 +149,6 @@ public void surfaceDestroyed(SurfaceHolder surfaceHolder) {
+     @Override
+     public void release() {
+         stop();
+-        DanmakuFilters.getDefault().clear();
+         if(mDrawTimes!= null) mDrawTimes.clear();
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -157,7 +157,7 @@ public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+     @Override
+     public void release() {
+         stop();
+-        DanmakuFilters.getDefault().clear();
++        if(mDrawTimes!= null) mDrawTimes.clear();
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DanmakuGlobalConfig.java
+Patch:
+@@ -512,7 +512,7 @@ public boolean isDuplicateMergingEnabled() {
+     
+     
+     public interface ConfigChangedCallback {
+-        public void onDanmakuConfigChanged(DanmakuGlobalConfig config, DanmakuConfigTag tag,
++        public boolean onDanmakuConfigChanged(DanmakuGlobalConfig config, DanmakuConfigTag tag,
+                 Object... value);
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -356,9 +356,7 @@ private final long syncTimer(long startMS) {
+         } else {
+             long averageTime = getAverageRenderingTime();
+             long gapTime = time - timer.currMillisecond;
+-            if (Math.abs(gapTime) > 3000) {
+-                d = timer.update(time);
+-            } else if (mSkipFrames > 0
++            if (mSkipFrames > 0
+                     || (mRenderingState != null && (gapTime > 120
+                             || averageTime > mCordonTime || mRenderingState.consumingTime > 60))) {
+                 d = timer.add(Math.max(Math.min(mRenderingState.consumingTime, averageTime),
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -276,7 +276,7 @@ public static void drawDanmaku(BaseDanmaku danmaku, Canvas canvas, float left, f
+                 applyPaintConfig(danmaku, paint, false);
+                 canvas.drawText(lines[0], left, top - paint.ascent(), paint);
+             } else {
+-                float textHeight = danmaku.paintHeight / lines.length;
++                float textHeight = (danmaku.paintHeight - 2 * danmaku.padding) / lines.length;
+                 for (int t = 0; t < lines.length; t++) {
+                     if (lines[t] == null || lines[t].length() == 0) {
+                         continue;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -69,7 +69,6 @@ protected void initTimer(DanmakuTimer timer) {
+ 
+     @Override
+     public void addDanmaku(BaseDanmaku danmaku) {
+-        super.addDanmaku(danmaku);
+         if (mCacheManager == null)
+             return;
+         mCacheManager.addDanmaku(danmaku);
+@@ -443,6 +442,7 @@ public void handleMessage(Message msg) {
+                                 mCacheTimer.update(mTimer.currMillisecond
+                                         + DanmakuFactory.MAX_DANMAKU_DURATION * mScreenSize);
+                             }
++                            CacheManagingDrawTask.super.addDanmaku(item);
+                         }
+                         break;
+                     case CLEAR_TIMEOUT_CACHES:
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -240,6 +240,7 @@ protected RenderingState drawDanmakus(AbsDisplayer<?> disp, DanmakuTimer timer)
+ 
+     public void requestClear() {
+         clearFlag = 5;
++        mLastBeginMills = mLastEndMills = 0;
+     }
+ 
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -107,7 +107,7 @@ public interface Callback {
+ 
+     public DrawHandler(Looper looper, IDanmakuView view, boolean danmakuVisibile) {
+         super(looper);
+-        mUpdateInNewThread = (Runtime.getRuntime().availableProcessors() > 3);
++        mUpdateInNewThread = false;//(Runtime.getRuntime().availableProcessors() > 3);
+         if(danmakuVisibile){
+             showDanmakus(null);
+         }else{
+@@ -333,7 +333,7 @@ public void run() {
+     private final long syncTimer(long startMS) {
+         long d = 0;
+         long time = startMS - mTimeBase;
+-        if (!mDanmakusVisible || mRenderingState.nothingRendered) {
++        if (!mDanmakusVisible || mRenderingState.nothingRendered || mRenderingState.inWaitingState) {
+             timer.update(time);
+         } else {
+             long averageTime = getAverageRenderingTime();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -430,9 +430,6 @@ public void seekBy(Long deltaMs) {
+     public void addDanmaku(BaseDanmaku item) {
+         if (drawTask != null) {
+             drawTask.addDanmaku(item);
+-            if(item.isLive) {
+-                item.time = getCurrentTime() + 100;
+-            }
+             notifyRendering();
+         }
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -86,6 +86,9 @@ public void addDanmaku(BaseDanmaku item) {
+         boolean added = false;
+         synchronized (danmakuList) {
+             item.setTimer(mTimer);
++            if(item.isLive) {
++                item.time = mTimer.currMillisecond;
++            }
+             item.index = danmakuList.size();
+             if (mLastBeginMills <= item.time && item.time <= mLastEndMills) {
+                 synchronized (danmakus) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/IDanmakus.java
+Patch:
+@@ -18,9 +18,9 @@
+ 
+ public interface IDanmakus {
+ 
+-    public void addItem(BaseDanmaku item);
++    public boolean addItem(BaseDanmaku item);
+ 
+-    public void removeItem(BaseDanmaku item);
++    public boolean removeItem(BaseDanmaku item);
+     
+     public IDanmakus subnew(long startTime, long endTime);
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/Danmakus.java
+Patch:
+@@ -99,7 +99,7 @@ public IDanmakuIterator iterator() {
+     }
+ 
+     @Override
+-    public synchronized void addItem(BaseDanmaku item) {
++    public void addItem(BaseDanmaku item) {
+         if (items != null) {
+             try {
+                 if (items.add(item))
+@@ -111,7 +111,7 @@ public synchronized void addItem(BaseDanmaku item) {
+     }
+ 
+     @Override
+-    public synchronized void removeItem(BaseDanmaku item) {
++    public void removeItem(BaseDanmaku item) {
+         if (item == null) {
+             return;
+         }
+@@ -184,7 +184,7 @@ public int size() {
+     }
+ 
+     @Override
+-    public synchronized void clear() {
++    public void clear() {
+         if (items != null){
+             items.clear();
+             mSize = 0;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/Danmakus.java
+Patch:
+@@ -99,7 +99,7 @@ public IDanmakuIterator iterator() {
+     }
+ 
+     @Override
+-    public void addItem(BaseDanmaku item) {
++    public synchronized void addItem(BaseDanmaku item) {
+         if (items != null) {
+             try {
+                 if (items.add(item))
+@@ -111,7 +111,7 @@ public void addItem(BaseDanmaku item) {
+     }
+ 
+     @Override
+-    public void removeItem(BaseDanmaku item) {
++    public synchronized void removeItem(BaseDanmaku item) {
+         if (item == null) {
+             return;
+         }
+@@ -184,7 +184,7 @@ public int size() {
+     }
+ 
+     @Override
+-    public void clear() {
++    public synchronized void clear() {
+         if (items != null){
+             items.clear();
+             mSize = 0;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -200,7 +200,7 @@ public void run() {
+                 Long start = (Long) msg.obj;
+                 if(drawTask != null) {
+                     if (start == null) {
+-                        timer.update(System.currentTimeMillis() - mTimeBase);
++                        timer.update(getCurrentTime());
+                         drawTask.requestClear();
+                     } else {
+                         drawTask.start();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -544,7 +544,7 @@ public void removeAllLiveDanmakus() {
+         }
+     }
+ 
+-    public long geCurrenttTime() {
++    public long getCurrentTime() {
+         if (quitFlag) {
+             return timer.currMillisecond;
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -395,7 +395,7 @@ public void setDrawingThreadType(int type) {
+     @Override
+     public long getCurrentTime() {
+         if (handler != null) {
+-            return handler.geCurrenttTime();
++            return handler.getCurrentTime();
+         }
+         return 0;
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -405,7 +405,7 @@ public void setDrawingThreadType(int type) {
+     @Override
+     public long getCurrentTime() {
+         if (handler != null) {
+-            return handler.geCurrenttTime();
++            return handler.getCurrentTime();
+         }
+         return 0;
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -122,7 +122,6 @@ public void setCallback(Callback cb) {
+     }
+ 
+     public void quit() {
+-        removeMessages(QUIT);
+         sendEmptyMessage(QUIT);
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -122,7 +122,7 @@ public void setCallback(Callback cb) {
+     }
+ 
+     public void quit() {
+-        removeCallbacksAndMessages(null);
++        removeMessages(QUIT);
+         sendEmptyMessage(QUIT);
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -314,6 +314,7 @@ public void run() {
+                         } else if (mRenderingState.nothingRendered) {
+                             dTime = mRenderingState.endTime - timer.currMillisecond;
+                             if (dTime > 500) {
++                                notifyRendering();
+                                 waitRendering(dTime - 400);
+                             }
+                         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -135,7 +135,7 @@ public class CacheManager implements ConfigChangedCallback {
+ 
+         public HandlerThread mThread;
+ 
+-        Danmakus mCaches = new Danmakus();
++        Danmakus mCaches = new Danmakus(Danmakus.ST_BY_LIST);
+ 
+         DrawingCachePoolManager mCachePoolManager = new DrawingCachePoolManager();
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -698,6 +698,7 @@ public void begin() {
+             }
+ 
+             public void pause() {
++                mPause = true;
+                 removeCallbacksAndMessages(null);
+                 sendEmptyMessage(QUIT);
+             }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -271,12 +271,11 @@ public void run() {
+                     if (this.drawTask != null){
+                         this.drawTask.quit();
+                     }
+-                    if (this.getLooper() != Looper.getMainLooper())
+-                        this.getLooper().quit();
+-                    
+                     if (mParser != null) {
+                         mParser.release();
+                     }
++                    if (this.getLooper() != Looper.getMainLooper())
++                        this.getLooper().quit();
+                 }
+                 break;
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -118,7 +118,6 @@ public void surfaceCreated(SurfaceHolder surfaceHolder) {
+ 
+     @Override
+     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+-        isSurfaceCreated = true;
+         if (handler != null) {
+             handler.notifyDispSizeChanged(width, height);
+         }
+@@ -127,6 +126,7 @@ public void surfaceChanged(SurfaceHolder holder, int format, int width, int heig
+     @Override
+     public void surfaceDestroyed(SurfaceHolder surfaceHolder) {
+         isSurfaceCreated = false;
++        release();
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -119,12 +119,12 @@ public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int hei
+     @Override
+     public synchronized boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+         isSurfaceCreated = false;
++        release();
+         return true;
+     }
+ 
+     @Override
+     public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+-        isSurfaceCreated = true;
+         if (handler != null) {
+             handler.notifyDispSizeChanged(width, height);
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -230,7 +230,6 @@ public void run() {
+                 }
+                 break;
+             case SHOW_DANMAKUS:
+-                GlobalFlagValues.updateVisibleFlag();
+                 Long start = (Long) msg.obj;
+                 if(drawTask != null) {
+                     if (start == null) {
+@@ -243,6 +242,9 @@ public void run() {
+                     }
+                 }
+                 mDanmakusVisible = true;
++                if(quitFlag && mDanmakuView != null) {
++                    mDanmakuView.drawDanmakus(); 
++                }
+                 break;
+             case HIDE_DANMAKUS:
+                 mDanmakusVisible = false;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/BiliDanmukuParser.java
+Patch:
+@@ -180,10 +180,10 @@ public void characters(char[] ch, int start, int length)  {
+                     if (textArr.length >= 11) {
+                         endX = Float.parseFloat(textArr[7]);
+                         endY = Float.parseFloat(textArr[8]);
+-                        if("".equals(textArr[9])){
++                        if(!"".equals(textArr[9])){
+                             translationDuration = Integer.parseInt(textArr[9]);
+                         }
+-                        if("".equals(textArr[10])){
++                        if(!"".equals(textArr[10])){
+                             translationStartDelay = (long) (Float.parseFloat(textArr[10]));
+                         }
+                     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/DanmakuFactory.java
+Patch:
+@@ -152,7 +152,7 @@ public static void fillTranslationData(BaseDanmaku item, int dispWidth, int disp
+         updateSpecicalDanmakuDuration(item);
+     }
+     
+-    public static void fiilLinePathData(BaseDanmaku item, int dispWidth, int dispHeight,
++    public static void fillLinePathData(BaseDanmaku item, int dispWidth, int dispHeight,
+             float[][] points) {
+         if (item.getType() != BaseDanmaku.TYPE_SPECIAL || points.length == 0
+                 || points[0].length != 2)
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/BiliDanmukuParser.java
+Patch:
+@@ -211,7 +211,7 @@ public void characters(char[] ch, int start, int length)  {
+                                     points[i][0] = Float.parseFloat(pointArray[0]);
+                                     points[i][1] = Float.parseFloat(pointArray[1]);
+                                 }
+-                                DanmakuFactory.fiilLinePathData(item, mDispWidth, mDispHeight,
++                                DanmakuFactory.fillLinePathData(item, mDispWidth, mDispHeight,
+                                         points);
+                             }
+                         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/IDisplayer.java
+Patch:
+@@ -36,6 +36,8 @@ public interface IDisplayer {
+     public abstract void measure(BaseDanmaku danmaku);
+     
+     public abstract long getAverageRenderingTime();
++    
++    public abstract float getStrokeWidth();
+ 
+ 
+     ////////////////// setter ///////////////////////////
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/android/DanmakuRenderer.java
+Patch:
+@@ -105,8 +105,8 @@ public void draw(IDisplayer disp, IDanmakus danmakus, long startRenderTime) {
+             bottom = Math.max(dbottom, bottom);
+ 
+         }
+-        
+-        mRefreshArea.set(left, top, right, bottom);
++        float borderWidth = disp.getStrokeWidth() * 2;
++        mRefreshArea.set(left, top, right + borderWidth, bottom + borderWidth);
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DanmakuGlobalConfig.java
+Patch:
+@@ -301,6 +301,7 @@ public DanmakuGlobalConfig setMaximumVisibleSizeInScreen(int maxSize) {
+      * 
+      * @param type DANMAKU_STYLE_NONE DANMAKU_STYLE_SHADOW or
+      *            DANMAKU_STYLE_STROKEN
++     * @param size
+      * @return
+      */
+     public DanmakuGlobalConfig setDanmakuStyle(int style, float size) {
+@@ -313,6 +314,7 @@ public DanmakuGlobalConfig setDanmakuStyle(int style, float size) {
+             case DANMAKU_STYLE_SHADOW:
+                 AndroidDisplayer.CONFIG_HAS_SHADOW = true;
+                 AndroidDisplayer.CONFIG_HAS_STROKE = false;
++                AndroidDisplayer.setShadowRadius(size);
+                 break;
+             case DANMAKU_STYLE_DEFAULT:
+             case DANMAKU_STYLE_STROKEN:
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/BiliDanmukuParser.java
+Patch:
+@@ -106,7 +106,7 @@ public void startElement(String uri, String localName, String qName, Attributes
+                         item.time = time;
+                         item.textSize = textSize * (mDispDensity - 0.6f);
+                         item.textColor = color;
+-                        item.textShadowColor = color <= Color.BLACK ? Color.WHITE : Color.BLACK;
++                        item.textShadowColor = Color.YELLOW;
+                     }
+                 }
+             }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -317,7 +317,7 @@ public static Paint getUnderlinePaint(BaseDanmaku danmaku){
+     
+     private static TextPaint getPaint(BaseDanmaku danmaku, boolean quick) {
+         TextPaint paint = null;
+-        if (quick && HAS_SHADOW) {
++        if (quick) {
+             paint = PAINT_DUPLICATE;
+             paint.set(PAINT);
+         } else {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -335,29 +335,29 @@ public void show() {
+     
+     @Override
+     public void showAndResumeDrawTask(Long position) {
++        mDanmakuVisibile = true;
+         if (handler == null) {
+             return;
+         }
+         handler.showDanmakus(position);
+-        mDanmakuVisibile = true;
+     }
+ 
+     @Override
+     public void hide() {
++        mDanmakuVisibile = false;
+         if (handler == null) {
+             return;
+         }
+         handler.hideDanmakus(false);
+-        mDanmakuVisibile = false;
+     }
+     
+     @Override
+     public long hideAndPauseDrawTask() {
++        mDanmakuVisibile = false;
+         if (handler == null) {
+             return 0;
+         }
+         long position = handler.hideDanmakus(true);
+-        mDanmakuVisibile = false;
+         return position;
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -326,29 +326,29 @@ public void show() {
+     
+     @Override
+     public void showAndResumeDrawTask(Long position) {
++        mDanmakuVisibile = true;
+         if (handler == null) {
+             return;
+         }
+         handler.showDanmakus(position);
+-        mDanmakuVisibile = true;
+     }
+ 
+     @Override
+     public void hide() {
++        mDanmakuVisibile = false;
+         if (handler == null) {
+             return;
+         }
+         handler.hideDanmakus(false);
+-        mDanmakuVisibile = false;
+     }
+     
+     @Override
+     public long hideAndPauseDrawTask() {
++        mDanmakuVisibile = false;
+         if (handler == null) {
+             return 0;
+         }
+         long position = handler.hideDanmakus(true);
+-        mDanmakuVisibile = false;
+         return position;
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/android/DanmakuRenderer.java
+Patch:
+@@ -99,7 +99,7 @@ public void draw(IDisplayer disp, IDanmakus danmakus, long startRenderTime) {
+             int dleft = (int) (drawItem.getLeft() - slopPixel);
+             int dright = (int) (drawItem.getRight() + slopPixel);
+             if (drawItem.getType() == BaseDanmaku.TYPE_FIX_BOTTOM) {
+-                dtop = (int) (disp.getHeight() - drawItem.paintHeight);
++                dtop = (int) (disp.getHeight() - drawItem.paintHeight - drawItem.getTop());
+                 dbottom = (int) (disp.getHeight() - drawItem.getTop());
+             } else {
+                 dtop = (int) (drawItem.getTop());
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/android/DanmakuRenderer.java
+Patch:
+@@ -99,7 +99,7 @@ public void draw(IDisplayer disp, IDanmakus danmakus, long startRenderTime) {
+             int dleft = (int) (drawItem.getLeft() - slopPixel);
+             int dright = (int) (drawItem.getRight() + slopPixel);
+             if (drawItem.getType() == BaseDanmaku.TYPE_FIX_BOTTOM) {
+-                dtop = (int) (disp.getHeight() - drawItem.paintHeight);
++                dtop = (int) (disp.getHeight() - drawItem.paintHeight - drawItem.getTop());
+                 dbottom = (int) Math.ceil(disp.getHeight() - drawItem.getTop());
+             } else {
+                 dtop = (int) (drawItem.getTop());
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/android/DanmakuRenderer.java
+Patch:
+@@ -99,11 +99,11 @@ public void draw(IDisplayer disp, IDanmakus danmakus, long startRenderTime) {
+             int dleft = (int) (drawItem.getLeft() - slopPixel);
+             int dright = (int) (drawItem.getRight() + slopPixel);
+             if (drawItem.getType() == BaseDanmaku.TYPE_FIX_BOTTOM) {
+-                dtop = (int) (disp.getHeight() - dtop - drawItem.paintHeight - slopPixel);
++                dtop = (int) (disp.getHeight() - drawItem.paintHeight - slopPixel);
+                 dbottom = (int) (disp.getHeight() - drawItem.getTop());
+             } else {
+                 dtop = (int) (drawItem.getTop() - slopPixel);
+-                dbottom = (int) (dtop + drawItem.paintHeight + slopPixel);
++                dbottom = (int) (drawItem.getBottom() + slopPixel);
+             }
+             left = Math.min(dleft, left);
+             top = Math.min(dtop, top);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -255,7 +255,7 @@ else if (handler.isStop()) {
+     @Override
+     public void pause() {
+         if (handler != null)
+-            handler.quit();
++            handler.pause();
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/L2RDanmaku.java
+Patch:
+@@ -73,8 +73,8 @@ protected float getStableLeft(IDisplayer displayer, long currTime) {
+                 / (float) averageRenderingTime;
+         float stepX = (displayer.getWidth() - (this.x + paintWidth)) / layoutCount;
+ 
+-        if (stepX < mStepX * displayer.getAverageRenderingTime()) {
+-            stepX = mStepX * displayer.getAverageRenderingTime();
++        if (stepX < mStepX * 16) {
++            stepX = mStepX * 16;
+         }
+ 
+         return this.x + stepX;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/R2LDanmaku.java
+Patch:
+@@ -69,10 +69,10 @@ protected float getStableLeft(IDisplayer displayer, long currTime) {
+                 / (float) averageRenderingTime;
+         float stepX = (this.x + paintWidth) / layoutCount;
+ 
+-        if (stepX < mStepX * averageRenderingTime) {
+-            stepX = mStepX * averageRenderingTime;
++        if (stepX < mStepX * 16) {
++            stepX = mStepX * 16;
+         }
+-
++        
+         return this.x - stepX;
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/BiliDanmukuParser.java
+Patch:
+@@ -32,6 +32,7 @@
+ import org.xml.sax.helpers.XMLReaderFactory;
+ 
+ import java.io.IOException;
++import java.util.Locale;
+ 
+ public class BiliDanmukuParser extends BaseDanmakuParser {
+ 
+@@ -89,7 +90,7 @@ public void endDocument() throws SAXException {
+         public void startElement(String uri, String localName, String qName, Attributes attributes)
+                 throws SAXException {
+             String tagName = localName.length() != 0 ? localName : qName;
+-            tagName = tagName.toLowerCase().trim();
++            tagName = tagName.toLowerCase(Locale.getDefault()).trim();
+             if (tagName.equals("d")) {
+                 String pValue = attributes.getValue("p");
+                 // parse p value to danmaku
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuView.java
+Patch:
+@@ -225,24 +225,25 @@ public void draw(Canvas canvas) {
+             Log.e(TAG, "ondraw:" + isSurfaceCreated + ",isshow:" + isShown());
+             if (!isSurfaceCreated)
+                 return;
++            long stime = System.currentTimeMillis();
+             if (!isShown()) {
+                 // DrawHelper.clearCanvas(canvas);
+                 return;
+             }
+-            long stime = System.currentTimeMillis();
+             if (canvas != null) {
+                 if (handler != null) {
+                     Log.e(TAG, "ondraw:" + isSurfaceCreated + ",isshow:" + isShown()
+                             + "handler.DRAWTASK:" + (handler.drawTask == null));
+                     handler.draw(canvas);
+-                    dtime = System.currentTimeMillis() - stime;
+                     if (mShowFps) {
++                        dtime = System.currentTimeMillis() - stime;
+                         String fps = String.format("%02d MS, fps %.2f", dtime,
+                                 1000 / (float) Math.max(dtime, 1));
+                         DrawHelper.drawFPS(canvas, fps);
+                     }
+                 }
+             }
++            dtime = System.currentTimeMillis() - stime;
+         }
+     }
+  
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -171,7 +171,8 @@ public void run() {
+                     if (this.drawTask != null){
+                         this.drawTask.quit();
+                     }
+-                    this.getLooper().quit();
++                    if (this.getLooper() != Looper.getMainLooper())
++                        this.getLooper().quit();
+                 }
+                 break;
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -280,12 +280,12 @@ public static Paint getUnderlinePaint(BaseDanmaku danmaku){
+     public static TextPaint getPaint(BaseDanmaku danmaku) {
+         PAINT.setTextSize(danmaku.textSize);
+         applyTextScaleConfig(danmaku, PAINT);
+-        PAINT.setAntiAlias(ANTI_ALIAS);
+         if (HAS_SHADOW) {
+             PAINT.setShadowLayer(3.0f, 0, 0, danmaku.textShadowColor);
+         } else {
+             PAINT.clearShadowLayer();
+         }
++        PAINT.setAntiAlias(ANTI_ALIAS);
+         return PAINT;
+     }
+     
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -669,7 +669,7 @@ public void onDanmakuConfigChanged(DanmakuGlobalConfig config, DanmakuConfigTag
+                 return;
+             }
+             if (tag.equals(DanmakuConfigTag.SCALE_TEXTSIZE) ) {
+-                mDisp.slopPixel = (int) (Math.max(mDisp.density,mDisp.scaledDensity) * 20 * DanmakuGlobalConfig.DEFAULT.scaleTextSize);  //TODO:fix me
++                mDisp.slopPixel = (int) (Math.max(mDisp.density,mDisp.scaledDensity) * DanmakuFactory.DANMAKU_MEDIUM_TEXTSIZE * DanmakuGlobalConfig.DEFAULT.scaleTextSize);  //TODO:fix me
+             }
+             if (mHandler != null) {
+                 mHandler.removeMessages(CacheHandler.CLEAR_ALL_OUTSIDE_CACHES);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -70,7 +70,7 @@ public DrawTask(DanmakuTimer timer, Context context, int dispW, int dispH,
+         mDisp.density = displayMetrics.density;
+         mDisp.densityDpi = displayMetrics.densityDpi;
+         mDisp.scaledDensity = displayMetrics.scaledDensity;
+-        mDisp.slopPixel = (int) (Math.max(mDisp.density,mDisp.scaledDensity) * 20 * DanmakuGlobalConfig.DEFAULT.scaleTextSize);  //TODO:fix me
++        mDisp.slopPixel = (int) (Math.max(mDisp.density,mDisp.scaledDensity) * DanmakuFactory.DANMAKU_MEDIUM_TEXTSIZE * DanmakuGlobalConfig.DEFAULT.scaleTextSize);  //TODO:fix me
+         initTimer(timer);
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/DanmakuFactory.java
+Patch:
+@@ -27,6 +27,8 @@ public class DanmakuFactory {
+     public static float BILI_PLAYER_HEIGHT = 385;
+ 
+     public static long COMMON_DANMAKU_DURATION = 3800; // B站原始分辨率下弹幕存活时间
++    
++    public static final int DANMAKU_MEDIUM_TEXTSIZE = 25;
+ 
+     public static long REAL_DANMAKU_DURATION = -1;
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -668,6 +668,9 @@ public void onDanmakuConfigChanged(DanmakuGlobalConfig config, DanmakuConfigTag
+                 mHandler.requestBuildCacheAndDraw();
+                 return;
+             }
++            if (tag.equals(DanmakuConfigTag.SCALE_TEXTSIZE) ) {
++                mDisp.slopPixel = (int) (Math.max(mDisp.density,mDisp.scaledDensity) * 20 * DanmakuGlobalConfig.DEFAULT.scaleTextSize);  //TODO:fix me
++            }
+             if (mHandler != null) {
+                 mHandler.removeMessages(CacheHandler.CLEAR_ALL_OUTSIDE_CACHES);
+                 mHandler.sendEmptyMessage(CacheHandler.CLEAR_ALL_OUTSIDE_CACHES);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -25,6 +25,7 @@
+ import master.flame.danmaku.danmaku.model.GlobalFlagValues;
+ import master.flame.danmaku.danmaku.model.IDanmakus;
+ import master.flame.danmaku.danmaku.model.android.AndroidDisplayer;
++import master.flame.danmaku.danmaku.model.android.DanmakuGlobalConfig;
+ import master.flame.danmaku.danmaku.model.android.Danmakus;
+ import master.flame.danmaku.danmaku.parser.BaseDanmakuParser;
+ import master.flame.danmaku.danmaku.parser.DanmakuFactory;
+@@ -69,7 +70,7 @@ public DrawTask(DanmakuTimer timer, Context context, int dispW, int dispH,
+         mDisp.density = displayMetrics.density;
+         mDisp.densityDpi = displayMetrics.densityDpi;
+         mDisp.scaledDensity = displayMetrics.scaledDensity;
+-        mDisp.slopPixel = (int) (Math.max(displayMetrics.density,displayMetrics.scaledDensity) * 20);
++        mDisp.slopPixel = (int) (Math.max(mDisp.density,mDisp.scaledDensity) * 20 * DanmakuGlobalConfig.DEFAULT.scaleTextSize);  //TODO:fix me
+         initTimer(timer);
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DanmakuGlobalConfig.java
+Patch:
+@@ -15,7 +15,7 @@
+ public class DanmakuGlobalConfig {
+ 
+     public enum DanmakuConfigTag {
+-        FT_DANMAKU_VISIBILITY, FB_DANMAKU_VISIBILITY, L2R_DANMAKU_VISIBILITY, R2L_DANMAKU_VISIBILIY, SPECIAL_DANMAKU_VISIBILITY, TYPEFACE, ALPHA, SCALE_TEXTSIZE, MAXIMUM_NUMS_IN_SCREEN, DANMAKU_STYLE, DANMAKU_BOLD;
++        FT_DANMAKU_VISIBILITY, FB_DANMAKU_VISIBILITY, L2R_DANMAKU_VISIBILITY, R2L_DANMAKU_VISIBILIY, SPECIAL_DANMAKU_VISIBILITY, TYPEFACE, TRANSPARENCY, SCALE_TEXTSIZE, MAXIMUM_NUMS_IN_SCREEN, DANMAKU_STYLE, DANMAKU_BOLD;
+ 
+         public boolean isVisibilityTag() {
+             return this.equals(FT_DANMAKU_VISIBILITY) || this.equals(FB_DANMAKU_VISIBILITY)
+@@ -110,7 +110,7 @@ public DanmakuGlobalConfig setDanmakuTransparency(float p) {
+         if (newTransparency != transparency) {
+             transparency = newTransparency;
+             isTranslucent = (newTransparency != AlphaValue.MAX);
+-            notifyConfigureChanged(DanmakuConfigTag.ALPHA, p);
++            notifyConfigureChanged(DanmakuConfigTag.TRANSPARENCY, p);
+         }
+         return this;
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -296,14 +296,14 @@ private static void applyPaintConfig(BaseDanmaku danmaku, Paint paint,boolean st
+         if (DanmakuGlobalConfig.DEFAULT.isTranslucent) {
+             if(stroke){
+                 paint.setStyle(Style.STROKE);
+-                int color = (danmaku.textShadowColor & 0x00FFFFFF) | (DanmakuGlobalConfig.DEFAULT.alpha<<24);
++                int color = (danmaku.textShadowColor & 0x00FFFFFF) | (DanmakuGlobalConfig.DEFAULT.transparency<<24);
+                 paint.setColor(color);
+             }else{
+                 paint.setStyle(Style.FILL);
+-                int color = (danmaku.textColor & 0x00FFFFFF) | (DanmakuGlobalConfig.DEFAULT.alpha<<24);
++                int color = (danmaku.textColor & 0x00FFFFFF) | (DanmakuGlobalConfig.DEFAULT.transparency<<24);
+                 paint.setColor(color);
+             }
+-            paint.setAlpha(DanmakuGlobalConfig.DEFAULT.alpha);
++            paint.setAlpha(DanmakuGlobalConfig.DEFAULT.transparency);
+         } else {
+             if(stroke){
+                 paint.setStyle(Style.STROKE);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -88,6 +88,7 @@ public class AndroidDisplayer implements IDisplayer {
+         ALPHA_PAINT = new Paint();
+         UNDERLINE_PAINT = new Paint();
+         UNDERLINE_PAINT.setStrokeWidth(UNDERLINE_HEIGHT);
++        UNDERLINE_PAINT.setStyle(Style.STROKE);
+     }
+     
+     public static void setTypeFace(Typeface font){
+@@ -267,8 +268,8 @@ public static void drawDanmaku(BaseDanmaku danmaku, Canvas canvas, float left, f
+         // draw underline
+         if (danmaku.underlineColor != 0) {
+             Paint linePaint = getUnderlinePaint(danmaku);
+-            float bottom = top + danmaku.paintHeight;
+-            canvas.drawLine(left, bottom - UNDERLINE_HEIGHT, left + danmaku.paintWidth, bottom, linePaint);
++            float bottom = top + danmaku.paintHeight - UNDERLINE_HEIGHT;
++            canvas.drawLine(left, bottom, left + danmaku.paintWidth, bottom, linePaint);
+         }
+ 
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -148,8 +148,9 @@ private void prepare() {
+         if (mDrawThread == null) {
+             mDrawThread = new HandlerThread("draw thread");
+             mDrawThread.start();
+-            handler = new DrawHandler(mDrawThread.getLooper() , this , mDanmakuVisibile);
+         }
++        if (handler == null)
++            handler = new DrawHandler(mDrawThread.getLooper(), this, mDanmakuVisibile);
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -153,8 +153,9 @@ private void prepare() {
+         if (mDrawThread == null) {
+             mDrawThread = new HandlerThread("draw thread");
+             mDrawThread.start();
+-            handler = new DrawHandler(mDrawThread.getLooper(), this , mDanmakuVisibile);
+         }
++        if (handler == null)
++            handler = new DrawHandler(mDrawThread.getLooper(), this, mDanmakuVisibile);
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -140,7 +140,7 @@ public void run() {
+                 if (mCallback != null) {
+                     mCallback.updateTimer(timer);
+                 }
+-                if (d <= 0) {
++                if (d < 0) {
+                     removeMessages(UPDATE);
+                     sendEmptyMessageDelayed(UPDATE, 60 - d);
+                     break;
+@@ -152,7 +152,7 @@ public void run() {
+                     sendEmptyMessageDelayed(UPDATE, 100);
+                     break;
+                 }
+-                if (d < 15) {
++                if (d <= 13) {
+                     sendEmptyMessageDelayed(UPDATE, 15 - d);
+                     break;
+                 }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/R2LDanmaku.java
+Patch:
+@@ -48,8 +48,6 @@ public void layout(IDisplayer displayer, float x, float y) {
+                 return;
+             } 
+             this.setVisibility(false);
+-            this.x = -paintWidth;
+-            this.y = -1;
+         }
+     }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -184,7 +184,7 @@ public long drawDanmakus() {
+             dtime = System.currentTimeMillis() - stime;
+             if (mShowFps) {
+                 String fps = String.format("%02d MS, fps %.2f", dtime, 1000 / (float) dtime);
+-                DrawHelper.drawText(canvas, fps);
++                DrawHelper.drawFPS(canvas, fps);
+             }
+             if (isSurfaceCreated)
+                 mSurfaceHolder.unlockCanvasAndPost(canvas);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -189,7 +189,7 @@ public long drawDanmakus() {
+             dtime = System.currentTimeMillis() - stime;
+             if (mShowFps) {
+                 String fps = String.format("%02d MS, fps %.2f", dtime, 1000 / (float) dtime);
+-                DrawHelper.drawText(canvas, fps);
++                DrawHelper.drawFPS(canvas, fps);
+             }
+             if (isSurfaceCreated)
+                 unlockCanvasAndPost(canvas);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -158,7 +158,6 @@ public void run() {
+                 if (what == QUIT){
+                     if (this.drawTask != null){
+                         this.drawTask.quit();
+-                        this.drawTask = null;
+                     }
+                     this.getLooper().quit();
+                 }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -156,8 +156,10 @@ public void run() {
+                 quitFlag = true;
+                 pausedPostion = timer.currMillisecond;
+                 if (what == QUIT){
+-                    if (this.drawTask != null)
++                    if (this.drawTask != null){
+                         this.drawTask.quit();
++                        this.drawTask = null;
++                    }
+                     this.getLooper().quit();
+                 }
+                 break;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawHandler.java
+Patch:
+@@ -156,7 +156,8 @@ public void run() {
+                 quitFlag = true;
+                 pausedPostion = timer.currMillisecond;
+                 if (what == QUIT){
+-                    this.drawTask.quit();
++                    if (this.drawTask != null)
++                        this.drawTask.quit();
+                     this.getLooper().quit();
+                 }
+                 break;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -46,7 +46,7 @@ public class DanmakuSurfaceView extends SurfaceView implements IDanmakuView, Sur
+     
+     private boolean isSurfaceCreated;
+ 
+-    private boolean mEnableDanmakuDrwaingCache;
++    private boolean mEnableDanmakuDrwaingCache = true;
+ 
+     private OnClickListener mOnClickListener;
+     
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuTextureView.java
+Patch:
+@@ -51,7 +51,7 @@ public class DanmakuTextureView extends TextureView implements IDanmakuView,
+ 
+     private boolean isSurfaceCreated;
+ 
+-    private boolean mEnableDanmakuDrwaingCache;
++    private boolean mEnableDanmakuDrwaingCache = true;
+ 
+     private OnClickListener mOnClickListener;
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -193,7 +193,8 @@ long drawDanmakus() {
+                 String fps = String.format("%02d MS, fps %.2f",dtime, 1000 / (float) dtime);
+                 DrawHelper.drawText(canvas, fps);
+             }
+-            mSurfaceHolder.unlockCanvasAndPost(canvas);
++            if(isSurfaceCreated)
++                mSurfaceHolder.unlockCanvasAndPost(canvas);
+         }
+         return dtime;
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -84,7 +84,6 @@ public void reset() {
+         // mCacheTimer.update(mTimer.currMillisecond);
+         if (mRenderer != null)
+             mRenderer.clear();
+-        mCacheManager.evictAll();
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/DanmakuTimer.java
+Patch:
+@@ -22,7 +22,7 @@ public class DanmakuTimer {
+     private long lastInterval;
+ 
+     public long update(long curr) {
+-        lastInterval = Math.abs(curr - currMillisecond);
++        lastInterval = curr - currMillisecond;
+         currMillisecond = curr;
+         return lastInterval;
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/renderer/IRenderer.java
+Patch:
+@@ -24,5 +24,7 @@ public interface IRenderer {
+     public void draw(IDisplayer disp, IDanmakus danmakus);
+ 
+     public void clear();
++    
++    public void release();
+ 
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -234,6 +234,8 @@ public void start() {
+     public void start(long postion) {
+         if (handler == null) {
+             prepare();
++        }else{
++            handler.removeCallbacksAndMessages(null);
+         }
+         handler.obtainMessage(DrawHandler.START, postion).sendToTarget();
+     }
+@@ -332,7 +334,6 @@ public void run() {
+                 	}
+                     break;
+                 case START:
+-                    removeCallbacksAndMessages(null);
+                     Long startTime = (Long) msg.obj;
+                     if(startTime!=null){
+                         pausedPostion = startTime.longValue();
+@@ -352,13 +353,13 @@ public void run() {
+                     }
+                     break;
+                 case SEEK_POS:
+-                    removeMessages(UPDATE);
+                     Long deltaMs = (Long) msg.obj;
+                     mTimeBase -= deltaMs;
+                     timer.update(System.currentTimeMillis() - mTimeBase);
+                     if (drawTask != null)
+                         drawTask.seek(timer.currMillisecond);
+                     pausedPostion = timer.currMillisecond;
++                    removeMessages(RESUME);
+                     sendEmptyMessage(RESUME);
+                     break;
+                 case UPDATE:
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -124,8 +124,8 @@ public void reset() {
+ 
+     @Override
+     public void seek(long mills) {        
+-        reset();
+         mTimer.update(mills);
++        reset();
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -357,7 +357,8 @@ public void run() {
+                     Long deltaMs = (Long) msg.obj;
+                     mTimeBase -= deltaMs;
+                     timer.update(System.currentTimeMillis() - mTimeBase);
+-                    drawTask.seek(timer.currMillisecond);
++                    if (drawTask != null)
++                        drawTask.seek(timer.currMillisecond);
+                     pausedPostion = timer.currMillisecond;
+                     sendEmptyMessage(RESUME);
+                     break;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -231,6 +231,7 @@ public static void drawDanmaku(BaseDanmaku danmaku, Canvas canvas, float left, f
+                 applyPaintConfig(danmaku, paint, false);
+                 canvas.drawText(lines[0], left, top - paint.ascent(), paint);
+             } else {
++                applyPaintConfig(danmaku, paint, false);
+                 Float textHeight = getTextHeight(paint);
+                 for (int t = 0; t < lines.length; t++) {
+                     if (lines[t].length() > 0) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DanmakuGlobalConfig.java
+Patch:
+@@ -257,6 +257,7 @@ public DanmakuGlobalConfig setMaximumVisibleSizeInScreen(int maxSize) {
+         return this;
+     }
+     
++    public final static int DANMAKU_STYLE_DEFAULT = -1; //自动
+     public final static int DANMAKU_STYLE_NONE = 0; //无
+     public final static int DANMAKU_STYLE_SHADOW = 1; //阴影
+     public final static int DANMAKU_STYLE_STROKEN = 2; //描边
+@@ -276,6 +277,7 @@ public DanmakuGlobalConfig setDanmakuStyle(int style){
+                 AndroidDisplayer.CONFIG_HAS_SHADOW = true;
+                 AndroidDisplayer.CONFIG_HAS_STROKE = false;
+                 break;
++            case DANMAKU_STYLE_DEFAULT:
+             case DANMAKU_STYLE_STROKEN:
+                 AndroidDisplayer.CONFIG_HAS_SHADOW = false;
+                 AndroidDisplayer.CONFIG_HAS_STROKE = true;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -290,7 +290,7 @@ private synchronized DrawingCache findReuseableCache(BaseDanmaku refDanmaku) {
+                 BaseDanmaku danmaku = it.next();
+                 if (danmaku.paintWidth == refDanmaku.paintWidth
+                         && danmaku.paintHeight == refDanmaku.paintHeight
+-                        && danmaku.textColor == danmaku.textColor
++                        && danmaku.textColor == refDanmaku.textColor
+                         && danmaku.text.equals(refDanmaku.text)) {
+                     return (DrawingCache) danmaku.cache;
+                 }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -90,9 +90,7 @@ public void reset() {
+ 
+     @Override
+     public void seek(long mills) {
+-        mTimer.update(mills);
+-        if (mRenderer != null)
+-            mRenderer.clear();
++        super.seek(mills);
+         mCacheManager.evictAllNotInScreen();
+         mCacheManager.resume();
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -134,7 +134,7 @@ public void start() {
+     @Override
+     public void quit() {
+         mRenderer.clear();
+-        danmakuList.clear();
++        //danmakuList.clear();
+     }
+ 
+     public void prepare() {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -69,7 +69,7 @@ public class AndroidDisplayer implements IDisplayer {
+     public static boolean ANTI_ALIAS = true;
+ 
+     static {
+-        PAINT = DanmakuGlobalConfig.Default.paint;
++        PAINT = DanmakuGlobalConfig.DEFAULT.paint;
+         STROKE = new Paint();
+         ALPHA_PAINT = new Paint();
+         UNDERLINE_PAINT = new Paint();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DanmakuGlobalConfig.java
+Patch:
+@@ -8,7 +8,7 @@
+ 
+ public class DanmakuGlobalConfig {
+     
+-    public static DanmakuGlobalConfig Default = new DanmakuGlobalConfig();
++    public static DanmakuGlobalConfig DEFAULT = new DanmakuGlobalConfig();
+ 
+     /**
+      * 默认字体
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -69,7 +69,7 @@ public class AndroidDisplayer implements IDisplayer {
+     public static boolean ANTI_ALIAS = true;
+ 
+     static {
+-        PAINT = new TextPaint();
++        PAINT = DanmakuGlobalConfig.Default.paint;
+         STROKE = new Paint();
+         ALPHA_PAINT = new Paint();
+         UNDERLINE_PAINT = new Paint();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/util/DanmakuUtils.java
+Patch:
+@@ -89,8 +89,7 @@ public static DrawingCache buildDanmakuDrawingCache(BaseDanmaku danmaku, IDispla
+         if (cache == null)
+             cache = new DrawingCache();
+ 
+-        cache.build((int) danmaku.paintWidth + 2, (int) danmaku.paintHeight + 2,
+-                disp.getDensityDpi());
++        cache.build((int) danmaku.paintWidth, (int) danmaku.paintHeight, disp.getDensityDpi());
+         DrawingCacheHolder holder = cache.get();
+         if (holder != null) {
+             AndroidDisplayer.drawDanmaku(danmaku, holder.canvas, 0, 0, false);
+@@ -99,7 +98,7 @@ public static DrawingCache buildDanmakuDrawingCache(BaseDanmaku danmaku, IDispla
+     }
+ 
+     public static int getCacheSize(int w, int h) {
+-        return (w + 2) * (h + 2) * 4;
++        return (w) * (h) * 4;
+     }
+ 
+     public static int compare(BaseDanmaku obj1, BaseDanmaku obj2) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -21,7 +21,6 @@
+ import android.text.TextPaint;
+ import master.flame.danmaku.danmaku.model.AlphaValue;
+ import master.flame.danmaku.danmaku.model.BaseDanmaku;
+-import master.flame.danmaku.danmaku.model.Danmaku;
+ import master.flame.danmaku.danmaku.model.IDisplayer;
+ 
+ /**
+@@ -260,7 +259,7 @@ public static TextPaint getPaint(BaseDanmaku danmaku) {
+             STROKE.setColor(danmaku.textShadowColor);
+         }
+         if (HAS_SHADOW) {
+-            PAINT.setShadowLayer(2.0f, 0, 0, danmaku.textShadowColor);
++            PAINT.setShadowLayer(3.0f, 0, 0, danmaku.textShadowColor);
+             SHADOW_HEIGHT = 4;
+         } else {
+             PAINT.clearShadowLayer();
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/util/AndroidCounter.java
+Patch:
+@@ -24,7 +24,7 @@ public AndroidCounter begin() {
+      */
+     public void end(String tag) {
+         end();
+-        Log.e(tag, Long.toString(counter) + " ms");
++        Log.d(tag, Long.toString(counter) + " ms");
+     }
+ 
+     public AndroidCounter end() {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -93,8 +93,8 @@ public void seek(long mills) {
+     public void start() {
+         if (mCacheManager == null) {
+             mCacheManager = new CacheManager(mMaxCacheSize, MAX_CACHE_SCREEN_SIZE);
+-        }
+-        if (mCacheManager.isPause()) {
++            mCacheManager.begin();
++        } else if (mCacheManager.isPause()) {
+             mCacheManager.begin();
+         }
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -273,7 +273,7 @@ public void handleMessage(Message msg) {
+                         break;
+                     case ADD_DANMAKKU:
+                         synchronized (danmakuList) {
+-                            danmakuList.addItem((BaseDanmaku) msg.obj);
++                            CacheManagingDrawTask.super.addDanmaku((BaseDanmaku) msg.obj);
+                         }
+                         break;
+                 }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -85,7 +85,6 @@ public void addDanmaku(BaseDanmaku item) {
+             item.underlineColor = Color.RED;
+             danmakuList.addItem(item);
+         }
+-
+     }
+ 
+     @Override
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/Danmakus.java
+Patch:
+@@ -47,7 +47,7 @@ public Danmakus(int sortType) {
+         } else if (sortType == ST_BY_YPOS) {
+             comparator = new YPosComparator();
+         } else if (sortType == ST_BY_YPOS_DESC) {
+-            comparator = new YposDescComparator();
++            comparator = new YPosDescComparator();
+         }
+         items = new TreeSet<BaseDanmaku>(comparator);
+     }
+@@ -211,7 +211,7 @@ public int compare(BaseDanmaku obj1, BaseDanmaku obj2) {
+         }
+     }
+ 
+-    private class YposDescComparator implements Comparator<BaseDanmaku> {
++    private class YPosDescComparator implements Comparator<BaseDanmaku> {
+         @Override
+         public int compare(BaseDanmaku obj1, BaseDanmaku obj2) {
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/util/DanmakuUtils.java
+Patch:
+@@ -26,7 +26,7 @@ public class DanmakuUtils {
+ 
+     /**
+      * 检测两个弹幕是否会碰撞
+-     * 
++     *
+      * @param d1
+      * @param d2
+      * @return
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/util/DanmakuUtils.java
+Patch:
+@@ -42,7 +42,7 @@ public static boolean willHitInDuration(IDisplayer disp, BaseDanmaku d1, BaseDan
+             return true;
+         }
+ 
+-        if (d1.isTimeOut()) {
++        if (d1.isTimeOut() || d2.isTimeOut()) {
+             return false;
+         }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/util/DanmakuUtils.java
+Patch:
+@@ -42,7 +42,7 @@ public static boolean willHitInDuration(IDisplayer disp, BaseDanmaku d1, BaseDan
+             return true;
+         }
+ 
+-        if (d1.isOutside()) {
++        if (d1.isTimeOut()) {
+             return false;
+         }
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/ui/widget/DanmakuSurfaceView.java
+Patch:
+@@ -61,7 +61,7 @@ public class DanmakuSurfaceView extends SurfaceView implements SurfaceHolder.Cal
+ 
+     private OnClickListener mOnClickListener;
+     private BaseDanmakuParser mParser;
+-    private boolean mFpsShown;
++    private boolean mShowFps;
+ 
+     public DanmakuSurfaceView(Context context) {
+         super(context);
+@@ -159,7 +159,7 @@ public void prepare(BaseDanmakuParser parser) {
+     }
+ 
+     public void showFPS(boolean show){
+-        mFpsShown = show;
++        mShowFps = show;
+     }
+ 
+     void drawDanmakus() {
+@@ -172,7 +172,7 @@ void drawDanmakus() {
+         if (canvas != null) {
+             DrawHelper.clearCanvas(canvas);
+             drawTask.draw(canvas);
+-            if(mFpsShown){
++            if(mShowFps){
+                 long dtime = System.currentTimeMillis() - stime;
+                 String fps = String.format("fps %.2f", 1000 / (float) dtime);
+                 DrawHelper.drawText(canvas, fps);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/BiliDanmukuParse.java
+Patch:
+@@ -133,9 +133,9 @@ public void characters(char[] ch, int start, int length) throws SAXException {
+                 item.index = index++;
+ 
+                 // initial specail danmaku data
+-                if (item.getType() == BaseDanmaku.TYPE_SPECIAL && item.text.startsWith("[")
+-                        && item.text.endsWith("]")) {
+-                    String text = item.text;
++                String text = item.text.trim();
++                if (item.getType() == BaseDanmaku.TYPE_SPECIAL && text.startsWith("[")
++                        && text.endsWith("]")) {
+                     text = text.substring(2, text.length() - 2);
+                     String[] textArr = text.split("\",\"");
+                     if (textArr == null || textArr.length < 5)
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/AlphaValue.java
+Patch:
+@@ -3,6 +3,8 @@
+ 
+ public class AlphaValue {
+ 
+-    public static int MAX_VALUE = 255;
++    public static int MAX = 255;
++
++    public static int TRANSPARENT = 0;
+ 
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/BiliDanmukuParse.java
+Patch:
+@@ -146,10 +146,10 @@ public void characters(char[] ch, int start, int length) throws SAXException {
+                     float endX = beginX;
+                     float endY = beginY;
+                     String[] alphaArr = textArr[2].split("-");
+-                    int beginAlpha = (int) (AlphaValue.MAX_VALUE * Float.parseFloat(alphaArr[0]));
++                    int beginAlpha = (int) (AlphaValue.MAX * Float.parseFloat(alphaArr[0]));
+                     int endAlpha = beginAlpha;
+                     if (alphaArr.length > 1) {
+-                        endAlpha = (int) (AlphaValue.MAX_VALUE * Float.parseFloat(alphaArr[1]));
++                        endAlpha = (int) (AlphaValue.MAX * Float.parseFloat(alphaArr[1]));
+                     }
+                     long alphaDuraion = (long) (Float.parseFloat(textArr[3]) * 1000);
+                     long translationDuration = alphaDuraion;
+@@ -165,7 +165,7 @@ public void characters(char[] ch, int start, int length) throws SAXException {
+                         translationDuration = Integer.parseInt(textArr[9]);
+                         translationStartDelay = (long) (Float.parseFloat(textArr[10]) * 1000);
+                     }
+-                    item.duration = Math.max(alphaDuraion, translationDuration);
++                    item.duration = alphaDuraion;
+                     item.rotateZ = rotateZ;
+                     item.rotateY = rotateY;
+                     DanmakuFactory.fillTranslationData(item, mDispWidth, mDispHeight, beginX, beginY, endX,
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -21,7 +21,6 @@
+ import android.graphics.Paint;
+ import android.graphics.Paint.Style;
+ import android.text.TextPaint;
+-import android.util.Log;
+ import master.flame.danmaku.danmaku.model.BaseDanmaku;
+ import master.flame.danmaku.danmaku.model.IDisplayer;
+ 
+@@ -123,11 +122,11 @@ public void draw(BaseDanmaku danmaku) {
+ //                    canvas.drawBitmap(holder.bitmap, 0, 0, null);
+ //                    canvas.restore();
+                     canvas.drawBitmap(holder.bitmap, left, top, null);
+-                    Log.e("CACHE", "cache hit:" + (++HIT_CACHE_COUNT));
++//                    Log.e("CACHE", "cache hit:" + (++HIT_CACHE_COUNT));
+                     return;
+                 }
+             }
+-            Log.e("CACHE", "no cache:" + (++NO_CACHE_COUNT));
++//            Log.e("CACHE", "no cache:" + (++NO_CACHE_COUNT));
+ 
+             drawDanmaku(danmaku, canvas, left, top, true);
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CacheManagingDrawTask.java
+Patch:
+@@ -167,7 +167,9 @@ private void put(BaseDanmaku item) {
+         private void clearTimeOutCaches() {
+             Iterator<BaseDanmaku> it = mCaches.iterator();
+             while (it.hasNext()) {
+-                if (it.next().isTimeOut()) {
++                BaseDanmaku val = it.next();
++                if (val.isTimeOut()) {
++                    entryRemoved(false, val, null);
+                     it.remove();
+                 } else {
+                     break;
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -43,7 +43,7 @@ public class DrawTask implements IDrawTask {
+ 
+     private static final String TAG = "DrawTask";
+ 
+-    private final int DEBUG_OPTION = 0;
++    private final int DEBUG_OPTION = 1;
+ 
+     protected AndroidDisplayer mDisp;
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -21,6 +21,7 @@
+ import android.graphics.Paint;
+ import android.graphics.Paint.Style;
+ import android.text.TextPaint;
++import android.util.Log;
+ import master.flame.danmaku.danmaku.model.BaseDanmaku;
+ import master.flame.danmaku.danmaku.model.IDisplayer;
+ 
+@@ -122,11 +123,11 @@ public void draw(BaseDanmaku danmaku) {
+ //                    canvas.drawBitmap(holder.bitmap, 0, 0, null);
+ //                    canvas.restore();
+                     canvas.drawBitmap(holder.bitmap, left, top, null);
+-//                    Log.e("CACHE", "cache hit:" + (++HIT_CACHE_COUNT));
++                    Log.e("CACHE", "cache hit:" + (++HIT_CACHE_COUNT));
+                     return;
+                 }
+             }
+-//            Log.e("CACHE", "no cache:" + (++NO_CACHE_COUNT));
++            Log.e("CACHE", "no cache:" + (++NO_CACHE_COUNT));
+ 
+             drawDanmaku(danmaku, canvas, left, top, true);
+         }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -121,7 +121,7 @@ public void draw(BaseDanmaku danmaku) {
+ //                    canvas.translate(left, top);
+ //                    canvas.drawBitmap(holder.bitmap, 0, 0, null);
+ //                    canvas.restore();
+-                    canvas.drawBitmap(holder.bitmap, danmaku.getLeft(), danmaku.getTop(), null);
++                    canvas.drawBitmap(holder.bitmap, left, top, null);
+ //                    Log.e("CACHE", "cache hit:" + (++HIT_CACHE_COUNT));
+                     return;
+                 }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -21,7 +21,6 @@
+ import android.graphics.Paint;
+ import android.graphics.Paint.Style;
+ import android.text.TextPaint;
+-import android.util.Log;
+ import master.flame.danmaku.danmaku.model.BaseDanmaku;
+ import master.flame.danmaku.danmaku.model.IDisplayer;
+ 
+@@ -118,11 +117,11 @@ public void draw(BaseDanmaku danmaku) {
+                     canvas.drawBitmap(holder.bitmap, 0, 0, null);
+                     canvas.restore();
+ //                    canvas.drawBitmap(holder.bitmap,danmaku.getLeft(),danmaku.getTop(),null);
+-                    Log.e("CACHE", "cache hit:" + (++HIT_CACHE_COUNT));
++//                    Log.e("CACHE", "cache hit:" + (++HIT_CACHE_COUNT));
+                     return;
+                 }
+             }
+-            Log.e("CACHE", "no cache:" + (++NO_CACHE_COUNT));
++//            Log.e("CACHE", "no cache:" + (++NO_CACHE_COUNT));
+             drawDanmaku(danmaku, canvas, danmaku.getLeft(), danmaku.getTop());
+         }
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -21,6 +21,7 @@
+ import android.graphics.Paint;
+ import android.graphics.Paint.Style;
+ import android.text.TextPaint;
++import android.util.Log;
+ import master.flame.danmaku.danmaku.model.BaseDanmaku;
+ import master.flame.danmaku.danmaku.model.IDisplayer;
+ 
+@@ -117,9 +118,11 @@ public void draw(BaseDanmaku danmaku) {
+                     canvas.drawBitmap(holder.bitmap, 0, 0, null);
+                     canvas.restore();
+ //                    canvas.drawBitmap(holder.bitmap,danmaku.getLeft(),danmaku.getTop(),null);
++                    Log.e("CACHE", "cache hit:" + (++HIT_CACHE_COUNT));
+                     return;
+                 }
+             }
++            Log.e("CACHE", "no cache:" + (++NO_CACHE_COUNT));
+             drawDanmaku(danmaku, canvas, danmaku.getLeft(), danmaku.getTop());
+         }
+     }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/DrawingCacheHolder.java
+Patch:
+@@ -40,8 +40,9 @@ public void buildCache(int w, int h, int density) {
+         width = w;
+         height = h;
+         bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+-        if (mDensity > 0) {
+-            bitmap.setDensity(mDensity);
++        if (density > 0) {
++            mDensity = density;
++            bitmap.setDensity(density);
+         }
+         if (canvas == null)
+             canvas = new Canvas(bitmap);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -43,7 +43,7 @@ public class DrawTask implements IDrawTask {
+ 
+     private static final String TAG = "DrawTask";
+ 
+-    private final int DEBUG_OPTION = 1;
++    private final int DEBUG_OPTION = 0;
+ 
+     protected AndroidDisplayer mDisp;
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/model/android/AndroidDisplayer.java
+Patch:
+@@ -111,7 +111,7 @@ public void draw(BaseDanmaku danmaku) {
+             // drawing cache
+             if (danmaku.hasDrawingCache()) {
+                 DrawingCacheHolder holder = ((DrawingCache) danmaku.cache).get();
+-                if (holder != null) {
++                if (holder != null && holder.bitmap != null) {
+                     canvas.save();
+                     canvas.translate(danmaku.getLeft(), danmaku.getTop());
+                     canvas.drawBitmap(holder.bitmap, 0, 0, null);
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/CachingDrawTask.java
+Patch:
+@@ -4,11 +4,10 @@
+ import android.content.Context;
+ import android.graphics.Bitmap;
+ import android.graphics.Canvas;
+-
+ import master.flame.danmaku.danmaku.model.DanmakuTimer;
+ import master.flame.danmaku.danmaku.model.android.DrawingCacheHolder;
+ 
+-public class CachingDrawTask extends DrawTask {
++public class CachingDrawTask extends CacheManagerDrawTask {
+ 
+     DrawingBuffer mCache;
+ 
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/controller/DrawTask.java
+Patch:
+@@ -72,9 +72,7 @@ private void loadBiliDanmakus(InputStream stream) {
+         mLoader.load(stream);
+         dataSource = mLoader.getDataSource();
+         mParser = new BiliDanmukuParse(disp);
+-
+-        mParser.load(dataSource);
+-        danmakuList = mParser.parse(mTimer);
++        danmakuList = mParser.load(dataSource).setTimer(mTimer).parse();
+     }
+ 
+     public void draw(Canvas canvas) {
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/loader/android/BiliDanmakuLoader.java
+Patch:
+@@ -61,7 +61,7 @@ public void load(InputStream stream) {
+     }
+ 
+     @Override
+-    public IDataSource getDataSource() {
++    public AndroidFileSource getDataSource() {
+         return dataSource;
+     }
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/IDataSource.java
+Patch:
+@@ -16,8 +16,8 @@
+ 
+ package master.flame.danmaku.danmaku.parser;
+ 
+-public interface IDataSource {
+-
++public interface IDataSource<T> {
++	public T data();
+     public void release();
+ 
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/loader/android/BiliDanmakuLoader.java
+Patch:
+@@ -61,7 +61,7 @@ public void load(InputStream stream) {
+     }
+ 
+     @Override
+-    public IDataSource getDataSource() {
++    public AndroidFileSource getDataSource() {
+         return dataSource;
+     }
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/BaseDanmakuParser.java
+Patch:
+@@ -23,11 +23,11 @@
+  *
+  */
+ public abstract class BaseDanmakuParser {
+-    protected IDataSource mDataSource;
++    protected IDataSource<?> mDataSource;
+ 
+     protected DanmakuTimer mTimer;
+ 
+-    public void load(IDataSource source) {
++    public void load(IDataSource<?> source) {
+         mDataSource = source;
+     }
+ 
+@@ -36,6 +36,6 @@ public Danmakus parse(DanmakuTimer timer) {
+         return parse(mDataSource);
+     }
+ 
+-    public abstract Danmakus parse(IDataSource source);
++    public abstract Danmakus parse(IDataSource<?> source);
+ 
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/IDataSource.java
+Patch:
+@@ -16,8 +16,8 @@
+ 
+ package master.flame.danmaku.danmaku.parser;
+ 
+-public interface IDataSource {
+-
++public interface IDataSource<T> {
++	public T data();
+     public void release();
+ 
+ }
+
+File: DanmakuFlameMaster/src/main/java/master/flame/danmaku/danmaku/parser/android/BiliDanmukuParse.java
+Patch:
+@@ -47,15 +47,15 @@ public BiliDanmukuParse(IDisplayer disp) {
+     }
+ 
+     @Override
+-    public Danmakus parse(IDataSource ds) {
++    public Danmakus parse(IDataSource<?> ds) {
+ 
+         if (ds != null) {
+             AndroidFileSource source = (AndroidFileSource) ds;
+             try {
+                 XMLReader xmlReader = XMLReaderFactory.createXMLReader();
+                 XmlContentHandler contentHandler = new XmlContentHandler();
+                 xmlReader.setContentHandler(contentHandler);
+-                xmlReader.parse(new InputSource(source.inStream));
++                xmlReader.parse(new InputSource(source.data()));
+                 return contentHandler.getResult();
+             } catch (SAXException e) {
+                 e.printStackTrace();
+

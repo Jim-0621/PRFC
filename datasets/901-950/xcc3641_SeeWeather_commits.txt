@@ -1,0 +1,1033 @@
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseApplication.java
+Patch:
+@@ -3,6 +3,7 @@
+ import android.app.Application;
+ import android.content.Context;
+ import android.support.v7.app.AppCompatDelegate;
++import com.facebook.stetho.Stetho;
+ import com.github.moduth.blockcanary.BlockCanary;
+ import com.hugo.watcher.Watcher;
+ import com.squareup.leakcanary.LeakCanary;
+@@ -32,6 +33,7 @@ public void onCreate() {
+             FIR.init(this);
+         } else {
+             Watcher.getInstance().start(this);
++            Stetho.initializeWithDefaults(this);
+         }
+         BlockCanary.install(this, new AppBlockCanaryContext()).start();
+         LeakCanary.install(this);
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/adapter/WeatherAdapter.java
+Patch:
+@@ -271,15 +271,15 @@ protected void bind(Weather weather) {
+                         }
+                     }
+                     ImageLoader.load(mContext,
+-                        SharedPreferenceUtil.getInstance().getInt(weather.dailyForecast.get(i).cond.txt, R.mipmap.none),
++                        SharedPreferenceUtil.getInstance().getInt(weather.dailyForecast.get(i).cond.txtDay, R.mipmap.none),
+                         forecastIcon[i]);
+                     forecastTemp[i].setText(
+                         String.format("%s℃ - %s℃",
+                             weather.dailyForecast.get(i).tmp.min,
+                             weather.dailyForecast.get(i).tmp.max));
+                     forecastTxt[i].setText(
+                         String.format("%s。 %s %s %s km/h。 降水几率 %s%%。",
+-                            weather.dailyForecast.get(i).cond.txt,
++                            weather.dailyForecast.get(i).cond.txtDay,
+                             weather.dailyForecast.get(i).wind.sc,
+                             weather.dailyForecast.get(i).wind.dir,
+                             weather.dailyForecast.get(i).wind.spd,
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/domain/CondEntity.java
+Patch:
+@@ -8,4 +8,6 @@ public class CondEntity implements Serializable {
+     public String code;
+     @SerializedName("txt")
+     public String txt;
++    @SerializedName("txt_d")
++    public String txtDay;
+ }
+\ No newline at end of file
+
+File: app/src/main/java/com/xiecc/seeWeather/component/RetrofitSingleton.java
+Patch:
+@@ -128,6 +128,7 @@ public Observable<Weather> fetchWeather(String city) {
+ 
+     public Observable<Version> fetchVersion() {
+         return sApiService.mVersionAPI(C.API_TOKEN)
++            .doOnError(RetrofitSingleton::disposeFailureInfo)
+             .compose(RxUtil.io());
+     }
+ }
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/adapter/WeatherAdapter.java
+Patch:
+@@ -130,7 +130,7 @@ protected void bind(Weather weather) {
+                     String.format("↓ %s ℃", weather.dailyForecast.get(0).tmp.min));
+ 
+                 tempPm.setText(String.format("PM2.5: %s μg/m³", Util.safeText(weather.aqi.city.pm25)));
+-                tempQuality.setText(Util.safeText("空气质量： ", weather.aqi.city.qlty));
++                tempQuality.setText(String.format("空气质量：%s", Util.safeText(weather.aqi.city.qlty)));
+                 ImageLoader.load(itemView.getContext(),
+                     SharedPreferenceUtil.getInstance().getInt(weather.now.cond.txt, R.mipmap.none),
+                     weatherIcon);
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/ui/MainFragment.java
+Patch:
+@@ -82,16 +82,17 @@ public View onCreateView(LayoutInflater inflater, @Nullable ViewGroup container,
+     public void onViewCreated(View view, @Nullable Bundle savedInstanceState) {
+         super.onViewCreated(view, savedInstanceState);
+         initView();
+-        new RxPermissions(getActivity()).request(Manifest.permission.ACCESS_COARSE_LOCATION)
++        new RxPermissions(getActivity())
++            .request(Manifest.permission.ACCESS_COARSE_LOCATION)
+             .doOnNext(granted -> {
+                 if (granted) {
+                     location();
+                 } else {
+                     load();
+                 }
++                CheckVersion.checkVersion(getActivity());
+             })
+             .subscribe();
+-        CheckVersion.checkVersion(getActivity());
+     }
+ 
+     @Override
+
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseApplication.java
+Patch:
+@@ -29,7 +29,6 @@ public void onCreate() {
+         mAppContext = getApplicationContext();
+         CrashHandler.init(new CrashHandler(getApplicationContext()));
+         if (!BuildConfig.DEBUG) {
+-
+             FIR.init(this);
+         }
+         BlockCanary.install(this, new AppBlockCanaryContext()).start();
+
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseFragment.java
+Patch:
+@@ -2,9 +2,9 @@
+ 
+ import android.os.Bundle;
+ import android.support.annotation.Nullable;
+-import android.support.v4.app.Fragment;
+ import android.support.v7.app.ActionBar;
+ import android.support.v7.app.AppCompatActivity;
++import com.trello.rxlifecycle.components.support.RxFragment;
+ 
+ /**
+  * Created by HugoXie on 16/7/9.
+@@ -13,7 +13,7 @@
+  * GitHub: https://github.com/xcc3641
+  * Info:
+  */
+-public abstract class BaseFragment extends Fragment {
++public abstract class BaseFragment extends RxFragment {
+ 
+     protected boolean isCreateView = false;
+ 
+
+File: app/src/main/java/com/xiecc/seeWeather/base/C.java
+Patch:
+@@ -16,4 +16,6 @@ public class C {
+     public static final String MULTI_CHECK = "multi_check";
+ 
+     public static final String ORM_NAME = "cities.db";
++
++    public static final String  UNKNOW_CITY = "unknown city";
+ }
+
+File: app/src/main/java/com/xiecc/seeWeather/common/CrashHandler.java
+Patch:
+@@ -39,9 +39,8 @@ public void uncaughtException(Thread thread, Throwable ex) {
+         PLog.e(TAG, collectCrashDeviceInfo());
+         PLog.e(TAG, getCrashInfo(ex));
+ 
+-        // TODO: 16/7/26 崩溃后自动初始化数据
+-        SharedPreferenceUtil mSharedPreferenceUtil = SharedPreferenceUtil.getInstance();
+-        mSharedPreferenceUtil.setCityName("北京");
++        // T崩溃后自动初始化数据
++        SharedPreferenceUtil.getInstance().setCityName("北京");
+         OrmLite.getInstance().deleteDatabase();
+         // 调用系统错误机制
+         defaultHandler.uncaughtException(thread, ex);
+
+File: app/src/main/java/com/xiecc/seeWeather/common/utils/CircularAnimUtil.java
+Patch:
+@@ -124,7 +124,7 @@ public void onAnimationEnd(Animator animation) {
+                 triggerView.postDelayed(new Runnable() {
+                     @Override
+                     public void run() {
+-                        Log.d("animi", "End");
++
+                         Animator anim =
+                             ViewAnimationUtils.createCircularReveal(view, cx, cy, finalRadius, 0);
+                         anim.setDuration(durationMills);
+@@ -140,7 +140,7 @@ public void onAnimationEnd(Animator animation) {
+                             }
+                         });
+                         anim.start();
+-                        Log.d("animi2", "start");
++
+                     }
+                 }, 1000);
+ 
+
+File: app/src/main/java/com/xiecc/seeWeather/common/utils/Util.java
+Patch:
+@@ -226,6 +226,6 @@ public static void copyToClipboard(String info, Context context) {
+         ClipboardManager manager = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+         ClipData clipData = ClipData.newPlainText("msg", info);
+         manager.setPrimaryClip(clipData);
+-        ToastUtil.showShort("已经复制到剪切板啦( •̀ .̫ •́ )✧");
++        ToastUtil.showShort(String.format("[%s] 已经复制到剪切板啦( •̀ .̫ •́ )✧",info));
+     }
+ }
+\ No newline at end of file
+
+File: app/src/main/java/com/xiecc/seeWeather/component/OrmLite.java
+Patch:
+@@ -33,6 +33,7 @@ private static OrmLite getOrmHolder() {
+     private OrmLite() {
+         if (liteOrm == null) {
+             liteOrm = LiteOrm.newSingleInstance(BaseApplication.getmAppContext(), C.ORM_NAME);
++
+         }
+         liteOrm.setDebugged(BuildConfig.DEBUG);
+     }
+
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseApplication.java
+Patch:
+@@ -5,9 +5,9 @@
+ import android.support.v7.app.AppCompatDelegate;
+ import com.github.moduth.blockcanary.BlockCanary;
+ import com.squareup.leakcanary.LeakCanary;
+-import com.tencent.bugly.crashreport.CrashReport;
+ import com.xiecc.seeWeather.BuildConfig;
+ import com.xiecc.seeWeather.common.CrashHandler;
++import im.fir.sdk.FIR;
+ 
+ /**
+  * Created by xcc on 2015/12/16.
+@@ -29,7 +29,8 @@ public void onCreate() {
+         mAppContext = getApplicationContext();
+         CrashHandler.init(new CrashHandler(getApplicationContext()));
+         if (!BuildConfig.DEBUG) {
+-            CrashReport.initCrashReport(getApplicationContext(), "900028220", false);
++
++            FIR.init(this);
+         }
+         BlockCanary.install(this, new AppBlockCanaryContext()).start();
+         LeakCanary.install(this);
+
+File: app/src/main/java/com/xiecc/seeWeather/common/utils/Util.java
+Patch:
+@@ -150,7 +150,7 @@ public static String getWeatherType(int code) {
+     }
+ 
+     /**
+-     * 正则匹配掉错误信息
++     * 匹配掉错误信息
+      */
+     public static String replaceCity(String city) {
+         city = safeText(city).replaceAll("(?:省|市|自治区|特别行政区|地区|盟)", "");
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/ui/MainFragment.java
+Patch:
+@@ -182,7 +182,7 @@ private void load() {
+             })
+             .doOnNext(weather -> {
+                 mIvErro.setVisibility(View.GONE);
+-                //mRecyclerview.setVisibility(View.VISIBLE);
++                mRecyclerview.setVisibility(View.VISIBLE);
+             })
+             .doOnTerminate(() -> {
+                 mSwiprefresh.setRefreshing(false);
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/adapter/MultiCityAdapter.java
+Patch:
+@@ -89,7 +89,7 @@ public MultiCityViewHolder(View itemView) {
+         public void invoke(Weather mWeather) {
+ 
+             mDialogCity.setText(Util.safeText(mWeather.basic.city));
+-            mDialogTemp.setText(String.format("%s°", mWeather.now.tmp));
++            mDialogTemp.setText(String.format("%s℃", mWeather.now.tmp));
+ 
+             Glide.with(mContext).load(SharedPreferenceUtil.getInstance().getInt(mWeather.now.cond.txt, R.mipmap.none
+             )).asBitmap().into(new SimpleTarget<Bitmap>() {
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/adapter/WeatherAdapter.java
+Patch:
+@@ -188,12 +188,12 @@ public void bind(Weather weather) {
+                     mClock[i].setText(
+                         mDate.substring(mDate.length() - 5, mDate.length()));
+                     mTemp[i].setText(
+-                        String.format("%s°", weather.hourlyForecast.get(i).tmp));
++                        String.format("%s℃", weather.hourlyForecast.get(i).tmp));
+                     mHumidity[i].setText(
+                         String.format("%s%%", weather.hourlyForecast.get(i).hum)
+                     );
+                     mWind[i].setText(
+-                        String.format("%sKm", weather.hourlyForecast.get(i).wind.spd)
++                        String.format("%sKm/h", weather.hourlyForecast.get(i).wind.spd)
+                     );
+                 }
+             } catch (Exception e) {
+@@ -290,7 +290,7 @@ public void bind(Weather weather) {
+                         SharedPreferenceUtil.getInstance().getInt(weather.dailyForecast.get(i).cond.txtD, R.mipmap.none),
+                         forecastIcon[i]);
+                     forecastTemp[i].setText(
+-                        String.format("%s° %s°",
++                        String.format("%s℃ %s℃",
+                             weather.dailyForecast.get(i).tmp.min,
+                             weather.dailyForecast.get(i).tmp.max));
+                     forecastTxt[i].setText(
+
+File: app/src/main/java/com/xiecc/seeWeather/base/C.java
+Patch:
+@@ -15,4 +15,5 @@ public class C {
+ 
+     public static final String MULTI_CHECK = "multi_check";
+ 
++    public static final String ORM_NAME = "cities.db";
+ }
+
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseActivity.java
+Patch:
+@@ -6,7 +6,6 @@
+ import android.support.v7.app.AppCompatDelegate;
+ import android.view.WindowManager;
+ import com.readystatesoftware.systembartint.SystemBarTintManager;
+-import com.xiecc.seeWeather.R;
+ import com.xiecc.seeWeather.common.ACache;
+ import com.xiecc.seeWeather.common.utils.SharedPreferenceUtil;
+ import rx.Subscription;
+@@ -27,7 +26,7 @@ protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+         aCache = ACache.get(getApplication());
+         mSharedPreferenceUtil = SharedPreferenceUtil.getInstance();
+-        setStatusBarColorForKitkat(R.color.colorSunrise);
++        //setStatusBarColorForKitkat(R.color.colorSunrise);
+     }
+ 
+     public CompositeSubscription getCompositeSubscription() {
+
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseApplication.java
+Patch:
+@@ -15,9 +15,10 @@ public class BaseApplication extends Application {
+     public static String cacheDir;
+     public static Context mAppContext = null;
+ 
++    // TODO: 16/8/1 这里的夜间模式 UI 有些没有适配好
+     static {
+         AppCompatDelegate.setDefaultNightMode(
+-            AppCompatDelegate.MODE_NIGHT_AUTO);
++            AppCompatDelegate.MODE_NIGHT_NO);
+     }
+ 
+     @Override
+
+File: app/src/main/java/com/xiecc/seeWeather/common/utils/SharedPreferenceUtil.java
+Patch:
+@@ -106,6 +106,6 @@ public void setNotificationModel(int t) {
+     }
+ 
+     public int getNotificationModel() {
+-        return mPrefs.getInt(NOTIFICATION_MODEL, Notification.FLAG_AUTO_CANCEL);
++        return mPrefs.getInt(NOTIFICATION_MODEL, Notification.FLAG_ONGOING_EVENT);
+     }
+ }
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/setting/ui/SettingFragment.java
+Patch:
+@@ -32,7 +32,6 @@
+ 
+ /**
+  * Created by hugo on 2016/2/19 0019.
+- *
+  */
+ public class SettingFragment extends PreferenceFragment implements Preference.OnPreferenceClickListener {
+     private static String TAG = SettingFragment.class.getSimpleName();
+@@ -57,6 +56,7 @@ public void onCreate(Bundle savedInstanceState) {
+         mClearCache = findPreference(SharedPreferenceUtil.CLEAR_CACHE);
+ 
+         mNotificationType = (SwitchPreference) findPreference(SharedPreferenceUtil.NOTIFICATION_MODEL);
++        mNotificationType.setChecked(true);
+ 
+         mChangeIcons.setSummary(getResources().getStringArray(R.array.icons)[mSharedPreferenceUtil.getIconType()]);
+ 
+@@ -95,7 +95,7 @@ public void onNext(Boolean aBoolean) {
+         } else if (mNotificationType == preference) {
+             mNotificationType.setChecked(mNotificationType.isChecked());
+             mSharedPreferenceUtil.setNotificationModel(
+-                mNotificationType.isChecked() ? Notification.FLAG_AUTO_CANCEL : Notification.FLAG_ONGOING_EVENT);
++                mNotificationType.isChecked() ? Notification.FLAG_ONGOING_EVENT : Notification.FLAG_AUTO_CANCEL);
+         }
+         return false;
+     }
+
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseActivity.java
+Patch:
+@@ -15,7 +15,7 @@
+ /**
+  * Created by hugo on 2015/12/16.
+  */
+-public class BaseActivity extends AppCompatActivity {
++public  class BaseActivity extends AppCompatActivity {
+     private static String TAG = BaseActivity.class.getSimpleName();
+     public ACache aCache;
+     public SharedPreferenceUtil mSharedPreferenceUtil = null;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/ui/MainActivity.java
+Patch:
+@@ -118,6 +118,7 @@ public void onPageScrolled(int position, float positionOffset, int positionOffse
+ 
+             }
+ 
++            // TODO: 16/7/29 第一次进入的时候 fab 无法点击 切换页面比较卡
+             @Override
+             public void onPageSelected(int position) {
+                 if (position == 1) {
+@@ -127,7 +128,6 @@ public void onPageSelected(int position) {
+                     fab.setOnClickListener(new View.OnClickListener() {
+                         @Override
+                         public void onClick(View v) {
+-
+                             Intent intent = new Intent(MainActivity.this, ChoiceCityActivity.class);
+                             intent.putExtra(C.MULTI_CHECK, true);
+                             CircularAnimUtil.startActivity(MainActivity.this, intent, fab,
+@@ -158,7 +158,7 @@ public void onPageScrollStateChanged(int state) {
+         //Glide.with(this).load(R.raw.loading).diskCacheStrategy(DiskCacheStrategy.ALL).into(imageViewTarget);
+ 
+         //fab
+-        //fab.setOnClickListener(v -> showFabDialog());
++        fab.setOnClickListener(v -> showFabDialog());
+     }
+ 
+     /**
+
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseApplication.java
+Patch:
+@@ -8,7 +8,6 @@
+ import com.tencent.bugly.crashreport.CrashReport;
+ import com.xiecc.seeWeather.BuildConfig;
+ import com.xiecc.seeWeather.common.CrashHandler;
+-import com.xiecc.seeWeather.common.utils.RxUtils;
+ import com.xiecc.seeWeather.component.RetrofitSingleton;
+ 
+ /**
+@@ -21,7 +20,7 @@ public class BaseApplication extends Application {
+ 
+     static {
+         AppCompatDelegate.setDefaultNightMode(
+-            AppCompatDelegate.MODE_NIGHT_NO);
++            AppCompatDelegate.MODE_NIGHT_AUTO);
+     }
+ 
+     @Override
+@@ -36,7 +35,7 @@ public void onCreate() {
+         }
+         BlockCanary.install(this, new AppBlockCanaryContext()).start();
+         LeakCanary.install(this);
+-        RxUtils.unifiedErrorHandler();
++        //RxUtils.unifiedErrorHandler();
+         //Thread.setDefaultUncaughtExceptionHandler(new MyUnCaughtExceptionHandler());
+         /**
+          * 如果存在SD卡则将缓存写入SD卡,否则写入手机内存
+
+File: app/src/main/java/com/xiecc/seeWeather/common/utils/SharedPreferenceUtil.java
+Patch:
+@@ -97,4 +97,6 @@ public void setNotificationModel(int t) {
+     public int getNotificationModel() {
+         return mPrefs.getInt(NOTIFICATION_MODEL, Notification.FLAG_AUTO_CANCEL);
+     }
++
++
+ }
+
+File: app/src/main/java/com/xiecc/seeWeather/common/utils/Util.java
+Patch:
+@@ -208,4 +208,6 @@ public static boolean checkDeviceHasNavigationBar(Context activity) {
+             .deviceHasKey(KeyEvent.KEYCODE_BACK);
+         return !hasMenuKey && !hasBackKey;
+     }
++
++
+ }
+\ No newline at end of file
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/city/ui/ChoiceCityActivity.java
+Patch:
+@@ -74,6 +74,7 @@ protected void onCreate(Bundle savedInstanceState) {
+ 
+ 
+ 
++
+     private void initView() {
+         mRecyclerview = (RecyclerView) findViewById(R.id.recyclerview);
+         mProgressBar = (ProgressBar) findViewById(R.id.progressBar);
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/ui/MainActivity.java
+Patch:
+@@ -121,6 +121,7 @@ private void initDrawer() {
+         NavigationView navigationView = (NavigationView) findViewById(R.id.nav_view);
+         if (navigationView != null) {
+             navigationView.setNavigationItemSelectedListener(this);
++            //navigationView.setItemIconTintList(null);
+             View headerLayout = navigationView.inflateHeaderView(R.layout.nav_header_main);
+             drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
+             ActionBarDrawerToggle toggle = new ActionBarDrawerToggle(this, drawer, toolbar, R.string.navigation_drawer_open,
+
+File: app/src/main/java/com/xiecc/seeWeather/common/CrashHandler.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.xiecc.seeWeather.common;
+ 
+ import android.content.Context;
++import com.xiecc.seeWeather.common.utils.SharedPreferenceUtil;
+ import com.xiecc.seeWeather.common.utils.Util;
+-import com.xiecc.seeWeather.modules.setting.Setting;
+ import java.io.PrintWriter;
+ import java.io.StringWriter;
+ import java.io.Writer;
+@@ -38,8 +38,8 @@ public void uncaughtException(Thread thread, Throwable ex) {
+         PLog.e(TAG, collectCrashDeviceInfo());
+         PLog.e(TAG, getCrashInfo(ex));
+ 
+-        Setting mSetting = Setting.getInstance();
+-        mSetting.setCityName("北京");
++        SharedPreferenceUtil mSharedPreferenceUtil = SharedPreferenceUtil.getInstance();
++        mSharedPreferenceUtil.setCityName("北京");
+         // 调用系统错误机制
+         defaultHandler.uncaughtException(thread, ex);
+     }
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/city/ui/ChoiceCityActivity.java
+Patch:
+@@ -97,7 +97,7 @@ private void initRecyclerView() {
+                 queryCities();
+             } else if (currentLevel == LEVEL_CITY) {
+                 selectedCity = cityList.get(pos);
+-                mSetting.setCityName(selectedCity.CityName);
++                mSharedPreferenceUtil.setCityName(selectedCity.CityName);
+                 RxBus.getDefault().post(new ChangeCityEvent());
+                 finish();
+             }
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/ui/MainActivity.java
+Patch:
+@@ -42,6 +42,7 @@
+ import com.bumptech.glide.request.animation.GlideAnimation;
+ import com.bumptech.glide.request.target.SimpleTarget;
+ import com.tbruyelle.rxpermissions.RxPermissions;
++import com.xiecc.seeWeather.BuildConfig;
+ import com.xiecc.seeWeather.R;
+ import com.xiecc.seeWeather.base.BaseActivity;
+ import com.xiecc.seeWeather.base.C;
+@@ -196,7 +197,7 @@ private void initView() {
+         fab = (FloatingActionButton) findViewById(R.id.fab);
+         if (fab != null) {
+             fab.setOnClickListener(v -> showFabDialog());
+-            if (Util.checkDeviceHasNavigationBar(this)) {
++            if (Util.checkDeviceHasNavigationBar(this) || BuildConfig.DEBUG) {
+                 CoordinatorLayout.LayoutParams lp = (CoordinatorLayout.LayoutParams) fab.getLayoutParams();
+                 Resources res = getResources();
+                 int fabMargin = Util.dip2px(this, res.getDimension(R.dimen.fab_margin)) / 3;
+
+File: app/src/main/java/com/xiecc/seeWeather/base/RxBus.java
+Patch:
+@@ -13,7 +13,7 @@ public class RxBus {
+ 
+     private static volatile RxBus instance;
+     // 主题
+-    private final Subject bus;
++    private final Subject<Object, Object> bus;
+ 
+     // PublishSubject只会把在订阅发生的时间点之后来自原始Observable的数据发射给观察者
+     public RxBus() {
+
+File: app/src/main/java/com/xiecc/seeWeather/common/PLog.java
+Patch:
+@@ -163,7 +163,6 @@ private static String log(String message) {
+         className = className.substring(className.lastIndexOf('.') + 1) + ".java";
+         int lineNumber = targetElement.getLineNumber();
+         if (lineNumber < 0) lineNumber = 0;
+-
+         return "(" + className + ":" + lineNumber + ") " + message;
+     }
+ }
+
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseApplication.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import android.app.Application;
+ import android.content.Context;
+-
+ import com.github.moduth.blockcanary.BlockCanary;
+ import com.squareup.leakcanary.LeakCanary;
+ import com.tencent.bugly.crashreport.CrashReport;
+@@ -24,6 +23,7 @@ public void onCreate() {
+         mAppContext = getApplicationContext();
+         // 初始化 retrofit
+         RetrofitSingleton.init(getApplicationContext());
++
+         CrashHandler.init(new CrashHandler(getApplicationContext()));
+         CrashReport.initCrashReport(getApplicationContext(), "900028220", false);
+         BlockCanary.install(this, new AppBlockCanaryContext()).start();
+
+File: app/src/main/java/com/xiecc/seeWeather/common/utils/FileSizeUtil.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.common;
++package com.xiecc.seeWeather.common.utils;
+ 
+ import android.util.Log;
+ import java.io.File;
+
+File: app/src/main/java/com/xiecc/seeWeather/component/AnimRecyclerViewAdapter.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.main.adapter;
++package com.xiecc.seeWeather.component;
+ 
+ import android.content.Context;
+ import android.support.v7.widget.RecyclerView;
+
+File: app/src/main/java/com/xiecc/seeWeather/component/ImageLoader.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.common;
++package com.xiecc.seeWeather.component;
+ 
+ import android.content.Context;
+ import android.support.annotation.DrawableRes;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/about/ui/AboutFragment.java
+Patch:
+@@ -12,8 +12,8 @@
+ import android.support.v7.app.AlertDialog;
+ import android.view.View;
+ import com.xiecc.seeWeather.R;
+-import com.xiecc.seeWeather.common.CheckVersion;
+-import com.xiecc.seeWeather.common.Util;
++import com.xiecc.seeWeather.common.utils.CheckVersion;
++import com.xiecc.seeWeather.common.utils.Util;
+ 
+ /**
+  * Created by hugo on 2016/2/20 0020.
+
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseActivity.java
+Patch:
+@@ -9,7 +9,7 @@
+ import android.view.WindowManager;
+ import com.readystatesoftware.systembartint.SystemBarTintManager;
+ import com.xiecc.seeWeather.common.ACache;
+-import com.xiecc.seeWeather.modules.ui.setting.Setting;
++import com.xiecc.seeWeather.modules.setting.Setting;
+ 
+ /**
+  * Created by hugo on 2015/12/16.
+
+File: app/src/main/java/com/xiecc/seeWeather/common/CheckVersion.java
+Patch:
+@@ -7,8 +7,8 @@
+ import android.support.v7.app.AlertDialog;
+ import android.view.View;
+ import com.xiecc.seeWeather.component.RetrofitSingleton;
+-import com.xiecc.seeWeather.modules.domain.VersionAPI;
+-import com.xiecc.seeWeather.modules.ui.setting.Setting;
++import com.xiecc.seeWeather.modules.about.domain.VersionAPI;
++import com.xiecc.seeWeather.modules.setting.Setting;
+ import rx.android.schedulers.AndroidSchedulers;
+ import rx.schedulers.Schedulers;
+ 
+
+File: app/src/main/java/com/xiecc/seeWeather/component/ApiInterface.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.xiecc.seeWeather.component;
+ 
+-import com.xiecc.seeWeather.modules.domain.VersionAPI;
+-import com.xiecc.seeWeather.modules.domain.WeatherAPI;
++import com.xiecc.seeWeather.modules.about.domain.VersionAPI;
++import com.xiecc.seeWeather.modules.main.domain.WeatherAPI;
+ import retrofit2.http.GET;
+ import retrofit2.http.Query;
+ import rx.Observable;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/about/domain/VersionAPI.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.domain;
++package com.xiecc.seeWeather.modules.about.domain;
+ 
+ import com.google.gson.annotations.SerializedName;
+ 
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/about/ui/AboutActivity.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.ui.about;
++package com.xiecc.seeWeather.modules.about.ui;
+ 
+ import android.os.Bundle;
+ import android.support.v4.content.ContextCompat;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/about/ui/AboutFragment.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.ui.about;
++package com.xiecc.seeWeather.modules.about.ui;
+ 
+ import android.content.ClipData;
+ import android.content.ClipboardManager;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/city/adapter/CityAdapter.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.adatper;
++package com.xiecc.seeWeather.modules.city.adapter;
+ 
+ import android.content.Context;
+ import android.support.v7.widget.CardView;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/city/db/DBManager.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.db;
++package com.xiecc.seeWeather.modules.city.db;
+ 
+ import android.content.Context;
+ import android.database.sqlite.SQLiteDatabase;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/city/db/WeatherDB.java
+Patch:
+@@ -1,11 +1,11 @@
+-package com.xiecc.seeWeather.modules.db;
++package com.xiecc.seeWeather.modules.city.db;
+ 
+ import android.content.Context;
+ import android.database.Cursor;
+ import android.database.sqlite.SQLiteDatabase;
+ 
+-import com.xiecc.seeWeather.modules.domain.City;
+-import com.xiecc.seeWeather.modules.domain.Province;
++import com.xiecc.seeWeather.modules.city.domain.City;
++import com.xiecc.seeWeather.modules.city.domain.Province;
+ import java.util.ArrayList;
+ import java.util.List;
+ 
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/city/domain/City.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.domain;
++package com.xiecc.seeWeather.modules.city.domain;
+ 
+ import java.io.Serializable;
+ 
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/city/domain/Province.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.domain;
++package com.xiecc.seeWeather.modules.city.domain;
+ 
+ import java.io.Serializable;
+ 
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/launch/FirstActivity.java
+Patch:
+@@ -1,11 +1,12 @@
+-package com.xiecc.seeWeather.modules.ui;
++package com.xiecc.seeWeather.modules.launch;
+ 
+ import android.app.Activity;
+ import android.content.Intent;
+ import android.os.Bundle;
+ import android.os.Handler;
+ import android.os.Looper;
+ import android.os.Message;
++import com.xiecc.seeWeather.modules.main.ui.MainActivity;
+ import java.lang.ref.WeakReference;
+ 
+ /**
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/domain/Weather.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.domain;
++package com.xiecc.seeWeather.modules.main.domain;
+ 
+ import com.google.gson.annotations.SerializedName;
+ import java.io.Serializable;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/domain/WeatherAPI.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.domain;
++package com.xiecc.seeWeather.modules.main.domain;
+ 
+ import com.google.gson.annotations.Expose;
+ import com.google.gson.annotations.SerializedName;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/main/listener/HidingScrollListener.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.listener;
++package com.xiecc.seeWeather.modules.main.listener;
+ 
+ import android.support.v7.widget.RecyclerView;
+ 
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/service/AutoUpdateService.java
+Patch:
+@@ -11,9 +11,9 @@
+ import com.xiecc.seeWeather.R;
+ import com.xiecc.seeWeather.common.ACache;
+ import com.xiecc.seeWeather.component.RetrofitSingleton;
+-import com.xiecc.seeWeather.modules.domain.Weather;
+-import com.xiecc.seeWeather.modules.ui.MainActivity;
+-import com.xiecc.seeWeather.modules.ui.setting.Setting;
++import com.xiecc.seeWeather.modules.main.domain.Weather;
++import com.xiecc.seeWeather.modules.main.ui.MainActivity;
++import com.xiecc.seeWeather.modules.setting.Setting;
+ import java.util.concurrent.TimeUnit;
+ import rx.Observable;
+ import rx.Subscription;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/setting/Setting.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.ui.setting;
++package com.xiecc.seeWeather.modules.setting;
+ 
+ import android.app.Notification;
+ import android.content.Context;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/setting/ui/SettingActivity.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.ui.setting;
++package com.xiecc.seeWeather.modules.setting.ui;
+ 
+ import android.os.Bundle;
+ import android.support.v4.content.ContextCompat;
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/setting/ui/SettingFragment.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.xiecc.seeWeather.modules.ui.setting;
++package com.xiecc.seeWeather.modules.setting.ui;
+ 
+ import android.app.Notification;
+ import android.content.Context;
+@@ -23,6 +23,7 @@
+ import com.xiecc.seeWeather.common.FileSizeUtil;
+ import com.xiecc.seeWeather.common.PLog;
+ import com.xiecc.seeWeather.modules.service.AutoUpdateService;
++import com.xiecc.seeWeather.modules.setting.Setting;
+ 
+ /**
+  * Created by hugo on 2016/2/19 0019.
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/ui/MainActivity.java
+Patch:
+@@ -167,8 +167,8 @@ private void initView() {
+ 
+         //mSetting.putInt(Setting.HOUR, calendar.get(Calendar.HOUR_OF_DAY));
+         mSetting.setCurrentHour(calendar.get(Calendar.HOUR_OF_DAY));
+-
+         setStatusBarColorForKitkat(R.color.colorSunrise);
++        Glide.with(this).load(R.mipmap.sunrise).diskCacheStrategy(DiskCacheStrategy.ALL).into(bannner);
+         if (mSetting.getCurrentHour() < 6 || mSetting.getCurrentHour() > 18) {
+             Glide.with(this).load(R.mipmap.sunset).diskCacheStrategy(DiskCacheStrategy.ALL).into(bannner);
+             collapsingToolbarLayout.setContentScrimColor(ContextCompat.getColor(this, R.color.colorSunset));
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/ui/ChoiceCityActivity.java
+Patch:
+@@ -83,12 +83,12 @@ private void initView() {
+         //toolbar = (Toolbar) findViewById(R.id.toolbar);
+         //toolbar.setTitle("选择城市");
+         //setSupportActionBar(toolbar);
+-        ImageView bannner = (ImageView) findViewById(R.id.bannner);
++        ImageView banner = (ImageView) findViewById(R.id.banner);
+         collapsingToolbarLayout = (CollapsingToolbarLayout) findViewById(R.id.toolbar_layout);
+         setStatusBarColorForKitkat(R.color.colorSunrise);
+         if (mSetting.getCurrentHour()< 6 || mSetting.getCurrentHour() > 18) {
+             collapsingToolbarLayout.setContentScrimColor(ContextCompat.getColor(this, R.color.colorSunset));
+-            Glide.with(this).load(R.mipmap.city_night).diskCacheStrategy(DiskCacheStrategy.ALL).into(bannner);
++            Glide.with(this).load(R.mipmap.city_night).diskCacheStrategy(DiskCacheStrategy.ALL).into(banner);
+             setStatusBarColorForKitkat(R.color.colorSunset);
+         }
+         mProgressBar = (ProgressBar) findViewById(R.id.progressBar);
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/ui/ChoiceCityActivity.java
+Patch:
+@@ -83,12 +83,12 @@ private void initView() {
+         //toolbar = (Toolbar) findViewById(R.id.toolbar);
+         //toolbar.setTitle("选择城市");
+         //setSupportActionBar(toolbar);
+-        ImageView bannner = (ImageView) findViewById(R.id.bannner);
++        ImageView banner = (ImageView) findViewById(R.id.banner);
+         collapsingToolbarLayout = (CollapsingToolbarLayout) findViewById(R.id.toolbar_layout);
+         setStatusBarColorForKitkat(R.color.colorSunrise);
+         if (mSetting.getCurrentHour()< 6 || mSetting.getCurrentHour() > 18) {
+             collapsingToolbarLayout.setContentScrimColor(ContextCompat.getColor(this, R.color.colorSunset));
+-            Glide.with(this).load(R.mipmap.city_night).diskCacheStrategy(DiskCacheStrategy.ALL).into(bannner);
++            Glide.with(this).load(R.mipmap.city_night).diskCacheStrategy(DiskCacheStrategy.ALL).into(banner);
+             setStatusBarColorForKitkat(R.color.colorSunset);
+         }
+         mProgressBar = (ProgressBar) findViewById(R.id.progressBar);
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/adatper/WeatherAdapter.java
+Patch:
+@@ -77,6 +77,7 @@ public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType
+ 
+     @Override
+     public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
++
+         if (holder instanceof NowWeatherViewHolder) {
+             try {
+                 ((NowWeatherViewHolder) holder).tempFlu.setText(mWeatherData.now.tmp + "℃");
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/db/DBManager.java
+Patch:
+@@ -26,6 +26,7 @@ public class DBManager {
+     private Context context;
+ 
+ 
++
+     public DBManager(Context context) {
+         this.context = context;
+     }
+@@ -62,7 +63,6 @@ private SQLiteDatabase openDatabase(String dbfile) {
+                 fos.close();
+                 is.close();
+             }
+-
+             return SQLiteDatabase.openOrCreateDatabase(dbfile, null);
+         } catch (FileNotFoundException e) {
+             Log.e("Database", "File not found");
+@@ -71,6 +71,7 @@ private SQLiteDatabase openDatabase(String dbfile) {
+             Log.e("Database", "IO exception");
+             e.printStackTrace();
+         }
++
+         return null;
+     }
+ 
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/adatper/WeatherAdapter.java
+Patch:
+@@ -177,7 +177,7 @@ public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
+ 
+     @Override
+     public int getItemCount() {
+-        return mWeatherData != null ? 4 : 0;
++        return mWeatherData.status != null ? 4 : 0;
+     }
+ 
+     /**
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/ui/ChoiceCityActivity.java
+Patch:
+@@ -142,6 +142,7 @@ private void queryProvinces() {
+                 //PLog.i(TAG,province.ProSort+"");
+                 //mAdapter.notifyItemInserted(province.ProSort-1);
+ 
++
+             }
+         };
+ 
+
+File: app/src/main/java/com/xiecc/seeWeather/modules/ui/setting/SettingFragment.java
+Patch:
+@@ -134,8 +134,9 @@ private void showIconDialog() {
+         layoutTypeTwo.setClickable(true);
+         RadioButton radioTypeTwo = (RadioButton) dialogLayout.findViewById(R.id.radio_two);
+         TextView done = (TextView) dialogLayout.findViewById(R.id.done);
++        
+         radioTypeOne.setClickable(false);
+-        radioTypeTwo.setChecked(false);
++        radioTypeTwo.setClickable(false);
+ 
+         switch (mSetting.getIconType()) {
+             case 0:
+
+File: app/src/main/java/com/xiecc/seeWeather/base/BaseApplication.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import android.app.Application;
+ import android.content.Context;
++import com.tencent.bugly.crashreport.CrashReport;
+ import com.xiecc.seeWeather.common.CrashHandler;
+ import com.xiecc.seeWeather.component.RetrofitSingleton;
+ 
+@@ -20,6 +21,8 @@ public class BaseApplication extends Application {
+         // 初始化 retrofit
+         RetrofitSingleton.init(getApplicationContext());
+         CrashHandler.init(new CrashHandler(getApplicationContext()));
++        CrashReport.initCrashReport(getApplicationContext(), "900028220", false);
++
+         //Thread.setDefaultUncaughtExceptionHandler(new MyUnCaughtExceptionHandler());
+ 
+         /**
+
+File: app/src/main/java/com/xiecc/seeWeather/component/RetrofitSingleton.java
+Patch:
+@@ -45,6 +45,7 @@ public static void init(final Context context) {
+         interceptor.setLevel(HttpLoggingInterceptor.Level.BODY);
+         okHttpClient = new OkHttpClient.Builder()
+             .addInterceptor(interceptor)
++
+             .retryOnConnectionFailure(true)
+             .connectTimeout(15, TimeUnit.SECONDS)
+             .build();
+
+File: app/src/main/java/com/xiecc/seeWeather/component/ApiInterface.java
+Patch:
+@@ -2,8 +2,8 @@
+ 
+ import com.xiecc.seeWeather.modules.domain.VersionAPI;
+ import com.xiecc.seeWeather.modules.domain.WeatherAPI;
+-import retrofit.http.GET;
+-import retrofit.http.Query;
++import retrofit2.http.GET;
++import retrofit2.http.Query;
+ import rx.Observable;
+ 
+ /**
+
+File: app/src/main/java/com/xiecc/seeWeather/component/RetrofitSingleton.java
+Patch:
+@@ -10,9 +10,9 @@
+ import com.squareup.okhttp.OkHttpClient;
+ import java.util.concurrent.Executor;
+ import java.util.concurrent.Executors;
+-import retrofit.GsonConverterFactory;
+-import retrofit.Retrofit;
+-import retrofit.RxJavaCallAdapterFactory;
++import retrofit2.Retrofit;
++import retrofit2.adapter.rxjava.RxJavaCallAdapterFactory;
++import retrofit2.converter.gson.GsonConverterFactory;
+ 
+ /**
+  * Created by zk on 2015/12/16.
+
+File: app/src/main/java/com/xiecc/seeWeather/common/CheckVersion.java
+Patch:
+@@ -31,7 +31,7 @@ public void onCompleted() {
+ 
+                 @Override
+                 public void onError(Throwable e) {
+-                    RetrofitSingleton.disposeFailureInfo(e, context, view);
++                    //RetrofitSingleton.disposeFailureInfo(e, context, view);
+                 }
+ 
+                 @Override
+

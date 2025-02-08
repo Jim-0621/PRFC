@@ -1,0 +1,875 @@
+File: dynamic-datasource-creator/src/main/java/com/baomidou/dynamic/datasource/creator/basic/BasicDataSourceCreator.java
+Patch:
+@@ -87,7 +87,7 @@ public DataSource createDataSource(DataSourceProperty dataSourceProperty) {
+             return (DataSource) buildMethod.invoke(o6);
+         } catch (Exception e) {
+             throw new ErrorCreateDataSourceException(
+-                    "dynamic-datasource create basic database named " + dataSourceProperty.getPoolName() + " error");
++                "dynamic-datasource create datasource named [" + dataSourceProperty.getPoolName() + "] error", e);
+         }
+     }
+ 
+
+File: dynamic-datasource-spring/src/main/java/com/baomidou/dynamic/datasource/tx/TransactionContext.java
+Patch:
+@@ -81,6 +81,9 @@ public static void registerSynchronization(TransactionSynchronization synchroniz
+         if (Objects.isNull(synchronization)) {
+             throw new IllegalArgumentException("TransactionSynchronization must not be null");
+         }
++        if (DsStrUtils.isEmpty(TransactionContext.getXID())) {
++            throw new IllegalStateException("Transaction is not active");
++        }
+         Set<TransactionSynchronization> synchs = SYNCHRONIZATION_HOLDER.get();
+         synchs.add(synchronization);
+     }
+
+File: dynamic-datasource-spring-boot3-starter/src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAopConfiguration.java
+Patch:
+@@ -46,6 +46,7 @@
+  * @see DynamicRoutingDataSource
+  * @since 1.0.0
+  */
++@Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+ @Configuration(proxyBeanMethods = false)
+ public class DynamicDataSourceAopConfiguration {
+ 
+@@ -95,4 +96,4 @@ public Advisor dynamicTransactionAdvisor() {
+         return new DynamicDataSourceAnnotationAdvisor(interceptor, DSTransactional.class);
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: dynamic-datasource-spring-boot-common/src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAssistConfiguration.java
+Patch:
+@@ -26,7 +26,6 @@
+ import com.baomidou.dynamic.datasource.tx.DsTxEventListenerFactory;
+ import lombok.RequiredArgsConstructor;
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+-import org.springframework.boot.context.properties.EnableConfigurationProperties;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+ import org.springframework.core.annotation.Order;
+@@ -44,7 +43,6 @@
+  */
+ @Configuration
+ @RequiredArgsConstructor
+-@EnableConfigurationProperties(DynamicDataSourceProperties.class)
+ public class DynamicDataSourceAssistConfiguration {
+ 
+     private final DynamicDataSourceProperties properties;
+
+File: dynamic-datasource-spring-boot-starter/src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAutoConfiguration.java
+Patch:
+@@ -25,7 +25,6 @@
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+ import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+-import org.springframework.boot.context.properties.EnableConfigurationProperties;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+ import org.springframework.context.annotation.Import;
+@@ -45,7 +44,6 @@
+  */
+ @Slf4j
+ @Configuration
+-@EnableConfigurationProperties(DynamicDataSourceProperties.class)
+ @AutoConfigureBefore(value = DataSourceAutoConfiguration.class, name = "com.alibaba.druid.spring.boot.autoconfigure.DruidDataSourceAutoConfigure")
+ @Import({DruidDynamicDataSourceConfiguration.class, DynamicDataSourceCreatorAutoConfiguration.class, DynamicDataSourceAopConfiguration.class, DynamicDataSourceAssistConfiguration.class})
+ @ConditionalOnProperty(prefix = DynamicDataSourceProperties.PREFIX, name = "enabled", havingValue = "true", matchIfMissing = true)
+
+File: dynamic-datasource-spring-boot3-starter/src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAutoConfiguration.java
+Patch:
+@@ -40,8 +40,7 @@
+  * @since 1.0.0
+  */
+ @Slf4j
+-@Configuration
+-@EnableConfigurationProperties(DynamicDataSourceProperties.class)
++@Configuration(proxyBeanMethods = false)
+ @AutoConfigureBefore(
+         value = DataSourceAutoConfiguration.class,
+         name = {
+
+File: dynamic-datasource-spring-boot-starter/src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAutoConfiguration.java
+Patch:
+@@ -64,8 +64,8 @@ public DynamicDataSourceAutoConfiguration(
+ 
+     @Bean
+     @ConditionalOnMissingBean
+-    public DataSource dataSource() {
+-        DynamicRoutingDataSource dataSource = new DynamicRoutingDataSource();
++    public DataSource dataSource(List<DynamicDataSourceProvider> providers) {
++        DynamicRoutingDataSource dataSource = new DynamicRoutingDataSource(providers);
+         dataSource.setPrimary(properties.getPrimary());
+         dataSource.setStrict(properties.getStrict());
+         dataSource.setStrategy(properties.getStrategy());
+
+File: dynamic-datasource-spring-boot3-starter/src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAutoConfiguration.java
+Patch:
+@@ -16,6 +16,7 @@
+ package com.baomidou.dynamic.datasource.spring.boot.autoconfigure;
+ 
+ import com.baomidou.dynamic.datasource.DynamicRoutingDataSource;
++import com.baomidou.dynamic.datasource.provider.DynamicDataSourceProvider;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.InitializingBean;
+ import org.springframework.beans.factory.ObjectProvider;
+@@ -64,8 +65,8 @@ public DynamicDataSourceAutoConfiguration(
+ 
+     @Bean
+     @ConditionalOnMissingBean
+-    public DataSource dataSource() {
+-        DynamicRoutingDataSource dataSource = new DynamicRoutingDataSource();
++    public DataSource dataSource(List<DynamicDataSourceProvider> providers) {
++        DynamicRoutingDataSource dataSource = new DynamicRoutingDataSource(providers);
+         dataSource.setPrimary(properties.getPrimary());
+         dataSource.setStrict(properties.getStrict());
+         dataSource.setStrategy(properties.getStrategy());
+
+File: dynamic-datasource-spring-boot-starter/src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAopConfiguration.java
+Patch:
+@@ -85,7 +85,8 @@ public Advisor dynamicDatasourceAnnotationAdvisor(DsProcessor dsProcessor) {
+     @Bean
+     @ConditionalOnProperty(prefix = DynamicDataSourceProperties.PREFIX, name = "seata", havingValue = "false", matchIfMissing = true)
+     public Advisor dynamicTransactionAdvisor() {
+-        DynamicLocalTransactionInterceptor interceptor = new DynamicLocalTransactionInterceptor();
++        DynamicDatasourceAopProperties aopProperties = properties.getAop();
++        DynamicLocalTransactionInterceptor interceptor = new DynamicLocalTransactionInterceptor(aopProperties.getAllowedPublicOnly());
+         return new DynamicDataSourceAnnotationAdvisor(interceptor, DSTransactional.class);
+     }
+ 
+
+File: dynamic-datasource-spring-boot3-starter/src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAopConfiguration.java
+Patch:
+@@ -85,7 +85,8 @@ public Advisor dynamicDatasourceAnnotationAdvisor(DsProcessor dsProcessor) {
+     @Bean
+     @ConditionalOnProperty(prefix = DynamicDataSourceProperties.PREFIX, name = "seata", havingValue = "false", matchIfMissing = true)
+     public Advisor dynamicTransactionAdvisor() {
+-        DynamicLocalTransactionInterceptor interceptor = new DynamicLocalTransactionInterceptor();
++        DynamicDatasourceAopProperties aopProperties = properties.getAop();
++        DynamicLocalTransactionInterceptor interceptor = new DynamicLocalTransactionInterceptor(aopProperties.getAllowedPublicOnly());
+         return new DynamicDataSourceAnnotationAdvisor(interceptor, DSTransactional.class);
+     }
+ 
+
+File: dynamic-datasource-spring/src/main/java/com/baomidou/dynamic/datasource/aop/DynamicDataSourceAnnotationInterceptor.java
+Patch:
+@@ -16,6 +16,7 @@
+ package com.baomidou.dynamic.datasource.aop;
+ 
+ import com.baomidou.dynamic.datasource.processor.DsProcessor;
++import com.baomidou.dynamic.datasource.annotation.DS;
+ import com.baomidou.dynamic.datasource.support.DataSourceClassResolver;
+ import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
+ import org.aopalliance.intercept.MethodInterceptor;
+@@ -66,7 +67,7 @@ public Object invoke(MethodInvocation invocation) throws Throwable {
+      * @return dsKey
+      */
+     private String determineDatasourceKey(MethodInvocation invocation) {
+-        String key = dataSourceClassResolver.findKey(invocation.getMethod(), invocation.getThis());
++        String key = dataSourceClassResolver.findKey(invocation.getMethod(), invocation.getThis(), DS.class);
+         return key.startsWith(DYNAMIC_PREFIX) ? dsProcessor.determineDatasource(invocation, key) : key;
+     }
+ }
+\ No newline at end of file
+
+File: dynamic-datasource-creator/src/main/java/com/baomidou/dynamic/datasource/creator/druid/DruidConfigUtil.java
+Patch:
+@@ -81,7 +81,7 @@ public static Properties mergeConfig(DruidConfig g, @NonNull DruidConfig c) {
+         }
+ 
+         //filters单独处理，默认了stat
+-        String filters = getValue(g, c, "filter");
++        String filters = getValue(g, c, "filters");
+         if (filters == null) {
+             filters = STAT_STR;
+         }
+@@ -180,4 +180,4 @@ public static void setValue(DruidDataSource dataSource, String field, DruidConfi
+             log.warn("druid current  set  [" + field + " ] error");
+         }
+     }
+-}
+\ No newline at end of file
++}
+
+File: dynamic-datasource-creator/src/main/java/com/baomidou/dynamic/datasource/toolkit/ConfigMergeCreator.java
+Patch:
+@@ -45,6 +45,7 @@ public class ConfigMergeCreator<C, T> {
+     private final Class<T> targetClazz;
+ 
+     @SneakyThrows
++    @SuppressWarnings("unchecked")
+     public T create(C global, C item) {
+         if (configClazz.equals(targetClazz) && global == null) {
+             return (T) item;
+
+File: dynamic-datasource-spring-boot-common/src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAssistConfiguration.java
+Patch:
+@@ -62,9 +62,10 @@ public DataSourceInitEvent dataSourceInitEvent() {
+ 
+     @Bean
+     @ConditionalOnMissingBean
+-    public DefaultDataSourceCreator dataSourceCreator(List<DataSourceCreator> dataSourceCreators) {
++    public DefaultDataSourceCreator dataSourceCreator(List<DataSourceCreator> dataSourceCreators, DataSourceInitEvent dataSourceInitEvent) {
+         DefaultDataSourceCreator creator = new DefaultDataSourceCreator();
+         creator.setCreators(dataSourceCreators);
++        creator.setDataSourceInitEvent(dataSourceInitEvent);
+         creator.setPublicKey(properties.getPublicKey());
+         creator.setLazy(properties.getLazy());
+         creator.setP6spy(properties.getP6spy());
+
+File: dynamic-datasource-spring/src/main/java/com/baomidou/dynamic/datasource/tx/ConnectionFactory.java
+Patch:
+@@ -220,7 +220,8 @@ public static void createSavepoint(String xid) throws TransactionException {
+      */
+     public static boolean hasSavepoint(String xid) {
+         Map<String, List<SavePointHolder>> savePointMap = SAVEPOINT_CONNECTION_HOLDER.get();
+-        return !CollectionUtils.isEmpty(savePointMap.get(xid));
++        List<SavePointHolder> savePointHolders = savePointMap.get(xid);
++        return !CollectionUtils.isEmpty(savePointHolders) && savePointHolders.stream().anyMatch(savePointHolder -> !CollectionUtils.isEmpty(savePointHolder.getSavePoints()));
+     }
+ 
+ }
+\ No newline at end of file
+
+File: dynamic-datasource-creator/src/main/java/com/baomidou/dynamic/datasource/creator/druid/DruidDataSourceCreator.java
+Patch:
+@@ -65,7 +65,6 @@ public class DruidDataSourceCreator implements DataSourceCreator {
+      * Druid since 1.2.17 use 'configFromPropeties' to copy config
+      * Druid < 1.2.17 use 'configFromPropety' to copy config
+      */
+-    @SuppressWarnings("JavaReflectionMemberAccess")
+     private static void fetchMethod() {
+         Class<DruidDataSource> aClass = DruidDataSource.class;
+         try {
+
+File: dynamic-datasource-spring-boot-common/src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceCreatorAutoConfiguration.java
+Patch:
+@@ -113,12 +113,13 @@ static class Dbcp2DataSourceCreatorConfiguration {
+         public Dbcp2DataSourceCreator dbcp2DataSourceCreator(DynamicDataSourceProperties properties) {
+             return new Dbcp2DataSourceCreator(properties.getDbcp2());
+         }
++
+     }
+ 
+     /**
+      * 存在Atomikos数据源时, 加入创建器
+      */
+-    @ConditionalOnClass(AtomikosDataSourceBean.class)
++    @ConditionalOnClass({AtomikosDataSourceBean.class,TransactionFactory.class})
+     @Configuration
+     static class AtomikosDataSourceCreatorConfiguration {
+ 
+@@ -129,10 +130,9 @@ public AtomikosDataSourceCreator atomikosDataSourceCreator(DynamicDataSourceProp
+         }
+ 
+         @Bean
+-        @ConditionalOnClass(TransactionFactory.class)
+         public TransactionFactory atomikosTransactionFactory() {
+             return new AtomikosTransactionFactory();
+         }
+-    }
+ 
++    }
+ }
+\ No newline at end of file
+
+File: dynamic-datasource-spring/src/main/java/com/baomidou/dynamic/datasource/provider/AbstractDataSourceProvider.java
+Patch:
+@@ -17,8 +17,8 @@
+ 
+ import com.baomidou.dynamic.datasource.creator.DataSourceProperty;
+ import com.baomidou.dynamic.datasource.creator.DefaultDataSourceCreator;
++import lombok.AllArgsConstructor;
+ import lombok.extern.slf4j.Slf4j;
+-import org.springframework.beans.factory.annotation.Autowired;
+ 
+ import javax.sql.DataSource;
+ import java.util.HashMap;
+@@ -28,10 +28,10 @@
+  * @author TaoYu
+  */
+ @Slf4j
++@AllArgsConstructor
+ public abstract class AbstractDataSourceProvider implements DynamicDataSourceProvider {
+ 
+-    @Autowired
+-    private DefaultDataSourceCreator defaultDataSourceCreator;
++    private final DefaultDataSourceCreator defaultDataSourceCreator;
+ 
+     protected Map<String, DataSource> createDataSourceMap(
+             Map<String, DataSourceProperty> dataSourcePropertiesMap) {
+
+File: dynamic-datasource-spring/src/main/java/com/baomidou/dynamic/datasource/tx/LocalTxUtil.java
+Patch:
+@@ -68,7 +68,7 @@ public static void rollback(String xid) throws Exception {
+             ConnectionFactory.notify(xid, false);
+         } finally {
+             if (!hasSavepoint) {
+-                log.debug("dynamic-datasource commit local tx [{}]", TransactionContext.getXID());
++                log.debug("dynamic-datasource rollback local tx [{}]", TransactionContext.getXID());
+                 TransactionContext.remove();
+             }
+         }
+
+File: dynamic-datasource-creator/src/main/java/com/baomidou/dynamic/datasource/creator/druid/DruidDataSourceCreator.java
+Patch:
+@@ -69,13 +69,13 @@ public class DruidDataSourceCreator implements DataSourceCreator {
+     private static void fetchMethod() {
+         Class<DruidDataSource> aClass = DruidDataSource.class;
+         try {
+-            configMethod = aClass.getMethod("configFromPropeties", DruidDataSource.class);
++            configMethod = aClass.getMethod("configFromPropeties", Properties.class);
+             return;
+         } catch (NoSuchMethodException ignored) {
+         }
+ 
+         try {
+-            configMethod = aClass.getMethod("configFromPropety", DruidDataSource.class);
++            configMethod = aClass.getMethod("configFromPropety", Properties.class);
+             return;
+         } catch (NoSuchMethodException ignored) {
+         }
+
+File: dynamic-datasource-spring/src/main/java/com/baomidou/dynamic/datasource/creator/DataSourceGlobalConfig.java
+Patch:
+@@ -30,7 +30,7 @@
+ @Slf4j
+ @Getter
+ @Setter
+-public class DataSourceGlobalProperty {
++public class DataSourceGlobalConfig {
+ 
+     /**
+      * 是否懒加载数据源
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/DruidDataSourceCreator.java
+Patch:
+@@ -214,7 +214,7 @@ private void setParam(DruidDataSource dataSource, DruidConfig config) {
+         }
+ 
+         Integer socketTimeout = config.getSocketTimeout() == null ? gConfig.getSocketTimeout() : config.getSocketTimeout();
+-        if (connectTimeout != null) {
++        if (socketTimeout != null) {
+             try {
+                 DruidDataSource.class.getMethod("setSocketTimeout", int.class);
+                 dataSource.setSocketTimeout(socketTimeout);
+
+File: src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAutoConfiguration.java
+Patch:
+@@ -47,6 +47,7 @@
+ import org.springframework.context.annotation.Import;
+ import org.springframework.context.annotation.Role;
+ import org.springframework.context.expression.BeanFactoryResolver;
++import org.springframework.core.annotation.Order;
+ import org.springframework.util.CollectionUtils;
+ 
+ import javax.sql.DataSource;
+@@ -81,6 +82,7 @@ public DynamicDataSourceAutoConfiguration(
+     }
+ 
+     @Bean
++    @Order(0)
+     public DynamicDataSourceProvider ymlDynamicDataSourceProvider() {
+         return new YmlDynamicDataSourceProvider(properties.getDatasource());
+     }
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/DruidDataSourceCreator.java
+Patch:
+@@ -101,16 +101,16 @@ private List<Filter> initFilters(DataSourceProperty dataSourceProperty, String f
+                 proxyFilters.add(wallFilter);
+             }
+             if (filters.contains("commons-log")) {
+-                proxyFilters.add(DruidLogConfigUtil.initFilter(CommonsLogFilter.class, dataSourceProperty.getDruid().getSlf4j(), gConfig.getCommonsLog()));
++                proxyFilters.add(DruidLogConfigUtil.initFilter(CommonsLogFilter.class, dataSourceProperty.getDruid().getCommonsLog(), gConfig.getCommonsLog()));
+             }
+             if (filters.contains("slf4j")) {
+                 proxyFilters.add(DruidLogConfigUtil.initFilter(Slf4jLogFilter.class, dataSourceProperty.getDruid().getSlf4j(), gConfig.getSlf4j()));
+             }
+             if (filters.contains("log4j")) {
+-                proxyFilters.add(DruidLogConfigUtil.initFilter(Log4jFilter.class, dataSourceProperty.getDruid().getSlf4j(), gConfig.getLog4j()));
++                proxyFilters.add(DruidLogConfigUtil.initFilter(Log4jFilter.class, dataSourceProperty.getDruid().getLog4j(), gConfig.getLog4j()));
+             }
+             if (filters.contains("log4j2")) {
+-                proxyFilters.add(DruidLogConfigUtil.initFilter(Log4j2Filter.class, dataSourceProperty.getDruid().getSlf4j(), gConfig.getLog4j2()));
++                proxyFilters.add(DruidLogConfigUtil.initFilter(Log4j2Filter.class, dataSourceProperty.getDruid().getLog4j2(), gConfig.getLog4j2()));
+             }
+         }
+         if (this.applicationContext != null) {
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/BeeCpDataSourceCreator.java
+Patch:
+@@ -84,6 +84,6 @@ public boolean support(DataSourceProperty dataSourceProperty) {
+ 
+     @Override
+     public void afterPropertiesSet() throws Exception {
+-        gConfig = dynamicDataSourceProperties.getBeecp();
++        gConfig = properties.getBeecp();
+     }
+ }
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/Dbcp2DataSourceCreator.java
+Patch:
+@@ -64,6 +64,6 @@ public boolean support(DataSourceProperty dataSourceProperty) {
+ 
+     @Override
+     public void afterPropertiesSet() throws Exception {
+-        gConfig = dynamicDataSourceProperties.getDbcp2();
++        gConfig = properties.getDbcp2();
+     }
+ }
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/DruidDataSourceCreator.java
+Patch:
+@@ -198,6 +198,6 @@ public boolean support(DataSourceProperty dataSourceProperty) {
+ 
+     @Override
+     public void afterPropertiesSet() throws Exception {
+-        gConfig = dynamicDataSourceProperties.getDruid();
++        gConfig = properties.getDruid();
+     }
+ }
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/HikariDataSourceCreator.java
+Patch:
+@@ -99,6 +99,6 @@ public boolean support(DataSourceProperty dataSourceProperty) {
+ 
+     @Override
+     public void afterPropertiesSet() throws Exception {
+-        gConfig = dynamicDataSourceProperties.getHikari();
++        gConfig = properties.getHikari();
+     }
+ }
+
+File: src/main/java/com/baomidou/dynamic/datasource/provider/AbstractDataSourceProvider.java
+Patch:
+@@ -35,13 +35,14 @@ protected Map<String, DataSource> createDataSourceMap(
+             Map<String, DataSourceProperty> dataSourcePropertiesMap) {
+         Map<String, DataSource> dataSourceMap = new HashMap<>(dataSourcePropertiesMap.size() * 2);
+         for (Map.Entry<String, DataSourceProperty> item : dataSourcePropertiesMap.entrySet()) {
++            String dsName = item.getKey();
+             DataSourceProperty dataSourceProperty = item.getValue();
+             String poolName = dataSourceProperty.getPoolName();
+             if (poolName == null || "".equals(poolName)) {
+-                poolName = item.getKey();
++                poolName = dsName;
+             }
+             dataSourceProperty.setPoolName(poolName);
+-            dataSourceMap.put(poolName, defaultDataSourceCreator.createDataSource(dataSourceProperty));
++            dataSourceMap.put(dsName, defaultDataSourceCreator.createDataSource(dataSourceProperty));
+         }
+         return dataSourceMap;
+     }
+
+File: src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/beecp/BeeCpConfig.java
+Patch:
+@@ -33,7 +33,7 @@ public class BeeCpConfig {
+     private Boolean defaultReadOnly;
+     private Boolean defaultAutoCommit;
+     private Integer defaultTransactionIsolationCode;
+-    private String defaultTransactionIsolation;
++    private String defaultTransactionIsolationName;
+ 
+     private Boolean fairMode;
+     private Integer initialSize;
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/BeeCpDataSourceCreator.java
+Patch:
+@@ -68,7 +68,7 @@ public DataSource createDataSource(DataSourceProperty dataSourceProperty) {
+         if (!StringUtils.isEmpty(driverClassName)) {
+             config.setDriverClassName(driverClassName);
+         }
+-        if (!dataSourceProperty.getLazy()) {
++        if (Boolean.FALSE.equals(dataSourceProperty.getLazy())) {
+             return new BeeDataSource(config);
+         }
+         BeeDataSource beeDataSource = new BeeDataSource();
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/Dbcp2DataSourceCreator.java
+Patch:
+@@ -63,7 +63,7 @@ public DataSource createDataSource(DataSourceProperty dataSourceProperty) {
+         if (!StringUtils.isEmpty(driverClassName)) {
+             dataSource.setDriverClassName(driverClassName);
+         }
+-        if (!dataSourceProperty.getLazy()) {
++        if (Boolean.FALSE.equals(dataSourceProperty.getLazy())) {
+             dataSource.start();
+         }
+         return dataSource;
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/DruidDataSourceCreator.java
+Patch:
+@@ -90,7 +90,7 @@ public DataSource createDataSource(DataSourceProperty dataSourceProperty) {
+         //设置druid内置properties不支持的的参数
+         this.setParam(dataSource, config);
+ 
+-        if (!dataSourceProperty.getLazy()) {
++        if (Boolean.FALSE.equals(dataSourceProperty.getLazy())) {
+             try {
+                 dataSource.init();
+             } catch (SQLException e) {
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/HikariDataSourceCreator.java
+Patch:
+@@ -86,7 +86,7 @@ public DataSource createDataSource(DataSourceProperty dataSourceProperty) {
+         if (!StringUtils.isEmpty(driverClassName)) {
+             config.setDriverClassName(driverClassName);
+         }
+-        if (!dataSourceProperty.getLazy()) {
++        if (Boolean.FALSE.equals(dataSourceProperty.getLazy())) {
+             return new HikariDataSource(config);
+         }
+         config.validate();
+
+File: src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceAutoConfiguration.java
+Patch:
+@@ -90,7 +90,6 @@ public DataSource dataSource(DynamicDataSourceProvider dynamicDataSourceProvider
+ 
+     @Role(value = BeanDefinition.ROLE_INFRASTRUCTURE)
+     @Bean
+-    @ConditionalOnMissingBean
+     public Advisor dynamicDatasourceAnnotationAdvisor(DsProcessor dsProcessor) {
+         DynamicDataSourceAnnotationInterceptor interceptor = new DynamicDataSourceAnnotationInterceptor(properties.isAllowedPublicOnly(), dsProcessor);
+         DynamicDataSourceAnnotationAdvisor advisor = new DynamicDataSourceAnnotationAdvisor(interceptor);
+
+File: src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/DynamicDataSourceCreatorAutoConfiguration.java
+Patch:
+@@ -52,7 +52,7 @@ public class DynamicDataSourceCreatorAutoConfiguration {
+     public DefaultDataSourceCreator dataSourceCreator(List<DataSourceCreator> dataSourceCreators) {
+         DefaultDataSourceCreator defaultDataSourceCreator = new DefaultDataSourceCreator();
+         defaultDataSourceCreator.setProperties(properties);
+-        defaultDataSourceCreator.setDataSourceCreators(dataSourceCreators);
++        defaultDataSourceCreator.setCreators(dataSourceCreators);
+         return defaultDataSourceCreator;
+     }
+ 
+
+File: src/main/java/com/baomidou/dynamic/datasource/aop/DynamicDataSourceAnnotationInterceptor.java
+Patch:
+@@ -45,9 +45,9 @@ public DynamicDataSourceAnnotationInterceptor(Boolean allowedPublicOnly, DsProce
+ 
+     @Override
+     public Object invoke(MethodInvocation invocation) throws Throwable {
++        String dsKey = determineDatasourceKey(invocation);
++        DynamicDataSourceContextHolder.push(dsKey);
+         try {
+-            String dsKey = determineDatasourceKey(invocation);
+-            DynamicDataSourceContextHolder.push(dsKey);
+             return invocation.proceed();
+         } finally {
+             DynamicDataSourceContextHolder.poll();
+@@ -58,4 +58,4 @@ private String determineDatasourceKey(MethodInvocation invocation) {
+         String key = dataSourceClassResolver.findDSKey(invocation.getMethod(), invocation.getThis());
+         return (!key.isEmpty() && key.startsWith(DYNAMIC_PREFIX)) ? dsProcessor.determineDatasource(invocation, key) : key;
+     }
+-}
+\ No newline at end of file
++}
+
+File: src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/druid/DruidWallConfigUtil.java
+Patch:
+@@ -60,7 +60,7 @@ public static WallConfig toWallConfig(DruidWallConfig c, DruidWallConfig g) {
+         }
+         Integer tempSelectLimit = c.getSelectLimit() == null ? g.getSelectLimit() : c.getSelectLimit();
+         if (tempSelectLimit != null) {
+-            c.setSelectLimit(tempSelectLimit);
++            wallConfig.setSelectLimit(tempSelectLimit);
+         }
+ 
+         Boolean tempCallAllow = c.getCallAllow() == null ? g.getCallAllow() : c.getCallAllow();
+
+File: src/main/java/com/baomidou/dynamic/datasource/ds/ItemDataSource.java
+Patch:
+@@ -63,8 +63,6 @@ public void close() {
+         Class<? extends DataSource> clazz = realDataSource.getClass();
+         try {
+             Method closeMethod = clazz.getDeclaredMethod("close");
+-            // #fix 275
+-            // closeMethod.invoke(dataSource);
+             closeMethod.invoke(realDataSource);
+         } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
+             log.warn("dynamic-datasource close the datasource named [{}] failed,", name, e);
+
+File: src/main/java/com/baomidou/dynamic/datasource/ds/ItemDataSource.java
+Patch:
+@@ -63,7 +63,9 @@ public void close() {
+         Class<? extends DataSource> clazz = realDataSource.getClass();
+         try {
+             Method closeMethod = clazz.getDeclaredMethod("close");
+-            closeMethod.invoke(dataSource);
++            // #fix 275
++            // closeMethod.invoke(dataSource);
++            closeMethod.invoke(realDataSource);
+         } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
+             log.warn("dynamic-datasource close the datasource named [{}] failed,", name, e);
+         }
+
+File: src/main/java/com/baomidou/dynamic/datasource/ds/ItemDataSource.java
+Patch:
+@@ -63,7 +63,9 @@ public void close() {
+         Class<? extends DataSource> clazz = realDataSource.getClass();
+         try {
+             Method closeMethod = clazz.getDeclaredMethod("close");
+-            closeMethod.invoke(dataSource);
++            // #fix 275
++            // closeMethod.invoke(dataSource);
++            closeMethod.invoke(realDataSource);
+         } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
+             log.warn("dynamic-datasource close the datasource named [{}] failed,", name, e);
+         }
+
+File: samples/add-remove-datasource-sample/src/main/java/com/baomidou/samples/ds/controller/DataSourceController.java
+Patch:
+@@ -1,13 +1,15 @@
+ package com.baomidou.samples.ds.controller;
+ 
+ import com.baomidou.dynamic.datasource.DynamicRoutingDataSource;
++import com.baomidou.dynamic.datasource.creator.*;
+ import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DataSourceProperty;
+ import com.baomidou.samples.ds.dto.DataSourceDTO;
+ import io.swagger.annotations.Api;
+ import io.swagger.annotations.ApiOperation;
+ import lombok.AllArgsConstructor;
+ import org.springframework.beans.BeanUtils;
+ import org.springframework.validation.annotation.Validated;
++import org.springframework.web.bind.annotation.*;
+ 
+ import javax.sql.DataSource;
+ import java.util.Set;
+
+File: samples/druid-sample/src/main/java/com/baomidou/samples/druid/DruidApplication.java
+Patch:
+@@ -7,7 +7,7 @@
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ 
+ @Slf4j
+-@SpringBootApplication(exclude = DruidDataSourceAutoConfigure.class)
++@SpringBootApplication(exclude = DruidDataSourceAutoConfigure.class)// ←←←←← look at here
+ @MapperScan("com.baomidou.samples.druid.mapper")
+ public class DruidApplication {
+ 
+
+File: samples/druid-sample/src/main/java/com/baomidou/samples/druid/controller/UserController.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.baomidou.samples.druid.service.UserService;
+ import io.swagger.annotations.Api;
+ import lombok.AllArgsConstructor;
++import org.springframework.web.bind.annotation.*;
+ 
+ import java.util.List;
+ import java.util.Random;
+
+File: samples/jdbc-template-sample/src/main/java/com/baomidou/samples/jdbc/JdbcTemplateApplication.java
+Patch:
+@@ -10,10 +10,10 @@
+ 
+ @Slf4j
+ @SpringBootApplication
+-public class JdbcApplication {
++public class JdbcTemplateApplication {
+ 
+     public static void main(String[] args) {
+-        SpringApplication.run(JdbcApplication.class, args);
++        SpringApplication.run(JdbcTemplateApplication.class, args);
+         log.info("open http://localhost:8080/doc.html");
+     }
+ 
+
+File: samples/jdbc-template-sample/src/main/java/com/baomidou/samples/jdbc/controller/UserController.java
+Patch:
+@@ -5,6 +5,7 @@
+ import com.baomidou.samples.jdbc.service.UserService;
+ import io.swagger.annotations.Api;
+ import lombok.AllArgsConstructor;
++import org.springframework.web.bind.annotation.*;
+ 
+ import java.util.List;
+ import java.util.Random;
+
+File: samples/mybatis-sample/src/main/java/com/baomidou/samples/mybatis/controller/UserController.java
+Patch:
+@@ -5,6 +5,7 @@
+ import com.baomidou.samples.mybatis.service.UserService;
+ import io.swagger.annotations.Api;
+ import lombok.AllArgsConstructor;
++import org.springframework.web.bind.annotation.*;
+ 
+ import java.util.List;
+ import java.util.Random;
+
+File: samples/mybatisplus2-sample/src/main/java/com/baomidou/samples/mybatisplus2/controller/UserController.java
+Patch:
+@@ -5,6 +5,7 @@
+ import com.baomidou.samples.mybatisplus2.service.UserService;
+ import io.swagger.annotations.Api;
+ import lombok.AllArgsConstructor;
++import org.springframework.web.bind.annotation.*;
+ 
+ import java.util.List;
+ import java.util.Random;
+
+File: samples/mybatisplus3-sample/src/main/java/com/baomidou/samples/mybatisplus3/controller/UserController.java
+Patch:
+@@ -5,6 +5,7 @@
+ import com.baomidou.samples.mybatisplus3.service.UserService;
+ import io.swagger.annotations.Api;
+ import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.web.bind.annotation.*;
+ 
+ import java.util.List;
+ import java.util.Random;
+
+File: samples/mybatisplus3-sample/src/main/java/com/baomidou/samples/mybatisplus3/MybatisPlus3Application.java
+Patch:
+@@ -5,7 +5,7 @@
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ 
+ @SpringBootApplication
+-@MapperScan("com.baomidou.samples.mybatisplus.mapper")
++@MapperScan("com.baomidou.samples.mybatisplus3.mapper")
+ public class MybatisPlus3Application {
+ 
+     public static void main(String[] args) {
+
+File: src/main/java/com/baomidou/dynamic/datasource/creator/DruidDataSourceCreator.java
+Patch:
+@@ -130,7 +130,7 @@ public DataSource createDataSource(DataSourceProperty dataSourceProperty) {
+         Integer timeout = config.getRemoveAbandonedTimeoutMillis() == null ? druidConfig.getRemoveAbandonedTimeoutMillis()
+                 : config.getRemoveAbandonedTimeoutMillis();
+         if (timeout != null) {
+-            dataSource.setRemoveAbandonedTimeout(timeout);
++            dataSource.setRemoveAbandonedTimeoutMillis(timeout);
+         }
+ 
+         Boolean abandoned = config.getRemoveAbandoned() == null ? druidConfig.getRemoveAbandoned() : config.getRemoveAbandoned();
+
+File: src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/druid/DruidDynamicDataSourceConfiguration.java
+Patch:
+@@ -16,7 +16,7 @@
+  */
+ package com.baomidou.dynamic.datasource.spring.boot.autoconfigure.druid;
+ 
+-import com.alibaba.druid.pool.DruidDataSource;
++import com.alibaba.druid.spring.boot.autoconfigure.DruidDataSourceAutoConfigure;
+ import com.alibaba.druid.spring.boot.autoconfigure.properties.DruidStatProperties;
+ import com.alibaba.druid.spring.boot.autoconfigure.stat.DruidFilterConfiguration;
+ import com.alibaba.druid.spring.boot.autoconfigure.stat.DruidSpringAopConfiguration;
+@@ -34,7 +34,7 @@
+  * @since 1.1.0
+  */
+ @Configuration
+-@ConditionalOnClass(DruidDataSource.class)
++@ConditionalOnClass(DruidDataSourceAutoConfigure.class)
+ @EnableConfigurationProperties({DruidStatProperties.class})
+ @Import({
+     DruidSpringAopConfiguration.class,
+
+File: src/main/java/com/baomidou/dynamic/datasource/aop/DynamicDataSourceAdvisor.java
+Patch:
+@@ -71,7 +71,7 @@ private Advice buildAdvice() {
+             public Object invoke(MethodInvocation invocation) throws Throwable {
+                 try {
+                     Method method = invocation.getMethod();
+-                    String methodPath = method.getDeclaringClass().getName() + "." + method.getName();
++                    String methodPath = invocation.getThis().getClass().getName() + "." + method.getName();
+                     String key = matchesCache.get(methodPath);
+                     if (key != null && !key.isEmpty() && key.startsWith(DYNAMIC_PREFIX)) {
+                         key = dsProcessor.determineDatasource(invocation, key);
+
+File: src/main/java/com/baomidou/dynamic/datasource/aop/DynamicDataSourceAdvisor.java
+Patch:
+@@ -58,7 +58,7 @@ public class DynamicDataSourceAdvisor extends AbstractPointcutAdvisor implements
+ 
+     private Pointcut pointcut;
+ 
+-    private Map<String, String> matchesCache = new HashMap();
++    private Map<String, String> matchesCache = new HashMap<String, String>();
+ 
+     public DynamicDataSourceAdvisor(List<Matcher> matchers) {
+         this.pointcut = buildPointcut(matchers);
+
+File: src/main/java/com/baomidou/dynamic/datasource/DynamicRoutingDataSource.java
+Patch:
+@@ -152,7 +152,7 @@ public synchronized void removeDataSource(String ds) {
+             }
+             log.info("动态数据源-删除 {} 成功", ds);
+         } else {
+-            log.warn("动态数据源-未找到 {} 数据源");
++            log.warn("动态数据源-未找到 {} 数据源", ds);
+         }
+     }
+ 
+
+File: src/main/java/com/baomidou/dynamic/datasource/plugin/MasterSlaveAutoRoutingPlugin.java
+Patch:
+@@ -47,7 +47,7 @@ public Object intercept(Invocation invocation) throws Throwable {
+         Object[] args = invocation.getArgs();
+         MappedStatement ms = (MappedStatement) args[0];
+         try {
+-            DynamicDataSourceContextHolder.push(SqlCommandType.SELECT == ms.getSqlCommandType() ? MASTER : SLAVE);
++            DynamicDataSourceContextHolder.push(SqlCommandType.SELECT == ms.getSqlCommandType() ? SLAVE : MASTER);
+             return invocation.proceed();
+         } finally {
+             DynamicDataSourceContextHolder.clear();
+
+File: src/main/java/com/baomidou/dynamic/datasource/strategy/LoadBalanceDynamicDataSourceStrategy.java
+Patch:
+@@ -35,6 +35,6 @@ public class LoadBalanceDynamicDataSourceStrategy implements DynamicDataSourceSt
+ 
+     @Override
+     public DataSource determineDataSource(List<DataSource> dataSources) {
+-        return dataSources.get(Math.abs(index.getAndAdd(1)) % dataSources.size());
++        return dataSources.get(Math.abs(index.getAndAdd(1) % dataSources.size()));
+     }
+ }
+
+File: src/main/java/com/baomidou/dynamic/datasource/DynamicRoutingDataSource.java
+Patch:
+@@ -157,7 +157,7 @@ public void init() {
+         }
+         //检测默认数据源设置
+         if (groupDataSources.containsKey(primary)) {
+-            log.info("当前的默认数据源是组数据源,组名为 {} ，其下有 {} 个数据源", primary, groupDataSources.size());
++            log.info("当前的默认数据源是组数据源,组名为 {} ，其下有 {} 个数据源", primary, groupDataSources.get(primary).size());
+         } else if (dataSourceMap.containsKey(primary)) {
+             log.info("当前的默认数据源是单数据源，数据源名为 {}", primary);
+         } else {
+
+File: src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/druid/DruidConfig.java
+Patch:
+@@ -57,7 +57,7 @@ public class DruidConfig {
+     private Boolean clearFiltersEnable;
+     private Boolean resetStatEnable;
+     private Integer notFullTimeoutRetryCount;
+-    private Long maxWaitThreadCount;
++    private Integer maxWaitThreadCount;
+     private Boolean failFast;
+     private Integer phyTimeoutMillis;
+     private Boolean keepAlive;
+@@ -172,8 +172,8 @@ public Properties toProperties(DruidConfig globalConfig) {
+             properties.setProperty("druid.notFullTimeoutRetryCount", String.valueOf(tempNotFullTimeoutRetryCount));
+         }
+ 
+-        Long tempMaxWaitThreadCount = maxWaitThreadCount == null ? globalConfig.getMaxWaitThreadCount() : maxWaitThreadCount;
+-        if (tempMaxWaitThreadCount != null && !tempMaxWaitThreadCount.equals(DEFAULT_MAX_WAIT)) {
++        Integer tempMaxWaitThreadCount = maxWaitThreadCount == null ? globalConfig.getMaxWaitThreadCount() : maxWaitThreadCount;
++        if (tempMaxWaitThreadCount != null && !tempMaxWaitThreadCount.equals(-1)) {
+             properties.setProperty("druid.maxWaitThreadCount", String.valueOf(tempMaxWaitThreadCount));
+         }
+ 
+
+File: src/main/java/com/baomidou/dynamic/datasource/spring/boot/autoconfigure/hikari/HikariCpConfig.java
+Patch:
+@@ -129,7 +129,7 @@ public HikariConfig toHikariConfig(HikariCpConfig globalConfig) {
+         }
+ 
+         Long tempInitializationFailTimeout = initializationFailTimeout == null ? globalConfig.getInitializationFailTimeout() : initializationFailTimeout;
+-        if (tempInitializationFailTimeout != null && !tempInitializationFailTimeout.equals(1)) {
++        if (tempInitializationFailTimeout != null && !tempInitializationFailTimeout.equals(1L)) {
+             config.setInitializationFailTimeout(tempInitializationFailTimeout);
+         }
+ 
+

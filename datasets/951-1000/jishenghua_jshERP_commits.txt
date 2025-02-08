@@ -1,0 +1,1835 @@
+File: jshERP-boot/src/main/java/com/jsh/erp/service/user/UserService.java
+Patch:
+@@ -103,7 +103,7 @@ public List<User> getUser(HttpServletRequest request) throws Exception {
+             Long userId = this.getUserId(request);
+             if(userId!=null) {
+                 UserExample example = new UserExample();
+-                example.createCriteria().andStatusEqualTo(BusinessConstants.USER_STATUS_NORMAL);
++                example.createCriteria().andStatusEqualTo(BusinessConstants.USER_STATUS_NORMAL).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+                 list = userMapper.selectByExample(example);
+             }
+         }catch(Exception e){
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -880,7 +880,7 @@ private Map<String, Long> parseDepotToMap(List<Depot> depotList) {
+     private Map<Long, BigDecimal> getStockMapCache(Sheet src, int depotCount, Map<String, Long> depotMap, int i) throws Exception {
+         Map<Long, BigDecimal> stockMap = new HashMap<>();
+         for(int j = 1; j<= depotCount; j++) {
+-            int col = 25 + j;
++            int col = 26 + j;
+             if(col < src.getColumns()){
+                 String depotName = ExcelUtils.getContent(src, 1, col); //获取仓库名称
+                 if(StringUtil.isNotEmpty(depotName)) {
+
+File: jshERP-boot/src/main/java/com/jsh/erp/constants/ExceptionConstants.java
+Patch:
+@@ -436,6 +436,9 @@ public class ExceptionConstants {
+     //单据录入-关联请购单号和关联订单号不能同时录入
+     public static final int DEPOT_ITEM_EXIST_REPEAT_NO_FAILED_CODE = 8500029;
+     public static final String DEPOT_ITEM_EXIST_REPEAT_NO_FAILED_MSG = "抱歉，关联请购单号和关联订单号不能同时录入";
++    //单据录入-单据最新状态不能进行批量操作
++    public static final int DEPOT_ITEM_EXIST_NEW_STATUS_FAILED_CODE = 8500030;
++    public static final String DEPOT_ITEM_EXIST_NEW_STATUS_FAILED_MSG = "抱歉，单据:%s最新状态不能进行批量操作";
+ 
+     /**
+      *  单据明细信息
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/DepotItemController.java
+Patch:
+@@ -492,6 +492,8 @@ public BaseResponseInfo getInOutStock(@RequestParam("currentPage") Integer curre
+             if(categoryId != null){
+                 categoryIdList = materialService.getListByParentId(categoryId);
+             }
++            beginTime = Tools.parseDayToTime(beginTime, BusinessConstants.DAY_FIRST_TIME);
++            endTime = Tools.parseDayToTime(endTime,BusinessConstants.DAY_LAST_TIME);
+             List<Long> depotList = parseListByDepotIds(depotIds);
+             List<DepotItemVo4WithInfoEx> dataList = depotItemService.getInOutStock(StringUtil.toNull(materialParam),
+                     categoryIdList, endTime,(currentPage-1)*pageSize, pageSize);
+@@ -575,6 +577,7 @@ public BaseResponseInfo getInOutStockCountMoney(@RequestParam(value = "depotIds"
+             if(categoryId != null){
+                 categoryIdList = materialService.getListByParentId(categoryId);
+             }
++            endTime = Tools.parseDayToTime(endTime,BusinessConstants.DAY_LAST_TIME);
+             List<Long> depotList = parseListByDepotIds(depotIds);
+             List<DepotItemVo4WithInfoEx> dataList = depotItemService.getInOutStock(StringUtil.toNull(materialParam),
+                     categoryIdList, endTime, null, null);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/AccountController.java
+Patch:
+@@ -115,15 +115,15 @@ public BaseResponseInfo findAccountInOutList(@RequestParam("currentPage") Intege
+         BaseResponseInfo res = new BaseResponseInfo();
+         Map<String, Object> map = new HashMap<String, Object>();
+         try {
++            Boolean forceFlag = systemConfigService.getForceApprovalFlag();
+             List<AccountVo4InOutList> dataList = accountService.findAccountInOutList(accountId, StringUtil.toNull(number),
+-                    beginTime, endTime, (currentPage-1)*pageSize, pageSize);
++                    beginTime, endTime, forceFlag, (currentPage-1)*pageSize, pageSize);
+             int total = accountService.findAccountInOutListCount(accountId, StringUtil.toNull(number),
+-                    beginTime, endTime);
++                    beginTime, endTime, forceFlag);
+             map.put("total", total);
+             //存放数据json数组
+             JSONArray dataArray = new JSONArray();
+             if (null != dataList) {
+-                Boolean forceFlag = systemConfigService.getForceApprovalFlag();
+                 for (AccountVo4InOutList aEx : dataList) {
+                     String type = aEx.getType().replace("其它", "");
+                     aEx.setType(type);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/AccountMapperEx.java
+Patch:
+@@ -72,14 +72,16 @@ List<AccountVo4InOutList> findAccountInOutList(
+             @Param("number") String number,
+             @Param("beginTime") String beginTime,
+             @Param("endTime") String endTime,
++            @Param("forceFlag") Boolean forceFlag,
+             @Param("offset") Integer offset,
+             @Param("rows") Integer rows);
+ 
+     int findAccountInOutListCount(
+             @Param("accountId") Long accountId,
+             @Param("number") String number,
+             @Param("beginTime") String beginTime,
+-            @Param("endTime") String endTime);
++            @Param("endTime") String endTime,
++            @Param("forceFlag") Boolean forceFlag);
+ 
+     int batchDeleteAccountByIds(@Param("updateTime") Date updateTime, @Param("updater") Long updater, @Param("ids") String ids[]);
+ 
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depotHead/DepotHeadService.java
+Patch:
+@@ -1712,8 +1712,9 @@ public void batchAddDepotHeadAndDetail(String ids, HttpServletRequest request) t
+             }
+             depotHead.setLinkNumber(oldNumber);
+             //给单号重新赋值
+-            depotHead.setNumber(prefixNo + sequenceService.buildOnlyNumber());
+-            depotHead.setDefaultNumber(prefixNo + sequenceService.buildOnlyNumber());
++            String number = prefixNo + sequenceService.buildOnlyNumber();
++            depotHead.setNumber(number);
++            depotHead.setDefaultNumber(number);
+             depotHead.setOperTime(new Date());
+             depotHead.setSubType(BusinessConstants.SUB_TYPE_OTHER);
+             depotHead.setChangeAmount(BigDecimal.ZERO);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/DepotItemMapperEx.java
+Patch:
+@@ -234,6 +234,7 @@ Long getCountByMaterialAndBatchNumber(
+             @Param("batchNumber") String batchNumber);
+ 
+     List<DepotItem> getDepotItemByBatchNumber(
++            @Param("materialExtendId") Long materialExtendId,
+             @Param("batchNumber") String batchNumber);
+ 
+     List<MaterialVo4Unit> getBillItemByParam(
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depotHead/DepotHeadService.java
+Patch:
+@@ -1571,6 +1571,9 @@ public void batchAddDepotHeadAndDetail(String ids, HttpServletRequest request) t
+             depotHead.setCreator(userInfo==null?null:userInfo.getId());
+             depotHead.setOrganId(null);
+             depotHead.setAccountId(null);
++            depotHead.setAccountIdList(null);
++            depotHead.setAccountMoneyList(null);
++            depotHead.setSalesMan(null);
+             depotHead.setStatus("0");
+             depotHead.setTenantId(null);
+             //查询明细
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/OrganizationMapperEx.java
+Patch:
+@@ -28,5 +28,6 @@ public interface OrganizationMapperEx {
+     int batchDeleteOrganizationByIds(@Param("updateTime") Date updateTime, @Param("updater") Long updater, @Param("ids") String ids[]);
+ 
+     int editOrganization(Organization org);
++
+     List <Organization> getOrganizationRootByIds(@Param("ids") String ids[]);
+ }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/organization/OrganizationService.java
+Patch:
+@@ -83,7 +83,6 @@ public int insertOrganization(JSONObject obj, HttpServletRequest request)throws
+     public int updateOrganization(JSONObject obj, HttpServletRequest request)throws Exception {
+         Organization organization = JSONObject.parseObject(obj.toJSONString(), Organization.class);
+         organization.setUpdateTime(new Date());
+-        organization.setDeleteFlag("0");
+         int result=0;
+         try{
+             result=organizationMapperEx.editOrganization(organization);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/organization/OrganizationService.java
+Patch:
+@@ -83,6 +83,7 @@ public int insertOrganization(JSONObject obj, HttpServletRequest request)throws
+     public int updateOrganization(JSONObject obj, HttpServletRequest request)throws Exception {
+         Organization organization = JSONObject.parseObject(obj.toJSONString(), Organization.class);
+         organization.setUpdateTime(new Date());
++        organization.setDeleteFlag("0");
+         int result=0;
+         try{
+             result=organizationMapperEx.editOrganization(organization);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/DepotItemController.java
+Patch:
+@@ -582,10 +582,10 @@ public BaseResponseInfo retailOut(@RequestParam("currentPage") Integer currentPa
+             List<Long> depotList = depotService.parseDepotList(depotId);
+             Boolean forceFlag = systemConfigService.getForceApprovalFlag();
+             List<DepotItemVo4WithInfoEx> dataList = depotItemService.getListWithBugOrSale(StringUtil.toNull(materialParam),
+-                    "sale", beginTime, endTime, creatorArray, organId, organArray, depotList, forceFlag, (currentPage-1)*pageSize, pageSize);
++                    "retail", beginTime, endTime, creatorArray, organId, organArray, depotList, forceFlag, (currentPage-1)*pageSize, pageSize);
+             String[] mpArr = mpList.split(",");
+             int total = depotItemService.getListWithBugOrSaleCount(StringUtil.toNull(materialParam),
+-                    "sale", beginTime, endTime, creatorArray, organId, organArray, depotList, forceFlag);
++                    "retail", beginTime, endTime, creatorArray, organId, organArray, depotList, forceFlag);
+             map.put("total", total);
+             //存放数据json数组
+             JSONArray dataArray = new JSONArray();
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depotHead/DepotHeadService.java
+Patch:
+@@ -289,7 +289,7 @@ public String[] getCreatorArrayByOrg(Long organizationId) throws Exception {
+             List<String> userIdStrList = userIdList.stream().map(Object::toString).collect(Collectors.toList());
+             return StringUtil.listToStringArray(userIdStrList);
+         } else {
+-            return null;
++            return "-1".split(",");
+         }
+     }
+ 
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/DepotItemMapperEx.java
+Patch:
+@@ -214,7 +214,9 @@ List<DepotItemVoBatchNumberList> getBatchNumberList(
+             @Param("name") String name,
+             @Param("depotId") Long depotId,
+             @Param("barCode") String barCode,
+-            @Param("batchNumber") String batchNumber);
++            @Param("batchNumber") String batchNumber,
++            @Param("forceFlag") Boolean forceFlag,
++            @Param("inOutManageFlag") Boolean inOutManageFlag);
+ 
+     Long getCountByMaterialAndDepot(
+             @Param("mId") Long mId,
+
+File: jshERP-boot/src/main/java/com/jsh/erp/constants/ExceptionConstants.java
+Patch:
+@@ -335,6 +335,9 @@ public class ExceptionConstants {
+     //多属性商品不能输入库存，建议进行盘点录入
+     public static final int MATERIAL_SKU_BEGIN_STOCK_FAILED_CODE = 8000025;
+     public static final String MATERIAL_SKU_BEGIN_STOCK_FAILED_MSG = "多属性商品%s不能输入库存，建议进行盘点录入";
++    //商品条码不存在，请重新选择
++    public static final int MATERIAL_BARCODE_IS_NOT_EXIST_CODE = 8000026;
++    public static final String MATERIAL_BARCODE_IS_NOT_EXIST_MSG = "商品条码%s不存在，请重新选择";
+ 
+     /**
+      *  单据信息
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/materialExtend/MaterialExtendService.java
+Patch:
+@@ -382,9 +382,10 @@ public MaterialExtend getInfoByBarCode(String barCode)throws Exception {
+                 .andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         List<MaterialExtend> list = materialExtendMapper.selectByExample(example);
+         if(list!=null && list.size()>0) {
+-            materialExtend = list.get(0);
++            return list.get(0);
++        } else {
++            return null;
+         }
+-        return materialExtend;
+     }
+ 
+     /**
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depotItem/DepotItemService.java
+Patch:
+@@ -1216,7 +1216,8 @@ public BigDecimal getLastUnitPriceByParam(Long organId, Long meId, String prefix
+     }
+ 
+     public BigDecimal getCurrentStockByParam(Long depotId, Long mId) {
+-        return depotItemMapperEx.getCurrentStockByParam(depotId, mId);
++        BigDecimal stock = depotItemMapperEx.getCurrentStockByParam(depotId, mId);
++        return stock!=null? stock: BigDecimal.ZERO;
+     }
+ 
+ }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/constants/ExceptionConstants.java
+Patch:
+@@ -400,6 +400,9 @@ public class ExceptionConstants {
+     //单据录入-单据当前状态下不能修改
+     public static final int DEPOT_HEAD_BILL_CANNOT_EDIT_CODE = 8500023;
+     public static final String DEPOT_HEAD_BILL_CANNOT_EDIT_MSG = "抱歉，单据当前状态下不能修改";
++    //单据删除-单据中的序列号已经出库，不能删除
++    public static final int DEPOT_HEAD_SERIAL_IS_SELL_CODE = 8500024;
++    public static final String DEPOT_HEAD_SERIAL_IS_SELL_MSG = "抱歉，单据%s的序列号已经出库，不能删除";
+ 
+     /**
+      *  单据明细信息
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/DepotHeadMapperEx.java
+Patch:
+@@ -238,4 +238,7 @@ BigDecimal getFinishDepositByNumberExceptCurrent(
+ 
+     void setAccountIdToNull(
+             @Param("id") Long id);
++
++    int getSerialNumberBySell(
++            @Param("number") String number);
+ }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -908,6 +908,8 @@ public void insertOrUpdateMaterialExtend(JSONObject materialExObj, String type,
+             } else {
+                 materialExtend.setId(meId);
+                 materialExtendMapper.updateByPrimaryKeySelective(materialExtend);
++                //如果金额为空，此处单独置空
++                materialExtendMapperEx.specialUpdatePrice(materialExtend);
+             }
+         }
+     }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/MaterialExtendMapperEx.java
+Patch:
+@@ -22,4 +22,6 @@ Long getMaxTimeByTenantAndTime(
+     List<MaterialExtend> getListByMId(@Param("ids") Long ids[]);
+ 
+     int batchDeleteMaterialExtendByMIds(@Param("ids") String ids[]);
++
++    int specialUpdatePrice(MaterialExtend record);
+ }
+\ No newline at end of file
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/DepotHeadMapperEx.java
+Patch:
+@@ -235,4 +235,7 @@ List<FinishDepositVo> getFinishDepositByNumberList(
+     BigDecimal getFinishDepositByNumberExceptCurrent(
+             @Param("linkNumber") String linkNumber,
+             @Param("number") String number);
++
++    void setAccountIdToNull(
++            @Param("id") Long id);
+ }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/inOutItem/InOutItemService.java
+Patch:
+@@ -194,6 +194,9 @@ public List<InOutItem> findBySelect(String type)throws Exception {
+         } else if (type.equals("out")) {
+             example.createCriteria().andTypeEqualTo("支出").andEnabledEqualTo(true)
+                     .andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
++        } else {
++            example.createCriteria().andEnabledEqualTo(true)
++                    .andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         }
+         example.setOrderByClause("sort asc, id desc");
+         List<InOutItem> list = null;
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -659,7 +659,7 @@ public BaseResponseInfo importExcel(MultipartFile file, HttpServletRequest reque
+                         BigDecimal initStock = getInitStock(mId, depotId);
+                         BigDecimal currentNumber = getCurrentStockByMaterialIdAndDepotId(mId, depotId);
+                         //当前库存的更新：减去初始库存，再加上导入的新初始库存
+-                        if(currentNumber!=null && initStock!=null) {
++                        if(currentNumber!=null && initStock!=null && stock!=null) {
+                             currentNumber = currentNumber.subtract(initStock).add(stock);
+                         }
+                         MaterialCurrentStock materialCurrentStock = new MaterialCurrentStock();
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/tenant/TenantService.java
+Patch:
+@@ -113,9 +113,7 @@ public int insertTenant(JSONObject obj, HttpServletRequest request)throws Except
+             if(tenant.getExpireTime()==null) {
+                 tenant.setExpireTime(Tools.addDays(new Date(), tryDayLimit)); //租户允许试用的天数
+             }
+-            if(BusinessConstants.DEFAULT_MANAGER.equals(userService.getCurrentUser().getLoginName())) {
+-                result = tenantMapper.insertSelective(tenant);
+-            }
++            result = tenantMapper.insertSelective(tenant);
+         }catch(Exception e){
+             JshException.writeFail(logger, e);
+         }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/supplier/SupplierService.java
+Patch:
+@@ -505,7 +505,7 @@ public BaseResponseInfo importExcel(List<Supplier> mList, String type) throws Ex
+         try {
+             for(Supplier s: mList) {
+                 SupplierExample example = new SupplierExample();
+-                example.createCriteria().andSupplierEqualTo(s.getSupplier()).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
++                example.createCriteria().andSupplierEqualTo(s.getSupplier()).andTypeEqualTo(type).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+                 List<Supplier> list= supplierMapper.selectByExample(example);
+                 if(list.size() <= 0) {
+                     supplierMapper.insertSelective(s);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/SupplierController.java
+Patch:
+@@ -58,7 +58,7 @@ public class SupplierController {
+     @GetMapping(value = "/checkIsNameAndTypeExist")
+     @ApiOperation(value = "检查名称和类型是否存在")
+     public String checkIsNameAndTypeExist(@RequestParam Long id,
+-                                          @RequestParam(value ="name") String name,
++                                          @RequestParam(value ="name", required = false) String name,
+                                           @RequestParam(value ="type") String type,
+                                           HttpServletRequest request)throws Exception {
+         Map<String, Object> objectMap = new HashMap<>();
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/CommonQueryManager.java
+Patch:
+@@ -128,7 +128,7 @@ public int deleteBatch(String apiName, String ids, HttpServletRequest request)th
+      * @return
+      */
+     public int checkIsNameExist(String apiName, Long id, String name) throws Exception{
+-        if (StringUtil.isNotEmpty(apiName)) {
++        if (StringUtil.isNotEmpty(apiName) && name!=null) {
+             return container.getCommonQuery(apiName).checkIsNameExist(id, name);
+         }
+         return 0;
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/supplier/SupplierService.java
+Patch:
+@@ -272,6 +272,7 @@ public int checkIsNameExist(Long id, String name)throws Exception {
+     }
+ 
+     public int checkIsNameAndTypeExist(Long id, String name, String type)throws Exception {
++        name = name == null? "": name;
+         SupplierExample example = new SupplierExample();
+         example.createCriteria().andIdNotEqualTo(id).andSupplierEqualTo(name).andTypeEqualTo(type)
+                 .andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/constants/ExceptionConstants.java
+Patch:
+@@ -363,7 +363,7 @@ public class ExceptionConstants {
+     public static final String DEPOT_HEAD_MANY_ACCOUNT_FAILED_MSG = "请修改多账户的结算金额";
+     //单据录入-关联单据实际不存在欠款
+     public static final int DEPOT_HEAD_BACK_BILL_DEBT_FAILED_CODE = 8500009;
+-    public static final String DEPOT_HEAD_BACK_BILL_DEBT_FAILED_MSG = "抱歉，关联单据实际不存在欠款";
++    public static final String DEPOT_HEAD_BACK_BILL_DEBT_FAILED_MSG = "抱歉，关联单据为空时不能欠款";
+     //单据录入-调入仓库与原仓库不能重复
+     public static final int DEPOT_HEAD_ANOTHER_DEPOT_EQUAL_FAILED_CODE = 8500010;
+     public static final String DEPOT_HEAD_ANOTHER_DEPOT_EQUAL_FAILED_MSG = "调入仓库与原仓库不能重复";
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/DepotItemMapperEx.java
+Patch:
+@@ -183,4 +183,7 @@ List<DepotItemVo4MaterialAndSum> getBatchBillDetailMaterialSum(
+     Long getCountByMaterialAndBatchNumber(
+             @Param("meId") Long meId,
+             @Param("batchNumber") String batchNumber);
++
++    List<DepotItem> getDepotItemByBatchNumber(
++            @Param("batchNumber") String batchNumber);
+ }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/materialExtend/MaterialExtendService.java
+Patch:
+@@ -96,7 +96,6 @@ public String saveDetials(JSONObject obj, String sortList, Long materialId, Stri
+             } else if("update".equals(type)){
+                 for (int i = 0; i < meArr.size(); i++) {
+                     JSONObject tempJson = meArr.getJSONObject(i);
+-                    String barCode = tempJson.getString("barCode");
+                     String tempId = tempJson.getString("id");
+                     if(tempId.length()>19){
+                         insertedJson.add(tempJson);
+@@ -168,6 +167,9 @@ public String saveDetials(JSONObject obj, String sortList, Long materialId, Stri
+                 if (StringUtils.isNotEmpty(tempUpdatedJson.getString("commodityUnit"))) {
+                     materialExtend.setCommodityUnit(tempUpdatedJson.getString("commodityUnit"));
+                 }
++                if (tempUpdatedJson.get("sku")!=null) {
++                    materialExtend.setSku(tempUpdatedJson.getString("sku"));
++                }
+                 if (StringUtils.isNotEmpty(tempUpdatedJson.getString("purchaseDecimal"))) {
+                     materialExtend.setPurchaseDecimal(tempUpdatedJson.getBigDecimal("purchaseDecimal"));
+                 }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -705,7 +705,7 @@ private Map<Long, BigDecimal> getStockMapCache(Sheet src, int depotCount, Map<St
+                 String depotName = ExcelUtils.getContent(src, 1, col); //获取仓库名称
+                 if(StringUtil.isNotEmpty(depotName)) {
+                     Long depotId = depotMap.get(depotName);
+-                    if(depotId!=0L){
++                    if(depotId!=null && depotId!=0L){
+                         String stockStr = ExcelUtils.getContent(src, i, col);
+                         if(StringUtil.isNotEmpty(stockStr)) {
+                             stockMap.put(depotId, parseBigDecimalEx(stockStr));
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/DepotHeadMapperEx.java
+Patch:
+@@ -23,6 +23,7 @@ List<DepotHeadVo4List> selectByConditionDepotHead(
+             @Param("subType") String subType,
+             @Param("creatorArray") String[] creatorArray,
+             @Param("statusArray") String[] statusArray,
++            @Param("purchaseStatusArray") String[] purchaseStatusArray,
+             @Param("number") String number,
+             @Param("linkNumber") String linkNumber,
+             @Param("beginTime") String beginTime,
+@@ -42,6 +43,7 @@ Long countsByDepotHead(
+             @Param("subType") String subType,
+             @Param("creatorArray") String[] creatorArray,
+             @Param("statusArray") String[] statusArray,
++            @Param("purchaseStatusArray") String[] purchaseStatusArray,
+             @Param("number") String number,
+             @Param("linkNumber") String linkNumber,
+             @Param("beginTime") String beginTime,
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/DepotItemMapperEx.java
+Patch:
+@@ -169,6 +169,5 @@ List<DepotItemVo4MaterialAndSum> getBatchBillDetailMaterialSum(
+ 
+     Long getCountByMaterialAndBatchNumber(
+             @Param("meId") Long meId,
+-            @Param("batchNumber") String batchNumber,
+-            @Param("type") String type);
++            @Param("batchNumber") String batchNumber);
+ }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depotHead/DepotHeadService.java
+Patch:
+@@ -314,7 +314,7 @@ public int batchDeleteBillByIds(String ids)throws Exception {
+                         BusinessConstants.SUB_TYPE_REPLAY.equals(depotHead.getSubType()))) {
+                         String status = BusinessConstants.BILLS_STATUS_AUDIT;
+                         //查询除当前单据之外的关联单据列表
+-                        List<DepotHead> exceptCurrentList = getListByLinkNumberExceptCurrent(depotHead.getLinkNumber(), depotHead.getNumber());
++                        List<DepotHead> exceptCurrentList = getListByLinkNumberExceptCurrent(depotHead.getLinkNumber(), depotHead.getNumber(), depotHead.getType());
+                         if(exceptCurrentList!=null && exceptCurrentList.size()>0) {
+                             status = BusinessConstants.BILLS_STATUS_SKIPING;
+                         }
+@@ -691,9 +691,9 @@ public List<DepotHeadVo4List> getDetailByNumber(String number)throws Exception {
+      * @return
+      * @throws Exception
+      */
+-    public List<DepotHead> getListByLinkNumberExceptCurrent(String linkNumber, String number)throws Exception {
++    public List<DepotHead> getListByLinkNumberExceptCurrent(String linkNumber, String number, String type)throws Exception {
+         DepotHeadExample example = new DepotHeadExample();
+-        example.createCriteria().andLinkNumberEqualTo(linkNumber).andNumberNotEqualTo(number)
++        example.createCriteria().andLinkNumberEqualTo(linkNumber).andNumberNotEqualTo(number).andTypeEqualTo(type)
+                 .andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return depotHeadMapper.selectByExample(example);
+     }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depotHead/DepotHeadService.java
+Patch:
+@@ -299,6 +299,7 @@ public int batchDeleteBillByIds(String ids)throws Exception {
+                         }
+                     }
+                 }
++                List<DepotItem> list = depotItemService.getListByHeaderId(depotHead.getId());
+                 //删除单据子表数据
+                 depotItemMapperEx.batchDeleteDepotItemByDepotHeadIds(new Long[]{depotHead.getId()});
+                 //删除单据主表信息
+@@ -325,7 +326,6 @@ public int batchDeleteBillByIds(String ids)throws Exception {
+                     }
+                 }
+                 //更新当前库存
+-                List<DepotItem> list = depotItemService.getListByHeaderId(depotHead.getId());
+                 for (DepotItem depotItem : list) {
+                     depotItemService.updateCurrentStock(depotItem);
+                 }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/account/AccountService.java
+Patch:
+@@ -526,10 +526,10 @@ public Map<Long,String> getAccountMap() throws Exception {
+     public String getAccountStrByIdAndMoney(Map<Long,String> accountMap, String accountIdList, String accountMoneyList){
+         StringBuffer sb = new StringBuffer();
+         List<Long> idList = StringUtil.strToLongList(accountIdList);
+-        List<Long> moneyList = StringUtil.strToLongList(accountMoneyList);
++        List<BigDecimal> moneyList = StringUtil.strToBigDecimalList(accountMoneyList);
+         for (int i = 0; i < idList.size(); i++) {
+             Long id = idList.get(i);
+-            BigDecimal money =  BigDecimal.valueOf(moneyList.get(i)).abs();
++            BigDecimal money =  moneyList.get(i).abs();
+             sb.append(accountMap.get(id) + "(" + money + "元) ");
+         }
+         return sb.toString();
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/DepotItemController.java
+Patch:
+@@ -212,7 +212,7 @@ public BaseResponseInfo getDetailList(@RequestParam("headerId") Long headerId,
+                     item.put("operNumber", diEx.getOperNumber());
+                     item.put("basicNumber", diEx.getBasicNumber());
+                     item.put("preNumber", diEx.getOperNumber()); //原数量
+-                    item.put("finishNumber", depotItemService.getFinishNumber(diEx.getMaterialId(), diEx.getHeaderId(), unitInfo, materialUnit)); //已入库|已出库
++                    item.put("finishNumber", depotItemService.getFinishNumber(diEx.getMaterialExtendId(), diEx.getHeaderId(), unitInfo, materialUnit)); //已入库|已出库
+                     item.put("unitPrice", diEx.getUnitPrice());
+                     item.put("taxUnitPrice", diEx.getTaxUnitPrice());
+                     item.put("allPrice", diEx.getAllPrice());
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -500,12 +500,12 @@ public BaseResponseInfo importExcel(Sheet src, HttpServletRequest request) throw
+                     String lowDecimal = ExcelUtils.getContent(src, i, 14); //最低售价
+                     String enabled = ExcelUtils.getContent(src, i, 15); //状态
+                     //校验基础条码是否是正整数
+-                    if(!StringUtil.isPositiveInteger(barCode)) {
++                    if(!StringUtil.isPositiveLong(barCode)) {
+                         throw new BusinessRunTimeException(ExceptionConstants.MATERIAL_BARCODE_NOT_INTEGER_CODE,
+                                 String.format(ExceptionConstants.MATERIAL_BARCODE_NOT_INTEGER_MSG, barCode));
+                     }
+                     //校验副条码是否是正整数
+-                    if(StringUtil.isNotEmpty(manyBarCode) && !StringUtil.isPositiveInteger(manyBarCode)) {
++                    if(StringUtil.isNotEmpty(manyBarCode) && !StringUtil.isPositiveLong(manyBarCode)) {
+                         throw new BusinessRunTimeException(ExceptionConstants.MATERIAL_BARCODE_NOT_INTEGER_CODE,
+                                 String.format(ExceptionConstants.MATERIAL_BARCODE_NOT_INTEGER_MSG, manyBarCode));
+                     }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/utils/StringUtil.java
+Patch:
+@@ -280,11 +280,11 @@ public static boolean isExist(Object value) {
+      * @param value
+      * @return
+      */
+-    public static boolean isPositiveInteger(Object value) {
++    public static boolean isPositiveLong(Object value) {
+         if(value!=null) {
+             String str = value.toString();
+             if(isNotEmpty(str)) {
+-                if((str.matches("[0-9]+"))&&(Integer.parseInt(str)>0)) {
++                if((str.matches("[0-9]+"))&&(Long.parseLong(str)>0)) {
+                     return true;
+                 } else {
+                     return false;
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/DepotItemController.java
+Patch:
+@@ -191,13 +191,13 @@ public BaseResponseInfo getDetailList(@RequestParam("headerId") Long headerId,
+                     item.put("color", diEx.getMColor());
+                     item.put("materialOther", getOtherInfo(mpArr, diEx));
+                     BigDecimal stock;
++                    Unit unitInfo = materialService.findUnit(diEx.getMaterialId()); //查询计量单位信息
++                    String materialUnit = diEx.getMaterialUnit();
+                     if(StringUtil.isNotEmpty(diEx.getSku())){
+                         stock = depotItemService.getSkuStockByParam(diEx.getDepotId(),diEx.getMaterialExtendId(),null,null);
+                     } else {
+                         stock = depotItemService.getStockByParam(diEx.getDepotId(),diEx.getMaterialId(),null,null);
+-                        Unit unitInfo = materialService.findUnit(diEx.getMaterialId()); //查询计量单位信息
+                         if (StringUtil.isNotEmpty(unitInfo.getName())) {
+-                            String materialUnit = diEx.getMaterialUnit();
+                             stock = unitService.parseStockByUnit(stock, unitInfo, materialUnit);
+                         }
+                     }
+@@ -212,7 +212,7 @@ public BaseResponseInfo getDetailList(@RequestParam("headerId") Long headerId,
+                     item.put("operNumber", diEx.getOperNumber());
+                     item.put("basicNumber", diEx.getBasicNumber());
+                     item.put("preNumber", diEx.getOperNumber()); //原数量
+-                    item.put("finishNumber", depotItemService.getFinishNumber(diEx.getMaterialId(), diEx.getHeaderId())); //已入库|已出库
++                    item.put("finishNumber", depotItemService.getFinishNumber(diEx.getMaterialId(), diEx.getHeaderId(), unitInfo, materialUnit)); //已入库|已出库
+                     item.put("unitPrice", diEx.getUnitPrice());
+                     item.put("taxUnitPrice", diEx.getTaxUnitPrice());
+                     item.put("allPrice", diEx.getAllPrice());
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -411,6 +411,7 @@ public List<MaterialVo4Unit> findBySelectWithBarCode(Long categoryId, String q,
+             }
+             if(StringUtil.isNotEmpty(q)) {
+                 q = q.replace("'", "");
++                q = q.trim();
+             }
+             list=  materialMapperEx.findBySelectWithBarCode(idList, q, offset, rows);
+         }catch(Exception e){
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depotItem/DepotItemService.java
+Patch:
+@@ -358,6 +358,7 @@ public void saveDetials(String rows, Long headerId, HttpServletRequest request)
+                     if(StringUtil.isExist(rowObj.get("depotId"))) {
+                         Long depotId = rowObj.getLong("depotId");
+                         if(BusinessConstants.SUB_TYPE_PURCHASE.equals(depotHead.getSubType())||
++                                BusinessConstants.SUB_TYPE_OTHER.equals(depotHead.getSubType())||
+                                 BusinessConstants.SUB_TYPE_SALES_RETURN.equals(depotHead.getSubType())) {
+                             serialNumberService.addSerialNumberByBill(depotHead.getNumber(), materialExtend.getMaterialId(), depotId, depotItem.getSnList());
+                         }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/config/TenantConfig.java
+Patch:
+@@ -77,7 +77,7 @@ public boolean doFilter(MetaObject metaObject) {
+                     return true;
+                 } else if ("com.jsh.erp.datasource.mappers.RoleMapperEx.getRoleWithoutTenant".equals(ms.getId())) {
+                     return true;
+-                } else if ("com.jsh.erp.datasource.mappers.logMapperEx.insertLogWithUserId".equals(ms.getId())) {
++                } else if ("com.jsh.erp.datasource.mappers.LogMapperEx.insertLogWithUserId".equals(ms.getId())) {
+                     return true;
+                 }
+                 return false;
+
+File: jshERP-boot/src/main/java/com/jsh/erp/config/TenantConfig.java
+Patch:
+@@ -77,6 +77,8 @@ public boolean doFilter(MetaObject metaObject) {
+                     return true;
+                 } else if ("com.jsh.erp.datasource.mappers.RoleMapperEx.getRoleWithoutTenant".equals(ms.getId())) {
+                     return true;
++                } else if ("com.jsh.erp.datasource.mappers.logMapperEx.insertLogWithUserId".equals(ms.getId())) {
++                    return true;
+                 }
+                 return false;
+             }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/UserController.java
+Patch:
+@@ -79,6 +79,7 @@ public BaseResponseInfo login(@RequestBody User userParam,
+         User user=null;
+         BaseResponseInfo res = new BaseResponseInfo();
+         try {
++
+             String loginName = userParam.getLoginName().trim();
+             String password = userParam.getPassword().trim();
+             //判断用户是否已经登录过，登录过不再处理
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/LogMapperEx.java
+Patch:
+@@ -33,4 +33,6 @@ Long getCountByIpAndDate(
+             @Param("moduleName") String moduleName,
+             @Param("clientIp") String clientIp,
+             @Param("createTime") String createTime);
++
++    int insertLogWithUserId(Log log);
+ }
+\ No newline at end of file
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/log/LogService.java
+Patch:
+@@ -183,7 +183,7 @@ public void insertLogWithUserId(Long userId, Long tenantId, String moduleName, S
+                 log.setStatus(status);
+                 log.setContent(content);
+                 log.setTenantId(tenantId);
+-                logMapper.insertSelective(log);
++                logMapperEx.insertLogWithUserId(log);
+             }
+         }catch(Exception e){
+             JshException.writeFail(logger, e);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/config/TenantConfig.java
+Patch:
+@@ -75,6 +75,8 @@ public boolean doFilter(MetaObject metaObject) {
+                 // 过滤自定义查询此时无租户信息约束出现
+                 if ("com.jsh.erp.datasource.mappers.UserMapperEx.getUserListByUserNameOrLoginName".equals(ms.getId())) {
+                     return true;
++                } else if ("com.jsh.erp.datasource.mappers.RoleMapperEx.getRoleWithoutTenant".equals(ms.getId())) {
++                    return true;
+                 }
+                 return false;
+             }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/RoleMapperEx.java
+Patch:
+@@ -18,4 +18,7 @@ Long countsByRole(
+             @Param("name") String name);
+ 
+     int batchDeleteRoleByIds(@Param("updateTime") Date updateTime, @Param("updater") Long updater, @Param("ids") String ids[]);
++
++    Role getRoleWithoutTenant(
++            @Param("roleId") Long roleId);
+ }
+\ No newline at end of file
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/user/UserService.java
+Patch:
+@@ -750,7 +750,7 @@ public String getRoleTypeByUserId(long userId) throws Exception {
+             if(valueArray.length>0) {
+                 roleId = valueArray[0];
+             }
+-            Role role = roleService.getRole(Long.parseLong(roleId));
++            Role role = roleService.getRoleWithoutTenant(Long.parseLong(roleId));
+             if(role!=null) {
+                 return role.getType();
+             } else {
+
+File: jshERP-boot/src/main/java/com/jsh/erp/filter/LogCostFilter.java
+Patch:
+@@ -77,7 +77,9 @@ public void doFilter(ServletRequest request, ServletResponse response,
+             }
+         }
+         servletResponse.setStatus(500);
+-        servletResponse.getWriter().write("loginOut");
++        if(requestUrl != null && !requestUrl.contains("/user/logout") && !requestUrl.contains("/function/findMenuByPNumber")) {
++            servletResponse.getWriter().write("loginOut");
++        }
+     }
+ 
+     private static String regexPrefix = "^.*";
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depotItem/DepotItemService.java
+Patch:
+@@ -649,9 +649,7 @@ public Map<String, BigDecimal> getIntervalMapByParamWithDepotList(List<Long> dep
+             BigDecimal transfOutTotal = stockObj.getTransfOutTotal();
+             BigDecimal assemOutTotal = stockObj.getAssemOutTotal();
+             BigDecimal disAssemOutTotal = stockObj.getDisAssemOutTotal();
+-            outSum = outTotal.subtract(transfOutTotal).subtract(assemOutTotal).subtract(disAssemOutTotal);
+-            //取绝对值
+-            outSum = outSum.abs();
++            outSum = outTotal.add(transfOutTotal).add(assemOutTotal).add(disAssemOutTotal);
+         }
+         if(stockCheckSum.compareTo(BigDecimal.ZERO)>0) {
+             inSum = inSum.add(stockCheckSum);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depotItem/DepotItemService.java
+Patch:
+@@ -650,6 +650,8 @@ public Map<String, BigDecimal> getIntervalMapByParamWithDepotList(List<Long> dep
+             BigDecimal assemOutTotal = stockObj.getAssemOutTotal();
+             BigDecimal disAssemOutTotal = stockObj.getDisAssemOutTotal();
+             outSum = outTotal.subtract(transfOutTotal).subtract(assemOutTotal).subtract(disAssemOutTotal);
++            //取绝对值
++            outSum = outSum.abs();
+         }
+         if(stockCheckSum.compareTo(BigDecimal.ZERO)>0) {
+             inSum = inSum.add(stockCheckSum);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -242,7 +242,7 @@ public int updateMaterial(JSONObject obj, HttpServletRequest request) throws Exc
+                         MaterialInitialStockExample example = new MaterialInitialStockExample();
+                         example.createCriteria().andMaterialIdEqualTo(material.getId()).andDepotIdEqualTo(depotId);
+                         materialInitialStockMapper.deleteByExample(example);
+-                        if (StringUtil.isNotEmpty(number) && Double.valueOf(number) > 0 || lowSafeStock!=null || highSafeStock!=null) {
++                        if (StringUtil.isNotEmpty(number) && Double.parseDouble(number) != 0 || lowSafeStock!=null || highSafeStock!=null) {
+                             insertInitialStockByMaterialAndDepot(depotId, material.getId(), parseBigDecimalEx(number), lowSafeStock, highSafeStock);
+                         }
+                         //更新当前库存
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/DepotItemController.java
+Patch:
+@@ -546,10 +546,10 @@ public BaseResponseInfo saleOut(@RequestParam("currentPage") Integer currentPage
+      */
+     public String getUName(String materialUnit, String uName) {
+         String unitName = null;
+-        if(!StringUtil.isEmpty(materialUnit)) {
++        if(StringUtil.isNotEmpty(materialUnit)) {
+             unitName = materialUnit;
+-        } else if(!StringUtil.isEmpty(uName)) {
+-            unitName = uName.substring(0,uName.indexOf(","));
++        } else if(StringUtil.isNotEmpty(uName)) {
++            unitName = uName;
+         }
+         return unitName;
+     }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/constants/ExceptionConstants.java
+Patch:
+@@ -295,7 +295,7 @@ public class ExceptionConstants {
+     public static final String MATERIAL_BARCODE_EXISTS_MSG = "商品条码:%s重复";
+     //商品-单位匹配不上
+     public static final int MATERIAL_UNIT_MATE_CODE = 8000006;
+-    public static final String MATERIAL_UNIT_MATE_MSG = "抱歉，单位匹配不上，请完善计量单位信息！";
++    public static final String MATERIAL_UNIT_MATE_MSG = "抱歉，商品条码:%s的单位匹配不上，请完善计量单位信息！";
+     /**
+      *  单据信息
+      * type = 85
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depotItem/DepotItemService.java
+Patch:
+@@ -382,7 +382,7 @@ public void saveDetials(String rows, Long headerId, HttpServletRequest request)
+                     Unit unitInfo = materialService.findUnit(materialExtend.getMaterialId()); //查询计量单位信息
+                     if (StringUtil.isNotEmpty(unitInfo.getName())) {
+                         String basicUnit = unitInfo.getBasicUnit(); //基本单位
+-                        if (unit.equals(basicUnit)) { //如果等于基础单位
++                        if (unit.equals(basicUnit)) { //如果等于基本单位
+                             depotItem.setBasicNumber(oNumber); //数量一致
+                         } else if (unit.equals(unitInfo.getOtherUnit())) { //如果等于副单位
+                             depotItem.setBasicNumber(oNumber.multiply(new BigDecimal(unitInfo.getRatio())) ); //数量乘以比例
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/materialExtend/MaterialExtendService.java
+Patch:
+@@ -192,7 +192,7 @@ public String saveDetials(JSONObject obj, String sortList, Long materialId, Stri
+                 this.updateMaterialExtend(materialExtend);
+             }
+         }
+-        //处理条码的排序，基础单位排第一个
++        //处理条码的排序，基本单位排第一个
+         if (null != sortJson && sortJson.size()>0) {
+             //此处为更新的逻辑
+             for (int i = 0; i < sortJson.size(); i++) {
+@@ -207,7 +207,7 @@ public String saveDetials(JSONObject obj, String sortList, Long materialId, Stri
+                 this.updateMaterialExtend(materialExtend);
+             }
+         } else {
+-            //新增的时候将第一条记录设置为默认基础单位
++            //新增的时候将第一条记录设置为默认基本单位
+             MaterialExtendExample example = new MaterialExtendExample();
+             example.createCriteria().andMaterialIdEqualTo(materialId).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+             List<MaterialExtend> meList = materialExtendMapper.selectByExample(example);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/userBusiness/UserBusinessService.java
+Patch:
+@@ -79,7 +79,7 @@ public int insertUserBusiness(JSONObject obj, HttpServletRequest request) throws
+             }
+             String value = userBusiness.getValue();
+             String newValue = value.replaceAll(",","\\]\\[");
+-            newValue = newValue.replaceAll("[0]","").replaceAll("\\[\\]","");
++            newValue = newValue.replaceAll("\\[0\\]","").replaceAll("\\[\\]","");
+             userBusiness.setValue(newValue);
+             result=userBusinessMapper.insertSelective(userBusiness);
+             logService.insertLog("关联关系", BusinessConstants.LOG_OPERATION_TYPE_ADD, request);
+@@ -96,7 +96,7 @@ public int updateUserBusiness(JSONObject obj, HttpServletRequest request) throws
+         try{
+             String value = userBusiness.getValue();
+             String newValue = value.replaceAll(",","\\]\\[");
+-            newValue = newValue.replaceAll("[0]","").replaceAll("\\[\\]","");
++            newValue = newValue.replaceAll("\\[0\\]","").replaceAll("\\[\\]","");
+             userBusiness.setValue(newValue);
+             result=userBusinessMapper.updateByPrimaryKeySelective(userBusiness);
+             logService.insertLog("关联关系", BusinessConstants.LOG_OPERATION_TYPE_EDIT, request);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/userBusiness/UserBusinessService.java
+Patch:
+@@ -79,6 +79,7 @@ public int insertUserBusiness(JSONObject obj, HttpServletRequest request) throws
+             }
+             String value = userBusiness.getValue();
+             String newValue = value.replaceAll(",","\\]\\[");
++            newValue = newValue.replaceAll("[0]","").replaceAll("\\[\\]","");
+             userBusiness.setValue(newValue);
+             result=userBusinessMapper.insertSelective(userBusiness);
+             logService.insertLog("关联关系", BusinessConstants.LOG_OPERATION_TYPE_ADD, request);
+@@ -95,6 +96,7 @@ public int updateUserBusiness(JSONObject obj, HttpServletRequest request) throws
+         try{
+             String value = userBusiness.getValue();
+             String newValue = value.replaceAll(",","\\]\\[");
++            newValue = newValue.replaceAll("[0]","").replaceAll("\\[\\]","");
+             userBusiness.setValue(newValue);
+             result=userBusinessMapper.updateByPrimaryKeySelective(userBusiness);
+             logService.insertLog("关联关系", BusinessConstants.LOG_OPERATION_TYPE_EDIT, request);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depot/DepotService.java
+Patch:
+@@ -291,9 +291,9 @@ public JSONArray findDepotByCurrentUser() throws Exception {
+                         String[] depotArr = depotStr.split(",");
+                         for(String depotId: depotArr) {
+                             JSONObject item = new JSONObject();
+-                            item.put("id", depotId);
++                            item.put("id", Long.parseLong(depotId));
+                             for (Depot depot : dataList) {
+-                                if(depot.getId() == Integer.parseInt(depotId)){
++                                if(depot.getId() == Long.parseLong(depotId)){
+                                     item.put("depotName", depot.getName());
+                                     item.put("isDefault", depot.getIsDefault());
+                                 }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/constants/BusinessConstants.java
+Patch:
+@@ -37,7 +37,7 @@ public class BusinessConstants {
+      * 单据主表出入库类型 type 入库 出库
+      * depothead
+      * */
+-    public static final String DEPOTHEAD_TYPE_STORAGE = "入库";
++    public static final String DEPOTHEAD_TYPE_IN = "入库";
+     public static final String DEPOTHEAD_TYPE_OUT = "出库";
+     /**
+      * 付款类型 payType //现付/预付款
+
+File: jshERP-boot/src/main/java/com/jsh/erp/constants/ExceptionConstants.java
+Patch:
+@@ -76,6 +76,9 @@ public class ExceptionConstants {
+     //演示用户不允许修改
+     public static final int USER_LIMIT_UPDATE_CODE = 500007;
+     public static final String USER_LIMIT_UPDATE_MSG = "抱歉，演示模式下的演示用户不允许修改";
++    //租户不能被删除
++    public static final int USER_LIMIT_TENANT_DELETE_CODE = 500008;
++    public static final String USER_LIMIT_TENANT_DELETE_MSG = "抱歉，租户不能被删除";
+ 
+     /**
+      * 角色信息
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/MaterialController.java
+Patch:
+@@ -201,7 +201,7 @@ public JSONObject findBySelect(@RequestParam(value = "categoryId", required = fa
+                             Unit unit = unitService.getUnit(material.getUnitId());
+                             if(material.getCommodityUnit().equals(unit.getOtherUnit())) {
+                                 if(unit.getRatio()!=0) {
+-                                    stock = stock.divide(BigDecimal.valueOf(unit.getRatio()));
++                                    stock = stock.divide(BigDecimal.valueOf(unit.getRatio()),2,BigDecimal.ROUND_HALF_UP);
+                                 }
+                             }
+                         }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/MaterialController.java
+Patch:
+@@ -466,7 +466,8 @@ public BaseResponseInfo getMaterialByBarCode(@RequestParam("barCode") String bar
+                 if("LSCK".equals(prefixNo) || "LSTH".equals(prefixNo)) {
+                     //零售价
+                     mu.setBillPrice(mu.getCommodityDecimal());
+-                } else if("CGDD".equals(prefixNo) || "CGRK".equals(prefixNo) || "CGTH".equals(prefixNo) || "QTRK".equals(prefixNo) || "DBCK".equals(prefixNo)) {
++                } else if("CGDD".equals(prefixNo) || "CGRK".equals(prefixNo) || "CGTH".equals(prefixNo)
++                        || "QTRK".equals(prefixNo) || "DBCK".equals(prefixNo) || "ZZD".equals(prefixNo) || "CXD".equals(prefixNo) ) {
+                     //采购价
+                     mu.setBillPrice(mu.getPurchaseDecimal());
+                 } else if("XSDD".equals(prefixNo) || "XSCK".equals(prefixNo) || "XSTH".equals(prefixNo) || "QTCK".equals(prefixNo)) {
+
+File: jshERP-boot/src/main/java/com/jsh/erp/datasource/mappers/DepotHeadMapperEx.java
+Patch:
+@@ -27,7 +27,7 @@ List<DepotHeadVo4List> selectByConditionDepotHead(
+             @Param("beginTime") String beginTime,
+             @Param("endTime") String endTime,
+             @Param("materialParam") String materialParam,
+-            @Param("depotIds") String depotIds,
++            @Param("depotArray") String[] depotArray,
+             @Param("offset") Integer offset,
+             @Param("rows") Integer rows);
+ 
+@@ -40,7 +40,7 @@ Long countsByDepotHead(
+             @Param("beginTime") String beginTime,
+             @Param("endTime") String endTime,
+             @Param("materialParam") String materialParam,
+-            @Param("depotIds") String depotIds);
++            @Param("depotArray") String[] depotArray);
+ 
+     String findMaterialsListByHeaderId(
+             @Param("id") Long id);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/organization/OrganizationService.java
+Patch:
+@@ -275,7 +275,7 @@ public void checkOrgNoIsExists(String orgNo,Long id)throws Exception {
+      * @return
+      */
+     public List<Long> getOrgIdByParentId(Long orgId) {
+-        List<Long> idList = new ArrayList<Long>();
++        List<Long> idList = new ArrayList<>();
+         OrganizationExample example = new OrganizationExample();
+         example.createCriteria().andIdEqualTo(orgId).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         List<Organization> orgList = organizationMapper.selectByExample(example);
+@@ -292,9 +292,8 @@ public List<Long> getOrgIdByParentId(Long orgId) {
+      * @return
+      */
+     public void getOrgIdByParentNo(List<Long> idList,Long id) {
+-        List<Long> list = new ArrayList<Long>();
+         OrganizationExample example = new OrganizationExample();
+-        example.createCriteria().andParentIdNotEqualTo(id).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
++        example.createCriteria().andParentIdEqualTo(id).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         List<Organization> orgList = organizationMapper.selectByExample(example);
+         if(orgList!=null && orgList.size()>0) {
+             for(Organization o: orgList) {
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/DepotItemController.java
+Patch:
+@@ -395,6 +395,9 @@ public BaseResponseInfo totalCountMoney(@RequestParam("depotId") Long depotId,
+                     Long mId = diEx.getMId();
+                     BigDecimal thisSum = depotItemService.getStockByParam(depotId,mId,null,endTime,tenantId);
+                     BigDecimal unitPrice = diEx.getPurchaseDecimal();
++                    if(unitPrice == null) {
++                        unitPrice = BigDecimal.ZERO;
++                    }
+                     thisAllPrice = thisAllPrice.add(thisSum.multiply(unitPrice));
+                 }
+             }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/AccountHeadController.java
+Patch:
+@@ -76,6 +76,7 @@ public BaseResponseInfo findTotalPay(@RequestParam("supplierId") Integer supplie
+         Map<String, Object> map = new HashMap<String, Object>();
+         try {
+             JSONObject outer = new JSONObject();
++            endTime = endTime + " 23:59:59";
+             BigDecimal sum = accountHeadService.findTotalPay(supplierId, endTime, supType);
+             outer.put("getAllMoney", sum);
+             map.put("rows", outer);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/service/depot/DepotService.java
+Patch:
+@@ -116,6 +116,8 @@ public int insertDepot(JSONObject obj, HttpServletRequest request)throws Excepti
+         Depot depot = JSONObject.parseObject(obj.toJSONString(), Depot.class);
+         int result=0;
+         try{
++            depot.setType(0);
++            depot.setIsDefault(false);
+             result=depotMapper.insertSelective(depot);
+             logService.insertLog("仓库",
+                     new StringBuffer(BusinessConstants.LOG_OPERATION_TYPE_ADD).append(depot.getName()).toString(), request);
+
+File: jshERP-boot/src/main/java/com/jsh/erp/ErpApplication.java
+Patch:
+@@ -21,7 +21,8 @@ public class ErpApplication{
+     public static void main(String[] args) throws IOException {
+         ConfigurableApplicationContext context = SpringApplication.run(ErpApplication.class, args);
+         Environment environment = context.getBean(Environment.class);
+-        System.out.println("启动成功，后端服务地址：http://" + ComputerInfo.getIpAddr() + ":"
+-                + environment.getProperty("server.port") + "，您还需启动前端服务，测试用户：jsh，密码：123456");
++        System.out.println("启动成功，后端服务API地址：http://" + ComputerInfo.getIpAddr() + ":"
++                + environment.getProperty("server.port") + "/jshERP-boot/doc.html");
++        System.out.println("您还需启动前端服务，启动命令：yarn run serve 或 npm run serve，测试用户：jsh，密码：123456");
+     }
+ }
+
+File: jshERP-boot/src/main/java/com/jsh/erp/filter/LogCostFilter.java
+Patch:
+@@ -19,7 +19,7 @@
+         initParams = {@WebInitParam(name = "ignoredUrl", value = ".ico"),
+                       @WebInitParam(name = "filterPath",
+                               value = "/jshERP-boot/user/login#/jshERP-boot/user/registerUser#/jshERP-boot/user/randomImage" +
+-                                      "#/jshERP-boot/platformConfig/getPlatformName#/jshERP-boot/v2/api-docs")})
++                                      "#/jshERP-boot/platformConfig/getPlatformName#/jshERP-boot/v2/api-docs#/jshERP-boot/webjars")})
+ public class LogCostFilter implements Filter {
+ 
+     private static final String FILTER_PATH = "filterPath";
+
+File: jshERP-boot/src/main/java/com/jsh/erp/controller/AccountController.java
+Patch:
+@@ -115,6 +115,7 @@ public BaseResponseInfo findAccountInOutList(@RequestParam("currentPage") Intege
+                     BigDecimal balance = accountService.getAccountSum(accountId, timeStr, "date").add(accountService.getAccountSumByHead(accountId, timeStr, "date"))
+                             .add(accountService.getAccountSumByDetail(accountId, timeStr, "date")).add(accountService.getManyAccountSum(accountId, timeStr, "date")).add(initialAmount);
+                     aEx.setBalance(balance);
++                    aEx.setAccountId(accountId);
+                     dataArray.add(aEx);
+                 }
+             }
+
+File: src/main/java/com/jsh/erp/datasource/mappers/AccountItemMapperEx.java
+Patch:
+@@ -32,4 +32,6 @@ List<AccountItemVo4List> getDetailList(
+     List<AccountItem> getAccountItemListByHeaderIds(@Param("headerIds") String[] headerIds);
+ 
+     List<AccountItem> getAccountItemListByInOutItemIds(@Param("inOutItemIds") String[] inOutItemIds);
++
++    int batchDeleteAccountItemByHeadIds(@Param("updateTime") Date updateTime, @Param("updater") Long updater, @Param("ids") String[] ids);
+ }
+\ No newline at end of file
+
+File: src/main/java/com/jsh/erp/service/accountHead/AccountHeadService.java
+Patch:
+@@ -320,6 +320,9 @@ public int batchDeleteAccountHeadByIds(String ids)throws Exception {
+         String [] idArray=ids.split(",");
+         int result = 0;
+         try{
++            //删除主表
++            result = accountItemMapperEx.batchDeleteAccountItemByHeadIds(new Date(),userInfo==null?null:userInfo.getId(),idArray);
++            //删除子表
+             result = accountHeadMapperEx.batchDeleteAccountHeadByIds(new Date(),userInfo==null?null:userInfo.getId(),idArray);
+         }catch(Exception e){
+             JshException.writeFail(logger, e);
+
+File: src/main/java/com/jsh/erp/datasource/mappers/MaterialCategoryMapperEx.java
+Patch:
+@@ -34,7 +34,7 @@ Long countsByMaterialCategory(
+ 
+     int editMaterialCategory(MaterialCategory mc);
+ 
+-    List<MaterialCategory> getMaterialCategoryBySerialNo(@Param("serialNo") String serialNo);
++    List<MaterialCategory> getMaterialCategoryBySerialNo(@Param("serialNo") String serialNo, @Param("id") Long id);
+ 
+     List<MaterialCategory> getMaterialCategoryListByCategoryIds(@Param("parentIds") String[] categoryIds);
+ }
+
+File: src/main/java/com/jsh/erp/datasource/mappers/SerialNumberMapperEx.java
+Patch:
+@@ -45,17 +45,17 @@ public interface SerialNumberMapperEx {
+     /**
+      * 查询符合条件的序列号数量
+      * */
+-    int countSerialNumberByMaterialIdAndDepotheadId(@Param("materialId")Long materialId, @Param("depotheadId")Long depotheadId, @Param("isSell")String isSell);
++    int countSerialNumberByMaterialIdAndDepotheadId(@Param("materialId")Long materialId, @Param("depotHeadId")Long depotHeadId, @Param("isSell")String isSell);
+     /**
+      * 卖出： update jsh_serial_number set is_Sell='1' ,depothead_Id='depotheadId' where 1=1 and material_Id='materialId'
+      * and is_Sell !='1' and delete_Flag !='1'  {limit 0，count}
+      * */
+-    int sellSerialNumber(@Param("materialId")Long materialId, @Param("depotheadId")Long depotheadId,@Param("count")Integer count, @Param("updateTime") Date updateTime,@Param("updater") Long updater);
++    int sellSerialNumber(@Param("materialId")Long materialId, @Param("depotHeadId")Long depotHeadId,@Param("count")Integer count, @Param("updateTime") Date updateTime,@Param("updater") Long updater);
+     /**
+      * 赎回：update jsh_serial_number set is_Sell='0'  where 1=1 and material_Id='materialId'
+      *      and depothead_Id='depotheadId' and is_Sell ！='0' and delete_Flag !='1' {limit 0，count}
+      * */
+-    int cancelSerialNumber(@Param("materialId")Long materialId, @Param("depotheadId")Long depotheadId, @Param("count")Integer count, @Param("updateTime") Date updateTime,@Param("updater") Long updater);
++    int cancelSerialNumber(@Param("materialId")Long materialId, @Param("depotHeadId")Long depotHeadId, @Param("count")Integer count, @Param("updateTime") Date updateTime,@Param("updater") Long updater);
+     /**
+      * 批量添加序列号
+      * */
+
+File: src/main/java/com/jsh/erp/service/materialCategory/MaterialCategoryService.java
+Patch:
+@@ -320,7 +320,7 @@ public void  checkMaterialCategorySerialNo(MaterialCategory mc)throws Exception
+         //根据商品类别编号查询商品类别
+         List<MaterialCategory> mList=null;
+         try{
+-            mList= materialCategoryMapperEx.getMaterialCategoryBySerialNo(mc.getSerialNo());
++            mList= materialCategoryMapperEx.getMaterialCategoryBySerialNo(mc.getSerialNo(), mc.getId());
+         }catch(Exception e){
+             JshException.readFail(logger, e);
+         }
+
+File: src/main/java/com/jsh/erp/controller/DepotItemController.java
+Patch:
+@@ -182,8 +182,6 @@ public BaseResponseInfo getDetailList(@RequestParam("headerId") Long headerId,
+                     item.put("Unit", diEx.getMunit());
+                     item.put("OperNumber", diEx.getOpernumber());
+                     item.put("BasicNumber", diEx.getBasicnumber());
+-                    //统计该商品已分批出库的总数量-用于订单
+-                    item.put("finishNumber", depotItemService.getFinishNumber(diEx.getMaterialid(),diEx.getHeaderid()));
+                     item.put("UnitPrice", diEx.getUnitprice());
+                     item.put("TaxUnitPrice", diEx.getTaxunitprice());
+                     item.put("AllPrice", diEx.getAllprice());
+
+File: src/main/java/com/jsh/erp/datasource/mappers/DepotItemMapperEx.java
+Patch:
+@@ -106,6 +106,4 @@ List<DepotItemStockWarningCount> findStockWarningCount(@Param("offset") Integer
+                                                            @Param("rows") Integer rows, @Param("pid") Integer pid);
+ 
+     int findStockWarningCountTotal( @Param("pid") Integer pid);
+-
+-    BigDecimal getFinishNumber(@Param("mid") Long mid, @Param("linkNumber") String linkNumber);
+ }
+
+File: src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -425,10 +425,9 @@ public BaseResponseInfo importExcel(Sheet src) throws Exception {
+                 m.setEnabled(enabled.equals("1")? true: false);
+                 //缓存各个仓库的库存信息
+                 Map<Long, BigDecimal> stockMap = new HashMap<Long, BigDecimal>();
+-                int depotSize = depotCount>10? 10: depotCount; //excel里面的仓库数量
+-                for(int j=1; j<=depotSize;j++) {
++                for(int j=1; j<=depotCount;j++) {
+                     int col = 15+j;
+-                    if(col <= src.getColumns()){
++                    if(col < src.getColumns()){
+                         String depotName = ExcelUtils.getContent(src, 1, col); //获取仓库名称
+                         Long depotId = depotService.getIdByName(depotName);
+                         if(depotId!=0L){
+
+File: src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -20,6 +20,7 @@
+ import com.jsh.erp.utils.BaseResponseInfo;
+ import com.jsh.erp.utils.ExcelUtils;
+ import com.jsh.erp.utils.StringUtil;
++import jxl.Cell;
+ import jxl.Sheet;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+@@ -424,7 +425,8 @@ public BaseResponseInfo importExcel(Sheet src) throws Exception {
+                 m.setEnabled(enabled.equals("1")? true: false);
+                 //缓存各个仓库的库存信息
+                 Map<Long, BigDecimal> stockMap = new HashMap<Long, BigDecimal>();
+-                for(int j=1; j<=depotCount;j++) {
++                int depotSize = depotCount>10? 10: depotCount; //excel里面的仓库数量
++                for(int j=1; j<=depotSize;j++) {
+                     int col = 15+j;
+                     if(col <= src.getColumns()){
+                         String depotName = ExcelUtils.getContent(src, 1, col); //获取仓库名称
+
+File: src/main/java/com/jsh/erp/service/user/UserService.java
+Patch:
+@@ -68,6 +68,7 @@ public User getUser(long id)throws Exception {
+ 
+     public List<User> getUser()throws Exception {
+         UserExample example = new UserExample();
++        example.createCriteria().andStatusEqualTo(BusinessConstants.USER_STATUS_NORMAL);
+         List<User> list=null;
+         try{
+             list=userMapper.selectByExample(example);
+
+File: src/main/java/com/jsh/erp/controller/MaterialController.java
+Patch:
+@@ -157,7 +157,9 @@ public JSONObject findBySelect(@RequestParam(value = "q", required = false) Stri
+                         ratio = "";
+                     } else {
+                         ratio = material.getUnitName();
+-                        ratio = ratio.substring(ratio.indexOf("("));
++                        if(ratio!=null) {
++                            ratio = ratio.substring(ratio.indexOf("("));
++                        }
+                     }
+                     //品名/型号/扩展信息/包装
+                     String MaterialName = "";
+
+File: src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -267,7 +267,8 @@ public int checkIsExist(Long id, String name, String model, String color, String
+         MaterialExample.Criteria criteria = example.createCriteria();
+         criteria.andNameEqualTo(name).andModelEqualTo(model).andColorEqualTo(color)
+                 .andStandardEqualTo(standard).andMfrsEqualTo(mfrs)
+-                .andOtherfield1EqualTo(otherField1).andOtherfield2EqualTo(otherField2).andOtherfield2EqualTo(otherField3);
++                .andOtherfield1EqualTo(otherField1).andOtherfield2EqualTo(otherField2).andOtherfield2EqualTo(otherField3)
++                .andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         if (id > 0) {
+             criteria.andIdNotEqualTo(id);
+         }
+
+File: src/main/java/com/jsh/erp/service/depotItem/DepotItemService.java
+Patch:
+@@ -498,9 +498,8 @@ public String saveDetials(String inserted, String deleted, String updated, Long
+                         try {
+                             String Unit = tempUpdatedJson.get("Unit").toString();
+                             BigDecimal oNumber = tempUpdatedJson.getBigDecimal("OperNumber");
+-                            Long mId = Long.parseLong(tempUpdatedJson.get("MaterialId").toString());
+                             //以下进行单位换算
+-                            String unitName = materialService.findUnitName(mId); //查询计量单位名称
++                            String unitName = materialService.findUnitName(materialId); //查询计量单位名称
+                             if (!StringUtil.isEmpty(unitName)) {
+                                 String unitList = unitName.substring(0, unitName.indexOf("("));
+                                 String ratioList = unitName.substring(unitName.indexOf("("));
+
+File: src/main/java/com/jsh/erp/datasource/mappers/DepotHeadMapperEx.java
+Patch:
+@@ -117,8 +117,6 @@ List<DepotHeadVo4List> getDetailByNumber(
+ 
+     List<DepotHead> getDepotHeadListByHandsPersonIds(@Param("handsPersonIds") String[] handsPersonIds);
+ 
+-    List<DepotHead> getDepotHeadListByDepotIds(@Param("depotIds") String[] depotIds);
+-
+     BigDecimal getBuyAndSaleStatistics(
+             @Param("type") String type,
+             @Param("subType") String subType,
+
+File: src/main/java/com/jsh/erp/controller/MaterialController.java
+Patch:
+@@ -248,7 +248,7 @@ public BaseResponseInfo findByOrder(HttpServletRequest request)throws Exception
+      * @throws Exception
+      */
+     @GetMapping(value = "/getMaterialByMeId")
+-    public JSONObject getMaterialByMeId(@RequestParam("meId") long meId,
++    public JSONObject getMaterialByMeId(@RequestParam(value = "meId", required = false) Long meId,
+                                         @RequestParam("mpList") String mpList,
+                                         HttpServletRequest request) throws Exception{
+         JSONObject item = new JSONObject();
+
+File: src/main/java/com/jsh/erp/controller/DepotHeadController.java
+Patch:
+@@ -479,11 +479,11 @@ public BaseResponseInfo getBuyAndSaleStatistics(HttpServletRequest request) {
+             String firstDay = Tools.getCurrentMonth() + "-01 00:00:00";
+             BigDecimal todaySale = depotHeadService.getBuyAndSaleStatistics("出库", "销售",
+                     1, today, getNow3()); //今日销售出库
+-            BigDecimal todayRetailSale = depotHeadService.getBuyAndSaleStatistics("出库", "销售",
++            BigDecimal todayRetailSale = depotHeadService.getBuyAndSaleRetailStatistics("出库", "零售",
+                     0, today, getNow3()); //今日零售出库
+             BigDecimal monthSale = depotHeadService.getBuyAndSaleStatistics("出库", "销售",
+                     1,firstDay, getNow3()); //本月销售出库
+-            BigDecimal monthRetailSale = depotHeadService.getBuyAndSaleStatistics("出库", "销售",
++            BigDecimal monthRetailSale = depotHeadService.getBuyAndSaleRetailStatistics("出库", "零售",
+                     0,firstDay, getNow3()); //本月零售出库
+             BigDecimal monthBuy = depotHeadService.getBuyAndSaleStatistics("入库", "采购",
+                     1, firstDay, getNow3()); //本月采购入库
+
+File: src/main/java/com/jsh/erp/service/depotItem/DepotItemService.java
+Patch:
+@@ -38,7 +38,7 @@ public class DepotItemService {
+     private Logger logger = LoggerFactory.getLogger(DepotItemService.class);
+ 
+     private final static String TYPE = "入库";
+-    private final static String SUM_TYPE = "Number";
++    private final static String SUM_TYPE = "number";
+     private final static String IN = "in";
+     private final static String OUT = "out";
+ 
+
+File: src/main/java/com/jsh/erp/controller/MaterialController.java
+Patch:
+@@ -257,7 +257,6 @@ public void importExcel(MultipartFile materialFile,
+                 info.code = 400;
+                 info.data = data;
+             }
+-            //读取所有的摄像机编码
+             //每行中数据顺序  "品名","类型","型号","安全存量","单位","零售价","最低售价","预计采购价","批发价","备注","状态"
+             List<Material> mList = new ArrayList<Material>();
+             for (int i = 1; i < src.getRows(); i++) {
+
+File: src/main/java/com/jsh/erp/controller/SupplierController.java
+Patch:
+@@ -397,7 +397,6 @@ public String importFun(MultipartFile supplierFile)throws Exception{
+                 info.code = 400;
+                 info.data = data;
+             }
+-            //读取所有的摄像机编码
+             //每行中数据顺序 "名称","类型","联系人","电话","电子邮箱","预收款","期初应收","期初应付","备注","传真","手机","地址","纳税人识别号","开户行","账号","税率","状态"
+             List<Supplier> sList = new ArrayList<Supplier>();
+             for (int i = 1; i < src.getRows(); i++) {
+
+File: src/main/java/com/jsh/erp/controller/UserController.java
+Patch:
+@@ -81,6 +81,7 @@ public BaseResponseInfo login(@RequestParam(value = "loginame", required = false
+             try {
+                 userStatus = userService.validateUser(username, password);
+             } catch (Exception e) {
++                e.printStackTrace();
+                 logger.error(">>>>>>>>>>>>>用户  " + username + " 登录 login 方法 访问服务层异常====", e);
+                 msgTip = "access service exception";
+             }
+@@ -122,6 +123,7 @@ public BaseResponseInfo login(@RequestParam(value = "loginame", required = false
+                         }
+                         request.getSession().setAttribute("mybatisPlusStatus",mybatisPlusStatus); //开启状态
+                     } catch (Exception e) {
++                        e.printStackTrace();
+                         logger.error(">>>>>>>>>>>>>>>查询用户名为:" + username + " ，用户信息异常", e);
+                     }
+                     break;
+@@ -140,6 +142,7 @@ public BaseResponseInfo login(@RequestParam(value = "loginame", required = false
+             logger.info("===============用户登录 login 方法调用结束===============");
+         } catch(Exception e){
+             e.printStackTrace();
++            logger.error(e.getMessage());
+             res.code = 500;
+             res.data = "用户登录失败";
+         }
+
+File: src/main/java/com/jsh/erp/controller/SupplierController.java
+Patch:
+@@ -86,7 +86,7 @@ public JSONArray findBySelectCus(@RequestParam(value = "UBType", required = fals
+             List<Supplier> supplierList = supplierService.findBySelectCus();
+             JSONArray dataArray = new JSONArray();
+             if (null != supplierList) {
+-                boolean depotFlag = systemConfigService.getDepotFlag();
++                boolean customerFlag = systemConfigService.getCustomerFlag();
+                 for (Supplier supplier : supplierList) {
+                     JSONObject item = new JSONObject();
+                     //勾选判断1
+@@ -96,7 +96,7 @@ public JSONArray findBySelectCus(@RequestParam(value = "UBType", required = fals
+                     } catch (DataAccessException e) {
+                         logger.error(">>>>>>>>>>>>>>>>>查询用户对应的客户：存在异常！");
+                     }
+-                    if (!depotFlag || flag) {
++                    if (!customerFlag || flag) {
+                         item.put("id", supplier.getId());
+                         item.put("supplier", supplier.getSupplier()); //客户名称
+                         dataArray.add(item);
+
+File: src/main/java/com/jsh/erp/service/tenant/TenantComponent.java
+Patch:
+@@ -14,7 +14,7 @@
+ import java.util.Map;
+ 
+ @Service(value = "tenant_component")
+-@UserResource
++@TenantResource
+ public class TenantComponent implements ICommonQuery {
+ 
+     @Resource
+
+File: src/main/java/com/jsh/erp/service/accountItem/AccountItemService.java
+Patch:
+@@ -49,6 +49,7 @@ public AccountItem getAccountItem(long id) {
+ 
+     public List<AccountItem> getAccountItem() {
+         AccountItemExample example = new AccountItemExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return accountItemMapper.selectByExample(example);
+     }
+ 
+
+File: src/main/java/com/jsh/erp/service/depot/DepotService.java
+Patch:
+@@ -47,11 +47,13 @@ public Depot getDepot(long id) {
+ 
+     public List<Depot> getDepot() {
+         DepotExample example = new DepotExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return depotMapper.selectByExample(example);
+     }
+ 
+     public List<Depot> getAllList() {
+         DepotExample example = new DepotExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         example.setOrderByClause("sort");
+         return depotMapper.selectByExample(example);
+     }
+@@ -99,7 +101,7 @@ public int checkIsNameExist(Long id, String name) {
+ 
+     public List<Depot> findUserDepot(){
+         DepotExample example = new DepotExample();
+-        example.createCriteria().andTypeEqualTo(0);
++        example.createCriteria().andTypeEqualTo(0).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         example.setOrderByClause("Sort");
+         List<Depot> list = depotMapper.selectByExample(example);
+         return list;
+
+File: src/main/java/com/jsh/erp/service/depotHead/DepotHeadService.java
+Patch:
+@@ -64,6 +64,7 @@ public DepotHead getDepotHead(long id) {
+ 
+     public List<DepotHead> getDepotHead() {
+         DepotHeadExample example = new DepotHeadExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return depotHeadMapper.selectByExample(example);
+     }
+ 
+@@ -191,7 +192,7 @@ public List<DepotHead> findByMonth(String monthTime) {
+         DepotHeadExample example = new DepotHeadExample();
+         monthTime = monthTime + "-31 23:59:59";
+         Date month = StringUtil.getDateByString(monthTime, null);
+-        example.createCriteria().andOpertimeLessThanOrEqualTo(month);
++        example.createCriteria().andOpertimeLessThanOrEqualTo(month).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return depotHeadMapper.selectByExample(example);
+     }
+ 
+
+File: src/main/java/com/jsh/erp/service/depotItem/DepotItemService.java
+Patch:
+@@ -66,6 +66,7 @@ public DepotItem getDepotItem(long id) {
+ 
+     public List<DepotItem> getDepotItem() {
+         DepotItemExample example = new DepotItemExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return depotItemMapper.selectByExample(example);
+     }
+ 
+
+File: src/main/java/com/jsh/erp/service/inOutItem/InOutItemService.java
+Patch:
+@@ -49,6 +49,7 @@ public InOutItem getInOutItem(long id) {
+ 
+     public List<InOutItem> getInOutItem() {
+         InOutItemExample example = new InOutItemExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return inOutItemMapper.selectByExample(example);
+     }
+ 
+@@ -96,9 +97,9 @@ public int checkIsNameExist(Long id, String name) {
+     public List<InOutItem> findBySelect(String type) {
+         InOutItemExample example = new InOutItemExample();
+         if (type.equals("in")) {
+-            example.createCriteria().andTypeEqualTo("收入");
++            example.createCriteria().andTypeEqualTo("收入").andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         } else if (type.equals("out")) {
+-            example.createCriteria().andTypeEqualTo("支出");
++            example.createCriteria().andTypeEqualTo("支出").andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         }
+         example.setOrderByClause("id desc");
+         return inOutItemMapper.selectByExample(example);
+
+File: src/main/java/com/jsh/erp/service/material/MaterialService.java
+Patch:
+@@ -45,6 +45,7 @@ public Material getMaterial(long id) {
+ 
+     public List<Material> getMaterial() {
+         MaterialExample example = new MaterialExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return materialMapper.selectByExample(example);
+     }
+ 
+@@ -175,6 +176,7 @@ public List<MaterialVo4Unit> findBySelect(){
+ 
+     public List<Material> findByOrder(){
+         MaterialExample example = new MaterialExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         example.setOrderByClause("Name,Model asc");
+         return materialMapper.selectByExample(example);
+     }
+
+File: src/main/java/com/jsh/erp/service/materialProperty/MaterialPropertyService.java
+Patch:
+@@ -42,8 +42,10 @@ public MaterialProperty getMaterialProperty(long id) {
+ 
+     public List<MaterialProperty> getMaterialProperty() {
+         MaterialPropertyExample example = new MaterialPropertyExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return materialPropertyMapper.selectByExample(example);
+     }
++
+     public List<MaterialProperty> select(String name, int offset, int rows) {
+         return materialPropertyMapperEx.selectByConditionMaterialProperty(name, offset, rows);
+     }
+
+File: src/main/java/com/jsh/erp/service/person/PersonService.java
+Patch:
+@@ -49,6 +49,7 @@ public Person getPerson(long id) {
+ 
+     public List<Person> getPerson() {
+         PersonExample example = new PersonExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return personMapper.selectByExample(example);
+     }
+ 
+@@ -96,7 +97,7 @@ public int checkIsNameExist(Long id, String name) {
+     public String getPersonByIds(String personIDs) {
+         List<Long> ids = StringUtil.strToLongList(personIDs);
+         PersonExample example = new PersonExample();
+-        example.createCriteria().andIdIn(ids);
++        example.createCriteria().andIdIn(ids).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         example.setOrderByClause("Id asc");
+         List<Person> list = personMapper.selectByExample(example);
+         StringBuffer sb = new StringBuffer();
+@@ -110,7 +111,7 @@ public String getPersonByIds(String personIDs) {
+ 
+     public List<Person> getPersonByType(String type) {
+         PersonExample example = new PersonExample();
+-        example.createCriteria().andTypeEqualTo(type);
++        example.createCriteria().andTypeEqualTo(type).andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         example.setOrderByClause("Id asc");
+         return personMapper.selectByExample(example);
+     }
+
+File: src/main/java/com/jsh/erp/service/role/RoleService.java
+Patch:
+@@ -43,6 +43,7 @@ public Role getRole(long id) {
+ 
+     public List<Role> getRole() {
+         RoleExample example = new RoleExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return roleMapper.selectByExample(example);
+     }
+ 
+
+File: src/main/java/com/jsh/erp/service/systemConfig/SystemConfigService.java
+Patch:
+@@ -42,6 +42,7 @@ public SystemConfig getSystemConfig(long id) {
+ 
+     public List<SystemConfig> getSystemConfig() {
+         SystemConfigExample example = new SystemConfigExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return systemConfigMapper.selectByExample(example);
+     }
+     public List<SystemConfig> select(String companyName, int offset, int rows) {
+@@ -84,6 +85,7 @@ public int checkIsNameExist(Long id, String name) {
+         List<SystemConfig> list = systemConfigMapper.selectByExample(example);
+         return list.size();
+     }
++
+     @Transactional(value = "transactionManager", rollbackFor = Exception.class)
+     public int batchDeleteSystemConfigByIds(String ids) {
+         logService.insertLog(BusinessConstants.LOG_INTERFACE_NAME_SYSTEM_CONFIG,
+
+File: src/main/java/com/jsh/erp/service/unit/UnitService.java
+Patch:
+@@ -49,6 +49,7 @@ public Unit getUnit(long id) {
+ 
+     public List<Unit> getUnit() {
+         UnitExample example = new UnitExample();
++        example.createCriteria().andDeleteFlagNotEqualTo(BusinessConstants.DELETE_FLAG_DELETED);
+         return unitMapper.selectByExample(example);
+     }
+ 
+
+File: src/main/java/com/jsh/erp/constants/BusinessConstants.java
+Patch:
+@@ -198,6 +198,7 @@ public class BusinessConstants {
+     public static final String LOG_INTERFACE_NAME_ORGANIZATION= "organization";
+ 
+     public static final String TYPE_NAME_ROLE_APP = "RoleAPP";
++    public static final String TYPE_NAME_ROLE_FUNCTIONS = "RoleFunctions";
+ 
+ 
+ 
+
+File: src/main/java/com/jsh/erp/service/userBusiness/UserBusinessService.java
+Patch:
+@@ -67,7 +67,7 @@ public int insertUserBusiness(String beanJson, HttpServletRequest request) {
+         UserBusiness userBusiness = JSONObject.parseObject(beanJson, UserBusiness.class);
+         int inserts = userBusinessMapper.insertSelective(userBusiness);
+         // 更新应用权限
+-        if (("RoleFunctions").equals(userBusiness.getType()) && inserts > 0) {
++        if (BusinessConstants.TYPE_NAME_ROLE_FUNCTIONS.equals(userBusiness.getType()) && inserts > 0) {
+             inserts = insertOrUpdateAppValue(BusinessConstants.TYPE_NAME_ROLE_APP, userBusiness.getKeyid(), userBusiness.getValue());
+         }
+         return inserts;
+@@ -79,7 +79,7 @@ public int updateUserBusiness(String beanJson, Long id) {
+         userBusiness.setId(id);
+         int updates = userBusinessMapper.updateByPrimaryKeySelective(userBusiness);
+         // 更新应用权限
+-        if (("RoleFunctions").equals(userBusiness.getType()) && updates > 0) {
++        if (BusinessConstants.TYPE_NAME_ROLE_FUNCTIONS.equals(userBusiness.getType()) && updates > 0) {
+             updates = insertOrUpdateAppValue(BusinessConstants.TYPE_NAME_ROLE_APP, userBusiness.getKeyid(), userBusiness.getValue());
+         }
+         return updates;
+
+File: src/main/java/com/jsh/erp/service/userBusiness/UserBusinessService.java
+Patch:
+@@ -67,7 +67,7 @@ public int insertUserBusiness(String beanJson, HttpServletRequest request) {
+         UserBusiness userBusiness = JSONObject.parseObject(beanJson, UserBusiness.class);
+         int inserts = userBusinessMapper.insertSelective(userBusiness);
+         // 更新应用权限
+-        if (inserts > 0) {
++        if (("RoleFunctions").equals(userBusiness.getType()) && inserts > 0) {
+             inserts = insertOrUpdateAppValue(BusinessConstants.TYPE_NAME_ROLE_APP, userBusiness.getKeyid(), userBusiness.getValue());
+         }
+         return inserts;
+@@ -79,7 +79,7 @@ public int updateUserBusiness(String beanJson, Long id) {
+         userBusiness.setId(id);
+         int updates = userBusinessMapper.updateByPrimaryKeySelective(userBusiness);
+         // 更新应用权限
+-        if (updates > 0) {
++        if (("RoleFunctions").equals(userBusiness.getType()) && updates > 0) {
+             updates = insertOrUpdateAppValue(BusinessConstants.TYPE_NAME_ROLE_APP, userBusiness.getKeyid(), userBusiness.getValue());
+         }
+         return updates;
+
+File: src/main/java/com/jsh/erp/controller/UserController.java
+Patch:
+@@ -112,7 +112,7 @@ public BaseResponseInfo login(@RequestParam(value = "loginame", required = false
+     //                            new Timestamp(System.currentTimeMillis()), (short) 0, "管理用户：" + username + " 登录系统", username + " 登录系统"));
+                         msgTip = "user can login";
+                         request.getSession().setAttribute("user",user);
+-                        String url = HTTP + manageIp + ":" + managePort + "/tenant/getTenant?tenantId=" + user.getId();
++                        String url = HTTP + manageIp + ":" + managePort + "/tenant/getTenant?tenantId=" + user.getTenantId();
+                         JSONObject obj = HttpClient.httpGet(url);
+                         if(obj!=null && obj.getString("code").equals(CODE_OK)) {
+                             JSONObject dataObj = obj.getJSONObject("data");
+
+File: src/main/java/com/jsh/erp/service/depotHead/DepotHeadService.java
+Patch:
+@@ -189,7 +189,7 @@ public String findMaterialsListByHeaderId(Long id) {
+ 
+     public List<DepotHead> findByMonth(String monthTime) {
+         DepotHeadExample example = new DepotHeadExample();
+-        monthTime = monthTime + "-31 00:00:00";
++        monthTime = monthTime + "-31 23:59:59";
+         Date month = StringUtil.getDateByString(monthTime, null);
+         example.createCriteria().andOpertimeLessThanOrEqualTo(month);
+         return depotHeadMapper.selectByExample(example);
+
+File: src/main/java/com/jsh/erp/datasource/mappers/LogMapper.java
+Patch:
+@@ -3,6 +3,8 @@
+ import com.jsh.erp.datasource.entities.Log;
+ import com.jsh.erp.datasource.entities.LogExample;
+ import java.util.List;
++
++import com.jsh.erp.datasource.vo.LogVo4List;
+ import org.apache.ibatis.annotations.Param;
+ 
+ public interface LogMapper {
+@@ -94,7 +96,7 @@ public interface LogMapper {
+      */
+     int updateByPrimaryKey(Log record);
+ 
+-    List<Log> selectByConditionLog(
++    List<LogVo4List> selectByConditionLog(
+             @Param("operation") String operation,
+             @Param("usernameID") Integer usernameID,
+             @Param("clientIp") String clientIp,
+
+File: src/main/java/com/jsh/erp/service/log/LogService.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.jsh.erp.datasource.entities.Log;
+ import com.jsh.erp.datasource.entities.LogExample;
+ import com.jsh.erp.datasource.mappers.LogMapper;
++import com.jsh.erp.datasource.vo.LogVo4List;
+ import com.jsh.erp.utils.ExceptionCodeConstants;
+ import com.jsh.erp.utils.JshException;
+ import com.jsh.erp.utils.StringUtil;
+@@ -33,8 +34,8 @@ public List<Log> getLog() {
+         return logMapper.selectByExample(example);
+     }
+ 
+-    public List<Log> select(String operation, Integer usernameID, String clientIp, Integer status, String beginTime, String endTime,
+-                            String contentdetails, int offset, int rows) {
++    public List<LogVo4List> select(String operation, Integer usernameID, String clientIp, Integer status, String beginTime, String endTime,
++                                   String contentdetails, int offset, int rows) {
+         return logMapper.selectByConditionLog(operation, usernameID, clientIp, status, beginTime, endTime,
+                             contentdetails, offset, rows);
+     }
+
+File: src/main/java/com/jsh/erp/controller/UserController.java
+Patch:
+@@ -52,8 +52,7 @@ public BaseResponseInfo login(@RequestParam(value = "loginame", required = false
+             if (userInfo != null) {
+                 sessionUser = (User) userInfo;
+             }
+-            if (sessionUser != null && username.equalsIgnoreCase(sessionUser.getLoginame())
+-                    && sessionUser.getPassword().equals(password)) {
++            if (sessionUser != null && username.equalsIgnoreCase(sessionUser.getLoginame())) {
+                 logger.info("====用户 " + username + "已经登录过, login 方法调用结束====");
+                 msgTip = "user already login";
+             }
+
+File: src/main/java/com/jsh/erp/controller/UserController.java
+Patch:
+@@ -52,8 +52,7 @@ public BaseResponseInfo login(@RequestParam(value = "loginame", required = false
+             if (userInfo != null) {
+                 sessionUser = (User) userInfo;
+             }
+-            if (sessionUser != null && username.equalsIgnoreCase(sessionUser.getLoginame())
+-                    && sessionUser.getPassword().equals(password)) {
++            if (sessionUser != null && username.equalsIgnoreCase(sessionUser.getLoginame())) {
+                 logger.info("====用户 " + username + "已经登录过, login 方法调用结束====");
+                 msgTip = "user already login";
+             }
+
+File: src/main/java/com/jsh/erp/controller/MaterialCategoryController.java
+Patch:
+@@ -55,7 +55,7 @@ public BaseResponseInfo findById(@RequestParam("id") Long id, HttpServletRequest
+                 }
+             }
+             res.code = 200;
+-            res.data = dataList;
++            res.data = outer;
+         } catch(Exception e){
+             e.printStackTrace();
+             res.code = 500;
+
+File: src/main/java/com/jsh/erp/controller/DepotItemController.java
+Patch:
+@@ -274,7 +274,7 @@ public String saveDetials(@RequestParam("inserted") String inserted,
+                             Long mId = Long.parseLong(tempInsertedJson.get("MaterialId").toString());
+                             //以下进行单位换算
+                             String UnitName = findUnitName(mId); //查询计量单位名称
+-                            if (!UnitName.equals("")) {
++                            if (!StringUtil.isEmpty(UnitName)) {
+                                 String UnitList = UnitName.substring(0, UnitName.indexOf("("));
+                                 String RatioList = UnitName.substring(UnitName.indexOf("("));
+                                 String basicUnit = UnitList.substring(0, UnitList.indexOf(",")); //基本单位
+
+File: src/main/java/com/jsh/erp/controller/DepotItemController.java
+Patch:
+@@ -359,7 +359,7 @@ public String saveDetials(@RequestParam("inserted") String inserted,
+                             Long mId = Long.parseLong(tempUpdatedJson.get("MaterialId").toString());
+                             //以下进行单位换算
+                             String UnitName = findUnitName(mId); //查询计量单位名称
+-                            if (!UnitName.equals("")) {
++                            if (!StringUtil.isEmpty(UnitName)) {
+                                 String UnitList = UnitName.substring(0, UnitName.indexOf("("));
+                                 String RatioList = UnitName.substring(UnitName.indexOf("("));
+                                 String basicUnit = UnitList.substring(0, UnitList.indexOf(",")); //基本单位
+
+File: src/main/java/com/jsh/dao/materials/DepotHeadDAO.java
+Patch:
+@@ -80,7 +80,7 @@ public void findInOutMaterialCount(PageUtil pageUtil,String beginTime,String end
+         queryString.append("select di.MaterialId, m.mName,m.Model,m.categoryName, "+
+         " (select sum(jsh_depotitem.AllPrice) priceSum from jsh_depothead INNER JOIN jsh_depotitem " +
+         "on jsh_depothead.id=jsh_depotitem.HeaderId where jsh_depotitem.MaterialId=di.MaterialId " +
+-        "and jsh_depothead.ProjectId=1 and jsh_depothead.type='"+ type +"' and dh.OperTime >='"+ beginTime +"' and dh.OperTime <='"+ endTime +"'");
++        " and jsh_depothead.type='"+ type +"' and dh.OperTime >='"+ beginTime +"' and dh.OperTime <='"+ endTime +"'");
+         if(pid!=null){
+             queryString.append(" and dh.ProjectId=" + pid );
+         }
+
+File: src/main/java/com/jsh/service/materials/DepotItemIService.java
+Patch:
+@@ -15,6 +15,8 @@
+ public interface DepotItemIService extends BaseIService<DepotItem>
+ {
+ 	void findByType(PageUtil<DepotItem> depotItem, String type, Long MId, String MonthTime,Boolean isPrev)throws JshException;
++
++	void findPriceByType(PageUtil<DepotItem> depotItem, String type, Long MId, String MonthTime,Boolean isPrev)throws JshException;
+ 	
+ 	void buyOrSale(PageUtil<DepotItem> depotItem, String type, String subType, Long MId, String MonthTime, String sumType)throws JshException;
+ 	
+
+File: src/main/java/com/jsh/action/basic/SupplierAction.java
+Patch:
+@@ -44,6 +44,7 @@ public void create()
+ 		    supplier.setType(model.getType());
+ 		    supplier.setDescription(model.getDescription());
+ 		    supplier.setEmail(model.getEmail());
++            supplier.setAdvanceIn(0.0);
+             supplier.setBeginNeedGet(model.getBeginNeedGet());
+             supplier.setBeginNeedPay(model.getBeginNeedPay());
+ 		    supplier.setIsystem((short)1);
+@@ -124,6 +125,7 @@ public void update()
+             supplier.setType(model.getType());
+             supplier.setDescription(model.getDescription());
+             supplier.setEmail(model.getEmail());
++            supplier.setAdvanceIn(supplier.getAdvanceIn());
+             supplier.setBeginNeedGet(model.getBeginNeedGet());
+             supplier.setBeginNeedPay(model.getBeginNeedPay());
+             supplier.setIsystem((short)1);
+
+File: src/com/jsh/action/basic/AccountAction.java
+Patch:
+@@ -291,9 +291,9 @@ public void findBySelect()
+                 for(Account account:dataList)
+                 {
+                     JSONObject item = new JSONObject();
+-                    item.put("id", account.getId());
++                    item.put("Id", account.getId());
+                     //结算账户名称
+-                    item.put("name", account.getName());
++                    item.put("AccountName", account.getName());
+                     dataArray.add(item);
+                 }
+             }
+
+File: src/com/jsh/base/Log.java
+Patch:
+@@ -4,7 +4,7 @@
+ 
+ /**
+  * 封装log4j日志信息，打印日志信息类
+- * @author ji/sheng/hua  qq_752718920
++ * @author ji/sheng/hua  qq_7527.18920
+  * @since 2014-01-22
+  */
+ public class Log
+

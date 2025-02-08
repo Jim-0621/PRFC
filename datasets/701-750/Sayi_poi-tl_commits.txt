@@ -1,0 +1,917 @@
+File: poi-tl/src/main/java/com/deepoove/poi/xwpf/XmlXWPFDocumentMerge.java
+Patch:
+@@ -229,6 +229,7 @@ protected String createMergeableString(NiceXWPFDocument source, NiceXWPFDocument
+     }
+ 
+     protected String ridSectPr(String appendString) {
++		appendString = appendString.replaceAll("<w:sectPr/>","");
+         int lastIndexOf = appendString.lastIndexOf("<w:sectPr");
+         String addPart = "";
+         int begin = appendString.indexOf(">") + 1;
+
+File: poi-tl/src/main/java/com/deepoove/poi/plugin/table/MultipleRowTableRenderPolicy.java
+Patch:
+@@ -112,13 +112,14 @@ public void render(ElementTemplate eleTemplate, Object data, XWPFTemplate templa
+ 
+                         List<XWPFTableCell> cells = newRow.getTableCells();
+                         RenderDataCompute dataCompute = template.getConfig().getRenderDataComputeFactory()
+-                                .newCompute(EnvModel.of(dt, EnvIterator.makeEnv(index++, hasNextData || hasNextTempRow)));
++                                .newCompute(EnvModel.of(dt, EnvIterator.makeEnv(index, hasNextData || hasNextTempRow)));
+                         cells.forEach(tableCell -> {
+                             List<MetaTemplate> metaTemplates = resolver.resolveBodyElements(tableCell.getBodyElements());
+                             new DocumentProcessor(template, resolver, dataCompute).process(metaTemplates);
+                         });
+                         ++position;
+                     }
++                    ++index;
+                 }
+ 
+                 removeTableRow(table, position, tempRows.size());
+
+File: poi-tl/src/main/java/com/deepoove/poi/plugin/table/MultipleRowTableRenderPolicy.java
+Patch:
+@@ -55,7 +55,7 @@ public MultipleRowTableRenderPolicy() {
+     }
+ 
+     public MultipleRowTableRenderPolicy(String prefix, String suffix) {
+-        this(DEFAULT_MULTIPLE_PREFIX, DEFAULT_MULTIPLE_PREFIX, prefix, suffix);
++        this(DEFAULT_MULTIPLE_PREFIX, DEFAULT_MULTIPLE_SUFFIX, prefix, suffix);
+     }
+ 
+     public MultipleRowTableRenderPolicy(String multiplePrefix, String multipleSuffix, String prefix, String suffix) {
+
+File: poi-tl/src/main/java/com/deepoove/poi/policy/TableRenderPolicy.java
+Patch:
+@@ -82,7 +82,7 @@ protected void afterRender(RenderContext<TableRenderData> context) {
+ 
+     public static class Helper {
+ 
+-        public static void renderTable(XWPFRun run, TableRenderData data) throws Exception {
++        public static XWPFTable renderTable(XWPFRun run, TableRenderData data) throws Exception {
+             BodyContainer bodyContainer = BodyContainerFactory.getBodyContainer(run);
+             XWPFTable table = bodyContainer.insertNewTable(run, data.obtainRowSize(), data.obtainColSize());
+             StyleUtils.styleTable(table, data.getTableStyle());
+@@ -94,6 +94,7 @@ public static void renderTable(XWPFRun run, TableRenderData data) throws Excepti
+             }
+ 
+             applyMergeRule(table, data.getMergeRule());
++            return table;
+         }
+ 
+         public static void renderRow(XWPFTableRow row, RowRenderData data) throws Exception {
+
+File: poi-tl/src/main/java/com/deepoove/poi/xwpf/DocumentBodyContainer.java
+Patch:
+@@ -103,7 +103,9 @@ public XWPFSection closelySectPr(IBodyElement element) {
+     public int elementPageWidth(IBodyElement element) {
+         XWPFSection section = closelySectPr(element);
+         if (null == section) {
+-            throw new IllegalAccessError("Unable to read the page where the element is located.");
++            //throw new IllegalAccessError("Unable to read the page where the element is located.");
++            // default A4
++            return Page.A4_NORMAL.contentWidth().intValue();
+         }
+         return section.getPageContentWidth().intValue();
+     }
+
+File: poi-tl/src/main/java/com/deepoove/poi/xwpf/NiceXWPFDocument.java
+Patch:
+@@ -216,9 +216,10 @@ public BigInteger addNewMultiLevelNumberingId(NumberingFormat... numFmts) {
+     public RelationPart addChartData(XWPFChart chart) throws InvalidFormatException, IOException {
+         int chartNumber = getNextPartNumber(XWPFRelation.CHART, charts.size() + 1);
+ 
++        PackagePart packagePart = chartMappingPart.getOrDefault(chart, chart.getPackagePart());
+         // create relationship in document for new chart
+         RelationPart rp = createRelationship(XWPFRelation.CHART,
+-                new XWPFChartFactory(chartMappingPart.getOrDefault(chart, chart.getPackagePart())), chartNumber, false);
++                new XWPFChartFactory(packagePart), chartNumber, false);
+ 
+         // initialize xwpfchart object
+         XWPFChart xwpfChart = rp.getDocumentPart();
+@@ -229,7 +230,7 @@ public RelationPart addChartData(XWPFChart chart) throws InvalidFormatException,
+ 
+         // add chart object to chart list
+         charts.add(xwpfChart);
+-        chartMappingPart.put(xwpfChart, chart.getPackagePart());
++        chartMappingPart.put(xwpfChart, packagePart);
+         return rp;
+     }
+ 
+
+File: poi-tl/src/test/java/com/deepoove/poi/tl/example/AnimalExample.java
+Patch:
+@@ -13,7 +13,7 @@
+ import com.deepoove.poi.data.Pictures;
+ 
+ @DisplayName("AnimalExmample test case")
+-public class AnimalExmample {
++public class AnimalExample {
+ 
+     @SuppressWarnings("serial")
+     @Test
+
+File: poi-tl/src/main/java/com/deepoove/poi/XWPFTemplate.java
+Patch:
+@@ -57,8 +57,8 @@
+  */
+ public class XWPFTemplate implements Closeable {
+ 
+-    public static final String DEFAULT_TEMPLATE_TAG_NAME = "template";
+-    public static final String TEMPLATE_TAG = "{{" + DEFAULT_TEMPLATE_TAG_NAME + "}}";
++    public static final String TEMPLATE_TAG_NAME = "template";
++    public static final String TEMPLATE_TAG = "{{" + TEMPLATE_TAG_NAME + "}}";
+ 
+     private static Logger logger = LoggerFactory.getLogger(XWPFTemplate.class);
+     private static final String SUPPORT_MINIMUM_VERSION = "4.1.2";
+@@ -210,7 +210,7 @@ public static XWPFTemplate create(Style templateTagStyle) {
+         XWPFRun run = document.createParagraph().createRun();
+         run.setText(TEMPLATE_TAG);
+         StyleUtils.styleRun(run, templateTagStyle);
+-        ConfigureBuilder builder = Configure.builder().bind(DEFAULT_TEMPLATE_TAG_NAME, new DocumentRenderPolicy());
++        ConfigureBuilder builder = Configure.builder().bind(TEMPLATE_TAG_NAME, new DocumentRenderPolicy());
+         return compile(document, builder.build());
+     }
+ 
+
+File: poi-tl/src/test/java/com/deepoove/poi/tl/xwpf/TemplateTest.java
+Patch:
+@@ -17,11 +17,11 @@ public class TemplateTest {
+     public void testCreateDocument() throws IOException {
+         DocumentRenderData data = Documents.of().addParagraph(Paragraphs.of("this a paragraph").create()).create();
+         XWPFTemplate.create()
+-                .render(Collections.singletonMap(XWPFTemplate.DEFAULT_TEMPLATE_TAG_NAME, data))
++                .render(Collections.singletonMap(XWPFTemplate.TEMPLATE_TAG_NAME, data))
+                 .writeToFile("out_generate.docx");
+ 
+         XWPFTemplate.create(Style.builder().buildFontFamily("微软雅黑").buildFontSize(18f).build())
+-                .render(Collections.singletonMap(XWPFTemplate.DEFAULT_TEMPLATE_TAG_NAME, data))
++                .render(Collections.singletonMap(XWPFTemplate.TEMPLATE_TAG_NAME, data))
+                 .writeToFile("out_generate_style.docx");
+     }
+ 
+
+File: src/test/java/com/deepoove/poi/tl/plugin/TocTest.java
+Patch:
+@@ -54,7 +54,6 @@ public static void main(String[] args) throws FileNotFoundException, IOException
+         doc.close();
+     }
+ 
+-    @Test
+     public void testTOC() throws IOException {
+         Configure config = Configure.builder().bind("toc", new RenderPolicy() {
+ 
+
+File: src/test/java/com/deepoove/poi/tl/policy/PictureRenderTest.java
+Patch:
+@@ -55,7 +55,7 @@ public void testPictureRender() throws Exception {
+         datas.put("localBytePicture",
+                 Pictures.ofStream(new FileInputStream("src/test/resources/logo.png")).size(100, 120).create());
+         // network url
+-        datas.put("urlPicture", Pictures.ofUrl("http://deepoove.com/images/icecream.png").create());
++        datas.put("urlPicture", "http://deepoove.com/images/icecream.png");
+         // java bufferedImage
+         datas.put("bufferImagePicture", Pictures.ofBufferedImage(bufferImage, PictureType.PNG).size(100, 100).create());
+         // base64
+
+File: src/main/java/com/deepoove/poi/resolver/TemplateResolver.java
+Patch:
+@@ -191,7 +191,7 @@ private ChartTemplate resolveXWPFChart(XWPFRun run) {
+         CTDrawing ctDrawing = getCTDrawing(run);
+         if (null == ctDrawing) return null;
+         CTDrawingWrapper wrapper = new CTDrawingWrapper(ctDrawing);
+-        String rid = wrapper.getCharId();
++        String rid = wrapper.getChartId();
+         if (null == rid) return null;
+         POIXMLDocumentPart documentPart = run.getDocument().getRelationById(rid);
+         if (null == documentPart || !(documentPart instanceof XWPFChart)) return null;
+
+File: src/main/java/com/deepoove/poi/xwpf/CTDrawingWrapper.java
+Patch:
+@@ -67,7 +67,7 @@ public String getDesc() {
+         return null == docPr ? null : docPr.getDescr();
+     }
+ 
+-    public String getCharId() {
++    public String getChartId() {
+         CTGraphicalObjectData graphicData = null;
+         if (ctDrawing.sizeOfAnchorArray() > 0) {
+             CTAnchor anchorArray = ctDrawing.getAnchorArray(0);
+
+File: src/main/java/com/deepoove/poi/config/ConfigureBuilder.java
+Patch:
+@@ -76,9 +76,9 @@ public ConfigureBuilder useSpringEL(Map<String, Method> spELFunction) {
+         return setRenderDataComputeFactory(model -> new SpELRenderDataCompute(model, true, spELFunction));
+     }
+ 
+-    public ConfigureBuilder useDefaultStrictEL() {
++    public ConfigureBuilder useDefaultEL(boolean isStrict) {
+         usedSpringEL = false;
+-        return setRenderDataComputeFactory(model -> new DefaultELRenderDataCompute(model, true));
++        return setRenderDataComputeFactory(model -> new DefaultELRenderDataCompute(model, isStrict));
+     }
+ 
+     public ConfigureBuilder setValidErrorHandler(ValidErrorHandler handler) {
+
+File: src/test/java/com/deepoove/poi/tl/config/ConfigELTest.java
+Patch:
+@@ -78,7 +78,7 @@ public void testDefaultELMode() throws Exception {
+     public void testStrictELMode() throws Exception {
+         model.getDetail().setDesc(null);
+         // 无法容忍变量不存在，直接抛出异常(可以防止人为的失误)
+-        Configure config = Configure.builder().useDefaultStrictEL().build();
++        Configure config = Configure.builder().useDefaultEL(true).build();
+         XWPFTemplate template = XWPFTemplate.compile(resource, config);
+ 
+         RenderException exception = assertThrows(RenderException.class, () -> template.render(model));
+
+File: src/main/java/com/deepoove/poi/template/PictureTemplate.java
+Patch:
+@@ -51,6 +51,7 @@ public void accept(Visitor visitor) {
+         visitor.visit(this);
+     }
+ 
++    @Override
+     public RenderPolicy findPolicy(Configure config) {
+         RenderPolicy renderPolicy = config.getCustomPolicy(tagName);
+         return null == renderPolicy ? config.getTemplatePolicy(this.getClass()) : renderPolicy;
+
+File: src/main/java/com/deepoove/poi/xwpf/AbstractXWPFDocumentMerge.java
+Patch:
+@@ -32,17 +32,20 @@ public abstract class AbstractXWPFDocumentMerge implements DocumentMerge<NiceXWP
+ 
+     protected Logger logger = LoggerFactory.getLogger(getClass());
+ 
++    @Override
+     public NiceXWPFDocument merge(NiceXWPFDocument source, NiceXWPFDocument merged) throws Exception {
+         return merge(source, Collections.singleton(merged).iterator());
+     }
+ 
++    @Override
+     public NiceXWPFDocument merge(NiceXWPFDocument source, Iterator<NiceXWPFDocument> mergedIterator) throws Exception {
+         return merge(source, mergedIterator, source.createParagraph().createRun());
+     }
+ 
+     /**
+      * the each element in mergedIterator should be the same document!
+      */
++    @Override
+     public abstract NiceXWPFDocument merge(NiceXWPFDocument source, Iterator<NiceXWPFDocument> mergedIterator,
+             XWPFRun location) throws Exception;
+ 
+
+File: src/test/java/com/deepoove/poi/tl/data/SerializableTest.java
+Patch:
+@@ -140,7 +140,7 @@ private void checkParagraph(ParagraphRenderData result, ParagraphRenderData data
+                 assertEquals(((TextRenderData) renderData2).getText(), ((TextRenderData) renderData).getText());
+             }
+             if (renderData instanceof PictureRenderData) {
+-                assertEquals(((PictureRenderData) renderData2).getImage(), ((PictureRenderData) renderData).getImage());
++                assertArrayEquals(((PictureRenderData) renderData2).getImage(), ((PictureRenderData) renderData).getImage());
+             }
+         }
+ 
+
+File: src/test/java/com/deepoove/poi/tl/config/ConfigureTest.java
+Patch:
+@@ -38,10 +38,11 @@ public class ConfigureTest {
+      * [[姓名]]
+      */
+     String resource = "src/test/resources/template/config.docx";
+-    ConfigureBuilder builder = Configure.builder();
++    ConfigureBuilder builder;
+ 
+     @BeforeEach
+     public void init() {
++        builder = Configure.builder();
+         // 自定义语法以[[开头，以]]结尾
+         builder.buildGramer("[[", "]]");
+         // 自定义标签text的策略：不是文本，是图片
+@@ -104,7 +105,6 @@ public void testDiscardHandler() throws Exception {
+     public void testAbortHandler() {
+         // 没有变量时，无法容忍，抛出异常
+         builder.setValidErrorHandler(new AbortHandler());
+-
+         assertThrows(RenderException.class,
+                 () -> XWPFTemplate.compile(resource, builder.build()).render(new HashMap<String, Object>()));
+     }
+
+File: src/test/java/com/deepoove/poi/tl/config/WritePluginTest.java
+Patch:
+@@ -15,7 +15,7 @@
+ 
+ import com.deepoove.poi.XWPFTemplate;
+ import com.deepoove.poi.config.Configure;
+-import com.deepoove.poi.data.NumberingRenderData;
++import com.deepoove.poi.data.Numberings;
+ import com.deepoove.poi.policy.AbstractRenderPolicy;
+ import com.deepoove.poi.render.RenderContext;
+ import com.deepoove.poi.render.WhereDelegate;
+@@ -66,7 +66,7 @@ public void doRender(RenderContext<List<String>> context) throws Exception {
+                 // anything
+                 List<String> thing = context.getThing();
+                 // do 列表
+-                where.renderNumbering(NumberingRenderData.build(thing.toArray(new String[] {})));
++                where.renderNumbering(Numberings.of(thing.toArray(new String[] {})).create());
+                 // clear
+                 clearPlaceholder(context, true);
+             }
+
+File: src/test/java/com/deepoove/poi/tl/issue/Issue329.java
+Patch:
+@@ -57,7 +57,7 @@ public void testDocxTemplateRender() throws Exception {
+         XWPFTemplate template = XWPFTemplate.compile("src/test/resources/template/render_include.docx")
+                 .render(datas);
+ 
+-        template.writeToFile("out_issue_329.docx");
++        // template.writeToFile("out_issue_329.docx");
+ 
+         //System.out.println("game over................");
+ 
+
+File: src/test/java/com/deepoove/poi/tl/issue/Issue370.java
+Patch:
+@@ -3,7 +3,6 @@
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ 
+ import java.io.FileInputStream;
+-import java.io.FileOutputStream;
+ import java.io.IOException;
+ 
+ import org.junit.jupiter.api.AfterEach;
+
+File: src/test/java/com/deepoove/poi/tl/xwpf/NiceXWPFDocumentTest.java
+Patch:
+@@ -33,7 +33,6 @@ public void testMergeAtEnd() throws Exception {
+         source.close();
+     }
+ 
+-    @SuppressWarnings("resource")
+     @Test
+     public void testMergeAtRun() throws Exception {
+         NiceXWPFDocument source = new NiceXWPFDocument(
+
+File: src/main/java/com/deepoove/poi/render/DefaultRender.java
+Patch:
+@@ -65,7 +65,7 @@ public void render(XWPFTemplate template, Object root) {
+             renderInclude(template, renderDataCompute);
+ 
+         } catch (Exception e) {
+-            if (e instanceof RenderException) throw (RenderException)e;
++            if (e instanceof RenderException) throw (RenderException) e;
+             throw new RenderException("Cannot render docx template, please check the Exception", e);
+         } finally {
+             watch.stop();
+@@ -76,7 +76,7 @@ public void render(XWPFTemplate template, Object root) {
+     private void renderTemplate(XWPFTemplate template, RenderDataCompute renderDataCompute) {
+         // log
+         new LogProcessor().process(template.getElementTemplates());
+-        
++
+         // render
+         DocumentProcessor documentRender = new DocumentProcessor(template, template.getResolver(), renderDataCompute);
+         documentRender.process(template.getElementTemplates());
+
+File: src/main/java/com/deepoove/poi/render/RenderContext.java
+Patch:
+@@ -26,7 +26,7 @@
+ import com.deepoove.poi.xwpf.NiceXWPFDocument;
+ 
+ /**
+- * 模板标签上下文
++ * Template context
+  * 
+  * @author Sayi
+  */
+
+File: src/main/java/com/deepoove/poi/render/WhereDelegate.java
+Patch:
+@@ -31,10 +31,11 @@
+ import com.deepoove.poi.policy.TextRenderPolicy;
+ 
+ /**
+- * 对当前位置的委托，提供更多操作当前位置的方法。
++ * The delegation of the current location provides more methods of operating the
++ * current location.
+  * 
+  * @author Sayi
+- * @version 1.5.1
++ * @since 1.5.1
+  */
+ public class WhereDelegate {
+ 
+
+File: src/main/java/com/deepoove/poi/render/processor/LogProcessor.java
+Patch:
+@@ -59,9 +59,8 @@ public void visit(RunTemplate runTemplate) {
+     @Override
+     public void visit(PictureTemplate pictureTemplate) {
+         log.info("{}{}", indentState, pictureTemplate);
+-        
+     }
+-    
++
+     @Override
+     public void visit(IterableTemplate iterableTemplate) {
+         log.info("{}{}", indentState, iterableTemplate.getStartMark());
+
+File: src/main/java/com/deepoove/poi/data/Pictures.java
+Patch:
+@@ -19,7 +19,7 @@
+ import java.io.File;
+ import java.io.InputStream;
+ 
+-import com.deepoove.poi.util.BytePictureUtils;
++import com.deepoove.poi.util.BufferedImageUtils;
+ import com.deepoove.poi.util.ByteUtils;
+ 
+ /**
+@@ -40,15 +40,15 @@ public static Pictures ofLocal(String src) {
+     }
+ 
+     public static Pictures ofUrl(String url, PictureType pictureType) {
+-        return ofBytes(BytePictureUtils.getUrlByteArray(url), pictureType);
++        return ofBytes(ByteUtils.getUrlByteArray(url), pictureType);
+     }
+ 
+     public static Pictures ofStream(InputStream inputStream, PictureType pictureType) {
+         return ofBytes(ByteUtils.toByteArray(inputStream), pictureType);
+     }
+ 
+     public static Pictures ofBufferedImage(BufferedImage image, PictureType pictureType) {
+-        return ofBytes(BytePictureUtils.getBufferByteArray(image, pictureType.format()), pictureType);
++        return ofBytes(BufferedImageUtils.getBufferByteArray(image, pictureType.format()), pictureType);
+     }
+ 
+     public static Pictures ofBytes(byte[] bytes, PictureType pictureType) {
+
+File: src/main/java/com/deepoove/poi/resolver/TemplateResolver.java
+Patch:
+@@ -56,7 +56,6 @@
+  * Resolver
+  * 
+  * @author Sayi
+- * @version 1.7.0
+  */
+ public class TemplateResolver extends AbstractResolver {
+ 
+@@ -258,8 +257,7 @@ private List<MetaTemplate> resolveTextbox(XWPFRun run) {
+ 
+     <T extends IBody> List<MetaTemplate> resolveBodys(List<T> bodys) {
+         List<MetaTemplate> metaTemplates = new ArrayList<>();
+-        if (null == bodys)
+-            return metaTemplates;
++        if (null == bodys) return metaTemplates;
+ 
+         bodys.forEach(body -> {
+             metaTemplates.addAll(resolveBodyElements(body.getBodyElements()));
+
+File: src/test/java/com/deepoove/poi/tl/policy/PictureRenderTest.java
+Patch:
+@@ -14,7 +14,7 @@
+ import com.deepoove.poi.XWPFTemplate;
+ import com.deepoove.poi.data.PictureType;
+ import com.deepoove.poi.data.Pictures;
+-import com.deepoove.poi.util.BytePictureUtils;
++import com.deepoove.poi.util.BufferedImageUtils;
+ 
+ @DisplayName("Picture Render test case")
+ public class PictureRenderTest {
+@@ -23,7 +23,7 @@ public class PictureRenderTest {
+ 
+     @BeforeEach
+     public void init() {
+-        bufferImage = BytePictureUtils.newBufferImage(100, 100);
++        bufferImage = BufferedImageUtils.newBufferImage(100, 100);
+         Graphics2D g = (Graphics2D) bufferImage.getGraphics();
+         g.setColor(Color.CYAN);
+         g.fillRect(0, 0, 100, 100);
+
+File: src/test/java/com/deepoove/poi/tl/source/ComplexRenderTest.java
+Patch:
+@@ -14,7 +14,7 @@
+ import com.deepoove.poi.data.Tables;
+ import com.deepoove.poi.data.TextRenderData;
+ import com.deepoove.poi.policy.TableRenderPolicy;
+-import com.deepoove.poi.util.BytePictureUtils;
++import com.deepoove.poi.util.ByteUtils;
+ 
+ /**
+  * 复杂模板
+@@ -50,7 +50,7 @@ public void testComplexDocx() throws Exception {
+                 put("s_antiWord", "没有安全问题");
+ 
+                 put("brakePicture", new PictureRenderData(220, 135, "src/test/resources/logo.png"));
+-                put("treadPicture", new PictureRenderData(220, 135, ".png", BytePictureUtils
++                put("treadPicture", new PictureRenderData(220, 135, ".png", ByteUtils
+                         .getLocalByteArray(new File("src/test/resources/logo.png"))));
+                 put("fluidPicture", new PictureRenderData(220, 135, "src/test/resources/logo.png"));
+                 put("antiPicture", new PictureRenderData(75, 170, "src/test/resources/logo.png"));
+
+File: src/main/java/com/deepoove/poi/data/style/ParagraphStyle.java
+Patch:
+@@ -35,6 +35,7 @@ public class ParagraphStyle implements Serializable {
+      */
+     private double spacing;
+ 
++    // TODO ADD numbering style Class
+     private Style glyphStyle;
+     private long numId = -1;
+     private long lvl = -1;
+
+File: src/main/java/com/deepoove/poi/expression/DefaultEL.java
+Patch:
+@@ -20,7 +20,7 @@
+ 
+ /**
+  * 
+- * calculate expression
++ * default el expression
+  * 
+  * @author Sayi
+  *
+
+File: src/main/java/com/deepoove/poi/policy/PictureRenderPolicy.java
+Patch:
+@@ -16,7 +16,6 @@
+ package com.deepoove.poi.policy;
+ 
+ import java.io.ByteArrayInputStream;
+-import java.io.IOException;
+ import java.io.InputStream;
+ 
+ import org.apache.poi.util.Units;
+@@ -60,7 +59,7 @@ protected void reThrowException(RenderContext<PictureRenderData> context, Except
+     public static class Helper {
+         public static void renderPicture(XWPFRun run, PictureRenderData picture) throws Exception {
+             if (null == picture.getImage()) {
+-                throw new IOException("Can't get input data from picture!");
++                throw new IllegalStateException("Can't get input data from picture!");
+             }
+             try (InputStream stream = new ByteArrayInputStream(picture.getImage())) {
+                 run.addPicture(stream, picture.getPictureType().type(), "Generated",
+
+File: src/main/java/com/deepoove/poi/policy/reference/AbstractTemplateRenderPolicy.java
+Patch:
+@@ -25,6 +25,7 @@ public abstract class AbstractTemplateRenderPolicy<E extends ElementTemplate, T>
+     @SuppressWarnings("unchecked")
+     @Override
+     public void render(ElementTemplate eleTemplate, Object data, XWPFTemplate template) {
++        if (null == data) return;
+         // type safe
+         T model = null;
+         try {
+@@ -36,7 +37,7 @@ public void render(ElementTemplate eleTemplate, Object data, XWPFTemplate templa
+         try {
+             doRender((E) eleTemplate, model, template);
+         } catch (Exception e) {
+-            if (e instanceof RenderException) throw (RenderException)e;
++            if (e instanceof RenderException) throw (RenderException) e;
+             else throw new RenderException("TemplateRenderPolicy render error", e);
+         }
+ 
+
+File: src/main/java/com/deepoove/poi/policy/reference/SingleSeriesChartTemplateRenderPolicy.java
+Patch:
+@@ -31,15 +31,13 @@
+  * single series chart
+  * 
+  * @author Sayi
+- * @version 1.8.0
+  */
+ public class SingleSeriesChartTemplateRenderPolicy
+         extends AbstractChartTemplateRenderPolicy<ChartSingleSeriesRenderData> {
+ 
+     @Override
+     public void doRender(ChartTemplate eleTemplate, ChartSingleSeriesRenderData data, XWPFTemplate template)
+             throws Exception {
+-        if (null == data) return;
+         XWPFChart chart = eleTemplate.getChart();
+         XDDFChartData pie = chart.getChartSeries().get(0);
+         SeriesRenderData seriesDatas = data.getSeriesData();
+
+File: src/main/java/com/deepoove/poi/data/CellRenderData.java
+Patch:
+@@ -20,7 +20,7 @@
+ 
+ import com.deepoove.poi.data.style.CellStyle;
+ 
+-public class CellV2RenderData implements RenderData {
++public class CellRenderData implements RenderData {
+ 
+     private static final long serialVersionUID = 1L;
+     private List<ParagraphRenderData> paragraphs = new ArrayList<>();
+@@ -34,7 +34,7 @@ public void setParagraphs(List<ParagraphRenderData> paragraphs) {
+         this.paragraphs = paragraphs;
+     }
+ 
+-    public CellV2RenderData addParagraph(ParagraphRenderData para) {
++    public CellRenderData addParagraph(ParagraphRenderData para) {
+         this.paragraphs.add(para);
+         return this;
+     }
+
+File: src/main/java/com/deepoove/poi/data/TextRenderData.java
+Patch:
+@@ -16,7 +16,6 @@
+ package com.deepoove.poi.data;
+ 
+ import com.deepoove.poi.data.style.Style;
+-import com.deepoove.poi.data.style.StyleBuilder;
+ 
+ /**
+  * 文本数据
+
+File: src/main/java/com/deepoove/poi/data/Texts.java
+Patch:
+@@ -16,7 +16,6 @@
+ package com.deepoove.poi.data;
+ 
+ import com.deepoove.poi.data.style.Style;
+-import com.deepoove.poi.data.style.StyleBuilder;
+ 
+ /**
+  * @author Sayi
+
+File: src/main/java/com/deepoove/poi/data/style/TableStyle.java
+Patch:
+@@ -21,7 +21,7 @@
+ 
+ import com.deepoove.poi.util.UnitUtils;
+ 
+-public class TableV2Style implements Serializable {
++public class TableStyle implements Serializable {
+ 
+     private static final long serialVersionUID = 1L;
+ 
+
+File: src/main/java/com/deepoove/poi/util/TableTools.java
+Patch:
+@@ -36,7 +36,7 @@
+ import org.openxmlformats.schemas.wordprocessingml.x2006.main.STTblWidth;
+ 
+ import com.deepoove.poi.data.style.BorderStyle;
+-import com.deepoove.poi.data.style.TableV2Style;
++import com.deepoove.poi.data.style.TableStyle;
+ 
+ /**
+  * XWPFTable 增强工具类 <br/>
+@@ -209,7 +209,7 @@ public static void borderTable(XWPFTable table, int size) {
+      * @param width
+      * @param style
+      */
+-    public static void initBasicTable(XWPFTable table, int col, float width, TableV2Style style) {
++    public static void initBasicTable(XWPFTable table, int col, float width, TableStyle style) {
+         int defaultBorderSize = 4;
+         widthTable(table, width, col);
+         borderTable(table, defaultBorderSize);
+@@ -220,7 +220,7 @@ public static boolean isInsideTable(XWPFRun run) {
+         return ((XWPFParagraph) run.getParent()).getPartType() == BodyType.TABLECELL;
+     }
+ 
+-    public static void styleTable(XWPFTable table, TableV2Style style) {
++    public static void styleTable(XWPFTable table, TableStyle style) {
+         StyleUtils.styleTable(table, style);
+     }
+ 
+
+File: src/test/java/com/deepoove/poi/tl/data/SerializableTest.java
+Patch:
+@@ -29,7 +29,7 @@
+ import com.deepoove.poi.data.PictureType;
+ import com.deepoove.poi.data.Pictures;
+ import com.deepoove.poi.data.RenderData;
+-import com.deepoove.poi.data.RowV2RenderData;
++import com.deepoove.poi.data.RowRenderData;
+ import com.deepoove.poi.data.Rows;
+ import com.deepoove.poi.data.TableRenderData;
+ import com.deepoove.poi.data.Tables;
+@@ -108,7 +108,7 @@ void testDocxRenderData() throws Exception {
+ 
+     @Test
+     void testTableRenderData() throws Exception {
+-        RowV2RenderData row = Rows.of(Cells.of("lisi").create(), Cells.of("lisi").create()).create();
++        RowRenderData row = Rows.of(Cells.of("lisi").create(), Cells.of("lisi").create()).create();
+         TableRenderData data = Tables.of(row).width(10.01f, null).center().create();
+ 
+         TableRenderData result = write(data).getResult(TableRenderData.class);
+
+File: src/test/java/com/deepoove/poi/tl/example/DetailTablePolicy.java
+Patch:
+@@ -5,7 +5,7 @@
+ import org.apache.poi.xwpf.usermodel.XWPFTable;
+ import org.apache.poi.xwpf.usermodel.XWPFTableRow;
+ 
+-import com.deepoove.poi.data.RowV2RenderData;
++import com.deepoove.poi.data.RowRenderData;
+ import com.deepoove.poi.policy.DynamicTableRenderPolicy;
+ import com.deepoove.poi.policy.TableRenderPolicy;
+ import com.deepoove.poi.util.TableTools;
+@@ -29,7 +29,7 @@ public void render(XWPFTable table, Object data) throws Exception {
+         if (null == data) return;
+         DetailData detailData = (DetailData) data;
+ 
+-        List<RowV2RenderData> labors = detailData.getLabors();
++        List<RowRenderData> labors = detailData.getLabors();
+         if (null != labors) {
+             table.removeRow(laborsStartRow);
+             // 循环插入行
+@@ -43,7 +43,7 @@ public void render(XWPFTable table, Object data) throws Exception {
+             }
+         }
+ 
+-        List<RowV2RenderData> goods = detailData.getGoods();
++        List<RowRenderData> goods = detailData.getGoods();
+         if (null != goods) {
+             table.removeRow(goodsStartRow);
+             for (int i = 0; i < goods.size(); i++) {
+
+File: src/test/java/com/deepoove/poi/tl/policy/ListRenderPolicyTest.java
+Patch:
+@@ -16,7 +16,7 @@
+ import com.deepoove.poi.data.NumberingRenderData;
+ import com.deepoove.poi.data.Numberings;
+ import com.deepoove.poi.data.PictureRenderData;
+-import com.deepoove.poi.data.RowV2RenderData;
++import com.deepoove.poi.data.RowRenderData;
+ import com.deepoove.poi.data.Rows;
+ import com.deepoove.poi.data.Tables;
+ import com.deepoove.poi.data.TextRenderData;
+@@ -25,7 +25,7 @@
+ @DisplayName("List Render test case")
+ public class ListRenderPolicyTest {
+ 
+-    RowV2RenderData header, row0, row1, row2;
++    RowRenderData header, row0, row1, row2;
+ 
+     @BeforeEach
+     public void init() {
+
+File: src/test/java/com/deepoove/poi/tl/source/ComplexRenderTest.java
+Patch:
+@@ -9,7 +9,7 @@
+ 
+ import com.deepoove.poi.XWPFTemplate;
+ import com.deepoove.poi.data.PictureRenderData;
+-import com.deepoove.poi.data.RowV2RenderData;
++import com.deepoove.poi.data.RowRenderData;
+ import com.deepoove.poi.data.Rows;
+ import com.deepoove.poi.data.Tables;
+ import com.deepoove.poi.data.TextRenderData;
+@@ -105,7 +105,7 @@ public void testComplexDocx() throws Exception {
+ 
+                 put("m_key", "5");
+ 
+-                RowV2RenderData headers = Rows.of(new TextRenderData("d0d0d0", "过户主体"),
++                RowRenderData headers = Rows.of(new TextRenderData("d0d0d0", "过户主体"),
+                         new TextRenderData("d0d0d0", "过户时间"), new TextRenderData("d0d0d0", "过户方式")).create();
+                 put("table",
+                         Tables.of(headers,
+
+File: src/main/java/com/deepoove/poi/policy/reference/MultiSeriesChartTemplateRenderPolicy.java
+Patch:
+@@ -45,12 +45,13 @@ public void doRender(ChartTemplate eleTemplate, ChartMultiSeriesRenderData data,
+             throws Exception {
+         if (null == data) return;
+         XWPFChart chart = eleTemplate.getChart();
+-        XDDFChartData chartData = chart.getChartSeries().get(0);
++        List<XDDFChartData> chartSeries = chart.getChartSeries();
++        XDDFChartData chartData = chartSeries.get(0);
+ 
+         // hack for poi 4.1.1+: repair seriesCount value,
+         Field field = ReflectionUtils.findField(XDDFChart.class, "seriesCount");
+         field.setAccessible(true);
+-        field.set(chart, chartData.getSeriesCount());
++        field.set(chart, chartSeries.stream().mapToInt(XDDFChartData::getSeriesCount).sum());
+ 
+         int orignSize = chartData.getSeriesCount();
+         List<SeriesRenderData> seriesDatas = data.getSeriesDatas();
+
+File: src/main/java/com/deepoove/poi/policy/reference/MultiSeriesChartTemplateRenderPolicy.java
+Patch:
+@@ -45,12 +45,13 @@ public void doRender(ChartTemplate eleTemplate, ChartMultiSeriesRenderData data,
+             throws Exception {
+         if (null == data) return;
+         XWPFChart chart = eleTemplate.getChart();
+-        XDDFChartData chartData = chart.getChartSeries().get(0);
++        List<XDDFChartData> chartSeries = chart.getChartSeries();
++        XDDFChartData chartData = chartSeries.get(0);
+ 
+         // hack for poi 4.1.1+: repair seriesCount value,
+         Field field = ReflectionUtils.findField(XDDFChart.class, "seriesCount");
+         field.setAccessible(true);
+-        field.set(chart, chartData.getSeriesCount());
++        field.set(chart, chartSeries.stream().mapToInt(XDDFChartData::getSeriesCount).sum());
+ 
+         int orignSize = chartData.getSeriesCount();
+         List<SeriesRenderData> seriesDatas = data.getSeriesDatas();
+
+File: src/test/java/com/deepoove/poi/tl/issue/Issue257.java
+Patch:
+@@ -15,6 +15,7 @@ public class Issue257 {
+     @Test
+     public void testDocxMerge() throws Exception {
+ 
++        // 编号继续前一个编号可以修改为重新开始编号
+         Map<String, Object> params = new HashMap<String, Object>();
+ 
+         params.put("docx", new DocxRenderData(new File("src/test/resources/issue/257_MERGE.docx")));
+
+File: src/test/java/com/deepoove/poi/tl/issue/Issue313.java
+Patch:
+@@ -21,13 +21,13 @@ public void tempToTemp() throws Exception {
+         map.put("item1", "{{#excel_first}}\n{{#excel_second}}");
+         XWPFTemplate template = XWPFTemplate.compile("src/test/resources/issue/313.docx")
+                 .render(map);
+-        FileOutputStream out = new FileOutputStream("out_template_313.docx");
++        FileOutputStream out = new FileOutputStream("out_issue_template_313.docx");
+         template.write(out);
+         out.flush();
+         out.close();
+         template.close();
+ 
+-        excelRender("out_template_313.docx", "out_issue_313.docx");
++        excelRender("out_issue_template_313.docx", "out_issue_313.docx");
+     }
+ 
+     public void excelRender(String temppath, String outpath) throws Exception {
+
+File: src/test/java/com/deepoove/poi/tl/policy/ConfigurePluginTest.java
+Patch:
+@@ -43,7 +43,7 @@ public void testConfig() throws Exception {
+     }
+     
+     @Test
+-    public void testSupportNullToBlank() throws Exception {
++    public void testNullToDoNothing() throws Exception {
+ 
+         Map<String, Object> datas = new HashMap<String, Object>();
+ 
+
+File: src/main/java/com/deepoove/poi/util/TableTools.java
+Patch:
+@@ -107,8 +107,6 @@ public static void mergeCellsVertically(XWPFTable table, int col, int fromRow, i
+      * @param widths
+      *            每列的宽度，单位CM
+      */
+-    @SuppressWarnings("unused")
+-    // TODO 
+     public static void widthTable(XWPFTable table, float[] colWidths) {
+         float widthCM = 0;
+         for (float w : colWidths) {
+
+File: src/main/java/com/deepoove/poi/policy/MiniTableRenderPolicy.java
+Patch:
+@@ -155,8 +155,8 @@ public static void renderRow(XWPFTable table, int row, RowRenderData rowData) {
+             String cellText = cellData.getText();
+             if (StringUtils.isBlank(cellText)) continue;
+ 
+-            String[] fragment = cellText.split(TextRenderPolicy.REGEX_LINE_CHARACTOR);
+-            if (null == fragment) continue;
++            String[] fragment = cellText.split(TextRenderPolicy.REGEX_LINE_CHARACTOR, -1);
++            if (null == fragment || fragment.length <= 0) continue;
+ 
+             // 处理单元格数据
+             XWPFParagraph par;
+
+File: src/main/java/com/deepoove/poi/policy/TextRenderPolicy.java
+Patch:
+@@ -57,8 +57,8 @@ public void doRender(RunTemplate runTemplate, Object renderData, XWPFTemplate te
+ 
+         StyleUtils.styleRun(run, textRenderData.getStyle());
+ 
+-        String[] split = data.split(REGEX_LINE_CHARACTOR);
+-        if (null != split) {
++        String[] split = data.split(REGEX_LINE_CHARACTOR, -1);
++        if (null != split && split.length > 0) {
+             run.setText(split[0], 0);
+             for (int i = 1; i < split.length; i++) {
+                 run.addBreak();
+
+File: src/main/java/com/deepoove/poi/policy/DynamicTableRenderPolicy.java
+Patch:
+@@ -45,11 +45,10 @@ public void render(ElementTemplate eleTemplate, Object data,
+ 		    //w:tbl-w:tr-w:tc-w:p-w:tr
+ 			XmlCursor newCursor = ((XWPFParagraph)run.getParent()).getCTP().newCursor();
+ 			newCursor.toParent();
+-			//if (newCursor.getObject() instanceof CTTc) 
+ 			newCursor.toParent();
+ 			newCursor.toParent();
+ 			XmlObject object = newCursor.getObject();
+-			XWPFTable table = doc.getTable((CTTbl) object);
++			XWPFTable table = doc.getAllTable((CTTbl) object);
+ 			render(table, data);
+ 		} catch (Exception e) {
+ 			logger.error("dynamic table error:" + e.getMessage(), e);
+
+File: src/main/java/com/deepoove/poi/resolver/TemplateResolver.java
+Patch:
+@@ -267,7 +267,7 @@ private static void styleRun(XWPFRun destRun, XWPFRun srcRun) {
+ 		if (null == destRun || null == srcRun) return;
+ 		destRun.setBold(srcRun.isBold());
+ 		destRun.setColor(srcRun.getColor());
+-		destRun.setCharacterSpacing(srcRun.getCharacterSpacing());
++//		destRun.setCharacterSpacing(srcRun.getCharacterSpacing());
+ 		destRun.setFontFamily(srcRun.getFontFamily());
+ 		int fontSize = srcRun.getFontSize();
+ 		if (-1 != fontSize) destRun.setFontSize(fontSize);
+

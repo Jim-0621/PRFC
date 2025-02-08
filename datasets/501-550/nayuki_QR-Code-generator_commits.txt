@@ -1,0 +1,167 @@
+File: java/io/nayuki/qrcodegen/QrCodeGeneratorWorker.java
+Patch:
+@@ -91,9 +91,7 @@ private static boolean processCase(Scanner input) {
+ 					System.out.println(qr.getModule(x, y) ? 1 : 0);
+ 			}
+ 			
+-		} catch (IllegalArgumentException e) {
+-			if (!e.getMessage().equals("Data too long"))
+-				throw e;
++		} catch (DataTooLongException e) {
+ 			System.out.println(-1);
+ 		}
+ 		System.out.flush();
+
+File: java/io/nayuki/qrcodegen/QrSegment.java
+Patch:
+@@ -173,7 +173,7 @@ else if (assignVal < (1 << 14)) {
+ 	 * Always zero or positive. Not the same as the data's bit length. */
+ 	public final int numChars;
+ 	
+-	/** The data bits of this segment. Not {@code null}. Accessed through {@link #getBits()}. */
++	/** The data bits of this segment. Not {@code null}. Accessed through {@link #getData()}. */
+ 	final BitBuffer data;
+ 	
+ 	
+@@ -205,7 +205,7 @@ public QrSegment(Mode md, int numCh, BitBuffer data) {
+ 	 * Returns the data bits of this segment.
+ 	 * @return a new copy of the data bits (not {@code null})
+ 	 */
+-	public BitBuffer getBits() {
++	public BitBuffer getData() {
+ 		return data.clone();  // Make defensive copy
+ 	}
+ 	
+
+File: java/io/nayuki/qrcodegen/QrCode.java
+Patch:
+@@ -116,7 +116,7 @@ public static QrCode encodeSegments(List<QrSegment> segs, Ecc ecl) {
+ 	 * @return a QR Code representing the segments
+ 	 * @throws NullPointerException if the list of segments, any segment, or the error correction level is {@code null}
+ 	 * @throws IllegalArgumentException if 1 &le; minVersion &le; maxVersion &le; 40
+-	 * is violated, or if mask &lt; &minus;1 or mask > 7, or if the segments fail
++	 * is violated, or if mask &lt; &minus;1 or mask &gt; 7, or if the segments fail
+ 	 * to fit in the maxVersion QR Code at the ECL, which means they are too long
+ 	 */
+ 	public static QrCode encodeSegments(List<QrSegment> segs, Ecc ecl, int minVersion, int maxVersion, int mask, boolean boostEcl) {
+
+File: java/io/nayuki/qrcodegen/QrSegmentAdvanced.java
+Patch:
+@@ -229,7 +229,7 @@ private static int countUtf8Bytes(int cp) {
+ 	/**
+ 	 * Returns a segment representing the specified string encoded in kanji mode.
+ 	 * <p>Note that broadly speaking, the set of encodable characters are {kanji used in Japan,
+-	 * hiragana, katakana, East Asian punctuation, full-width ASCII, Greek, Cyrillic}.<br/>
++	 * hiragana, katakana, East Asian punctuation, full-width ASCII, Greek, Cyrillic}.<br>
+ 	 * Examples of non-encodable characters include {normal ASCII, half-width katakana, more extensive Chinese hanzi}.
+ 	 * @param text the text to be encoded, which must fall in the kanji mode subset of characters
+ 	 * @return a segment containing the data
+@@ -253,7 +253,7 @@ public static QrSegment makeKanji(String text) {
+ 	/**
+ 	 * Tests whether the specified text string can be encoded as a segment in kanji mode.
+ 	 * <p>Note that broadly speaking, the set of encodable characters are {kanji used in Japan,
+-	 * hiragana, katakana, East Asian punctuation, full-width ASCII, Greek, Cyrillic}.<br/>
++	 * hiragana, katakana, East Asian punctuation, full-width ASCII, Greek, Cyrillic}.<br>
+ 	 * Examples of non-encodable characters include {normal ASCII, half-width katakana, more extensive Chinese hanzi}.
+ 	 * @param text the string to test for encodability
+ 	 * @return {@code true} if and only if the string can be encoded in kanji mode
+
+File: java/io/nayuki/qrcodegen/QrSegmentAdvanced.java
+Patch:
+@@ -134,7 +134,7 @@ else if (c < 0x10000)
+ 				charModes[i][2] = modeTypes[2];
+ 			}
+ 			if (isKanji(c)) {
+-				curCosts[3] = prevCosts[3] + 104;  // 13 bits per Shift JIS char
++				curCosts[3] = prevCosts[3] + 78;  // 13 bits per Shift JIS char
+ 				charModes[i][3] = modeTypes[3];
+ 			}
+ 			
+
+File: java/io/nayuki/qrcodegen/QrCode.java
+Patch:
+@@ -226,7 +226,7 @@ public QrCode(int ver, Ecc ecl, byte[] dataCodewords, int mask) {
+ 		
+ 		// Draw function patterns, draw all codewords, do masking
+ 		drawFunctionPatterns();
+-		byte[] allCodewords = appendErrorCorrection(dataCodewords);
++		byte[] allCodewords = addEccAndInterleave(dataCodewords);
+ 		drawCodewords(allCodewords);
+ 		this.mask = handleConstructorMasking(mask);
+ 	}
+@@ -437,7 +437,7 @@ private void setFunctionModule(int x, int y, boolean isBlack) {
+ 	
+ 	// Returns a new byte string representing the given data with the appropriate error correction
+ 	// codewords appended to it, based on this object's version and error correction level.
+-	private byte[] appendErrorCorrection(byte[] data) {
++	private byte[] addEccAndInterleave(byte[] data) {
+ 		if (data.length != getNumDataCodewords(version, errorCorrectionLevel))
+ 			throw new IllegalArgumentException();
+ 		
+
+File: src/io/nayuki/fastqrcodegen/QrSegment.java
+Patch:
+@@ -75,7 +75,7 @@ public static QrSegment makeAlphanumeric(String text) {
+ 			char c = text.charAt(i);
+ 			if (c >= ALPHANUMERIC_MAP.length || ALPHANUMERIC_MAP[c] == -1)
+ 				throw new IllegalArgumentException("String contains unencodable characters in alphanumeric mode");
+-			accumData = accumData * 10 + ALPHANUMERIC_MAP[c];
++			accumData = accumData * 45 + ALPHANUMERIC_MAP[c];
+ 			accumCount++;
+ 			if (accumCount == 2) {
+ 				bb.appendBits(accumData, 11);
+
+File: java/io/nayuki/qrcodegen/QrSegment.java
+Patch:
+@@ -143,7 +143,7 @@ public static QrSegment makeEci(int assignVal) {
+ 		else if ((1 << 7) <= assignVal && assignVal < (1 << 14)) {
+ 			bb.appendBits(2, 2);
+ 			bb.appendBits(assignVal, 14);
+-		} else if ((1 << 14) <= assignVal && assignVal < 999999) {
++		} else if ((1 << 14) <= assignVal && assignVal < 1000000) {
+ 			bb.appendBits(6, 3);
+ 			bb.appendBits(assignVal, 21);
+ 		} else
+
+File: java/io/nayuki/qrcodegen/BitBuffer.java
+Patch:
+@@ -59,7 +59,7 @@ public int bitLength() {
+ 	
+ 	// Returns the bit at the given index, yielding 0 or 1, or throwing IndexOutOfBoundsException.
+ 	public int getBit(int index) {
+-		if (index < 0 || index > bitLength)
++		if (index < 0 || index >= bitLength)
+ 			throw new IndexOutOfBoundsException();
+ 		return data.get(index) ? 1 : 0;
+ 	}
+
+File: java/io/nayuki/qrcodegen/QrSegmentAdvanced.java
+Patch:
+@@ -109,7 +109,7 @@ private static int[][] computeBitCosts(byte[] data, int version) {
+ 			char c = (char)data[i];
+ 			result[0][j] = result[0][i] + 48;  // 8 bits per byte
+ 			if (isAlphanumeric(c))
+-				result[1][j] = result[1][i] + 39;  // 6.5 bits per alphanumeric char
++				result[1][j] = result[1][i] + 33;  // 5.5 bits per alphanumeric char
+ 			if (isNumeric(c))
+ 				result[2][j] = result[2][i] + 20;  // 3.33 bits per alphanumeric char
+ 			
+@@ -148,7 +148,7 @@ else if (bitCosts[1][end] <= bitCosts[2][end])
+ 			if (curMode == NUMERIC) {
+ 				if (isNumeric(c))
+ 					curMode = NUMERIC;
+-				else if (isAlphanumeric(c) && (bitCosts[1][i] + 39 + 5) / 6 * 6 + numberCost == bitCosts[2][i + 1])
++				else if (isAlphanumeric(c) && (bitCosts[1][i] + 33 + 5) / 6 * 6 + numberCost == bitCosts[2][i + 1])
+ 					curMode = ALPHANUMERIC;
+ 				else
+ 					curMode = BYTE;
+@@ -162,7 +162,7 @@ else if (isAlphanumeric(c))
+ 			} else if (curMode == BYTE) {
+ 				if (isNumeric(c) && (bitCosts[2][i] + 20 + 5) / 6 * 6 + bytesCost == bitCosts[0][i + 1])
+ 					curMode = NUMERIC;
+-				else if (isAlphanumeric(c) && (bitCosts[1][i] + 39 + 5) / 6 * 6 + bytesCost == bitCosts[0][i + 1])
++				else if (isAlphanumeric(c) && (bitCosts[1][i] + 33 + 5) / 6 * 6 + bytesCost == bitCosts[0][i + 1])
+ 					curMode = ALPHANUMERIC;
+ 				else
+ 					curMode = BYTE;
+

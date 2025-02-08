@@ -1,0 +1,313 @@
+File: lib/src/main/java/com/tbruyelle/rxpermissions2/RxPermissions.java
+Patch:
+@@ -18,6 +18,7 @@
+ import android.app.Activity;
+ import android.os.Build;
+ import android.support.annotation.NonNull;
++import android.support.annotation.VisibleForTesting;
+ import android.support.v4.app.FragmentActivity;
+ import android.support.v4.app.FragmentManager;
+ import android.text.TextUtils;
+@@ -36,7 +37,8 @@ public class RxPermissions {
+     static final String TAG = RxPermissions.class.getSimpleName();
+     static final Object TRIGGER = new Object();
+ 
+-    private final Lazy<RxPermissionsFragment> mRxPermissionsFragment;
++    @VisibleForTesting
++    Lazy<RxPermissionsFragment> mRxPermissionsFragment;
+ 
+     public RxPermissions(@NonNull final FragmentActivity activity) {
+         mRxPermissionsFragment = getLazySingleton(activity);
+
+File: lib/src/test/java/com/tbruyelle/rxpermissions2/RxPermissionsTest.java
+Patch:
+@@ -61,7 +61,9 @@ public void setup() {
+         mActivity = spy(activityController.setup().get());
+         mRxPermissions = spy(new RxPermissions(mActivity));
+         mRxPermissions.mRxPermissionsFragment = spy(mRxPermissions.mRxPermissionsFragment);
+-        when(mRxPermissions.mRxPermissionsFragment.getActivity()).thenReturn(mActivity);
++        final RxPermissionsFragment rxPermissionsFragment = spy(mRxPermissions.mRxPermissionsFragment.get());
++        when(rxPermissionsFragment.getActivity()).thenReturn(mActivity);
++        when(mRxPermissions.mRxPermissionsFragment.get()).thenReturn(rxPermissionsFragment);
+         // Default deny all permissions
+         doReturn(false).when(mRxPermissions).isGranted(anyString());
+         // Default no revoked permissions
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -47,7 +47,7 @@ private RxPermissionsFragment getRxPermissionsFragment(Activity activity) {
+             fragmentManager
+                     .beginTransaction()
+                     .add(rxPermissionsFragment, TAG)
+-                    .commit();
++                    .commitAllowingStateLoss();
+             fragmentManager.executePendingTransactions();
+         }
+         return rxPermissionsFragment;
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissionsFragment.java
+Patch:
+@@ -58,7 +58,8 @@ void onRequestPermissionsResult(String permissions[], int[] grantResults, boolea
+             PublishSubject<Permission> subject = mSubjects.get(permissions[i]);
+             if (subject == null) {
+                 // No subject found
+-                throw new IllegalStateException("RxPermissions.onRequestPermissionsResult invoked but didn't find the corresponding permission request.");
++                Log.e(RxPermissions.TAG, "RxPermissions.onRequestPermissionsResult invoked but didn't find the corresponding permission request.");
++                return;
+             }
+             mSubjects.remove(permissions[i]);
+             boolean granted = grantResults[i] == PackageManager.PERMISSION_GRANTED;
+
+File: sample/src/main/java/com/tbruyelle/rxpermissions/sample/MainActivity.java
+Patch:
+@@ -27,7 +27,7 @@ public class MainActivity extends AppCompatActivity {
+     @Override
+     protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+-        RxPermissions rxPermissions = RxPermissions.getInstance(this);
++        RxPermissions rxPermissions = RxPermissions.newInstance(this);
+         rxPermissions.setLogging(true);
+ 
+         setContentView(R.layout.act_main);
+
+File: lib/src/test/java/com/tbruyelle/rxpermissions2/RxPermissionsTest.java
+Patch:
+@@ -53,7 +53,7 @@ public void setup() {
+         doReturn(false).when(mRxPermissions).isRevoked(anyString());
+     }
+ 
+-    private Observable<?> trigger() {
++    private Observable<Object> trigger() {
+         return Observable.just(RxPermissions.TRIGGER);
+     }
+ 
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/EnsureSameProcessActivity.java
+Patch:
+@@ -6,11 +6,11 @@
+ 
+ /**
+  * In case of restore, ensures it's done by the same process, if not, kill self.
+- * </p>
++ * <p>
+  * The goal is to prevent a crash when the activity is restored during a permission request
+  * but by another process. In that specific case the library is not able to restore the observable
+  * chain. This is a hack to prevent the crash, not a fix.
+- * </p>
++ * <p>
+  * See https://github.com/tbruyelle/RxPermissions/issues/46.
+  */
+ public abstract class EnsureSameProcessActivity extends Activity {
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/ShadowActivity.java
+Patch:
+@@ -1,11 +1,9 @@
+ package com.tbruyelle.rxpermissions;
+ 
+ import android.annotation.TargetApi;
+-import android.app.Activity;
+ import android.content.Intent;
+ import android.os.Build;
+ import android.os.Bundle;
+-import android.os.Process;
+ 
+ @TargetApi(Build.VERSION_CODES.M)
+ public class ShadowActivity extends EnsureSameProcessActivity {
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -103,7 +103,7 @@ public Observable<Boolean> call(List<Permission> permissions) {
+ 
+     /**
+      * Map emitted items from the source observable into {@link Permission} objects for each
+-     * permissions in parameters.
++     * permission in parameters.
+      * <p>
+      * If one or several permissions have never been requested, invoke the related framework method
+      * to ask the user if he allows the permissions.
+@@ -212,7 +212,7 @@ private Observable<Permission> request_(final String... permissions) {
+      * Activity.shouldShowRequestPermissionRationale returned true for
+      * all revoked permissions.
+      * <p>
+-     * You shouldn't call this method is all permissions haven been granted.
++     * You shouldn't call this method if all permissions have been granted.
+      * <p>
+      * For SDK &lt; 23, the observable will always emit false.
+      */
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -212,7 +212,7 @@ private Observable<Permission> request_(final String... permissions) {
+      * Activity.shouldShowRequestPermissionRationale returned true for
+      * all revoked permissions.
+      * <p>
+-     * You shouldn't call this method if all permissions haven been granted.
++     * You shouldn't call this method if all permissions have been granted.
+      * <p>
+      * For SDK &lt; 23, the observable will always emit false.
+      */
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -103,7 +103,7 @@ public Observable<Boolean> call(List<Permission> permissions) {
+ 
+     /**
+      * Map emitted items from the source observable into {@link Permission} objects for each
+-     * permissions in parameters.
++     * permission in parameters.
+      * <p>
+      * If one or several permissions have never been requested, invoke the related framework method
+      * to ask the user if he allows the permissions.
+@@ -212,7 +212,7 @@ private Observable<Permission> request_(final String... permissions) {
+      * Activity.shouldShowRequestPermissionRationale returned true for
+      * all revoked permissions.
+      * <p>
+-     * You shouldn't call this method is all permissions haven been granted.
++     * You shouldn't call this method if all permissions haven been granted.
+      * <p>
+      * For SDK &lt; 23, the observable will always emit false.
+      */
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -283,8 +283,8 @@ private boolean isRevoked_(String permission) {
+         return mCtx.getPackageManager().isPermissionRevokedByPolicy(permission, mCtx.getPackageName());
+     }
+ 
+-    void onDestroy() {
+-        log("onDestroy");
++    void onShadowActivityStop() {
++        log("onShadowActivityStop");
+         for (String permission : mSubjects.keySet()) {
+             mNoResultRequests.add(permission);
+         }
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/ShadowActivity.java
+Patch:
+@@ -34,8 +34,8 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions, in
+     }
+ 
+     @Override
+-    protected void onDestroy() {
+-        super.onDestroy();
+-        RxPermissions.getInstance(this).onDestroy();
++    protected void onStop() {
++        super.onStop();
++        RxPermissions.getInstance(this).onShadowActivityStop();
+     }
+ }
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -31,7 +31,6 @@
+ import rx.Observable;
+ import rx.functions.Func1;
+ import rx.subjects.PublishSubject;
+-import rx.subjects.Subject;
+ 
+ public class RxPermissions {
+ 
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -160,7 +160,7 @@ private Observable<?> pending(final String... permissions) {
+     }
+ 
+     private Observable<Object> oneOf(Observable<?> o1, Observable<?> o2) {
+-        return Observable.merge(o1, o2).take(1);
++        return Observable.merge(o1, o2);
+     }
+ 
+     @TargetApi(Build.VERSION_CODES.M)
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -200,8 +200,9 @@ public Permission call(String s) {
+             }
+             list.add(subject);
+         }
++
+         if (!unrequestedPermissions.isEmpty()) {
+-            startShadowActivity(permissions);
++            startShadowActivity(unrequestedPermissions.toArray(new String[]{}));
+         }
+         return Observable.concat(Observable.from(list));
+     }
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -63,7 +63,7 @@ private RxPermissions() {
+      */
+     public Observable<Boolean> request(final String... permissions) {
+         if (permissions == null || permissions.length == 0) {
+-            throw new IllegalArgumentException("RxPermission.request requires at least one input permission");
++            throw new IllegalArgumentException("RxPermissions.request requires at least one input permission");
+         }
+         if (isGranted(permissions)) {
+             // Already granted, or not Android M
+@@ -143,7 +143,7 @@ void onRequestPermissionsResult(int requestCode,
+             PublishSubject<Boolean> subject = mSubjects.get(permissions[i]);
+             if (subject == null) {
+                 // No subject found
+-                throw new IllegalStateException("RxPermission.onRequestPermissionsResult invoked but didn't find the corresponding permission request.");
++                throw new IllegalStateException("RxPermissions.onRequestPermissionsResult invoked but didn't find the corresponding permission request.");
+             }
+             mSubjects.remove(permissions[i]);
+             subject.onNext(grantResults[i] == PackageManager.PERMISSION_GRANTED);
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -136,8 +136,8 @@ private boolean hasPermission_(String... permissions) {
+      * The method will find the pending requests and emit the response to the
+      * matching observables.
+      */
+-    public void onRequestPermissionsResult(int requestCode,
+-                                           String permissions[], int[] grantResults) {
++    void onRequestPermissionsResult(int requestCode,
++                                    String permissions[], int[] grantResults) {
+         for (int i = 0; i < permissions.length; i++) {
+             // Find the corresponding subject
+             PublishSubject<Boolean> subject = mSubjects.get(permissions[i]);
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -52,7 +52,7 @@ public RxPermissions(Activity activity) {
+      */
+     public Observable<Boolean> request(final String... permissions) {
+         if (permissions == null || permissions.length == 0) {
+-            throw new IllegalArgumentException("RxPermission.request requires at least on input permission");
++            throw new IllegalArgumentException("RxPermission.request requires at least one input permission");
+         }
+         if (isGranted(permissions)) {
+             // Already granted, or not Android M
+@@ -120,7 +120,7 @@ public void onRequestPermissionsResult(int requestCode,
+             PublishSubject<Boolean> subject = mSubjects.get(permissions[i]);
+             if (subject == null) {
+                 // No subject found
+-                throw new IllegalStateException("RxPermission.onRequestPermissionsResult invoked but didn't found the corresponding permission request.");
++                throw new IllegalStateException("RxPermission.onRequestPermissionsResult invoked but didn't find the corresponding permission request.");
+             }
+             mSubjects.remove(permissions[i]);
+             subject.onNext(grantResults[i] == PackageManager.PERMISSION_GRANTED);
+
+File: lib/src/main/java/com/tbruyelle/rxpermissions/RxPermissions.java
+Patch:
+@@ -52,7 +52,7 @@ public RxPermissions(Activity activity) {
+      */
+     public Observable<Boolean> request(final String... permissions) {
+         if (permissions == null || permissions.length == 0) {
+-            throw new IllegalArgumentException("RxPermission.request requires at least on input permission");
++            throw new IllegalArgumentException("RxPermission.request requires at least one input permission");
+         }
+         if (isGranted(permissions)) {
+             // Already granted, or not Android M
+@@ -120,7 +120,7 @@ public void onRequestPermissionsResult(int requestCode,
+             PublishSubject<Boolean> subject = mSubjects.get(permissions[i]);
+             if (subject == null) {
+                 // No subject found
+-                throw new IllegalStateException("RxPermission.onRequestPermissionsResult invoked but didn't found the corresponding permission request.");
++                throw new IllegalStateException("RxPermission.onRequestPermissionsResult invoked but didn't find the corresponding permission request.");
+             }
+             mSubjects.remove(permissions[i]);
+             subject.onNext(grantResults[i] == PackageManager.PERMISSION_GRANTED);
+

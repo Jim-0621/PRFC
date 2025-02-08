@@ -1,0 +1,211 @@
+File: src/main/java/io/github/xxyopen/novel/core/constant/DatabaseConsts.java
+Patch:
+@@ -89,6 +89,8 @@ private BookTable() {
+ 
+         public static final String COLUMN_CATEGORY_ID = "category_id";
+ 
++        public static final String COLUMN_BOOK_NAME = "book_name";
++
+         public static final String AUTHOR_ID = "author_id";
+ 
+         public static final String COLUMN_VISIT_COUNT = "visit_count";
+
+File: src/main/java/io/github/xxyopen/novel/core/constant/DatabaseConsts.java
+Patch:
+@@ -93,6 +93,8 @@ private BookTable() {
+ 
+         public static final String COLUMN_VISIT_COUNT = "visit_count";
+ 
++        public static final String COLUMN_WORD_COUNT = "word_count";
++
+         public static final String COLUMN_LAST_CHAPTER_UPDATE_TIME = "last_chapter_update_time";
+ 
+     }
+
+File: src/main/java/io/github/xxyopen/novel/service/impl/BookServiceImpl.java
+Patch:
+@@ -301,7 +301,7 @@ public RestResp<Void> saveBook(BookAddReqDto dto) {
+     @Override
+     public RestResp<Void> saveBookChapter(ChapterAddReqDto dto) {
+         // 校验该作品是否属于当前作家
+-        BookInfoRespDto bookInfo = bookInfoCacheManager.getBookInfo(dto.getBookId());
++        BookInfo bookInfo = bookInfoMapper.selectById(dto.getBookId());
+         if (!Objects.equals(bookInfo.getAuthorId(), UserHolder.getAuthorId())) {
+             return RestResp.fail(ErrorCodeEnum.USER_UN_AUTH);
+         }
+@@ -345,8 +345,8 @@ public RestResp<Void> saveBookChapter(ChapterAddReqDto dto) {
+         newBookInfo.setWordCount(bookInfo.getWordCount() + newBookChapter.getWordCount());
+         newBookChapter.setUpdateTime(LocalDateTime.now());
+         bookInfoMapper.updateById(newBookInfo);
+-        //  b) 刷新小说信息缓存
+-        bookInfoCacheManager.cachePutBookInfo(dto.getBookId());
++        //  b) 清除小说信息缓存
++        bookInfoCacheManager.evictBookInfoCache(dto.getBookId());
+         //  c) 发送小说信息更新的 MQ 消息
+         amqpMsgManager.sendBookChangeMsg(dto.getBookId());
+         return RestResp.ok();
+
+File: src/main/java/io/github/xxyopen/novel/dto/req/ChapterAddReqDto.java
+Patch:
+@@ -17,7 +17,6 @@ public class ChapterAddReqDto {
+     /**
+      * 小说ID
+      */
+-    @NotNull
+     private Long bookId;
+ 
+     /**
+
+File: src/main/java/io/github/xxyopen/novel/service/SearchService.java
+Patch:
+@@ -21,5 +21,4 @@ public interface SearchService {
+      */
+     RestResp<PageRespDto<BookInfoRespDto>> searchBooks(BookSearchReqDto condition);
+ 
+-
+ }
+
+File: src/main/java/io/github/xxyopen/novel/dto/req/UserInfoUptReqDto.java
+Patch:
+@@ -19,7 +19,7 @@ public class UserInfoUptReqDto {
+     @Length(min = 2,max = 10)
+     private String nickName;
+ 
+-    @Pattern(regexp="^/[^\s]{10,}\\.(png|jpg|jpeg|gif|bpm)$")
++    @Pattern(regexp="^/[^\s]{10,}\\.(png|PNG|jpg|JPG|jpeg|JPEG|gif|GIF|bpm|BPM)$")
+     private String userPhoto;
+ 
+     @Min(value = 0)
+
+File: src/main/java/io/github/xxyopen/novel/core/interceptor/FileInterceptor.java
+Patch:
+@@ -31,7 +31,7 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
+         String requestUri = request.getRequestURI();
+         // 缓存10天
+         response.setDateHeader("expires", System.currentTimeMillis() + 60 * 60 * 24 * 10 * 1000);
+-        try (OutputStream out = response.getOutputStream();InputStream input = new FileInputStream(fileUploadPath + requestUri)) {
++        try (OutputStream out = response.getOutputStream(); InputStream input = new FileInputStream(fileUploadPath + requestUri)) {
+             byte[] b = new byte[4096];
+             for (int n; (n = input.read(b)) != -1; ) {
+                 out.write(b, 0, n);
+
+File: src/main/java/io/github/xxyopen/novel/core/constant/DatabaseConsts.java
+Patch:
+@@ -136,6 +136,8 @@ private BookCommentTable() {
+ 
+         public static final String COLUMN_BOOK_ID = "book_id";
+ 
++        public static final String COLUMN_USER_ID = "user_id";
++
+     }
+ 
+     /**
+
+File: src/main/java/io/github/xxyopen/novel/dto/req/UserCommentReqDto.java
+Patch:
+@@ -1,6 +1,7 @@
+ package io.github.xxyopen.novel.dto.req;
+ 
+ import jakarta.validation.constraints.NotBlank;
++import jakarta.validation.constraints.NotNull;
+ import lombok.Data;
+ import org.hibernate.validator.constraints.Length;
+ 
+@@ -14,7 +15,7 @@ public class UserCommentReqDto {
+ 
+     private Long userId;
+ 
+-    @NotBlank(message="小说ID不能为空！")
++    @NotNull(message="小说ID不能为空！")
+     private Long bookId;
+ 
+     @NotBlank(message="评论不能为空！")
+
+File: src/main/java/io/github/xxyopen/novel/controller/front/BookController.java
+Patch:
+@@ -137,5 +137,4 @@ public RestResp<BookCommentRespDto> listNewestComments(Long bookId) {
+         return bookService.listNewestComments(bookId);
+     }
+ 
+-
+ }
+
+File: src/main/java/io/github/xxyopen/novel/controller/front/UserController.java
+Patch:
+@@ -75,7 +75,7 @@ public RestResp<Void> deleteFeedback(@PathVariable Long id) {
+      * 发表评论接口
+      * */
+     @PostMapping("comment")
+-    public RestResp<Void> comment(@RequestBody UserCommentReqDto dto) {
++    public RestResp<Void> comment(@Valid @RequestBody UserCommentReqDto dto) {
+         dto.setUserId(UserHolder.getUserId());
+         return bookService.saveComment(dto);
+     }
+
+File: src/main/java/io/github/xxyopen/novel/core/json/serializer/UsernameSerializer.java
+Patch:
+@@ -7,7 +7,7 @@
+ import java.io.IOException;
+ 
+ /**
+- * 用户名序列化类（敏感信息，不应该在页面上完全显示）
++ * 用户名序列化器（敏感信息，不应该在页面上完全显示）
+  *
+  * @author xiongxiaoyang
+  * @date 2022/5/20
+
+File: src/main/java/io/github/xxyopen/novel/core/auth/AuthStrategy.java
+Patch:
+@@ -22,7 +22,7 @@ public interface AuthStrategy {
+      * 如果后面需要扩展到对每一个URI都进行权限控制，那么此方法可以加一个参数来接收用户请求的URI
+      *
+      * @param token 登录 token
+-     * @throws BusinessException 认证失败则抛出义务异常
++     * @throws BusinessException 认证失败则抛出业务异常
+      */
+     void auth(String token) throws BusinessException;
+ 
+
+File: src/main/java/io/github/xxyopen/novel/core/config/CorsConfig.java
+Patch:
+@@ -40,4 +40,5 @@ public CorsFilter corsFilter() {
+         configurationSource.registerCorsConfiguration("/**",config);
+         return new CorsFilter(configurationSource);
+     }
++
+ }
+
+File: src/main/java/io/github/xxyopen/novel/manager/BookRankCacheManager.java
+Patch:
+@@ -67,6 +67,7 @@ private List<BookRankRespDto> getBookRankRespDtos(QueryWrapper<BookInfo> bookInf
+             respDto.setCategoryId(v.getCategoryId());
+             respDto.setCategoryName(v.getCategoryName());
+             respDto.setBookName(v.getBookName());
++            respDto.setAuthorName(v.getAuthorName());
+             respDto.setPicUrl(v.getPicUrl());
+             respDto.setBookDesc(v.getBookDesc());
+             respDto.setLastChapterName(v.getLastChapterName());
+
+File: src/main/java/io/github/xxyopen/novel/core/common/constant/ApiRouterConsts.java
+Patch:
+@@ -6,7 +6,7 @@
+  * @author xiongxiaoyang
+  * @date 2022/5/12
+  */
+-public class ApiRouterConsts {
++public interface ApiRouterConsts {
+ 
+     /**
+      * API请求路径前缀
+
+File: src/main/java/io/github/xxyopen/novel/core/common/resp/RestResp.java
+Patch:
+@@ -40,6 +40,7 @@ private RestResp(ErrorCodeEnum errorCode) {
+     }
+ 
+     private RestResp(T data) {
++        this();
+         this.data = data;
+     }
+ 
+

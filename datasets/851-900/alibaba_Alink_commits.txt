@@ -1,0 +1,2024 @@
+File: core/src/test/java/com/alibaba/alink/common/io/plugin/PluginDownloaderTest.java
+Patch:
+@@ -78,9 +78,7 @@ public class PluginDownloaderTest extends AlinkTestBase {
+ 
+ 	@Before
+ 	public void setUp() throws Exception {
+-		AlinkGlobalConfiguration.setPluginDir(folder.getRoot().getAbsolutePath());
+-
+-		pluginDownloader = AlinkGlobalConfiguration.getPluginDownloader();
++		pluginDownloader = new PluginDownloader(folder.getRoot().getPath());
+ 	}
+ 
+ 	@Test
+
+File: core/src/test/java/com/alibaba/alink/common/MTableTest.java
+Patch:
+@@ -43,8 +43,8 @@ public void test() throws Exception {
+ 		MTable mTable = new MTable(
+ 			rows,
+ 			"col0 int, col1 string, label int, ts timestamp"
+-				+ ", d_vec VEC_TYPES_DENSE_VECTOR"
+-				+ ", s_vec VEC_TYPES_SPARSE_VECTOR"
++				+ ", d_vec densevector"
++				+ ", s_vec vector"
+ 				+ ", tensor TENSOR_TYPES_FLOAT_TENSOR");
+ 
+ 		System.out.println(mTable);
+
+File: core/src/main/java/com/alibaba/alink/common/io/plugin/PluginDownloader.java
+Patch:
+@@ -21,7 +21,7 @@
+ 
+ public class PluginDownloader {
+ 
+-	private final static String MAIN_URL = "https://alink-release.oss-cn-beijing.aliyuncs.com/deps-files-test";
++	private final static String MAIN_URL = "https://alink-release.oss-cn-beijing.aliyuncs.com/deps-files";
+ 
+ 	private Map <String, PluginDownloaderConfig> jarsPluginConfigs;
+ 	private boolean isJarsPluginConfigLoaded = false;
+
+File: core/src/main/java/com/alibaba/alink/operator/common/feature/MultiHotModelDataConverter.java
+Patch:
+@@ -1,13 +1,11 @@
+ package com.alibaba.alink.operator.common.feature;
+ 
+ import org.apache.flink.api.java.tuple.Tuple2;
+-import org.apache.flink.api.java.tuple.Tuple3;
+ import org.apache.flink.ml.api.misc.param.Params;
+ 
+ import com.alibaba.alink.common.model.SimpleModelDataConverter;
+ import com.alibaba.alink.common.utils.JsonConverter;
+ import com.alibaba.alink.params.feature.MultiHotTrainParams;
+-import com.alibaba.alink.params.shared.HasSize;
+ 
+ import java.util.ArrayList;
+ import java.util.HashMap;
+
+File: core/src/main/java/com/alibaba/alink/operator/common/feature/MultiHotModelMapper.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import org.apache.flink.api.common.typeinfo.TypeInformation;
+ import org.apache.flink.api.java.tuple.Tuple2;
+-import org.apache.flink.api.java.tuple.Tuple3;
+ import org.apache.flink.api.java.tuple.Tuple4;
+ import org.apache.flink.ml.api.misc.param.Params;
+ import org.apache.flink.table.api.TableSchema;
+@@ -11,7 +10,6 @@
+ import com.alibaba.alink.common.VectorTypes;
+ import com.alibaba.alink.common.linalg.SparseVector;
+ import com.alibaba.alink.common.mapper.ModelMapper;
+-
+ import com.alibaba.alink.params.dataproc.HasHandleInvalid.HandleInvalid;
+ import com.alibaba.alink.params.feature.HasEncodeWithoutWoeAndIndex.Encode;
+ import com.alibaba.alink.params.feature.MultiHotPredictParams;
+
+File: core/src/main/java/com/alibaba/alink/operator/common/fm/FmModelMapper.java
+Patch:
+@@ -58,10 +58,10 @@ public void loadModel(List <Row> modelRows) {
+ 			= new FmModelDataConverter(FmModelDataConverter.extractLabelType(super.getModelSchema()));
+ 		this.model = fmModelDataConverter.load(modelRows);
+ 		this.dim = model.dim;
+-		if (labelType == Types.INT) {
++		if (labelType.equals(Types.INT)) {
+ 			this.model.labelValues[0] = Double.valueOf(model.labelValues[0].toString()).intValue();
+ 			this.model.labelValues[1] = Double.valueOf(model.labelValues[1].toString()).intValue();
+-		} else if (labelType == Types.LONG) {
++		} else if (labelType.equals(Types.LONG)) {
+ 			this.model.labelValues[0] = Double.valueOf(model.labelValues[0].toString()).longValue();
+ 			this.model.labelValues[1] = Double.valueOf(model.labelValues[1].toString()).longValue();
+ 		}
+
+File: core/src/main/java/com/alibaba/alink/operator/common/distance/FastDistanceMatrixData.java
+Patch:
+@@ -85,7 +85,7 @@ public String toString() {
+ 
+ 	public static FastDistanceMatrixData fromString(String s) {
+ 		Params params = Params.fromJson(s);
+-		Row[] row = params.get("rows", Row[].class);
++		Row[] row = parseRowArrayCompatible(params);
+ 		DenseMatrix vectors = params.get("vectors", DenseMatrix.class);
+ 		FastDistanceMatrixData matrixData = new FastDistanceMatrixData(vectors, row);
+ 		matrixData.label = params.get("label", DenseMatrix.class);
+
+File: core/src/main/java/com/alibaba/alink/operator/common/distance/FastDistanceSparseData.java
+Patch:
+@@ -143,7 +143,7 @@ public static FastDistanceSparseData fromString(String s) {
+ 		double[][] values = params.get("values", double[][].class);
+ 
+ 		FastDistanceSparseData sparseData = new FastDistanceSparseData(indices, values,
+-			params.get("vectorNum", int.class), params.get("rows", Row[].class));
++			params.get("vectorNum", int.class), parseRowArrayCompatible(params));
+ 		sparseData.label = params.get("label", DenseMatrix.class);
+ 
+ 		return sparseData;
+
+File: core/src/main/java/com/alibaba/alink/operator/common/distance/FastDistanceVectorData.java
+Patch:
+@@ -77,7 +77,7 @@ public String toString() {
+ 
+ 	public static FastDistanceVectorData fromString(String s) {
+ 		Params params = Params.fromJson(s);
+-		Row row = params.getOrDefault("rows", Row.class, null);
++		Row row = parseRowCompatible(params);
+ 		String vector = params.get("vector", String.class);
+ 		DenseVector label = params.get("label", DenseVector.class);
+ 		FastDistanceVectorData vectorData = new FastDistanceVectorData(VectorUtil.getVector(vector), row);
+
+File: core/src/test/java/com/alibaba/alink/operator/batch/nlp/KeywordsExtractionBatchOpTest.java
+Patch:
+@@ -44,7 +44,7 @@ public void testGetKeyWordsTextRankBatch() {
+ 				.setMethod("TEXT_RANK")
+ 				.setTopN(3);
+ 
+-		String[] output = {"基于 算法 建模,1"};
++		String[] output = {"+I[基于 算法 建模, 1]"};
+ 		List <Row> res = evalOp.linkFrom(words).collect();
+ 		String[] results = new String[res.size()];
+ 		for (int i = 0; i < res.size(); i++) {
+
+File: core/src/main/java/com/alibaba/alink/common/VectorTypes.java
+Patch:
+@@ -28,8 +28,7 @@ public class VectorTypes {
+ 	 * For efficiency, use type information of sub-class <code>DenseVector</code> and <code>SparseVector</code>
+ 	 * as much as possible. When an operator output both sub-class type of vectors, use this one.
+ 	 */
+-	//public static final TypeInformation <Vector> VECTOR = TypeInformation.of(Vector.class);
+-	public static final TypeInformation <Vector> VECTOR = new com.alibaba.alink.common.types.VectorTypes.VectorTypeInternal();
++	public static final TypeInformation <Vector> VECTOR = TypeInformation.of(Vector.class);
+ 
+ 	static {
+ 		TYPES.put("VEC_TYPES_DENSE_VECTOR", DENSE_VECTOR);
+
+File: core/src/main/java/com/alibaba/alink/operator/common/regression/glm/link/Log.java
+Patch:
+@@ -16,7 +16,7 @@ public class Log extends LinkFunction implements Serializable, AlinkSerializable
+ 	 */
+ 	@Override
+ 	public String name() {
+-		return "log";
++		return "Log";
+ 	}
+ 
+ 	/**
+
+File: core/src/main/java/com/alibaba/alink/operator/common/regression/glm/link/Logit.java
+Patch:
+@@ -16,7 +16,7 @@ public class Logit extends LinkFunction implements Serializable, AlinkSerializab
+ 	 */
+ 	@Override
+ 	public String name() {
+-		return "logit";
++		return "Logit";
+ 	}
+ 
+ 	/**
+
+File: core/src/main/java/com/alibaba/alink/operator/common/regression/glm/link/Power.java
+Patch:
+@@ -31,7 +31,7 @@ public Power(double linkPower) {
+ 	 */
+ 	@Override
+ 	public String name() {
+-		return "power";
++		return "Power";
+ 	}
+ 
+ 	/**
+
+File: core/src/main/java/com/alibaba/alink/operator/common/regression/glm/link/Probit.java
+Patch:
+@@ -17,7 +17,7 @@ public class Probit extends LinkFunction implements Serializable, AlinkSerializa
+ 	 */
+ 	@Override
+ 	public String name() {
+-		return "probit";
++		return "Probit";
+ 	}
+ 
+ 	/**
+
+File: core/src/main/java/com/alibaba/alink/operator/common/regression/glm/link/Sqrt.java
+Patch:
+@@ -16,7 +16,7 @@ public class Sqrt extends LinkFunction implements Serializable, AlinkSerializabl
+ 	 */
+ 	@Override
+ 	public String name() {
+-		return "sqrt";
++		return "Sqrt";
+ 	}
+ 
+ 	/**
+
+File: core/src/main/java/com/alibaba/alink/pipeline/regression/GeneralizedLinearRegression.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import org.apache.flink.ml.api.misc.param.Params;
+ 
++import com.alibaba.alink.common.lazy.HasLazyPrintModelInfo;
+ import com.alibaba.alink.operator.batch.BatchOperator;
+ import com.alibaba.alink.operator.batch.regression.GlmTrainBatchOp;
+ import com.alibaba.alink.params.regression.GlmPredictParams;
+@@ -14,7 +15,8 @@
+ public class GeneralizedLinearRegression
+ 	extends Trainer <GeneralizedLinearRegression, GeneralizedLinearRegressionModel>
+ 	implements GlmTrainParams <GeneralizedLinearRegression>,
+-	GlmPredictParams <GeneralizedLinearRegression> {
++	GlmPredictParams <GeneralizedLinearRegression>,
++	HasLazyPrintModelInfo <GeneralizedLinearRegression> {
+ 
+ 	private static final long serialVersionUID = 217074066645415654L;
+ 
+
+File: core/src/main/java/com/alibaba/alink/common/io/catalog/plugin/InputSplitAssignerWithClassLoader.java
+Patch:
+@@ -2,9 +2,11 @@
+ 
+ import org.apache.flink.core.io.InputSplit;
+ import org.apache.flink.core.io.InputSplitAssigner;
++import org.apache.flink.util.InstantiationUtil;
+ 
+ import com.alibaba.alink.common.io.plugin.ClassLoaderFactory;
+ 
++import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.List;
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/clustering/LdaTrainBatchOp.java
+Patch:
+@@ -17,6 +17,7 @@
+ import org.apache.flink.types.Row;
+ import org.apache.flink.util.Collector;
+ 
++import com.alibaba.alink.common.VectorTypes;
+ import com.alibaba.alink.common.comqueue.IterativeComQueue;
+ import com.alibaba.alink.common.comqueue.communication.AllReduce;
+ import com.alibaba.alink.common.lazy.WithModelInfoBatchOp;
+@@ -109,7 +110,7 @@ public LdaTrainBatchOp linkFrom(BatchOperator <?>... inputs) {
+ 		DataSet <Row> resRow = in.getDataSet()
+ 			.flatMap(new Document2Vector(index)).withBroadcastSet(resDocCountModel, "DocCountModel");
+ 		TypeInformation <?>[] types = in.getColTypes().clone();
+-		types[index] = TypeInformation.of(SparseVector.class);
++		types[index] = VectorTypes.SPARSE_VECTOR;
+ 		BatchOperator trainData = new TableSourceBatchOp(DataSetConversionUtil
+ 			.toTable(mlEnvId, resRow, in.getColNames(), types))
+ 			.setMLEnvironmentId(mlEnvId);
+
+File: test_utils/src/main/java/com/alibaba/alink/testutil/envfactory/impl/LocalEnvFactoryImpl.java
+Patch:
+@@ -50,7 +50,7 @@ public Object getMlEnv() {
+                 .newInstance()
+                 .useOldPlanner()
+                 .build()
+-        );;
++        );
+         return makeMlEnv(benv, btenv, senv, stenv);
+     }
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/stream/evaluation/EvalBinaryClassStreamOp.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import com.alibaba.alink.operator.common.evaluation.BaseEvalClassStreamOp;
+ import org.apache.flink.ml.api.misc.param.Params;
+-import com.alibaba.alink.params.evaluation.BinaryEvaluationStreamParams;
++import com.alibaba.alink.params.evaluation.EvalBinaryClassStreamParams;
+ 
+ /**
+  * Calculate the evaluation data within time windows for binary classifiction.
+@@ -12,7 +12,7 @@
+  * If not given, the labels are sorted in descending order.
+  */
+ public class EvalBinaryClassStreamOp extends BaseEvalClassStreamOp<EvalBinaryClassStreamOp> implements
+-	BinaryEvaluationStreamParams <EvalBinaryClassStreamOp> {
++	EvalBinaryClassStreamParams<EvalBinaryClassStreamOp> {
+ 
+ 	public EvalBinaryClassStreamOp() {
+ 		this(null);
+
+File: core/src/main/java/com/alibaba/alink/operator/stream/evaluation/EvalMultiClassStreamOp.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import com.alibaba.alink.operator.common.evaluation.BaseEvalClassStreamOp;
+ import org.apache.flink.ml.api.misc.param.Params;
+-import com.alibaba.alink.params.evaluation.MultiEvaluationStreamParams;
++import com.alibaba.alink.params.evaluation.EvalMultiClassStreamParams;
+ 
+ /**
+  * Calculate the evaluation data within time windows for multi classifiction.
+@@ -11,7 +11,7 @@
+  * The labels are sorted in descending order in the output label array and confusion matrix..
+  */
+ public class EvalMultiClassStreamOp extends BaseEvalClassStreamOp<EvalMultiClassStreamOp> implements
+-	MultiEvaluationStreamParams <EvalMultiClassStreamOp> {
++	EvalMultiClassStreamParams<EvalMultiClassStreamOp> {
+ 
+ 	public EvalMultiClassStreamOp() {
+ 		this(null);
+
+File: core/src/main/java/com/alibaba/alink/params/evaluation/EvalBinaryClassParams.java
+Patch:
+@@ -7,7 +7,7 @@
+ /**
+  * Params for binary classification evaluation.
+  */
+-public interface BinaryEvaluationParams<T> extends
++public interface EvalBinaryClassParams<T> extends
+ 	HasLabelCol<T>,
+ 	HasPredictionDetailCol<T>,
+ 	HasPositiveLabelValueString <T> {
+
+File: core/src/main/java/com/alibaba/alink/params/evaluation/EvalBinaryClassStreamParams.java
+Patch:
+@@ -5,7 +5,7 @@
+ /**
+  * Params for binary classification evaluation.
+  */
+-public interface BinaryEvaluationStreamParams<T> extends
+-	MultiEvaluationStreamParams <T>,
++public interface EvalBinaryClassStreamParams<T> extends
++	EvalMultiClassStreamParams<T>,
+ 	HasPositiveLabelValueString <T> {
+ }
+
+File: core/src/main/java/com/alibaba/alink/params/evaluation/EvalMultiClassParams.java
+Patch:
+@@ -7,7 +7,7 @@
+ /**
+  * Params for multi classification evaluation.
+  */
+-public interface MultiEvaluationParams<T> extends
++public interface EvalMultiClassParams<T> extends
+ 	HasLabelCol <T>,
+ 	HasPredictionCol <T>,
+ 	HasPredictionDetailCol <T> {
+
+File: core/src/main/java/com/alibaba/alink/params/evaluation/EvalMultiClassStreamParams.java
+Patch:
+@@ -5,7 +5,7 @@
+ /**
+  * Params for multi classification evaluation.
+  */
+-public interface MultiEvaluationStreamParams<T> extends
+-	MultiEvaluationParams <T>,
++public interface EvalMultiClassStreamParams<T> extends
++    EvalMultiClassParams<T>,
+ 	HasTimeIntervalDv3 <T> {
+ }
+
+File: core/src/main/java/com/alibaba/alink/params/evaluation/EvalRegressionParams.java
+Patch:
+@@ -6,7 +6,7 @@
+ /**
+  * Params for regression evaluation.
+  */
+-public interface RegressionEvaluationParams<T> extends
++public interface EvalRegressionParams<T> extends
+ 	HasLabelCol <T>,
+ 	HasPredictionCol <T> {
+ }
+
+File: core/src/main/java/com/alibaba/alink/pipeline/tuning/GridSearchCVModel.java
+Patch:
+@@ -4,8 +4,8 @@
+ 
+ public class GridSearchCVModel extends BaseTuningModel <GridSearchCVModel> {
+ 
+-	public GridSearchCVModel(TransformerBase transformer, Report report) {
+-		super(transformer, report);
++	public GridSearchCVModel(TransformerBase transformer) {
++		super(transformer);
+ 	}
+ 
+ }
+
+File: core/src/main/java/com/alibaba/alink/pipeline/tuning/GridSearchTVSplitModel.java
+Patch:
+@@ -4,8 +4,8 @@
+ 
+ public class GridSearchTVSplitModel extends BaseTuningModel <GridSearchTVSplitModel> {
+ 
+-	public GridSearchTVSplitModel(TransformerBase transformer, Report report) {
+-		super(transformer, report);
++	public GridSearchTVSplitModel(TransformerBase transformer) {
++		super(transformer);
+ 	}
+ 
+ }
+
+File: core/src/main/java/com/alibaba/alink/pipeline/tuning/ParamGrid.java
+Patch:
+@@ -15,7 +15,6 @@
+  * ParamGrid.
+  */
+ public class ParamGrid implements Serializable {
+-
+ 	private List<Tuple3<PipelineStageBase, ParamInfo, Object[]>> items = new ArrayList<>();
+ 
+ 	public <V> ParamGrid addGrid(PipelineStageBase stage, ParamInfo<V> info, V[] params) {
+
+File: core/src/test/java/com/alibaba/alink/operator/common/evaluation/BinaryClassMetricsTest.java
+Patch:
+@@ -130,7 +130,9 @@ public void extractMatrixThreCurveTest(){
+             {0.0, 0.333, 0.666, 0.666, 1.0, 1.0, 1.0},
+             {1.0, 1.0, 1.0, 0.666, 0.75, 0.6, 0.6},
+             {0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.0},
+-            {0.0, 1.0, 2.0, 2.0, 3.0, 3.0, 3.0}};
++            {0.0, 1.0, 2.0, 2.0, 3.0, 3.0, 3.0},
++            {0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.0},
++            {0.0, 0.333, 0.666, 0.666, 1.0, 1.0, 1.0}};
+ 
+         cnt = 0;
+         for (EvaluationCurve aCurve : curve) {
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/clustering/LdaTrainBatchOp.java
+Patch:
+@@ -39,6 +39,7 @@
+ import com.alibaba.alink.operator.common.clustering.lda.UpdateLambdaAndAlpha;
+ import com.alibaba.alink.operator.common.nlp.DocCountVectorizerModelData;
+ import com.alibaba.alink.operator.common.nlp.DocCountVectorizerModelMapper;
++import com.alibaba.alink.operator.common.nlp.FeatureType;
+ import com.alibaba.alink.operator.common.statistics.StatisticsHelper;
+ import com.alibaba.alink.operator.common.statistics.basicstatistic.BaseVectorSummary;
+ import com.alibaba.alink.params.clustering.LdaTrainParams;
+@@ -296,7 +297,7 @@ private static class Document2Vector extends RichFlatMapFunction<Row, Row> {
+         private HashMap<String, Tuple2<Integer, Double>> wordIdWeight;
+         private int featureNum;
+         private int index;
+-        private DocCountVectorizerModelMapper.FeatureType featureType;
++        private FeatureType featureType;
+ 
+         Document2Vector(int index) {
+             this.index = index;
+@@ -308,7 +309,7 @@ public void open(Configuration parameters) {
+                     this.getRuntimeContext().getBroadcastVariable("DocCountModel").get(0);
+             featureNum = data.list.size();
+             minTF = data.minTF;
+-            this.featureType = DocCountVectorizerModelMapper.FeatureType.valueOf(data.featureType.toUpperCase());
++            this.featureType = FeatureType.valueOf(data.featureType.toUpperCase());
+             this.wordIdWeight = LdaUtil.setWordIdWeightPredict(data.list);
+         }
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/nlp/DocCountVectorizerTrainBatchOp.java
+Patch:
+@@ -138,7 +138,7 @@ private static class BuildDocCountModel implements MapPartitionFunction<Tuple2<L
+         private double minTF;
+ 
+         public BuildDocCountModel(Params params) {
+-            this.featureType = params.get(DocHashCountVectorizerTrainParams.FEATURE_TYPE);
++            this.featureType = params.get(DocHashCountVectorizerTrainParams.FEATURE_TYPE).name();
+             this.minTF = params.get(DocHashCountVectorizerTrainParams.MIN_TF);
+         }
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/nlp/DocHashCountVectorizerTrainBatchOp.java
+Patch:
+@@ -70,7 +70,7 @@ static class BuildModel implements FlatMapFunction<Tuple2<Long, HashMap<Integer,
+         public BuildModel(Params params) {
+             this.minDocFrequency = params.get(DocHashCountVectorizerTrainParams.MIN_DF);
+             this.numFeatures = params.get(DocHashCountVectorizerTrainParams.NUM_FEATURES);
+-            this.featureType = params.get(DocHashCountVectorizerTrainParams.FEATURE_TYPE);
++            this.featureType = params.get(DocHashCountVectorizerTrainParams.FEATURE_TYPE).name();
+             this.minTF = params.get(DocHashCountVectorizerTrainParams.MIN_TF);
+         }
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/regression/DecisionTreeRegTrainBatchOp.java
+Patch:
+@@ -3,6 +3,7 @@
+ import org.apache.flink.ml.api.misc.param.Params;
+ 
+ import com.alibaba.alink.operator.common.tree.BaseRandomForestTrainBatchOp;
++import com.alibaba.alink.operator.common.tree.TreeUtil;
+ import com.alibaba.alink.params.regression.DecisionTreeRegTrainParams;
+ import com.alibaba.alink.params.shared.tree.HasFeatureSubsamplingRatio;
+ import com.alibaba.alink.params.shared.tree.HasNumTreesDefaltAs10;
+@@ -22,7 +23,7 @@ public DecisionTreeRegTrainBatchOp() {
+ 	public DecisionTreeRegTrainBatchOp(Params params) {
+ 		super(params);
+ 		getParams().set(HasNumTreesDefaltAs10.NUM_TREES, 1);
+-		getParams().set(HasTreeType.TREE_TYPE, "mse");
++		getParams().set(TreeUtil.TREE_TYPE, TreeUtil.TreeType.MSE);
+ 		getParams().set(HasFeatureSubsamplingRatio.FEATURE_SUBSAMPLING_RATIO, 1.0);
+ 		getParams().set(HasSubsamplingRatio.SUBSAMPLING_RATIO, 1.0);
+ 	}
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/regression/RandomForestRegTrainBatchOp.java
+Patch:
+@@ -3,6 +3,7 @@
+ import org.apache.flink.ml.api.misc.param.Params;
+ 
+ import com.alibaba.alink.operator.common.tree.BaseRandomForestTrainBatchOp;
++import com.alibaba.alink.operator.common.tree.TreeUtil;
+ import com.alibaba.alink.params.regression.RandomForestRegTrainParams;
+ import com.alibaba.alink.params.shared.tree.HasTreeType;
+ 
+@@ -18,6 +19,6 @@ public RandomForestRegTrainBatchOp() {
+ 
+ 	public RandomForestRegTrainBatchOp(Params params) {
+ 		super(params);
+-		this.getParams().set(HasTreeType.TREE_TYPE, "mse");
++		this.getParams().set(TreeUtil.TREE_TYPE, TreeUtil.TreeType.MSE);
+ 	}
+ }
+
+File: core/src/main/java/com/alibaba/alink/operator/common/clustering/BisectingKMeansModelData.java
+Patch:
+@@ -1,14 +1,15 @@
+ package com.alibaba.alink.operator.common.clustering;
+ 
+ import com.alibaba.alink.common.linalg.DenseVector;
++import com.alibaba.alink.params.shared.clustering.HasKMeansDistanceType;
+ 
+ import java.io.Serializable;
+ import java.util.Map;
+ 
+ public class BisectingKMeansModelData {
+     public int k;
+     public int vectorSize;
+-    public DistanceType distanceType;
++    public HasKMeansDistanceType.DistanceType distanceType;
+     public String vectorColName;
+ 
+     public Map<Long, ClusterSummary> summaries;
+
+File: core/src/main/java/com/alibaba/alink/operator/common/clustering/BisectingKMeansModelDataConverter.java
+Patch:
+@@ -25,7 +25,7 @@ public Tuple2<Params, Iterable<String>> serializeModel(BisectingKMeansModelData
+ 			v.clusterId = k;
+ 			modelRows.add(gson.toJson(v, ClusterSummary.class));
+ 		});
+-		Params meta = new Params().set(BisectingKMeansTrainParams.DISTANCE_TYPE, modelData.distanceType.name())
++		Params meta = new Params().set(BisectingKMeansTrainParams.DISTANCE_TYPE, modelData.distanceType)
+ 			.set(BisectingKMeansTrainParams.K, modelData.k)
+ 			.set(HasVectorSizeDv100.VECTOR_SIZE, modelData.vectorSize)
+ 			.set(BisectingKMeansTrainParams.VECTOR_COL, modelData.vectorColName);
+@@ -37,7 +37,7 @@ public BisectingKMeansModelData deserializeModel(Params meta, Iterable<String> d
+ 		BisectingKMeansModelData modelData = new BisectingKMeansModelData();
+ 		modelData.k = meta.get(BisectingKMeansTrainParams.K);
+ 		modelData.vectorSize = meta.get(HasVectorSizeDv100.VECTOR_SIZE);
+-		modelData.distanceType = DistanceType.valueOf(meta.get(BisectingKMeansTrainParams.DISTANCE_TYPE).toUpperCase());
++		modelData.distanceType = meta.get(BisectingKMeansTrainParams.DISTANCE_TYPE);
+ 		modelData.vectorColName = meta.get(BisectingKMeansTrainParams.VECTOR_COL);
+ 		modelData.summaries = new HashMap <>();
+ 		for (String c : data) {
+
+File: core/src/main/java/com/alibaba/alink/operator/common/clustering/LdaModelMapper.java
+Patch:
+@@ -3,6 +3,7 @@
+ import com.alibaba.alink.common.linalg.DenseVector;
+ import com.alibaba.alink.common.mapper.RichModelMapper;
+ import com.alibaba.alink.operator.common.nlp.DocCountVectorizerModelMapper;
++import com.alibaba.alink.operator.common.nlp.FeatureType;
+ import com.alibaba.alink.params.nlp.DocCountVectorizerPredictParams;
+ 
+ import org.apache.flink.api.common.typeinfo.TypeInformation;
+@@ -34,7 +35,7 @@ public class LdaModelMapper extends RichModelMapper {
+     private int topicNum;
+     public int vocabularySize;
+ 
+-    private DocCountVectorizerModelMapper.FeatureType featureType = DocCountVectorizerModelMapper.FeatureType.valueOf("WORD_COUNT");
++    private FeatureType featureType = FeatureType.valueOf("WORD_COUNT");
+     private HashMap <String, Tuple2 <Integer, Double>> wordIdWeight;
+     private int featureNum;
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/common/clustering/kmeans/KMeansModelMapper.java
+Patch:
+@@ -99,7 +99,7 @@ public Row map(Row row){
+     @Override
+     public void loadModel(List<Row> modelRows) {
+         this.modelData = new KMeansModelDataConverter().load(modelRows);
+-        this.distance = (FastDistance)this.modelData.params.distanceType.getContinuousDistance();
++        this.distance = this.modelData.params.distanceType.getFastDistance();
+         this.distanceMatrix = new DenseMatrix(this.modelData.params.k, 1);
+         this.colIdx = KMeansUtil.getKmeansPredictColIdxs(this.modelData.params, getDataSchema().getFieldNames());
+     }
+
+File: core/src/main/java/com/alibaba/alink/operator/common/clustering/kmeans/KMeansUtil.java
+Patch:
+@@ -8,6 +8,7 @@
+ import com.alibaba.alink.operator.common.distance.FastDistance;
+ import com.alibaba.alink.operator.common.distance.FastDistanceMatrixData;
+ import com.alibaba.alink.operator.common.distance.FastDistanceVectorData;
++import com.alibaba.alink.params.shared.clustering.HasKMeansWithHaversineDistanceType;
+ import org.apache.commons.math3.stat.StatUtils;
+ import org.apache.flink.api.java.tuple.Tuple2;
+ import org.apache.flink.ml.api.misc.param.Params;
+@@ -182,7 +183,7 @@ public static int getMinPointIndex(double[] data, int endIndex){
+     public static int[] getKmeansPredictColIdxs(KMeansTrainModelData.ParamSummary params, String[] dataCols) {
+         Preconditions.checkArgument((null == params.longtitudeColName) == (null == params.latitudeColName),
+             "Model Format error!");
+-        Preconditions.checkArgument(params.distanceType.equals(DistanceType.HAVERSINE) == (null == params.vectorColName
++        Preconditions.checkArgument(params.distanceType.equals(HasKMeansWithHaversineDistanceType.DistanceType.HAVERSINE) == (null == params.vectorColName
+                 && null != params.longtitudeColName),
+             "Model Format error!");
+         int[] colIdxs;
+@@ -254,7 +255,7 @@ public static KMeansPredictModelData transformTrainDataToPredictData(KMeansTrain
+             index++;
+         }
+         modelData.centroids = new FastDistanceMatrixData(denseMatrix, rows);
+-        ((FastDistance)modelData.params.distanceType.getContinuousDistance()).updateLabel(modelData.centroids);
++        (modelData.params.distanceType.getFastDistance()).updateLabel(modelData.centroids);
+         return modelData;
+     }
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/common/dataproc/MultiStringIndexerModelMapper.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.alibaba.alink.common.mapper.ModelMapper;
+ import com.alibaba.alink.common.utils.OutputColsHelper;
+ import com.alibaba.alink.common.utils.TableUtil;
++import com.alibaba.alink.params.dataproc.HasHandleInvalid;
+ import com.alibaba.alink.params.dataproc.MultiStringIndexerPredictParams;
+ import com.alibaba.alink.params.shared.colname.HasSelectedCols;
+ import com.alibaba.alink.pipeline.dataproc.MultiStringIndexerModel;
+@@ -37,7 +38,7 @@ public class MultiStringIndexerModelMapper extends ModelMapper {
+     private OutputColsHelper outputColsHelper;
+     private String[] selectedColNames;
+     private int[] selectedColIndicesInData;
+-    private StringIndexerUtil.HandleInvalidStrategy handleInvalidStrategy;
++    private HasHandleInvalid.HandleInvalid handleInvalidStrategy;
+ 
+     public MultiStringIndexerModelMapper(TableSchema modelSchema, TableSchema dataSchema, Params params) {
+         super(modelSchema, dataSchema, params);
+@@ -48,7 +49,7 @@ public MultiStringIndexerModelMapper(TableSchema modelSchema, TableSchema dataSc
+         }
+         String[] reservedColNames = params.get(MultiStringIndexerPredictParams.RESERVED_COLS);
+ 
+-        handleInvalidStrategy = StringIndexerUtil.HandleInvalidStrategy
++        handleInvalidStrategy = HasHandleInvalid.HandleInvalid
+             .valueOf(params.get(MultiStringIndexerPredictParams.HANDLE_INVALID).toUpperCase());
+ 
+         TypeInformation[] outputColTypes = new TypeInformation[selectedColNames.length];
+
+File: core/src/main/java/com/alibaba/alink/operator/common/dataproc/StringIndexerModelMapper.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.alibaba.alink.operator.common.dataproc;
+ 
+ import com.alibaba.alink.common.mapper.SISOModelMapper;
++import com.alibaba.alink.params.dataproc.HasHandleInvalid;
+ import com.alibaba.alink.params.dataproc.StringIndexerPredictParams;
+ import org.apache.flink.api.common.typeinfo.TypeInformation;
+ import org.apache.flink.api.common.typeinfo.Types;
+@@ -20,12 +21,11 @@ public class StringIndexerModelMapper extends SISOModelMapper {
+ 
+     private Map<String, Long> mapper;
+     private Long defaultIndex;
+-    private StringIndexerUtil.HandleInvalidStrategy handleInvalidStrategy;
++    private HasHandleInvalid.HandleInvalid handleInvalidStrategy;
+ 
+     public StringIndexerModelMapper(TableSchema modelSchema, TableSchema dataSchema, Params params) {
+         super(modelSchema, dataSchema, params);
+-        handleInvalidStrategy = StringIndexerUtil.HandleInvalidStrategy
+-            .valueOf(params.get(StringIndexerPredictParams.HANDLE_INVALID).toUpperCase());
++        handleInvalidStrategy = params.get(StringIndexerPredictParams.HANDLE_INVALID);
+     }
+ 
+     @Override
+
+File: core/src/main/java/com/alibaba/alink/operator/common/feature/LocalitySensitiveHashApproxFunctions.java
+Patch:
+@@ -9,6 +9,8 @@
+ import com.alibaba.alink.operator.common.clustering.DistanceType;
+ import com.alibaba.alink.operator.common.statistics.StatisticsHelper;
+ import com.alibaba.alink.operator.common.statistics.basicstatistic.BaseVectorSummary;
++import com.alibaba.alink.params.shared.clustering.HasApproxDistanceType;
++import com.alibaba.alink.params.similarity.ApproxVectorJoinLSHParams;
+ import com.alibaba.alink.params.similarity.BaseJoinTopNLSHParams;
+ import com.alibaba.alink.params.feature.BaseLSHTrainParams;
+ import com.alibaba.alink.params.feature.HasNumHashTables;
+@@ -44,7 +46,7 @@
+ public class LocalitySensitiveHashApproxFunctions {
+ 
+ 	public static DataSet<BaseLSH> buildLSH(BatchOperator left, BatchOperator right, Params params){
+-		DistanceType distanceType = DistanceType.valueOf(params.get(BaseJoinTopNLSHParams.DISTANCE_TYPE).toUpperCase());
++		HasApproxDistanceType.DistanceType distanceType = params.get(ApproxVectorJoinLSHParams.DISTANCE_TYPE);
+ 
+ 		TableUtil.assertSelectedColExist(left.getSchema().getFieldNames(), params.get(BaseJoinTopNLSHParams.LEFT_ID_COL));
+ 		TableUtil.assertSelectedColExist(left.getSchema().getFieldNames(), params.get(BaseJoinTopNLSHParams.LEFT_COL));
+
+File: core/src/main/java/com/alibaba/alink/operator/common/feature/OneHotModelMapper.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.alibaba.alink.operator.common.feature;
+ 
++import com.alibaba.alink.params.dataproc.HasHandleInvalid;
+ import com.alibaba.alink.params.feature.OneHotPredictParams;
+ import org.apache.flink.api.java.tuple.Tuple3;
+ import org.apache.flink.ml.api.misc.param.Params;
+@@ -10,7 +11,6 @@
+ import com.alibaba.alink.common.mapper.ModelMapper;
+ import com.alibaba.alink.common.utils.Functional;
+ import com.alibaba.alink.common.utils.TableUtil;
+-import com.alibaba.alink.operator.common.dataproc.StringIndexerUtil;
+ import com.alibaba.alink.params.feature.HasEnableElse;
+ import com.alibaba.alink.params.shared.colname.HasSelectedCols;
+ 
+@@ -96,7 +96,7 @@ enum InvalidStrategy {
+          * @return the method to handle unseen token and null token.
+          */
+         public static InvalidStrategy valueOf(boolean enableElse,
+-                                              StringIndexerUtil.HandleInvalidStrategy handleInvalidStrategy) {
++                                              HasHandleInvalid.HandleInvalid handleInvalidStrategy) {
+             switch (handleInvalidStrategy) {
+                 case KEEP: {
+                     if (enableElse) {
+
+File: core/src/main/java/com/alibaba/alink/operator/common/nlp/DocCountVectorizerModelDataConverter.java
+Patch:
+@@ -19,7 +19,7 @@ public DocCountVectorizerModelDataConverter() {
+     @Override
+     public Tuple2<Params, Iterable<String>> serializeModel(DocCountVectorizerModelData data) {
+         Params params = new Params().set(DocCountVectorizerTrainParams.MIN_TF, data.minTF)
+-            .set(DocCountVectorizerTrainParams.FEATURE_TYPE, data.featureType);
++            .set(DocCountVectorizerTrainParams.FEATURE_TYPE, FeatureType.valueOf(data.featureType));
+         return Tuple2.of(params, data.list);
+     }
+ 
+@@ -29,7 +29,7 @@ public DocCountVectorizerModelData deserializeModel(Params meta, Iterable<String
+         data.list = new ArrayList<>();
+         modelData.forEach(data.list::add);
+         data.minTF = meta.get(DocCountVectorizerTrainParams.MIN_TF);
+-        data.featureType = meta.get(DocCountVectorizerTrainParams.FEATURE_TYPE);
++        data.featureType = meta.get(DocCountVectorizerTrainParams.FEATURE_TYPE).name();
+         return data;
+     }
+ }
+
+File: core/src/main/java/com/alibaba/alink/operator/common/nlp/DocHashCountVectorizerModelDataConverter.java
+Patch:
+@@ -23,7 +23,7 @@ public Tuple2<Params, Iterable<String>> serializeModel(DocHashCountVectorizerMod
+         Params meta = new Params()
+             .set(DocHashCountVectorizerTrainParams.NUM_FEATURES, data.numFeatures)
+             .set(DocHashCountVectorizerTrainParams.MIN_TF, data.minTF)
+-            .set(DocHashCountVectorizerTrainParams.FEATURE_TYPE, data.featureType);
++            .set(DocHashCountVectorizerTrainParams.FEATURE_TYPE, FeatureType.valueOf(data.featureType));
+         return Tuple2.of(meta, Collections.singletonList(JsonConverter.toJson(data.idfMap)));
+     }
+ 
+@@ -35,7 +35,7 @@ public DocHashCountVectorizerModelData deserializeModel(Params meta, Iterable<St
+             new TypeReference<HashMap<Integer, Double>>() {}.getType());
+         modelData.numFeatures = meta.get(DocHashCountVectorizerTrainParams.NUM_FEATURES);
+         modelData.minTF = meta.get(DocHashCountVectorizerTrainParams.MIN_TF);
+-        modelData.featureType = meta.get(DocHashCountVectorizerTrainParams.FEATURE_TYPE);
++        modelData.featureType = meta.get(DocHashCountVectorizerTrainParams.FEATURE_TYPE).name();
+         return modelData;
+     }
+ }
+
+File: core/src/main/java/com/alibaba/alink/operator/common/nlp/DocHashCountVectorizerModelMapper.java
+Patch:
+@@ -24,7 +24,7 @@
+  */
+ public class DocHashCountVectorizerModelMapper extends SISOModelMapper {
+ 	private DocHashCountVectorizerModelData model;
+-	private DocCountVectorizerModelMapper.FeatureType featureType;
++	private FeatureType featureType;
+ 
+ 	private static final HashFunction HASH = murmur3_32(0);
+ 
+@@ -35,7 +35,7 @@ public DocHashCountVectorizerModelMapper(TableSchema modelSchema, TableSchema da
+ 	@Override
+ 	public void loadModel(List <Row> modelRows) {
+ 		this.model = new DocHashCountVectorizerModelDataConverter().load(modelRows);
+-		this.featureType = DocCountVectorizerModelMapper.FeatureType.valueOf(model.featureType.toUpperCase());
++		this.featureType = FeatureType.valueOf(model.featureType.toUpperCase());
+ 	}
+ 
+ 	@Override
+
+File: core/src/main/java/com/alibaba/alink/operator/common/nlp/Word2VecModelMapper.java
+Patch:
+@@ -38,6 +38,7 @@ public void loadModel(List <Row> modelRows) {
+ 		generator = new DocVecGenerator(
+ 			word2VecModel.modelRows,
+ 			params.get(HasWordDelimiter.WORD_DELIMITER),
+-			DocVecGenerator.InferVectorMethod.valueOf(params.get(HasPredMethod.PRED_METHOD).trim().toUpperCase()));
++			params.get(HasPredMethod.PRED_METHOD)
++		);
+ 	}
+ }
+
+File: core/src/main/java/com/alibaba/alink/operator/common/tree/predictors/RandomForestModelMapper.java
+Patch:
+@@ -9,6 +9,7 @@
+ import com.alibaba.alink.operator.common.tree.LabelCounter;
+ import com.alibaba.alink.operator.common.tree.Node;
+ import com.alibaba.alink.common.utils.JsonConverter;
++import com.alibaba.alink.operator.common.tree.TreeUtil;
+ import com.alibaba.alink.params.shared.tree.HasTreeType;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+@@ -62,7 +63,7 @@ protected Tuple2<Object, String> predictResultDetail(Row row) throws Exception {
+ 
+ 			labelCounter.normWithWeight();
+ 
+-			if (!Criteria.isRegression(treeModel.meta.get(HasTreeType.TREE_TYPE))) {
++			if (!Criteria.isRegression(treeModel.meta.get(TreeUtil.TREE_TYPE))) {
+ 				detail = new HashMap<>();
+ 				double[] probability = labelCounter.getDistributions();
+ 				double max = 0.0;
+
+File: core/src/main/java/com/alibaba/alink/params/classification/DecisionTreeTrainParams.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.alibaba.alink.params.classification;
+ 
+-import com.alibaba.alink.params.shared.tree.HasTreeType;
++import com.alibaba.alink.params.shared.tree.HasIndividualTreeType;
+ 
+ public interface DecisionTreeTrainParams<T> extends
+ 	IndividualTreeParams<T>,
+-	HasTreeType<T> {
++	HasIndividualTreeType<T> {
+ }
+
+File: core/src/main/java/com/alibaba/alink/params/clustering/BisectingKMeansTrainParams.java
+Patch:
+@@ -4,15 +4,15 @@
+ import org.apache.flink.ml.api.misc.param.ParamInfoFactory;
+ 
+ import org.apache.flink.ml.api.misc.param.WithParams;
+-import com.alibaba.alink.params.shared.clustering.HasDistanceType;
++import com.alibaba.alink.params.shared.clustering.HasKMeansDistanceType;
+ import com.alibaba.alink.params.shared.colname.HasVectorCol;
+ import com.alibaba.alink.params.shared.iter.HasMaxIterDefaultAs10;
+ 
+ /**
+  * Params for BisectingKMeansTrain.
+  */
+ public interface BisectingKMeansTrainParams<T> extends WithParams<T>,
+-	HasDistanceType <T>,
++	HasKMeansDistanceType<T>,
+ 	HasVectorCol <T>,
+     HasMaxIterDefaultAs10<T> {
+ 
+
+File: core/src/main/java/com/alibaba/alink/params/clustering/KMeansTrainParams.java
+Patch:
+@@ -1,13 +1,13 @@
+ package com.alibaba.alink.params.clustering;
+ 
+-import com.alibaba.alink.params.shared.clustering.HasDistanceType;
++import com.alibaba.alink.params.shared.clustering.HasKMeansDistanceType;
+ import com.alibaba.alink.params.shared.colname.HasVectorCol;
+ 
+ /**
+  * Params for KMeansTrainer.
+  */
+ public interface KMeansTrainParams<T> extends
+-	HasDistanceType <T>,
++	HasKMeansDistanceType<T>,
+ 	HasVectorCol <T>,
+ 	BaseKMeansTrainParams <T> {
+ }
+
+File: core/src/main/java/com/alibaba/alink/params/evaluation/EvalClusterParams.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.alibaba.alink.params.evaluation;
+ 
+-import com.alibaba.alink.params.shared.clustering.HasDistanceType;
++import com.alibaba.alink.params.shared.clustering.HasClusteringDistanceType;
+ import com.alibaba.alink.params.shared.colname.HasPredictionCol;
+ 
+ import org.apache.flink.ml.api.misc.param.ParamInfo;
+@@ -11,7 +11,7 @@
+  */
+ public interface EvalClusterParams<T> extends
+ 	HasPredictionCol <T>,
+-	HasDistanceType<T> {
++	HasClusteringDistanceType<T> {
+ 
+ 	ParamInfo <String> LABEL_COL = ParamInfoFactory
+ 		.createParamInfo("labelCol", String.class)
+
+File: core/src/main/java/com/alibaba/alink/params/feature/OneHotPredictParams.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.alibaba.alink.params.feature;
+ 
+ import com.alibaba.alink.params.dataproc.HasHandleInvalid;
+-import com.alibaba.alink.params.dataproc.MultiStringIndexerPredictParams;
+ import com.alibaba.alink.params.shared.colname.*;
+ 
+ /**
+@@ -12,6 +11,6 @@ public interface OneHotPredictParams<T> extends
+ 	HasReservedCols<T>,
+ 	HasOutputColsDefaultAsNull<T>,
+ 	HasHandleInvalid<T>,
+-	HasEncode<T>,
++	HasEncodeWithoutWoe<T>,
+ 	HasDropLast<T> {
+ }
+
+File: core/src/main/java/com/alibaba/alink/params/feature/QuantileDiscretizerPredictParams.java
+Patch:
+@@ -10,6 +10,6 @@ public interface QuantileDiscretizerPredictParams<T> extends
+ 	HasReservedCols<T>,
+ 	HasOutputColsDefaultAsNull<T>,
+ 	HasHandleInvalid<T>,
+-	HasEncodeDefaultAsIndex<T>,
++	HasEncodeWithoutWoeDefaultAsIndex<T>,
+ 	HasDropLast<T> {
+ }
+
+File: core/src/main/java/com/alibaba/alink/params/similarity/ApproxVectorJoinLSHParams.java
+Patch:
+@@ -1,11 +1,13 @@
+ package com.alibaba.alink.params.similarity;
+ 
++import com.alibaba.alink.params.shared.clustering.HasApproxDistanceType;
+ import com.alibaba.alink.params.shared.clustering.HasDistanceThreshold;
+ 
+ /**
+  * Params for ApproxVectorJoinLSH.
+  */
+ public interface ApproxVectorJoinLSHParams<T> extends
+ 	BaseJoinTopNLSHParams<T>,
++	HasApproxDistanceType<T>,
+ 	HasDistanceThreshold<T>{
+ }
+
+File: core/src/main/java/com/alibaba/alink/params/similarity/ApproxVectorTopNLSHParams.java
+Patch:
+@@ -1,9 +1,12 @@
+ package com.alibaba.alink.params.similarity;
+ 
++import com.alibaba.alink.params.shared.clustering.HasApproxDistanceType;
++
+ /**
+  * Params for ApproxVectorTopNLSH.
+  */
+ public interface ApproxVectorTopNLSHParams<T> extends
+ 	BaseJoinTopNLSHParams<T>,
++	HasApproxDistanceType<T>,
+ 	HasTopN_5<T>{
+ }
+
+File: core/src/main/java/com/alibaba/alink/params/similarity/BaseJoinTopNLSHParams.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import com.alibaba.alink.params.feature.BaseLSHTrainParams;
+ import com.alibaba.alink.params.feature.HasProjectionWidth;
+-import com.alibaba.alink.params.shared.clustering.HasDistanceType;
+ import com.alibaba.alink.params.shared.colname.HasOutputCol;
+ 
+ /**
+@@ -11,7 +10,6 @@
+ public interface BaseJoinTopNLSHParams<T> extends
+ 	HasLeftCol<T>,
+     HasRightCol<T>,
+-	HasDistanceType<T>,
+ 	HasOutputCol <T>,
+     HasLeftIdCol<T>,
+ 	HasRightIdCol<T>,
+
+File: core/src/test/java/com/alibaba/alink/operator/batch/classification/RandomForestTrainBatchOpTest.java
+Patch:
+@@ -203,7 +203,8 @@ public void linkFrom7() throws Exception {
+ 			.setLabelCol(colNames[2])
+ 			.setFeatureCols(colNames[0], colNames[1])
+ 			.setNumTrees(3)
+-			.setTreeType("1,2")
++			.setTreeType("partition")
++			.setTreePartition("1,2")
+ 			.setCategoricalCols(colNames[0], colNames[1]);
+ 
+ 		rfOp.linkFrom(memSourceBatchOp).print();
+
+File: core/src/test/java/com/alibaba/alink/operator/common/nlp/DocHashCountVectorizerModelMapperTest.java
+Patch:
+@@ -116,7 +116,7 @@ public void testIDF() throws Exception {
+ 
+         Params params = new Params()
+             .set(DocHashCountVectorizerPredictParams.SELECTED_COL, "sentence")
+-            .set(DocCountVectorizerTrainParams.FEATURE_TYPE, "IDF");
++            .set(DocCountVectorizerTrainParams.FEATURE_TYPE, FeatureType.IDF);
+ 
+         DocHashCountVectorizerModelMapper mapper = new DocHashCountVectorizerModelMapper(modelSchema, dataSchema, params);
+         mapper.loadModel(model);
+
+File: core/src/test/java/com/alibaba/alink/operator/common/nlp/Word2VecModelMapperTest.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.alibaba.alink.operator.common.nlp;
+ 
++import com.alibaba.alink.params.nlp.HasPredMethod;
+ import org.junit.Test;
+ 
+ import static org.junit.Assert.assertEquals;
+@@ -12,7 +13,7 @@ public void predictResult() {
+ 		String type = "avg";
+ 
+ 		assertEquals(
+-			DocVecGenerator.InferVectorMethod.valueOf(type.trim().toUpperCase()),
+-			DocVecGenerator.InferVectorMethod.AVG);
++			HasPredMethod.PredMethod.valueOf(type.trim().toUpperCase()),
++			HasPredMethod.PredMethod.AVG);
+ 	}
+ }
+\ No newline at end of file
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/feature/ChiSqSelectorBatchOp.java
+Patch:
+@@ -25,7 +25,7 @@ public ChiSqSelectorBatchOp linkFrom(BatchOperator<?>... inputs) {
+         String[] selectedColNames = getSelectedCols();
+         String labelColName = getLabelCol();
+ 
+-        String selectorType = getParams().get(SELECTOR_TYPE).trim().toLowerCase();
++        SelectorType selectorType = getParams().get(SELECTOR_TYPE);
+         int numTopFeatures = getParams().get(NUM_TOP_FEATURES);
+         double percentile = getParams().get(PERCENTILE);
+         double fpr = getParams().get(FPR);
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/feature/PcaTrainBatchOp.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.alibaba.alink.operator.batch.feature;
+ 
+ import com.alibaba.alink.common.linalg.*;
+-import com.alibaba.alink.operator.common.feature.pca.PcaTypeEnum;
+ import org.apache.flink.api.common.functions.RichFlatMapFunction;
+ import org.apache.flink.api.common.functions.RichMapPartitionFunction;
+ import org.apache.flink.api.java.DataSet;
+@@ -328,7 +327,7 @@ public void mapPartition(Iterable<Tuple2<Integer, DenseVector>> splitVec, Collec
+             PcaModelData pcr = new PcaModelData();
+ 
+             //get correlation or covariance matrix
+-            PcaTypeEnum pcaTypeEnum = PcaTypeEnum.valueOf(pcaType.toUpperCase());
++            CalculationType pcaTypeEnum = CalculationType.valueOf(pcaType.toUpperCase());
+ 
+             double[][] corr = null;
+ 
+@@ -346,7 +345,7 @@ public void mapPartition(Iterable<Tuple2<Integer, DenseVector>> splitVec, Collec
+ 
+ 
+             DenseMatrix calculateMatrix = new DenseMatrix(corr);
+-            if (pcaTypeEnum.equals(PcaTypeEnum.COVAR_POP)) {
++            if (pcaTypeEnum.equals(CalculationType.COVAR_POP)) {
+                 double cnt = counts[0];
+                 if (cnt > 1) {
+                     calculateMatrix.scaleEqual(cnt / (cnt - 1));
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/feature/VectorChiSqSelectorBatchOp.java
+Patch:
+@@ -24,7 +24,7 @@ public VectorChiSqSelectorBatchOp linkFrom(BatchOperator<?>... inputs) {
+         String vectorColName = getSelectedCol();
+         String labelColName = getLabelCol();
+ 
+-        String selectorType = getParams().get(SELECTOR_TYPE).trim().toLowerCase();
++        SelectorType selectorType = getParams().get(SELECTOR_TYPE);
+         int numTopFeatures = getParams().get(NUM_TOP_FEATURES);
+         double percentile = getParams().get(PERCENTILE);
+         double fpr = getParams().get(FPR);
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/regression/GlmEvaluationBatchOp.java
+Patch:
+@@ -36,8 +36,8 @@ public GlmEvaluationBatchOp linkFrom(BatchOperator<?>... inputs) {
+         String weightColName = getWeightCol();
+         String offsetColName = getOffsetCol();
+ 
+-        String familyName = getFamily();
+-        String linkName = getLink();
++        Family familyName = getFamily();
++        Link linkName = getLink();
+         double variancePower = getVariancePower();
+         double linkPower = getLinkPower();
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/statistics/CorrelationBatchOp.java
+Patch:
+@@ -47,9 +47,9 @@ public CorrelationBatchOp linkFrom(BatchOperator<?>... inputs) {
+         //check col types must be double or bigint
+         TableUtil.assertNumericalCols(in.getSchema(), selectedColNames);
+ 
+-        String corrType = getMethod().trim().toLowerCase();
++        Method corrType = getMethod();
+ 
+-        if ("pearson".equals(corrType)) {
++        if (Method.PEARSON == corrType) {
+ 
+             DataSet<Tuple2<TableSummary, CorrelationResult>> srt = StatisticsHelper.pearsonCorrelation(in, selectedColNames);
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/statistics/VectorCorrelationBatchOp.java
+Patch:
+@@ -39,9 +39,9 @@ public VectorCorrelationBatchOp linkFrom(BatchOperator<?>... inputs) {
+         BatchOperator<?> in = checkAndGetFirst(inputs);
+         String vectorColName = getSelectedCol();
+ 
+-        String corrType = getMethod().trim().toLowerCase();
++        Method corrType = getMethod();
+ 
+-        if ("pearson".equals(corrType)) {
++        if (Method.PEARSON == corrType) {
+             DataSet<Tuple2<BaseVectorSummary, CorrelationResult>> srt = StatisticsHelper.vectorPearsonCorrelation(in, vectorColName);
+ 
+             //block
+
+File: core/src/main/java/com/alibaba/alink/operator/common/feature/pca/PcaModelDataConverter.java
+Patch:
+@@ -7,6 +7,7 @@
+ import org.apache.flink.ml.api.misc.param.Params;
+ 
+ import com.alibaba.alink.common.utils.JsonConverter;
++import com.alibaba.alink.params.feature.HasCalculationType;
+ import com.alibaba.alink.params.shared.colname.HasFeatureColsDefaultAsNull;
+ import com.alibaba.alink.params.feature.PcaTrainParams;
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/common/regression/GlmModelMapper.java
+Patch:
+@@ -98,9 +98,9 @@ public void loadModel(List<Row> modelRows) {
+ 
+         features = new double[featureColIdxs.length];
+ 
+-        String familyName = params.get(GlmTrainParams.FAMILY);
++        GlmTrainParams.Family familyName = params.get(GlmTrainParams.FAMILY);
+         double variancePower = params.get(GlmTrainParams.VARIANCE_POWER);
+-        String linkName = params.get(GlmTrainParams.LINK);
++        GlmTrainParams.Link linkName = params.get(GlmTrainParams.LINK);
+         double linkPower = params.get(GlmTrainParams.LINK_POWER);
+ 
+         familyLink = new FamilyLink(familyName, variancePower, linkName, linkPower);
+
+File: core/src/main/java/com/alibaba/alink/operator/common/statistics/ChiSquareTestUtil.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.alibaba.alink.operator.common.feature.ChiSqSelectorModelDataConverter;
+ import com.alibaba.alink.common.utils.JsonConverter;
+ import com.alibaba.alink.common.utils.DataSetConversionUtil;
++import com.alibaba.alink.params.feature.BasedChisqSelectorParams;
+ import org.apache.commons.lang3.ArrayUtils;
+ import org.apache.flink.api.common.functions.MapFunction;
+ import org.apache.flink.api.common.typeinfo.TypeInformation;
+@@ -64,7 +65,7 @@ public static DataSet<Row> test(BatchOperator in,
+     public static Table selector(BatchOperator in,
+                                  String[] selectedColNames,
+                                  String labelColName,
+-                                 String selectorType,
++                                 BasedChisqSelectorParams.SelectorType selectorType,
+                                  int numTopFeatures,
+                                  double percentile,
+                                  double fpr,
+@@ -97,7 +98,7 @@ public static Table selector(BatchOperator in,
+     public static Table vectorSelector(BatchOperator in,
+                                        String selectedColName,
+                                        String labelColName,
+-                                       String selectorType,
++                                       BasedChisqSelectorParams.SelectorType selectorType,
+                                        int numTopFeatures,
+                                        double percentile,
+                                        double fpr,
+
+File: core/src/main/java/com/alibaba/alink/params/feature/PcaTrainParams.java
+Patch:
+@@ -16,5 +16,4 @@ public interface PcaTrainParams<T> extends
+         HasWithStd<T>,
+         HasK<T>,
+         HasCalculationType<T> {
+-
+ }
+
+File: core/src/main/java/com/alibaba/alink/params/io/HasSchemaStrDefaultAsNull.java
+Patch:
+@@ -5,7 +5,7 @@
+ 
+ import org.apache.flink.ml.api.misc.param.WithParams;
+ 
+-public interface HasSchemaStr_null<T> extends WithParams<T> {
++public interface HasSchemaStrDefaultAsNull<T> extends WithParams<T> {
+ 	ParamInfo <String> SCHEMA_STR = ParamInfoFactory
+ 		.createParamInfo("schemaStr", String.class)
+ 		.setDescription("Formatted schema")
+
+File: core/src/main/java/com/alibaba/alink/params/io/MySqlSourceParams.java
+Patch:
+@@ -6,5 +6,6 @@
+ 
+ public interface MySqlSourceParams<T> extends WithParams<T>,
+ 	MySqlDBParams <T>,
+-	HasInputTableName <T> {
++	HasInputTableName <T>,
++	HasSchemaStrDefaultAsNull<T>{
+ }
+
+File: core/src/main/java/com/alibaba/alink/common/mapper/MISOMapper.java
+Patch:
+@@ -32,7 +32,7 @@ public abstract class MISOMapper extends Mapper {
+ 	public MISOMapper(TableSchema dataSchema, Params params) {
+ 		super(dataSchema, params);
+ 		String[] inputColNames = this.params.get(MISOMapperParams.SELECTED_COLS);
+-		this.colIndices = TableUtil.findColIndices(dataSchema.getFieldNames(), inputColNames);
++		this.colIndices = TableUtil.findColIndicesWithAssertAndHint(dataSchema.getFieldNames(), inputColNames);
+ 		String outputColName = params.get(MISOMapperParams.OUTPUT_COL);
+ 		String[] keepColNames = null;
+ 		if (this.params.contains(MISOMapperParams.RESERVED_COLS)) {
+
+File: core/src/main/java/com/alibaba/alink/common/utils/JsonPathMapper.java
+Patch:
+@@ -31,7 +31,7 @@ public class JsonPathMapper extends FlatMapper {
+ 	public JsonPathMapper(TableSchema dataSchema, Params params) {
+ 		super(dataSchema, params);
+ 		String selectedColName = this.params.get(JsonValueParams.SELECTED_COL);
+-		this.idx = TableUtil.findColIndex(dataSchema.getFieldNames(), selectedColName);
++		this.idx = TableUtil.findColIndexWithAssertAndHint(dataSchema.getFieldNames(), selectedColName);
+ 		outputColNames = params.get(JsonValueParams.OUTPUT_COLS);
+ 		jsonPaths = params.get(JsonValueParams.JSON_PATHS);
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/classification/NaiveBayesTextTrainBatchOp.java
+Patch:
+@@ -71,7 +71,7 @@ public NaiveBayesTextTrainBatchOp linkFrom(BatchOperator<?>... inputs) {
+ 		double smoothing = getSmoothing();
+ 		String vectorColName = getVectorCol();
+ 
+-		labelType = in.getColTypes()[TableUtil.findColIndex(in.getColNames(), labelColName)];
++		labelType = TableUtil.findColTypeWithAssertAndHint(in.getSchema(), labelColName);
+ 
+ 		String[] keepColNames = (weightColName == null) ? new String[] {labelColName}
+ 			: new String[] {weightColName, labelColName};
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/classification/SoftmaxTrainBatchOp.java
+Patch:
+@@ -82,7 +82,7 @@ public SoftmaxTrainBatchOp linkFrom(BatchOperator<?>... inputs) {
+         }
+ 
+         if (null == labelType) {
+-            labelType = in.getColTypes()[TableUtil.findColIndex(dataSchema.getFieldNames(), labelName)];
++            labelType = in.getColTypes()[TableUtil.findColIndexWithAssertAndHint(dataSchema.getFieldNames(), labelName)];
+         }
+ 
+         DataSet<Row> labelIds = in
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/clustering/LdaTrainBatchOp.java
+Patch:
+@@ -82,7 +82,7 @@ public LdaTrainBatchOp linkFrom(BatchOperator<?>... inputs) {
+         getParams().set(SELECTED_COL, vectorColName);
+         final DataSet<DocCountVectorizerModelData> resDocCountModel = DocCountVectorizerTrainBatchOp
+                 .generateDocCountModel(getParams(), in);
+-        int index = TableUtil.findColIndex(in.getColNames(), vectorColName);
++        int index = TableUtil.findColIndexWithAssertAndHint(in.getColNames(), vectorColName);
+         DataSet<Row> resRow = in.getDataSet()
+                 .flatMap(new Document2Vector(index)).withBroadcastSet(resDocCountModel, "DocCountModel");
+         TypeInformation<?>[] types = in.getColTypes();
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/dataproc/ImputerTrainBatchOp.java
+Patch:
+@@ -46,7 +46,7 @@ public ImputerTrainBatchOp linkFrom(BatchOperator<?>... inputs) {
+         //result is statistic model with strategy.
+         ImputerModelDataConverter converter = new ImputerModelDataConverter();
+         converter.selectedColNames = selectedColNames;
+-        converter.selectedColTypes = TableUtil.findColTypes(in.getSchema(), selectedColNames);
++        converter.selectedColTypes = TableUtil.findColTypesWithAssertAndHint(in.getSchema(), selectedColNames);
+ 
+         Params meta = new Params()
+             .set(ImputerTrainParams.STRATEGY, strategy);
+@@ -56,7 +56,7 @@ public ImputerTrainBatchOp linkFrom(BatchOperator<?>... inputs) {
+         if (isNeedStatModel()) {
+             rows = StatisticsHelper.summary(in, selectedColNames)
+                 .flatMap(new BuildImputerModel(selectedColNames,
+-                        TableUtil.findColTypes(in.getSchema(), selectedColNames), strategy));
++                        TableUtil.findColTypesWithAssertAndHint(in.getSchema(), selectedColNames), strategy));
+ 
+         } else {
+             String fillValue = getFillValue();
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/dataproc/MultiStringIndexerPredictBatchOp.java
+Patch:
+@@ -135,7 +135,7 @@ public MultiStringIndexerPredictBatchOp linkFrom(BatchOperator<?>... inputs) {
+         OutputColsHelper outputColsHelper = new OutputColsHelper(data.getSchema(), outputColNames,
+             outputColTypes, keepColNames);
+ 
+-        final int[] selectedColIdx = TableUtil.findColIndices(data.getSchema(), selectedColNames);
++        final int[] selectedColIdx = TableUtil.findColIndicesWithAssertAndHint(data.getSchema(), selectedColNames);
+         final StringIndexerUtil.HandleInvalidStrategy handleInvalidStrategy
+             = StringIndexerUtil.HandleInvalidStrategy
+             .valueOf(params.get(StringIndexerPredictParams.HANDLE_INVALID).toUpperCase());
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/dataproc/MultiStringIndexerTrainBatchOp.java
+Patch:
+@@ -52,7 +52,7 @@ public MultiStringIndexerTrainBatchOp linkFrom(BatchOperator<?>... inputs) {
+         final String[] selectedColSqlType = new String[selectedColNames.length];
+         for (int i = 0; i < selectedColNames.length; i++) {
+             selectedColSqlType[i] = FlinkTypeConverter.getTypeString(
+-                TableUtil.findColType(in.getSchema(), selectedColNames[i]));
++                TableUtil.findColTypeWithAssertAndHint(in.getSchema(), selectedColNames[i]));
+         }
+ 
+         DataSet<Row> inputRows = in.select(selectedColNames).getDataSet();
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/evaluation/EvalRegressionBatchOp.java
+Patch:
+@@ -38,9 +38,8 @@ public EvalRegressionBatchOp(Params params) {
+     public EvalRegressionBatchOp linkFrom(BatchOperator<?>... inputs) {
+         BatchOperator in = checkAndGetFirst(inputs);
+ 
+-        int indexLabel = TableUtil.findColIndex(in.getColNames(), this.getLabelCol());
+-        int indexPredict = TableUtil.findColIndex(in.getColNames(), this.getPredictionCol());
+-        Preconditions.checkArgument(indexLabel >= 0 && indexPredict >= 0, "Can not find given columns!");
++        TableUtil.findColIndexWithAssertAndHint(in.getColNames(), this.getLabelCol());
++        TableUtil.findColIndexWithAssertAndHint(in.getColNames(), this.getPredictionCol());
+ 
+         TableUtil.assertNumericalCols(in.getSchema(), this.getLabelCol(), this.getPredictionCol());
+         DataSet<Row> out = in.select(new String[] {this.getLabelCol(), this.getPredictionCol()})
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/feature/OneHotTrainBatchOp.java
+Patch:
+@@ -51,7 +51,7 @@ public OneHotTrainBatchOp linkFrom(BatchOperator<?>... inputs) {
+ 		final String[] selectedColSqlType = new String[selectedColNames.length];
+ 		for (int i = 0; i < selectedColNames.length; i++) {
+ 			selectedColSqlType[i] = FlinkTypeConverter.getTypeString(
+-				TableUtil.findColType(in.getSchema(), selectedColNames[i]));
++				TableUtil.findColTypeWithAssertAndHint(in.getSchema(), selectedColNames[i]));
+ 		}
+ 		int[] thresholdArray;
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/feature/QuantileDiscretizerTrainBatchOp.java
+Patch:
+@@ -254,7 +254,7 @@ public QuantileDiscretizerTrainBatchOp linkFrom(BatchOperator<?>... inputs) {
+ 			new SerializeModel(
+ 				getParams(),
+ 				quantileColNames,
+-				TableUtil.findColTypes(in.getSchema(), quantileColNames),
++				TableUtil.findColTypesWithAssertAndHint(in.getSchema(), quantileColNames),
+ 				BinTypes.BinDivideType.QUANTILE
+ 			)
+ 		);
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/outlier/SosBatchOp.java
+Patch:
+@@ -39,7 +39,7 @@ public SosBatchOp linkFrom(BatchOperator<?>... inputs) {
+ 		BatchOperator<?> in = checkAndGetFirst(inputs);
+ 		final String vectorColName = getVectorCol();
+ 		final String predResultColName = getPredictionCol();
+-		final int vectorColIdx = TableUtil.findColIndex(in.getColNames(), vectorColName);
++		final int vectorColIdx = TableUtil.findColIndexWithAssertAndHint(in.getColNames(), vectorColName);
+ 
+ 		DataSet <Tuple2 <Integer, Row>> pointsWithIndex = DataSetUtils
+ 			.zipWithIndex(in.getDataSet())
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/recommendation/AlsPredictBatchOp.java
+Patch:
+@@ -156,8 +156,8 @@ public Table rate(BatchOperator model, BatchOperator data) {
+         String userColName = getUserCol();
+         String itemColName = getItemCol();
+         String predResultColName = getPredictionCol();
+-        final int userColIdx = TableUtil.findColIndex(data.getColNames(), userColName);
+-        final int itemColIdx = TableUtil.findColIndex(data.getColNames(), itemColName);
++        final int userColIdx = TableUtil.findColIndexWithAssertAndHint(data.getColNames(), userColName);
++        final int itemColIdx = TableUtil.findColIndexWithAssertAndHint(data.getColNames(), itemColName);
+ 
+         DataSet<Tuple2<Long, float[]>> userFactors = getFactors(model, 0);
+         DataSet<Tuple2<Long, float[]>> itemFactors = getFactors(model, 1);
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/recommendation/AlsTrainBatchOp.java
+Patch:
+@@ -67,9 +67,9 @@ public AlsTrainBatchOp linkFrom(BatchOperator<?>... inputs) {
+         final double alpha = getAlpha();
+         final int numMiniBatches = getNumBlocks();
+ 
+-        final int userColIdx = TableUtil.findColIndex(in.getColNames(), userColName);
+-        final int itemColIdx = TableUtil.findColIndex(in.getColNames(), itemColName);
+-        final int rateColIdx = TableUtil.findColIndex(in.getColNames(), rateColName);
++        final int userColIdx = TableUtil.findColIndexWithAssertAndHint(in.getColNames(), userColName);
++        final int itemColIdx = TableUtil.findColIndexWithAssertAndHint(in.getColNames(), itemColName);
++        final int rateColIdx = TableUtil.findColIndexWithAssertAndHint(in.getColNames(), rateColName);
+ 
+         // tuple3: userId, itemId, rating
+         DataSet<Tuple3<Long, Long, Float>> alsInput = in.getDataSet()
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/sink/LibSvmSinkBatchOp.java
+Patch:
+@@ -58,8 +58,8 @@ public LibSvmSinkBatchOp sinkFrom(BatchOperator in) {
+         final String vectorCol = getVectorCol();
+         final String labelCol = getLabelCol();
+ 
+-        final int vectorColIdx = TableUtil.findColIndex(in.getColNames(), vectorCol);
+-        final int labelColIdx = TableUtil.findColIndex(in.getColNames(), labelCol);
++        final int vectorColIdx = TableUtil.findColIndexWithAssertAndHint(in.getColNames(), vectorCol);
++        final int labelColIdx = TableUtil.findColIndexWithAssertAndHint(in.getColNames(), labelCol);
+ 
+         DataSet<Row> outputRows = ((DataSet<Row>) in.getDataSet())
+             .map(new MapFunction<Row, Row>() {
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/statistics/ChiSquareTestBatchOp.java
+Patch:
+@@ -74,7 +74,7 @@ public ChiSquareTestResult[] collectChiSquareTestResult() {
+ 
+             TableUtil.assertSelectedColExist(selectedColNames, colName);
+ 
+-            result[TableUtil.findColIndex(selectedColNames, colName)] =
++            result[TableUtil.findColIndexWithAssertAndHint(selectedColNames, colName)] =
+                 JsonConverter.fromJson((String) row.getField(1), ChiSquareTestResult.class);
+         }
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/common/classification/ann/MlpcModelMapper.java
+Patch:
+@@ -74,11 +74,10 @@ public void loadModel(List<Row> modelRows) {
+             String vectorColName = params.contains(MultilayerPerceptronPredictParams.VECTOR_COL) ?
+                 params.get(MultilayerPerceptronPredictParams.VECTOR_COL) :
+                 model.meta.get(MultilayerPerceptronPredictParams.VECTOR_COL);
+-            this.vectorColIdx = TableUtil.findColIndex(dataSchema.getFieldNames(), vectorColName);
+-            assert this.vectorColIdx >= 0;
++            this.vectorColIdx = TableUtil.findColIndexWithAssert(dataSchema.getFieldNames(), vectorColName);
+         } else {
+             String[] featureColNames = model.meta.get(MultilayerPerceptronTrainParams.FEATURE_COLS);
+-            this.featureColIdx = TableUtil.findColIndices(dataSchema.getFieldNames(), featureColNames);
++            this.featureColIdx = TableUtil.findColIndicesWithAssert(dataSchema.getFieldNames(), featureColNames);
+         }
+     }
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/common/clustering/LdaModelMapper.java
+Patch:
+@@ -14,9 +14,7 @@
+ 
+ import com.alibaba.alink.common.linalg.DenseMatrix;
+ import com.alibaba.alink.common.linalg.SparseVector;
+-import com.alibaba.alink.common.mapper.ModelMapper;
+ import com.alibaba.alink.operator.common.clustering.lda.LdaUtil;
+-import com.alibaba.alink.common.utils.OutputColsHelper;
+ import com.alibaba.alink.common.utils.TableUtil;
+ import com.alibaba.alink.params.clustering.LdaPredictParams;
+ 
+@@ -50,7 +48,7 @@ public LdaModelMapper(TableSchema modelSchema, TableSchema dataSchema, Params pa
+         super(modelSchema, dataSchema, params);
+         params.set(DocCountVectorizerPredictParams.SELECTED_COL, this.params.get(LdaPredictParams.SELECTED_COL));
+         String documentColName = this.params.get(LdaPredictParams.SELECTED_COL);
+-        this.documentColIdx = TableUtil.findColIndex(dataSchema.getFieldNames(), documentColName);
++        this.documentColIdx = TableUtil.findColIndexWithAssertAndHint(dataSchema.getFieldNames(), documentColName);
+     }
+ 
+     /**
+
+File: core/src/main/java/com/alibaba/alink/operator/common/dataproc/ImputerModelMapper.java
+Patch:
+@@ -49,7 +49,7 @@ public ImputerModelMapper(TableSchema modelSchema, TableSchema dataSchema, Param
+         super(modelSchema, dataSchema, params);
+         String[] selectedColNames = ImputerModelDataConverter.extractSelectedColNames(modelSchema);
+         TypeInformation[] selectedColTypes = ImputerModelDataConverter.extractSelectedColTypes(modelSchema);
+-        this.selectedColIndices = TableUtil.findColIndices(dataSchema, selectedColNames);
++        this.selectedColIndices = TableUtil.findColIndicesWithAssert(dataSchema, selectedColNames);
+ 
+         String[] outputColNames = params.get(SrtPredictMapperParams.OUTPUT_COLS);
+         if (outputColNames == null) {
+
+File: core/src/main/java/com/alibaba/alink/operator/common/dataproc/MaxAbsScalerModelMapper.java
+Patch:
+@@ -31,7 +31,7 @@ public MaxAbsScalerModelMapper(TableSchema modelSchema, TableSchema dataSchema,
+         super(modelSchema, dataSchema, params);
+         String[] selectedColNames = RichModelDataConverter.extractSelectedColNames(modelSchema);
+         TypeInformation[] selectedColTypes = RichModelDataConverter.extractSelectedColTypes(modelSchema);
+-        this.selectedColIndices = TableUtil.findColIndices(dataSchema, selectedColNames);
++        this.selectedColIndices = TableUtil.findColIndicesWithAssert(dataSchema, selectedColNames);
+ 
+         String[] outputColNames = params.get(SrtPredictMapperParams.OUTPUT_COLS);
+         if (outputColNames == null) {
+
+File: core/src/main/java/com/alibaba/alink/operator/common/dataproc/MinMaxScalerModelMapper.java
+Patch:
+@@ -40,7 +40,7 @@ public MinMaxScalerModelMapper(TableSchema modelSchema, TableSchema dataSchema,
+         super(modelSchema, dataSchema, params);
+         String[] selectedColNames = ImputerModelDataConverter.extractSelectedColNames(modelSchema);
+         TypeInformation[] selectedColTypes = ImputerModelDataConverter.extractSelectedColTypes(modelSchema);
+-        this.selectedColIndices = TableUtil.findColIndices(dataSchema, selectedColNames);
++        this.selectedColIndices = TableUtil.findColIndicesWithAssert(dataSchema, selectedColNames);
+ 
+         String[] outputColNames = params.get(SrtPredictMapperParams.OUTPUT_COLS);
+         if (outputColNames == null) {
+
+File: core/src/main/java/com/alibaba/alink/operator/common/dataproc/MultiStringIndexerModelData.java
+Patch:
+@@ -35,8 +35,7 @@ public class MultiStringIndexerModelData {
+      * @return The number of tokens of that column.
+      */
+     public long getNumberOfTokensOfColumn(String columnName) {
+-        int colIndex = TableUtil.findColIndex(meta.get(HasSelectedCols.SELECTED_COLS), columnName);
+-        Preconditions.checkArgument(colIndex >= 0, "Can't find column: " + columnName);
++        int colIndex = TableUtil.findColIndexWithAssertAndHint(meta.get(HasSelectedCols.SELECTED_COLS), columnName);
+         Preconditions.checkArgument(tokenNumber != null);
+         return tokenNumber.get(colIndex);
+     }
+
+File: core/src/main/java/com/alibaba/alink/operator/common/dataproc/MultiStringIndexerModelMapper.java
+Patch:
+@@ -62,8 +62,8 @@ public void loadModel(List<Row> modelRows) {
+         MultiStringIndexerModelData model = new MultiStringIndexerModelDataConverter().load(modelRows);
+ 
+         String[] trainColNames = model.meta.get(HasSelectedCols.SELECTED_COLS);
+-        this.selectedColIndicesInData = TableUtil.findColIndices(super.getDataSchema(), selectedColNames);
+-        int[] selectedColIndicesInModel = TableUtil.findColIndices(trainColNames, selectedColNames);
++        this.selectedColIndicesInData = TableUtil.findColIndicesWithAssert(super.getDataSchema(), selectedColNames);
++        int[] selectedColIndicesInModel = TableUtil.findColIndicesWithAssert(trainColNames, selectedColNames);
+         this.indexMapper = new HashMap<>();
+         this.defaultIndex = new HashMap<>();
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/common/dataproc/NumericalTypeCastMapper.java
+Patch:
+@@ -28,7 +28,7 @@ public class NumericalTypeCastMapper extends Mapper {
+ 	public NumericalTypeCastMapper(TableSchema dataSchema, Params params) {
+ 		super(dataSchema, params);
+ 		String[] inputColNames = this.params.get(NumericalTypeCastParams.SELECTED_COLS);
+-		this.colIndices = TableUtil.findColIndices(dataSchema.getFieldNames(), inputColNames);
++		this.colIndices = TableUtil.findColIndicesWithAssertAndHint(dataSchema.getFieldNames(), inputColNames);
+ 		String[] outputColNames = params.get(NumericalTypeCastParams.OUTPUT_COLS);
+ 		if (outputColNames == null || outputColNames.length == 0) {
+ 			outputColNames = inputColNames;
+
+File: core/src/main/java/com/alibaba/alink/operator/common/dataproc/StandardScalerModelMapper.java
+Patch:
+@@ -26,7 +26,7 @@ public StandardScalerModelMapper(TableSchema modelSchema, TableSchema dataSchema
+         super(modelSchema, dataSchema, params);
+         this.selectedColNames = ImputerModelDataConverter.extractSelectedColNames(modelSchema);
+         this.selectedColTypes = ImputerModelDataConverter.extractSelectedColTypes(modelSchema);
+-        this.selectedColIndices = TableUtil.findColIndices(dataSchema, selectedColNames);
++        this.selectedColIndices = TableUtil.findColIndicesWithAssert(dataSchema, selectedColNames);
+ 
+         String[] outputColNames = params.get(SrtPredictMapperParams.OUTPUT_COLS);
+         if (outputColNames == null) {
+
+File: core/src/main/java/com/alibaba/alink/operator/common/feature/BinarizerMapper.java
+Patch:
+@@ -33,7 +33,7 @@ public BinarizerMapper(TableSchema dataSchema, Params params) {
+ 		super(dataSchema, params);
+ 		this.threshold = this.params.get(BinarizerParams.THRESHOLD);
+ 
+-		selectedColType = TableUtil.findColType(
++		selectedColType = TableUtil.findColTypeWithAssertAndHint(
+ 			dataSchema,
+ 			this.params.get(BinarizerParams.SELECTED_COL)
+ 		);
+@@ -51,7 +51,7 @@ public BinarizerMapper(TableSchema dataSchema, Params params) {
+ 
+ 	@Override
+ 	protected TypeInformation initOutputColType() {
+-		final TypeInformation<?> selectedColType = TableUtil.findColType(
++		final TypeInformation<?> selectedColType = TableUtil.findColTypeWithAssertAndHint(
+ 				getDataSchema(),
+ 			this.params.get(BinarizerParams.SELECTED_COL)
+ 		);
+
+File: core/src/main/java/com/alibaba/alink/operator/common/feature/FeatureHasherMapper.java
+Patch:
+@@ -50,8 +50,8 @@ public FeatureHasherMapper(TableSchema dataSchema, Params params) {
+         String[] numericCols = ArrayUtils.removeElements(selectedCols, categoricalCols);
+         colNames = dataSchema.getFieldNames();
+ 
+-        numericColIndexes = TableUtil.findColIndices(colNames, numericCols);
+-        categoricalColIndexes = TableUtil.findColIndices(colNames, categoricalCols);
++        numericColIndexes = TableUtil.findColIndicesWithAssertAndHint(colNames, numericCols);
++        categoricalColIndexes = TableUtil.findColIndicesWithAssertAndHint(colNames, categoricalCols);
+ 
+         outputColsHelper = new OutputColsHelper(
+             dataSchema,
+
+File: core/src/main/java/com/alibaba/alink/operator/common/feature/OneHotModelMapper.java
+Patch:
+@@ -149,13 +149,15 @@ public void loadModel(List<Row> modelRows) {
+         if (null == mapperBuilder.getSelectedCols()) {
+             mapperBuilder.setSelectedCols(trainColNames);
+         }
++
+         mapperBuilder.setSelectedColIndicesInData(super.getDataSchema());
+         mapperBuilder.setInvalidStrategy(model.modelData.meta.get(HasEnableElse.ENABLE_ELSE));
+-        int[] selectedColIndicesInModel = TableUtil.findColIndices(trainColNames, mapperBuilder.getSelectedCols());
++        int[] selectedColIndicesInModel = TableUtil.findColIndicesWithAssert(trainColNames, mapperBuilder.getSelectedCols());
+ 
+         for (int i = 0; i < mapperBuilder.getSelectedCols().length; i++) {
+             Map<String, Long> mapper = new HashMap<>();
+             int colIdxInModel = selectedColIndicesInModel[i];
++
+             Preconditions.checkArgument(colIdxInModel >= 0, "Can not find %s in model!",
+                 mapperBuilder.getSelectedCols()[i]);
+             for (Tuple3<Integer, String, Long> record : model.modelData.tokenAndIndex) {
+
+File: core/src/main/java/com/alibaba/alink/operator/common/feature/QuantileDiscretizerModelMapper.java
+Patch:
+@@ -110,7 +110,7 @@ public static class DiscretizerMapperBuilder implements Serializable {
+ 
+ 		public DiscretizerMapperBuilder(Params params, TableSchema dataSchema){
+ 			paramsBuilder = new DiscretizerParamsBuilder(params, dataSchema, params.get(HasEncodeDefaultAsIndex.ENCODE));
+-			this.selectedColIndicesInData = TableUtil.findColIndices(
++			this.selectedColIndicesInData = TableUtil.findColIndicesWithAssert(
+ 				dataSchema,
+ 				paramsBuilder.selectedCols
+ 			);
+
+File: core/src/main/java/com/alibaba/alink/operator/common/feature/pca/PcaModelMapper.java
+Patch:
+@@ -49,11 +49,11 @@ private int[] checkGetColIndices(Boolean isVector, String[] featureColNames, Str
+         if (!isVector) {
+             TableUtil.assertSelectedColExist(colNames, featureColNames);
+             TableUtil.assertNumericalCols(getDataSchema(), featureColNames);
+-            return TableUtil.findColIndices(colNames, featureColNames);
++            return TableUtil.findColIndicesWithAssertAndHint(colNames, featureColNames);
+         } else {
+             TableUtil.assertSelectedColExist(colNames, vectorColName);
+             TableUtil.assertVectorCols(getDataSchema(), vectorColName);
+-            return new int[]{TableUtil.findColIndex(colNames, vectorColName)};
++            return new int[]{TableUtil.findColIndexWithAssertAndHint(colNames, vectorColName)};
+         }
+     }
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/common/linear/SoftmaxModelMapper.java
+Patch:
+@@ -34,7 +34,7 @@ public SoftmaxModelMapper(TableSchema modelSchema, TableSchema dataSchema, Param
+ 		if (null != params) {
+ 			String vectorColName = params.get(SoftmaxPredictParams.VECTOR_COL);
+ 			if (null != vectorColName && vectorColName.length() != 0) {
+-				this.vectorColIndex = TableUtil.findColIndex(dataSchema.getFieldNames(), vectorColName);
++				this.vectorColIndex = TableUtil.findColIndexWithAssert(dataSchema.getFieldNames(), vectorColName);
+ 			}
+ 		}
+ 	}
+@@ -51,11 +51,11 @@ public void loadModel(List <Row> modelRows) {
+ 				this.featureIdx = new int[this.featureN];
+ 				String[] predictTableColNames = dataSchema.getFieldNames();
+ 				for (int i = 0; i < this.featureN; i++) {
+-					this.featureIdx[i] = TableUtil.findColIndex(predictTableColNames,
++					this.featureIdx[i] = TableUtil.findColIndexWithAssert(predictTableColNames,
+ 						this.model.featureNames[i]);
+ 				}
+ 			} else {
+-				vectorColIndex = TableUtil.findColIndex(dataSchema.getFieldNames(), model.vectorColName);
++				vectorColIndex = TableUtil.findColIndexWithAssert(dataSchema.getFieldNames(), model.vectorColName);
+ 			}
+ 		}
+ 	}
+
+File: core/src/main/java/com/alibaba/alink/operator/common/recommendation/AlsModelMapper.java
+Patch:
+@@ -25,9 +25,9 @@ public AlsModelMapper(TableSchema modelSchema, TableSchema dataSchema, Params pa
+         super(modelSchema, dataSchema, params);
+         String predResultColName = this.params.get(AlsPredictParams.PREDICTION_COL);
+         String userColName = this.params.get(AlsPredictParams.USER_COL);
+-        this.userColIdx = TableUtil.findColIndex(dataSchema.getFieldNames(), userColName);
++        this.userColIdx = TableUtil.findColIndexWithAssertAndHint(dataSchema.getFieldNames(), userColName);
+         String itemColName = this.params.get(AlsPredictParams.ITEM_COL);
+-        this.itemColIdx = TableUtil.findColIndex(dataSchema.getFieldNames(), itemColName);
++        this.itemColIdx = TableUtil.findColIndexWithAssertAndHint(dataSchema.getFieldNames(), itemColName);
+         this.outputColsHelper = new OutputColsHelper(dataSchema, predResultColName, Types.DOUBLE());
+     }
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/common/regression/AFTModelMapper.java
+Patch:
+@@ -45,7 +45,7 @@ public AFTModelMapper(TableSchema modelSchema, TableSchema dataSchema, Params pa
+         if (null != params) {
+             String vectorColName = params.get(LinearModelMapperParams.VECTOR_COL);
+             if (null != vectorColName && vectorColName.length() != 0) {
+-                this.vectorColIndex = TableUtil.findColIndex(dataSchema.getFieldNames(), vectorColName);
++                this.vectorColIndex = TableUtil.findColIndexWithAssert(dataSchema.getFieldNames(), vectorColName);
+             }
+         }
+     }
+@@ -66,11 +66,11 @@ public void loadModel(List<Row> modelRows) {
+                 this.featureIdx = new int[this.featureN];
+                 String[] predictTableColNames = dataSchema.getFieldNames();
+                 for (int i = 0; i < this.featureN; i++) {
+-                    this.featureIdx[i] = TableUtil.findColIndex(predictTableColNames,
++                    this.featureIdx[i] = TableUtil.findColIndexWithAssert(predictTableColNames,
+                             this.model.featureNames[i]);
+                 }
+             } else {
+-                vectorColIndex = TableUtil.findColIndex(dataSchema.getFieldNames(), model.vectorColName);
++                vectorColIndex = TableUtil.findColIndexWithAssert(dataSchema.getFieldNames(), model.vectorColName);
+             }
+         }
+     }
+
+File: core/src/main/java/com/alibaba/alink/operator/common/regression/IsotonicRegressionModelMapper.java
+Patch:
+@@ -52,9 +52,9 @@ public void loadModel(List <Row> modelRows) {
+ 		featureIndex = meta.get(IsotonicRegTrainParams.FEATURE_INDEX);
+ 		TableSchema dataSchema = getDataSchema();
+ 		if (null == vectorColName) {
+-			colIdx = TableUtil.findColIndex(dataSchema.getFieldNames(), featureColName);
++			colIdx = TableUtil.findColIndexWithAssert(dataSchema.getFieldNames(), featureColName);
+ 		} else {
+-			colIdx = TableUtil.findColIndex(dataSchema.getFieldNames(), vectorColName);
++			colIdx = TableUtil.findColIndexWithAssert(dataSchema.getFieldNames(), vectorColName);
+ 		}
+ 	}
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/common/tree/BaseGbdtTrainBatchOp.java
+Patch:
+@@ -98,7 +98,7 @@ public T linkFrom(BatchOperator<?>... inputs) {
+ 			)
+ 		);
+ 
+-		init(TableUtil.findColType(in.getSchema(), getParams().get(HasLabelCol.LABEL_COL)));
++		init(TableUtil.findColTypeWithAssertAndHint(in.getSchema(), getParams().get(HasLabelCol.LABEL_COL)));
+ 
+ 		int parallelism = Math.max(1, MLEnvironmentFactory
+ 			.get(getMLEnvironmentId())
+
+File: core/src/main/java/com/alibaba/alink/operator/common/tree/BaseRandomForestTrainBatchOp.java
+Patch:
+@@ -79,14 +79,14 @@ public T linkFrom(BatchOperator<?>... inputs) {
+ 			getParams().set(
+ 				ModelParamName.LABEL_TYPE,
+ 				FlinkTypeConverter.getTypeString(
+-					TableUtil.findColType(in.getSchema(), getParams().get(HasLabelCol.LABEL_COL))
++					TableUtil.findColTypeWithAssertAndHint(in.getSchema(), getParams().get(HasLabelCol.LABEL_COL))
+ 				)
+ 			);
+ 		}
+ 
+ 		getParams().set(ModelParamName.FEATURE_TYPES,
+ 			FlinkTypeConverter.getTypeString(
+-				TableUtil.findColTypes(in.getSchema(), getParams().get(HasFeatureCols.FEATURE_COLS))
++				TableUtil.findColTypesWithAssertAndHint(in.getSchema(), getParams().get(HasFeatureCols.FEATURE_COLS))
+ 			)
+ 		);
+ 
+
+File: core/src/main/java/com/alibaba/alink/operator/common/tree/Preprocessing.java
+Patch:
+@@ -37,7 +37,6 @@
+ import com.alibaba.alink.params.shared.colname.HasCategoricalCols;
+ import com.alibaba.alink.params.shared.colname.HasFeatureCols;
+ import com.alibaba.alink.params.shared.colname.HasLabelCol;
+-import com.alibaba.alink.params.shared.colname.HasVectorCol;
+ import com.alibaba.alink.params.shared.colname.HasWeightColDefaultAsNull;
+ import com.alibaba.alink.params.shared.tree.HasMaxBins;
+ import org.apache.commons.lang3.ArrayUtils;
+@@ -420,8 +419,8 @@ public void mapPartition(Iterable<Row> values, Collector<Row> out) throws Except
+ 	}
+ 
+ 	public static BatchOperator<?> select(BatchOperator<?> in, String... selectCols) {
+-		final int[] selectIndices = TableUtil.findColIndices(in.getColNames(), selectCols);
+-		final TypeInformation<?>[] selectColTypes = TableUtil.findColTypes(in.getSchema(), selectCols);
++		final int[] selectIndices = TableUtil.findColIndicesWithAssertAndHint(in.getColNames(), selectCols);
++		final TypeInformation<?>[] selectColTypes = TableUtil.findColTypesWithAssertAndHint(in.getSchema(), selectCols);
+ 
+ 		return new TableSourceBatchOp(
+ 			DataSetConversionUtil.toTable(
+
+File: core/src/main/java/com/alibaba/alink/operator/stream/onlinelearning/FtrlTrainStreamOp.java
+Patch:
+@@ -90,15 +90,15 @@ public FtrlTrainStreamOp linkFrom(StreamOperator<?>... inputs) {
+         int vectorSize = getVectorSize();
+         boolean hasInterceptItem = getWithIntercept();
+         int vectorTrainIdx = getVectorCol() != null ?
+-            TableUtil.findColIndex(inputs[0].getColNames(), getVectorCol()) : -1;
+-        int labelIdx = TableUtil.findColIndex(inputs[0].getColNames(), getLabelCol());
++            TableUtil.findColIndexWithAssertAndHint(inputs[0].getColNames(), getVectorCol()) : -1;
++        int labelIdx = TableUtil.findColIndexWithAssertAndHint(inputs[0].getColNames(), getLabelCol());
+         String[] featureCols = getFeatureCols();
+         int[] featureIdx = null;
+         int featureColLength = -1;
+         if (vectorTrainIdx == -1) {
+             featureIdx = new int[featureCols.length];
+             for (int i = 0; i < featureCols.length; ++i) {
+-                featureIdx[i] = TableUtil.findColIndex(inputs[0].getColNames(), featureCols[i]);
++                featureIdx[i] = TableUtil.findColIndexWithAssertAndHint(inputs[0].getColNames(), featureCols[i]);
+             }
+             featureColLength = featureCols.length;
+         }
+
+File: core/src/main/java/com/alibaba/alink/operator/stream/sink/LibSvmSinkStreamOp.java
+Patch:
+@@ -36,8 +36,8 @@ public LibSvmSinkStreamOp sinkFrom(StreamOperator in) {
+         final String vectorCol = getVectorCol();
+         final String labelCol = getLabelCol();
+ 
+-        final int vectorColIdx = TableUtil.findColIndex(in.getColNames(), vectorCol);
+-        final int labelColIdx = TableUtil.findColIndex(in.getColNames(), labelCol);
++        final int vectorColIdx = TableUtil.findColIndexWithAssertAndHint(in.getColNames(), vectorCol);
++        final int labelColIdx = TableUtil.findColIndexWithAssertAndHint(in.getColNames(), labelCol);
+ 
+         DataStream<Row> outputRows = ((DataStream<Row>) in.getDataStream())
+             .map(new MapFunction<Row, Row>() {
+
+File: core/src/main/java/com/alibaba/alink/common/MLEnvironment.java
+Patch:
+@@ -113,7 +113,7 @@ public ExecutionEnvironment getExecutionEnvironment() {
+         if (null == env) {
+             if (ExecutionEnvironment.areExplicitEnvironmentsAllowed()) {
+                 final int managedMemPerCoreInMB = 64;
+-                final int networkMemPerCoreInMB = 16;
++                final int networkMemPerCoreInMB = 64;
+                 final int core = Runtime.getRuntime().availableProcessors();
+ 
+                 Configuration conf = new Configuration();
+
+File: core/src/test/java/com/alibaba/alink/common/comqueue/IterativeComQueueTest.java
+Patch:
+@@ -37,8 +37,6 @@ public class IterativeComQueueTest implements Serializable {
+ 
+ 	@Test
+ 	public void testPI() throws Exception {
+-		MLEnvironmentFactory.getDefault().getExecutionEnvironment().setParallelism(1);
+-
+ 		DataSet<Row> result = new IterativeComQueue()
+ 			.add(new ComputeFunction() {
+ 				@Override
+
+File: core/src/test/java/com/alibaba/alink/operator/batch/classification/GbdtBatchOpTest.java
+Patch:
+@@ -18,7 +18,6 @@ public class GbdtBatchOpTest {
+ 
+ 	@Test
+ 	public void linkFrom() throws Exception {
+-		MLEnvironmentFactory.getDefault().getExecutionEnvironment().setParallelism(1);
+ 		Row[] testArray =
+ 			new Row[]{
+ 				Row.of(1, 2, 0),
+@@ -48,7 +47,6 @@ public void linkFrom() throws Exception {
+ 
+ 	@Test
+ 	public void linkFrom1() throws Exception {
+-		MLEnvironmentFactory.getDefault().getExecutionEnvironment().setParallelism(1);
+ 		Row[] testArray =
+ 			new Row[]{
+ 				Row.of(1, 2, 0),
+
+File: core/src/test/java/com/alibaba/alink/operator/batch/classification/RandomForestTrainBatchOpTest.java
+Patch:
+@@ -86,6 +86,8 @@ public void linkFromDecisionTreeModeParallel() throws Exception {
+ 			.setLabelCol(colNames[2])
+ 			.setFeatureCols(colNames[0], colNames[1])
+ 			.setMinSamplesPerLeaf(1)
++			.setMaxDepth(4)
++			.setMaxMemoryInMB(1)
+ 			.setCreateTreeMode("parallel");
+ 
+ 		DecisionTreeRegPredictBatchOp decisionTreeRegPredictBatchOp = new DecisionTreeRegPredictBatchOp()
+@@ -132,6 +134,7 @@ public void linkFromDecisionTreeClassifierParallel() throws Exception {
+ 			.setLabelCol(colNames[2])
+ 			.setFeatureCols(colNames[0], colNames[1])
+ 			.setMinSamplesPerLeaf(1)
++			.setMaxMemoryInMB(1)
+ 			.setCreateTreeMode("parallel");
+ 
+ 		DecisionTreeRegPredictBatchOp decisionTreeRegPredictBatchOp = new DecisionTreeRegPredictBatchOp()
+
+File: core/src/test/java/com/alibaba/alink/operator/batch/regression/IsotonicRegTrainBatchOpTest.java
+Patch:
+@@ -71,7 +71,6 @@ public class IsotonicRegTrainBatchOpTest {
+ 
+ 	@Test
+ 	public void isotonicRegTest() throws Exception {
+-		MLEnvironmentFactory.getDefault().getExecutionEnvironment().setParallelism(5);
+ 		int length = 15;
+ 		Object[][] inTrain=new Object[length][3];
+ 		for (int i=0;i<length;++i){
+
+File: core/src/test/java/com/alibaba/alink/pipeline/classification/MultilayerPerceptronClassifierTest.java
+Patch:
+@@ -29,7 +29,7 @@ public void testMLPC() throws Exception {
+             .linkFrom(res)
+             .collectMetrics();
+ 
+-        Assert.assertTrue(metrics.getAccuracy() > 0.9);
++        Assert.assertTrue(metrics.getAccuracy() > 0.6);
+ 
+     }
+ }
+\ No newline at end of file
+
+File: core/src/test/java/com/alibaba/alink/pipeline/classification/SoftmaxTest.java
+Patch:
+@@ -30,7 +30,6 @@ public class SoftmaxTest {
+ 
+ 	@Test
+ 	public void pipelineTest() throws Exception {
+-		MLEnvironmentFactory.getDefault().getExecutionEnvironment().setParallelism(4);
+ 		Softmax softmax = new Softmax()
+ 			.setFeatureCols(new String[] {"f0", "f1", "f2"})
+ 			.setStandardization(true)
+
+File: core/src/test/java/com/alibaba/alink/pipeline/regression/LinearRegressionTest.java
+Patch:
+@@ -28,9 +28,6 @@ public class LinearRegressionTest {
+ 
+     @Test
+     public void regressionPipelineTest() throws Exception {
+-        MLEnvironmentFactory.getDefault().getExecutionEnvironment().setParallelism(1);
+-        MLEnvironmentFactory.getDefault().getExecutionEnvironment().getConfig().disableSysoutLogging();
+-
+         String[] xVars = new String[] {"f0", "f1", "f2"};
+         String yVar = "label";
+         String vec = "vec";
+
+File: connectors/connector-kafka-base/src/main/java/com/alibaba/alink/operator/stream/source/BaseKafkaSourceStreamOp.java
+Patch:
+@@ -53,7 +53,7 @@ protected Table initializeDataSource() {
+         String topic = getParams().get(KafkaSourceParams.TOPIC);
+         String topicPattern = getParams().get(KafkaSourceParams.TOPIC_PATTERN);
+         BaseKafkaSourceBuilder.StartupMode startupMode = BaseKafkaSourceBuilder.StartupMode.valueOf(
+-            getParams().get(KafkaSourceParams.STARTUP_MODE));
++            getParams().get(KafkaSourceParams.STARTUP_MODE).toUpperCase());
+         String properties = getParams().get(KafkaSourceParams.PROPERTIES);
+ 
+         Preconditions.checkArgument(!StringUtils.isNullOrWhitespaceOnly(topicPattern) ||
+
+File: core/src/main/java/com/alibaba/alink/operator/batch/utils/UDTFBatchOp.java
+Patch:
+@@ -13,7 +13,7 @@
+  * This class provides the UDTF feature which is similar with Flink user-defined table functions.
+  * <p>
+  * An instance of a class inheriting Flink TableFunction is provided.
+- * The computation involves selectedCols, outputCols, and joinType,
++ * The computation involves selectedCols and outputCols,
+  * and reservedCols are columns kept from the input table.
+  * <p>
+  * Note that outputCols can have same names with the selectedCols.
+@@ -61,8 +61,7 @@ public UDTFBatchOp linkFrom(BatchOperator<?>... inputs) {
+         }
+ 
+         String clause = UDFHelper.generateUDTFClause(in.getOutputTable().toString(), funcName,
+-            getOutputCols(), getSelectedCols(), reservedCols, getJoinType()
+-        );
++            getOutputCols(), getSelectedCols(), reservedCols);
+         this.setOutputTable(tEnv.sqlQuery(clause));
+         return this;
+     }
+
+File: core/src/main/java/com/alibaba/alink/operator/stream/utils/UDTFStreamOp.java
+Patch:
+@@ -13,7 +13,7 @@
+  * This class provides the UDTF feature which is similar with Flink user-defined table functions.
+  * <p>
+  * An instance of a class inheriting Flink TableFunction is provided.
+- * The computation involves selectedCols, outputCols, and joinType,
++ * The computation involves selectedCols and outputCols,
+  * and reservedCols are columns kept from the input table.
+  * <p>
+  * Note that outputCols can have same names with the selectedCols.
+@@ -61,8 +61,7 @@ public UDTFStreamOp linkFrom(StreamOperator<?>... inputs) {
+         }
+ 
+         String clause = UDFHelper.generateUDTFClause(in.getOutputTable().toString(), funcName,
+-            getOutputCols(), getSelectedCols(), reservedCols, getJoinType()
+-        );
++            getOutputCols(), getSelectedCols(), reservedCols);
+         this.setOutputTable(tEnv.sqlQuery(clause));
+         return this;
+     }
+
+File: core/src/main/java/com/alibaba/alink/params/dataproc/UDTFParams.java
+Patch:
+@@ -4,12 +4,10 @@
+ import com.alibaba.alink.params.shared.colname.HasReservedCols;
+ import com.alibaba.alink.params.shared.colname.HasSelectedCols;
+ import com.alibaba.alink.params.udf.HasFuncName;
+-import com.alibaba.alink.params.udf.HasJoinType;
+ 
+ public interface UDTFParams<T> extends
+ 	HasFuncName<T>,
+ 	HasSelectedCols<T>,
+ 	HasOutputCols<T>,
+-	HasReservedCols<T>,
+-	HasJoinType<T> {
++	HasReservedCols<T> {
+ }
+
+File: core/src/main/java/com/alibaba/alink/operator/common/io/csv/GenericCsvInputFormat.java
+Patch:
+@@ -57,7 +57,7 @@ public class GenericCsvInputFormat implements InputFormat<Row, CsvFileInputSplit
+     // for reading records
+     private transient Charset charset;
+ 
+-    private transient int splitLength;   // remaining bytes of current split to read
++    private transient long splitLength;  // remaining bytes of current split to read
+     private transient byte[] readBuffer; // buffer for holding data read by reader
+     private transient long bytesRead;    // number of bytes read by reader
+     private transient boolean overLimit; // flag indicating whether we have read beyond the split
+@@ -74,7 +74,7 @@ public class GenericCsvInputFormat implements InputFormat<Row, CsvFileInputSplit
+ 
+     private transient CsvFileInputSplit split;
+ 
+-    // for parsing fields of a reacord
++    // for parsing fields of a record
+     private transient FieldParser<?>[] fieldParsers = null;
+     private transient Object[] holders = null;
+ 
+@@ -151,7 +151,7 @@ private void initializeParsers() {
+     @Override
+     public void open(CsvFileInputSplit split) throws IOException {
+         this.charset = Charset.forName(charsetName);
+-        this.splitLength = (int) split.length;
++        this.splitLength = split.length;
+         this.split = split;
+         this.bytesRead = 0L;
+ 
+

@@ -1,0 +1,1196 @@
+File: dexter/src/main/java/com/karumi/dexter/Dexter.java
+Patch:
+@@ -150,14 +150,15 @@ static void onActivityReady(Activity activity) {
+ 
+   /**
+    * Method called whenever the DexterActivity has been destroyed.
++   * @param oldActivity the DexterActivity that was destroyed
+    */
+-  static void onActivityDestroyed() {
++  static void onActivityDestroyed(DexterActivity oldActivity) {
+     /* Check against null values because sometimes the DexterActivity can call these internal
+        methods when the DexterInstance has been cleaned up.
+        Refer to this commit message for a more detailed explanation of the issue.
+      */
+     if (instance != null) {
+-      instance.onActivityDestroyed();
++      instance.onActivityDestroyed(oldActivity);
+     }
+   }
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/DexterActivity.java
+Patch:
+@@ -40,7 +40,7 @@ public final class DexterActivity extends Activity
+ 
+   @Override protected void onDestroy() {
+     super.onDestroy();
+-    Dexter.onActivityDestroyed();
++    Dexter.onActivityDestroyed(this);
+   }
+ 
+   @Override protected void onNewIntent(Intent intent) {
+
+File: dexter/src/test/java/com/karumi/dexter/DexterInstanceTest.java
+Patch:
+@@ -153,7 +153,7 @@ public void onCheckPermissionMoreThanOnceThenThrowException() {
+     givenPermissionIsAlreadyDenied(ANY_PERMISSION);
+ 
+     whenCheckPermission(permissionListener, ANY_PERMISSION);
+-    dexter.onActivityDestroyed();
++    dexter.onActivityDestroyed(activity);
+     whenCheckPermission(permissionListener, ANY_PERMISSION);
+ 
+     verifyRequestPermissions(new String[]{ANY_PERMISSION}, 2);
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -17,7 +17,6 @@
+ package com.karumi.dexter;
+ 
+ import android.app.Activity;
+-import android.app.Application;
+ import android.content.Context;
+ import android.content.Intent;
+ import android.content.pm.PackageManager;
+@@ -220,7 +219,7 @@ private void startTransparentActivityIfNeeded() {
+     }
+ 
+     Intent intent = intentProvider.get(context, DexterActivity.class);
+-    if (context instanceof Application) {
++    if (!(context instanceof Activity)) {
+       intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+     }
+     context.startActivity(intent);
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -383,4 +383,4 @@ public Collection<String> getImpossibleToGrantPermissions() {
+       return impossibleToGrantPermissions;
+     }
+   }
+-}
+\ No newline at end of file
++}
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -124,7 +124,10 @@ void onActivityReady(Activity activity) {
+    * Method called whenever the inner activity has been destroyed.
+    */
+   void onActivityDestroyed() {
++    activity = null;
+     isRequestingPermission.set(false);
++    rationaleAccepted.set(false);
++    isShowingNativeDialog.set(false);
+     listener = EMPTY_LISTENER;
+   }
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -254,7 +254,7 @@ private void updatePermissionsAsGranted(Collection<String> permissions) {
+   private void updatePermissionsAsDenied(Collection<String> permissions) {
+     for (String permission : permissions) {
+       PermissionDeniedResponse response = PermissionDeniedResponse.from(permission,
+-          !androidPermissionService.shouldShowRequestPermissionRationale(activity, permission));
++          androidPermissionService.isPermissionPermanentlyDenied(activity, permission));
+       multiplePermissionsReport.addDeniedPermissionResponse(response);
+     }
+     onPermissionsChecked(permissions);
+
+File: dexter/src/main/java/com/karumi/dexter/DexterActivity.java
+Patch:
+@@ -22,8 +22,8 @@
+ import android.content.pm.PackageManager;
+ import android.os.Build;
+ import android.os.Bundle;
+-import android.support.v4.app.ActivityCompat;
+-import android.support.v4.content.PermissionChecker;
++import androidx.core.app.ActivityCompat;
++import androidx.core.content.PermissionChecker;
+ import android.view.WindowManager;
+ import java.util.Arrays;
+ import java.util.Collection;
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -21,7 +21,7 @@
+ import android.content.Context;
+ import android.content.Intent;
+ import android.content.pm.PackageManager;
+-import android.support.v4.content.PermissionChecker;
++import androidx.core.content.PermissionChecker;
+ import com.karumi.dexter.listener.DexterError;
+ import com.karumi.dexter.listener.PermissionDeniedResponse;
+ import com.karumi.dexter.listener.PermissionGrantedResponse;
+@@ -166,7 +166,7 @@ void onCancelPermissionRequest() {
+   private void requestPermissionsToSystem(Collection<String> permissions) {
+     if (!isShowingNativeDialog.get()) {
+       androidPermissionService.requestPermissions(activity,
+-          permissions.toArray(new String[permissions.size()]), PERMISSIONS_REQUEST_CODE);
++          permissions.toArray(new String[0]), PERMISSIONS_REQUEST_CODE);
+     }
+     isShowingNativeDialog.set(true);
+   }
+
+File: dexter/src/main/java/com/karumi/dexter/listener/PermissionDeniedResponse.java
+Patch:
+@@ -16,7 +16,7 @@
+ 
+ package com.karumi.dexter.listener;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ 
+ /**
+  * If a permission was denied, an instance of this class will be returned
+
+File: dexter/src/main/java/com/karumi/dexter/listener/PermissionGrantedResponse.java
+Patch:
+@@ -16,7 +16,7 @@
+ 
+ package com.karumi.dexter.listener;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ 
+ /**
+  * If a permission was granted, an instance of this class will be returned
+
+File: dexter/src/main/java/com/karumi/dexter/listener/PermissionRequest.java
+Patch:
+@@ -16,7 +16,7 @@
+ 
+ package com.karumi.dexter.listener;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ 
+ /**
+  * Wrapper class for a permission request
+
+File: dexter/src/main/java/com/karumi/dexter/listener/multi/DialogOnAnyDeniedMultiplePermissionsListener.java
+Patch:
+@@ -21,8 +21,8 @@
+ import android.content.Context;
+ import android.content.DialogInterface;
+ import android.graphics.drawable.Drawable;
+-import android.support.annotation.DrawableRes;
+-import android.support.annotation.StringRes;
++import androidx.annotation.DrawableRes;
++import androidx.annotation.StringRes;
+ import com.karumi.dexter.MultiplePermissionsReport;
+ 
+ /**
+
+File: dexter/src/main/java/com/karumi/dexter/listener/multi/SnackbarOnAnyDeniedMultiplePermissionsListener.java
+Patch:
+@@ -20,8 +20,8 @@
+ import android.content.Intent;
+ import android.net.Uri;
+ import android.provider.Settings;
+-import android.support.annotation.StringRes;
+-import android.support.design.widget.Snackbar;
++import androidx.annotation.StringRes;
++import com.google.android.material.snackbar.Snackbar;
+ import android.view.View;
+ import com.karumi.dexter.MultiplePermissionsReport;
+ 
+@@ -70,7 +70,7 @@ private void showSnackbar() {
+       snackbar.setAction(buttonText, onButtonClickListener);
+     }
+     if (snackbarCallback != null) {
+-      snackbar.setCallback(snackbarCallback);
++      snackbar.addCallback(snackbarCallback);
+     }
+     snackbar.show();
+   }
+
+File: dexter/src/main/java/com/karumi/dexter/listener/single/DialogOnDeniedPermissionListener.java
+Patch:
+@@ -20,8 +20,8 @@
+ import android.content.Context;
+ import android.content.DialogInterface;
+ import android.graphics.drawable.Drawable;
+-import android.support.annotation.DrawableRes;
+-import android.support.annotation.StringRes;
++import androidx.annotation.DrawableRes;
++import androidx.annotation.StringRes;
+ import com.karumi.dexter.listener.PermissionDeniedResponse;
+ 
+ /**
+
+File: dexter/src/main/java/com/karumi/dexter/listener/single/SnackbarOnDeniedPermissionListener.java
+Patch:
+@@ -20,8 +20,8 @@
+ import android.content.Intent;
+ import android.net.Uri;
+ import android.provider.Settings;
+-import android.support.annotation.StringRes;
+-import android.support.design.widget.Snackbar;
++import androidx.annotation.StringRes;
++import com.google.android.material.snackbar.Snackbar;
+ import android.view.View;
+ import com.karumi.dexter.listener.PermissionDeniedResponse;
+ 
+@@ -63,7 +63,7 @@ private SnackbarOnDeniedPermissionListener(View view, String text, String button
+       snackbar.setAction(buttonText, onButtonClickListener);
+     }
+     if (snackbarCallback != null) {
+-      snackbar.setCallback(snackbarCallback);
++      snackbar.addCallback(snackbarCallback);
+     }
+     snackbar.show();
+   }
+
+File: dexter/src/test/java/com/karumi/dexter/MultiplePermissionListenerThreadDecoratorTest.java
+Patch:
+@@ -23,11 +23,10 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.mockito.Mock;
+-import org.mockito.runners.MockitoJUnitRunner;
++import org.mockito.junit.MockitoJUnitRunner;
+ 
+ import static java.util.Collections.singletonList;
+ import static org.junit.Assert.assertTrue;
+-import static org.mockito.Matchers.any;
+ import static org.mockito.Mockito.verify;
+ 
+ @RunWith(MockitoJUnitRunner.class) public class MultiplePermissionListenerThreadDecoratorTest {
+@@ -49,7 +48,7 @@
+   @Test public void onPermissionCheckedThenListenerIsDecorated() {
+     decorator.onPermissionsChecked(null);
+ 
+-    verify(listener).onPermissionsChecked(any(MultiplePermissionsReport.class));
++    verify(listener).onPermissionsChecked(null);
+     assertTrue(thread.decorated);
+   }
+ 
+
+File: sample/src/main/java/com/karumi/dexter/sample/SampleActivity.java
+Patch:
+@@ -23,8 +23,8 @@
+ import android.content.DialogInterface;
+ import android.os.Build;
+ import android.os.Bundle;
+-import android.support.design.widget.Snackbar;
+-import android.support.v4.content.ContextCompat;
++import com.google.android.material.snackbar.Snackbar;
++import androidx.core.content.ContextCompat;
+ import android.view.View;
+ import android.widget.TextView;
+ import butterknife.BindView;
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -125,6 +125,7 @@ void onActivityReady(Activity activity) {
+    */
+   void onActivityDestroyed() {
+     isRequestingPermission.set(false);
++    listener = EMPTY_LISTENER;
+   }
+ 
+   /**
+@@ -322,6 +323,7 @@ private void checkMultiplePermissions(final MultiplePermissionsListener listener
+           }
+           isRequestingPermission.set(false);
+           listener.onPermissionsChecked(report);
++          DexterInstance.this.listener = EMPTY_LISTENER;
+         }
+       });
+     } else {
+
+File: dexter/src/test/java/com/karumi/dexter/DexterInstanceTest.java
+Patch:
+@@ -132,6 +132,7 @@ public void onCheckPermissionMoreThanOnceThenThrowException() {
+   }
+ 
+   @Test public void onPermissionFailedByRuntimeExceptionThenNotifiesListener() {
++    givenPermissionIsChecked(ANY_PERMISSION, PackageManager.PERMISSION_DENIED);
+     givenARuntimeExceptionIsThrownWhenPermissionIsChecked(ANY_PERMISSION);
+     givenShouldShowRationaleForPermission(ANY_PERMISSION);
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/DexterException.java
+Patch:
+@@ -20,9 +20,9 @@
+ 
+ final class DexterException extends IllegalStateException {
+ 
+-  public final DexterError error;
++  final DexterError error;
+ 
+-  public DexterException(String detailMessage, DexterError error) {
++  DexterException(String detailMessage, DexterError error) {
+     super(detailMessage);
+     this.error = error;
+   }
+
+File: dexter/src/main/java/com/karumi/dexter/MultiplePermissionsListenerToPermissionListenerAdapter.java
+Patch:
+@@ -32,7 +32,7 @@ final class MultiplePermissionsListenerToPermissionListenerAdapter
+ 
+   private final PermissionListener listener;
+ 
+-  public MultiplePermissionsListenerToPermissionListenerAdapter(PermissionListener listener) {
++  MultiplePermissionsListenerToPermissionListenerAdapter(PermissionListener listener) {
+     this.listener = listener;
+   }
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/PermissionRationaleToken.java
+Patch:
+@@ -21,7 +21,7 @@ final class PermissionRationaleToken implements PermissionToken {
+   private final DexterInstance dexterInstance;
+   private boolean isTokenResolved = false;
+ 
+-  public PermissionRationaleToken(DexterInstance dexterInstance) {
++  PermissionRationaleToken(DexterInstance dexterInstance) {
+     this.dexterInstance = dexterInstance;
+   }
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/AndroidPermissionService.java
+Patch:
+@@ -21,18 +21,18 @@
+ import android.support.annotation.NonNull;
+ import android.support.annotation.Nullable;
+ import android.support.v4.app.ActivityCompat;
+-import android.support.v4.content.ContextCompat;
++import android.support.v4.content.PermissionChecker;
+ 
+ /**
+  * Wrapper class for all the static calls to the Android permission system
+  */
+ class AndroidPermissionService {
+ 
+   /**
+-   * @see ContextCompat#checkSelfPermission
++   * @see PermissionChecker#checkSelfPermission
+    */
+   int checkSelfPermission(@NonNull Context context, @NonNull String permission) {
+-    return ContextCompat.checkSelfPermission(context, permission);
++    return PermissionChecker.checkSelfPermission(context, permission);
+   }
+ 
+   /**
+
+File: dexter/src/main/java/com/karumi/dexter/DexterActivity.java
+Patch:
+@@ -20,11 +20,12 @@
+ import android.content.Intent;
+ import android.content.pm.PackageManager;
+ import android.os.Bundle;
++import android.support.v4.app.ActivityCompat;
+ import android.view.WindowManager;
+ import java.util.Collection;
+ import java.util.LinkedList;
+ 
+-public final class DexterActivity extends Activity {
++public final class DexterActivity extends Activity implements ActivityCompat.OnRequestPermissionsResultCallback {
+ 
+   @Override protected void onCreate(Bundle savedInstanceState) {
+     super.onCreate(savedInstanceState);
+
+File: dexter/src/main/java/com/karumi/dexter/DexterActivity.java
+Patch:
+@@ -20,11 +20,12 @@
+ import android.content.Intent;
+ import android.content.pm.PackageManager;
+ import android.os.Bundle;
++import android.support.v4.app.ActivityCompat;
+ import android.view.WindowManager;
+ import java.util.Collection;
+ import java.util.LinkedList;
+ 
+-public final class DexterActivity extends Activity {
++public final class DexterActivity extends Activity implements ActivityCompat.OnRequestPermissionsResultCallback {
+ 
+   @Override protected void onCreate(Bundle savedInstanceState) {
+     super.onCreate(savedInstanceState);
+
+File: dexter/src/main/java/com/karumi/dexter/listener/single/SnackbarOnDeniedPermissionListener.java
+Patch:
+@@ -30,7 +30,7 @@
+  * Utility listener that shows a {@link Snackbar} with a custom text whenever a permission has been
+  * denied
+  */
+-public class SnackbarOnDeniedPermissionListener extends EmptyPermissionListener {
++public class SnackbarOnDeniedPermissionListener extends BasePermissionListener {
+ 
+   private final ViewGroup rootView;
+   private final String text;
+@@ -144,7 +144,8 @@ public Builder withCallback(Snackbar.Callback callback) {
+      * Builds a new instance of {@link SnackbarOnDeniedPermissionListener}
+      */
+     public SnackbarOnDeniedPermissionListener build() {
+-      return new SnackbarOnDeniedPermissionListener(rootView, text, buttonText, onClickListener, snackbarCallback);
++      return new SnackbarOnDeniedPermissionListener(rootView, text, buttonText, onClickListener,
++          snackbarCallback);
+     }
+   }
+ }
+
+File: dexter/src/test/java/com/karumi/dexter/RetryCheckPermissionOnDeniedPermissionListener.java
+Patch:
+@@ -18,14 +18,14 @@
+ 
+ import com.karumi.dexter.listener.PermissionDeniedResponse;
+ import com.karumi.dexter.listener.PermissionRequest;
+-import com.karumi.dexter.listener.single.EmptyPermissionListener;
++import com.karumi.dexter.listener.single.BasePermissionListener;
+ import com.karumi.dexter.listener.single.PermissionListener;
+ 
+ /**
+  * PermissionListener implementation that will perform yet another check when denied for the first
+  * time. It will register the provided listener when retrying the check.
+  */
+-public class RetryCheckPermissionOnDeniedPermissionListener extends EmptyPermissionListener {
++public class RetryCheckPermissionOnDeniedPermissionListener extends BasePermissionListener {
+ 
+   private final PermissionListener listener;
+   private final CheckPermissionAction checkPermission;
+
+File: dexter/src/main/java/com/karumi/dexter/WorkerThread.java
+Patch:
+@@ -27,7 +27,9 @@ final class WorkerThread implements Thread {
+   private final Handler handler;
+ 
+   WorkerThread() {
+-    Looper.prepare();
++    if (Looper.myLooper() == null) {
++      Looper.prepare();
++    }
+     handler = new Handler();
+   }
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/WorkerThread.java
+Patch:
+@@ -27,7 +27,9 @@ final class WorkerThread implements Thread {
+   private final Handler handler;
+ 
+   WorkerThread() {
+-    Looper.prepare();
++    if (Looper.myLooper() == null) {
++      Looper.prepare();
++    }
+     handler = new Handler();
+   }
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -185,6 +185,7 @@ void requestPermissionsToSystem(Collection<String> permissions) {
+ 
+   private PermissionStates getPermissionStates(Collection<String> pendingPermissions) {
+     PermissionStates permissionStates = new PermissionStates();
++
+     for (String permission : pendingPermissions) {
+       int permissionState = androidPermissionService.checkSelfPermission(activity, permission);
+       switch (permissionState) {
+@@ -197,6 +198,7 @@ private PermissionStates getPermissionStates(Collection<String> pendingPermissio
+           break;
+       }
+     }
++
+     return permissionStates;
+   }
+ 
+@@ -250,7 +252,7 @@ private void onPermissionsChecked(Collection<String> permissions) {
+       return;
+     }
+ 
+-    synchronized(pendingPermissionsMutex) {
++    synchronized (pendingPermissionsMutex) {
+       pendingPermissions.removeAll(permissions);
+       if (pendingPermissions.isEmpty()) {
+         activity.finish();
+
+File: dexter/src/main/java/com/karumi/dexter/Dexter.java
+Patch:
+@@ -20,7 +20,6 @@
+ import android.content.Context;
+ import com.karumi.dexter.listener.multi.MultiplePermissionsListener;
+ import com.karumi.dexter.listener.single.PermissionListener;
+-import com.karumi.dexter.listener.threaddecorator.ThreadFactory;
+ import java.util.Arrays;
+ import java.util.Collection;
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -26,8 +26,6 @@
+ import com.karumi.dexter.listener.multi.EmptyMultiplePermissionsListener;
+ import com.karumi.dexter.listener.multi.MultiplePermissionsListener;
+ import com.karumi.dexter.listener.single.PermissionListener;
+-import com.karumi.dexter.listener.threaddecorator.MultiplePermissionListenerThreadDecorator;
+-import com.karumi.dexter.listener.threaddecorator.Thread;
+ import java.util.Collection;
+ import java.util.Collections;
+ import java.util.LinkedList;
+
+File: dexter/src/main/java/com/karumi/dexter/MainThread.java
+Patch:
+@@ -14,15 +14,15 @@
+  * limitations under the License.
+  */
+ 
+-package com.karumi.dexter.listener.threaddecorator;
++package com.karumi.dexter;
+ 
+ import android.os.Handler;
+ import android.os.Looper;
+ 
+ /**
+  * A thread specification to execute passed runnable objects in the main thread
+  */
+-class MainThread implements Thread {
++final class MainThread implements Thread {
+ 
+   MainThread() {
+   }
+
+File: dexter/src/main/java/com/karumi/dexter/Thread.java
+Patch:
+@@ -14,12 +14,12 @@
+  * limitations under the License.
+  */
+ 
+-package com.karumi.dexter.listener.threaddecorator;
++package com.karumi.dexter;
+ 
+ /**
+  * A thread specification to execute passed runnable objects in a certain thread
+  */
+-public interface Thread {
++interface Thread {
+   void execute(Runnable runnable);
+ 
+   void loop();
+
+File: dexter/src/main/java/com/karumi/dexter/ThreadFactory.java
+Patch:
+@@ -14,14 +14,14 @@
+  * limitations under the License.
+  */
+ 
+-package com.karumi.dexter.listener.threaddecorator;
++package com.karumi.dexter;
+ 
+ import android.os.Looper;
+ 
+ /**
+  * Factory to create the different thread specifications
+  */
+-public class ThreadFactory {
++final class ThreadFactory {
+ 
+   /**
+    * Create a thread spec to execute on the main thread
+
+File: dexter/src/main/java/com/karumi/dexter/WorkerThread.java
+Patch:
+@@ -14,15 +14,15 @@
+  * limitations under the License.
+  */
+ 
+-package com.karumi.dexter.listener.threaddecorator;
++package com.karumi.dexter;
+ 
+ import android.os.Handler;
+ import android.os.Looper;
+ 
+ /**
+  * A thread specification to execute passed runnable objects in a worker thread
+  */
+-class WorkerThread implements Thread {
++final class WorkerThread implements Thread {
+ 
+   private final Handler handler;
+ 
+
+File: dexter/src/test/java/com/karumi/dexter/DexterInstanceTest.java
+Patch:
+@@ -26,7 +26,6 @@
+ import com.karumi.dexter.listener.PermissionRequest;
+ import com.karumi.dexter.listener.multi.MultiplePermissionsListener;
+ import com.karumi.dexter.listener.single.PermissionListener;
+-import com.karumi.dexter.listener.threaddecorator.Thread;
+ import java.util.Collections;
+ import org.junit.Before;
+ import org.junit.Test;
+
+File: dexter/src/test/java/com/karumi/dexter/MultiplePermissionListenerThreadDecoratorTest.java
+Patch:
+@@ -14,10 +14,8 @@
+  * limitations under the License.
+  */
+ 
+-package com.karumi.dexter.listener.threaddecorator;
++package com.karumi.dexter;
+ 
+-import com.karumi.dexter.MultiplePermissionsReport;
+-import com.karumi.dexter.PermissionToken;
+ import com.karumi.dexter.listener.PermissionRequest;
+ import com.karumi.dexter.listener.multi.MultiplePermissionsListener;
+ import java.util.List;
+
+File: dexter/src/main/java/com/karumi/dexter/Dexter.java
+Patch:
+@@ -136,7 +136,7 @@ public static boolean isRequestOngoing() {
+    */
+   public static void continuePendingRequestsIfPossible(MultiplePermissionsListener listener) {
+     checkInstanceNotNull();
+-    instance.continuePendingRequestsIfPossible(listener);
++    instance.continuePendingRequestsIfPossible(listener, ThreadSpecFactory.makeMainThreadSpec());
+   }
+ 
+   /**
+@@ -146,7 +146,7 @@ public static void continuePendingRequestsIfPossible(MultiplePermissionsListener
+    */
+   public static void continuePendingRequestIfPossible(PermissionListener listener) {
+     checkInstanceNotNull();
+-    instance.continuePendingRequestIfPossible(listener);
++    instance.continuePendingRequestIfPossible(listener, ThreadSpecFactory.makeMainThreadSpec());
+   }
+ 
+   private static void checkInstanceNotNull() {
+
+File: dexter/src/test/java/com/karumi/dexter/DexterInstanceTest.java
+Patch:
+@@ -173,7 +173,7 @@ private void whenCheckPermission(PermissionListener permissionListener, String p
+   }
+ 
+   private void whenContinueWithTheCheckPermissionProcess(PermissionListener permissionListener) {
+-    dexter.continuePendingRequestIfPossible(permissionListener);
++    dexter.continuePendingRequestIfPossible(permissionListener, THREAD_SPEC);
+   }
+ 
+   private void thenPermissionIsGranted(String permission) {
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -50,7 +50,7 @@ final class DexterInstance {
+   private final AtomicBoolean isRequestingPermission;
+   private final AtomicBoolean rationaleAccepted;
+   private Activity activity;
+-  private MultiplePermissionListenerThreadDecorator listener;
++  private MultiplePermissionsListener listener;
+ 
+   DexterInstance(Context context, AndroidPermissionService androidPermissionService,
+       IntentProvider intentProvider) {
+
+File: dexter/src/main/java/com/karumi/dexter/listener/threaddecorator/ThreadSpec.java
+Patch:
+@@ -5,4 +5,6 @@
+  */
+ public interface ThreadSpec {
+   void execute(Runnable runnable);
++
++  void loop();
+ }
+
+File: dexter/src/main/java/com/karumi/dexter/listener/threaddecorator/ThreadSpecFactory.java
+Patch:
+@@ -13,6 +13,6 @@ public static ThreadSpec makeThreadSpec() {
+   }
+ 
+   private static boolean runningMainThread() {
+-    return Looper.getMainLooper() != Looper.myLooper();
++    return Looper.getMainLooper().getThread() == Thread.currentThread();
+   }
+ }
+
+File: dexter/src/main/java/com/karumi/dexter/listener/threaddecorator/ThreadSpecFactory.java
+Patch:
+@@ -13,6 +13,6 @@ public static ThreadSpec makeThreadSpec() {
+   }
+ 
+   private static boolean runningMainThread() {
+-    return Looper.getMainLooper() != Looper.myLooper();
++    return Looper.getMainLooper() == Looper.myLooper();
+   }
+ }
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -245,6 +245,7 @@ private void onPermissionsChecked(Collection<String> permissions) {
+     pendingPermissions.removeAll(permissions);
+     if (pendingPermissions.isEmpty()) {
+       activity.finish();
++      activity = null;
+       isRequestingPermission.set(false);
+       rationaleAccepted.set(false);
+       MultiplePermissionsListener currentListener = listener;
+
+File: dexter/src/test/java/com/karumi/dexter/DexterInstanceTest.java
+Patch:
+@@ -117,7 +117,7 @@ public void onCheckPermissionMoreThanOnceThenThrowException() {
+ 
+   @Test public void onPermissionPermanentlyDeniedThenNotifiesListener() {
+     givenPermissionIsAlreadyDenied(ANY_PERMISSION);
+-    givenShouldShowNotRationaleForPermission(ANY_PERMISSION);
++    givenShouldNotShowRationaleForPermission(ANY_PERMISSION);
+ 
+     whenCheckPermission(permissionListener, ANY_PERMISSION);
+     dexter.onPermissionRequestDenied(Collections.singletonList(ANY_PERMISSION));
+@@ -153,7 +153,7 @@ private void givenShouldShowRationaleForPermission(String permission) {
+         permission)).thenReturn(true);
+   }
+ 
+-  private void givenShouldShowNotRationaleForPermission(String permission) {
++  private void givenShouldNotShowRationaleForPermission(String permission) {
+     when(androidPermissionService.shouldShowRequestPermissionRationale(activity,
+         permission)).thenReturn(false);
+   }
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -54,7 +54,7 @@ final class DexterInstance {
+ 
+   DexterInstance(Context context, AndroidPermissionService androidPermissionService,
+       IntentProvider intentProvider) {
+-    this.context = context;
++    this.context = context.getApplicationContext();
+     this.androidPermissionService = androidPermissionService;
+     this.intentProvider = intentProvider;
+     this.pendingPermissions = new TreeSet<>();
+
+File: dexter/src/test/java/com/karumi/dexter/DexterInstanceTest.java
+Patch:
+@@ -36,6 +36,7 @@
+ import static org.mockito.Matchers.argThat;
+ import static org.mockito.Matchers.isA;
+ import static org.mockito.Mockito.times;
++import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.verify;
+ import static org.mockito.Mockito.when;
+ 
+@@ -54,6 +55,8 @@
+ 
+   @Before public void setUp() {
+     IntentProvider intentProvider = new IntentMockProvider(intent);
++    Context mockApplicationContext = mock(Context.class);
++    when(context.getApplicationContext()).thenReturn(mockApplicationContext);
+     dexter = new DexterInstance(context, androidPermissionService, intentProvider);
+   }
+ 
+
+File: dexter/src/test/java/com/karumi/dexter/DexterInstanceTest.java
+Patch:
+@@ -35,6 +35,7 @@
+ 
+ import static org.mockito.Matchers.argThat;
+ import static org.mockito.Matchers.isA;
++import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.verify;
+ import static org.mockito.Mockito.when;
+ 
+@@ -53,6 +54,8 @@
+ 
+   @Before public void setUp() {
+     IntentProvider intentProvider = new IntentMockProvider(intent);
++    Context mockApplicationContext = mock(Context.class);
++    when(context.getApplicationContext()).thenReturn(mockApplicationContext);
+     dexter = new DexterInstance(context, androidPermissionService, intentProvider);
+   }
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -48,7 +48,7 @@ final class DexterInstance {
+   private final AtomicBoolean rationaleAccepted;
+   private Activity activity;
+   private MultiplePermissionsListener listener;
+-  
++
+   DexterInstance(Context context, AndroidPermissionService androidPermissionService,
+       IntentProvider intentProvider) {
+     this.context = context;
+
+File: sample/src/main/java/com/karumi/dexter/sample/SampleActivity.java
+Patch:
+@@ -64,7 +64,7 @@ public class SampleActivity extends Activity {
+      * to start with the check permission process without keep in an Android Bundle the state of
+      * the request permission process.
+      */
+-    Dexter.checkPendingPermissions();
++    Dexter.checkPendingPermissions(allPermissionsListener);
+   }
+ 
+   @OnClick(R.id.all_permissions_button) public void onAllPermissionsButtonClicked() {
+
+File: dexter/src/main/java/com/karumi/dexter/listener/multi/CompositeMultiplePermissionsListener.java
+Patch:
+@@ -16,11 +16,12 @@
+ 
+ package com.karumi.dexter.listener.multi;
+ 
+-import com.karumi.dexter.PermissionToken;
+ import com.karumi.dexter.MultiplePermissionsReport;
++import com.karumi.dexter.PermissionToken;
+ import com.karumi.dexter.listener.PermissionRequest;
+ import java.util.Arrays;
+ import java.util.Collection;
++import java.util.List;
+ 
+ /**
+  * Listener that composes multiple listeners into one
+@@ -54,8 +55,7 @@ public CompositeMultiplePermissionsListener(Collection<MultiplePermissionsListen
+     }
+   }
+ 
+-  @Override
+-  public void onPermissionRationaleShouldBeShown(Collection<PermissionRequest> permissions,
++  @Override public void onPermissionRationaleShouldBeShown(List<PermissionRequest> permissions,
+       PermissionToken token) {
+     for (MultiplePermissionsListener listener : listeners) {
+       listener.onPermissionRationaleShouldBeShown(permissions, token);
+
+File: dexter/src/main/java/com/karumi/dexter/listener/multi/MultiplePermissionsListener.java
+Patch:
+@@ -16,10 +16,10 @@
+ 
+ package com.karumi.dexter.listener.multi;
+ 
+-import com.karumi.dexter.PermissionToken;
+ import com.karumi.dexter.MultiplePermissionsReport;
++import com.karumi.dexter.PermissionToken;
+ import com.karumi.dexter.listener.PermissionRequest;
+-import java.util.Collection;
++import java.util.List;
+ 
+ /**
+  * Interface that listens to updates to the permission requests
+@@ -42,6 +42,6 @@ public interface MultiplePermissionsListener {
+    * @param token Token used to continue or cancel the permission request process. The permission
+    * request process will remain blocked until one of the token methods is called
+    */
+-  void onPermissionRationaleShouldBeShown(Collection<PermissionRequest> permissions,
++  void onPermissionRationaleShouldBeShown(List<PermissionRequest> permissions,
+       PermissionToken token);
+ }
+
+File: dexter/src/main/java/com/karumi/dexter/IntentProvider.java
+Patch:
+@@ -7,7 +7,7 @@
+ import android.content.Context;
+ import android.content.Intent;
+ 
+-public class IntentProvider {
++class IntentProvider {
+   public Intent get(Context context, Class<?> clazz) {
+     return new Intent(context, clazz);
+   }
+
+File: dexter/src/main/java/com/karumi/dexter/MultiplePermissionsListenerToPermissionListenerAdapter.java
+Patch:
+@@ -36,7 +36,7 @@ public MultiplePermissionsListenerToPermissionListenerAdapter(PermissionListener
+     this.listener = listener;
+   }
+ 
+-  @Override public void onPermissionsChecked(PermissionsReport report) {
++  @Override public void onPermissionsChecked(MultiplePermissionsReport report) {
+     Collection<PermissionDeniedResponse> deniedResponses = report.getDeniedPermissionResponses();
+     Collection<PermissionGrantedResponse> grantedResponses = report.getGrantedPermissionResponses();
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/MultiplePermissionsReport.java
+Patch:
+@@ -23,14 +23,14 @@
+ import java.util.List;
+ 
+ /**
+- * An in detail report of the request permission process.
++ * An in detail report of the request permission process
+  */
+-public final class PermissionsReport {
++public final class MultiplePermissionsReport {
+ 
+   private final List<PermissionGrantedResponse> grantedPermissionResponses;
+   private final List<PermissionDeniedResponse> deniedPermissionResponses;
+ 
+-  PermissionsReport() {
++  MultiplePermissionsReport() {
+     grantedPermissionResponses = new LinkedList<>();
+     deniedPermissionResponses = new LinkedList<>();
+   }
+
+File: dexter/src/main/java/com/karumi/dexter/listener/multi/EmptyMultiplePermissionsListener.java
+Patch:
+@@ -17,17 +17,17 @@
+ package com.karumi.dexter.listener.multi;
+ 
+ import com.karumi.dexter.PermissionToken;
+-import com.karumi.dexter.PermissionsReport;
++import com.karumi.dexter.MultiplePermissionsReport;
+ import com.karumi.dexter.listener.PermissionRequest;
+ import java.util.Collection;
+ 
+ /**
+  * Empty implementation of {@link MultiplePermissionsListener} to allow extensions to implement only the
+- * required methods.
++ * required methods
+  */
+ public class EmptyMultiplePermissionsListener implements MultiplePermissionsListener {
+ 
+-  @Override public void onPermissionsChecked(PermissionsReport report) {
++  @Override public void onPermissionsChecked(MultiplePermissionsReport report) {
+ 
+   }
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/listener/multi/MultiplePermissionsListener.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.karumi.dexter.listener.multi;
+ 
+ import com.karumi.dexter.PermissionToken;
+-import com.karumi.dexter.PermissionsReport;
++import com.karumi.dexter.MultiplePermissionsReport;
+ import com.karumi.dexter.listener.PermissionRequest;
+ import java.util.Collection;
+ 
+@@ -31,7 +31,7 @@ public interface MultiplePermissionsListener {
+    *
+    * @param report In detail report with all the permissions that has been denied and granted
+    */
+-  void onPermissionsChecked(PermissionsReport report);
++  void onPermissionsChecked(MultiplePermissionsReport report);
+ 
+   /**
+    * Method called whenever Android asks the application to inform the user of the need for the
+
+File: dexter/src/main/java/com/karumi/dexter/listener/multi/SnackbarOnAnyDeniedMultiplePermissionsListener.java
+Patch:
+@@ -24,7 +24,7 @@
+ import android.support.design.widget.Snackbar;
+ import android.view.View;
+ import android.view.ViewGroup;
+-import com.karumi.dexter.PermissionsReport;
++import com.karumi.dexter.MultiplePermissionsReport;
+ 
+ /**
+  * Utility listener that shows a {@link Snackbar} with a custom text whenever a permission has been
+@@ -51,7 +51,7 @@ private SnackbarOnAnyDeniedMultiplePermissionsListener(ViewGroup rootView, Strin
+     this.onButtonClickListener = onButtonClickListener;
+   }
+ 
+-  @Override public void onPermissionsChecked(PermissionsReport report) {
++  @Override public void onPermissionsChecked(MultiplePermissionsReport report) {
+     super.onPermissionsChecked(report);
+ 
+     if (!report.areAllPermissionsGranted()) {
+
+File: dexter/src/main/java/com/karumi/dexter/listener/single/CompositePermissionListener.java
+Patch:
+@@ -24,9 +24,9 @@
+ import java.util.Collection;
+ 
+ /**
+- * Listener that composes multiple listeners into one.
++ * Listener that composes multiple listeners into one
+  * All inner listeners will be called for a given event unless one of them throws an exception or
+- * is blocked.
++ * is blocked
+  */
+ public class CompositePermissionListener implements PermissionListener {
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/listener/single/DialogOnDeniedPermissionListener.java
+Patch:
+@@ -14,7 +14,7 @@
+ 
+ /**
+  * Utility listener that shows a {@link android.app.Dialog} with a minimum configuration when the
+- * user rejects some permission.
++ * user rejects some permission
+  */
+ public class DialogOnDeniedPermissionListener extends EmptyPermissionListener {
+ 
+@@ -36,7 +36,8 @@ private DialogOnDeniedPermissionListener(Context context, String title, String m
+   @Override public void onPermissionDenied(PermissionDeniedResponse response) {
+     super.onPermissionDenied(response);
+ 
+-    new AlertDialog.Builder(context).setTitle(title)
++    new AlertDialog.Builder(context)
++        .setTitle(title)
+         .setMessage(message)
+         .setPositiveButton(positiveButtonText, new DialogInterface.OnClickListener() {
+           @Override public void onClick(DialogInterface dialog, int which) {
+
+File: dexter/src/main/java/com/karumi/dexter/listener/single/EmptyPermissionListener.java
+Patch:
+@@ -23,7 +23,7 @@
+ 
+ /**
+  * Empty implementation of {@link PermissionListener} to allow extensions to implement only the
+- * required methods.
++ * required methods
+  */
+ public class EmptyPermissionListener implements PermissionListener {
+ 
+
+File: sample/src/main/java/com/karumi/dexter/sample/SampleMultiplePermissionListener.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.karumi.dexter.sample;
+ 
+ import com.karumi.dexter.PermissionToken;
+-import com.karumi.dexter.PermissionsReport;
++import com.karumi.dexter.MultiplePermissionsReport;
+ import com.karumi.dexter.listener.PermissionDeniedResponse;
+ import com.karumi.dexter.listener.PermissionGrantedResponse;
+ import com.karumi.dexter.listener.PermissionRequest;
+@@ -32,7 +32,7 @@ public SampleMultiplePermissionListener(SampleActivity activity) {
+     this.activity = activity;
+   }
+ 
+-  @Override public void onPermissionsChecked(PermissionsReport report) {
++  @Override public void onPermissionsChecked(MultiplePermissionsReport report) {
+     for (PermissionGrantedResponse response : report.getGrantedPermissionResponses()) {
+       activity.showPermissionGranted(response.getPermissionName());
+     }
+
+File: dexter/src/main/java/com/karumi/dexter/Dexter.java
+Patch:
+@@ -17,7 +17,6 @@
+ package com.karumi.dexter;
+ 
+ import android.app.Activity;
+-import android.app.Application;
+ import android.content.Context;
+ import com.karumi.dexter.listener.PermissionListener;
+ 
+@@ -33,7 +32,7 @@ public final class Dexter {
+   /**
+    * Initializes the library
+    *
+-   * @param context Context used by Dexter. Use your {@link Application} to make sure the instance
++   * @param context Context used by Dexter. Use your {@link android.app.Application} to make sure the instance
+    * is not cleaned up during your app lifetime
+    */
+   public static void initialize(Context context) {
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -139,6 +139,6 @@ private void finishWithDeniedPermission(String permission) {
+   }
+ 
+   private int getPermissionCodeForPermission(String permission) {
+-    return permission.hashCode();
++    return Math.abs(permission.hashCode() % Integer.MAX_VALUE);
+   }
+ }
+
+File: dexter/src/main/java/com/karumi/dexter/Dexter.java
+Patch:
+@@ -17,7 +17,6 @@
+ package com.karumi.dexter;
+ 
+ import android.app.Activity;
+-import android.app.Application;
+ import android.content.Context;
+ import com.karumi.dexter.listener.PermissionListener;
+ 
+@@ -33,7 +32,7 @@ public final class Dexter {
+   /**
+    * Initializes the library
+    *
+-   * @param context Context used by Dexter. Use your {@link Application} to make sure the instance
++   * @param context Context used by Dexter. Use your {@link android.app.Application} to make sure the instance
+    * is not cleaned up during your app lifetime
+    */
+   public static void initialize(Context context) {
+
+File: dexter/src/main/java/com/karumi/dexter/DexterInstance.java
+Patch:
+@@ -139,6 +139,6 @@ private void finishWithDeniedPermission(String permission) {
+   }
+ 
+   private int getPermissionCodeForPermission(String permission) {
+-    return permission.hashCode();
++    return Math.abs(permission.hashCode() % Integer.MAX_VALUE);
+   }
+ }
+
+File: sample/src/main/java/com/karumi/dexter/sample/SampleActivity.java
+Patch:
+@@ -127,12 +127,12 @@ private void showPermissionDenied(TextView feedbackView) {
+   private void createPermissionListeners() {
+     cameraPermissionListener = new MultiPermissionListener(this,
+         SnackbarOnDeniedPermissionListener.Builder
+-            .with(this, rootView, R.string.camera_permission_denied_feedback)
++            .with(rootView, R.string.camera_permission_denied_feedback)
+             .withOpenSettingsButton(R.string.permission_rationale_settings_button_text)
+             .build());
+     contactsPermissionListener = new MultiPermissionListener(this,
+         SnackbarOnDeniedPermissionListener.Builder
+-            .with(this, rootView, R.string.contacts_permission_denied_feedback)
++            .with(rootView, R.string.contacts_permission_denied_feedback)
+             .withOpenSettingsButton(R.string.permission_rationale_settings_button_text)
+             .build());
+     PermissionListener dialogOnDeniedPermissionListener =
+
+File: dexter/src/main/java/com/karumi/dexter/PermissionToken.java
+Patch:
+@@ -19,8 +19,6 @@
+ /**
+  * Utility class to let clients show the user how is the permission going to be used
+  * Clients of this class must call one of the two methods and only once
+- * In case none of the methods is actually called, the request will proceed as if the user accepted
+- * to continue with the process
+  */
+ public interface PermissionToken {
+ 
+
+File: dexter/src/main/java/com/karumi/dexter/DexterActivity.java
+Patch:
+@@ -32,9 +32,9 @@ public final class DexterActivity extends Activity {
+   @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
+       int[] grantResults) {
+     if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+-      Dexter.onPermissionRequestGranted(requestCode);
++      Dexter.onPermissionRequestGranted();
+     } else {
+-      Dexter.onPermissionRequestDenied(requestCode);
++      Dexter.onPermissionRequestDenied();
+     }
+   }
+ }
+
+File: dexter/src/main/java/com/karumi/dexter/PermissionRationaleToken.java
+Patch:
+@@ -29,14 +29,14 @@ public PermissionRationaleToken(DexterInstance dexterInstance, String permission
+ 
+   @Override public void continuePermissionRequest() {
+     if (!isTokenResolved) {
+-      dexterInstance.requestPermission(permission);
++      dexterInstance.onContinuePermissionRequest(permission);
+       isTokenResolved = true;
+     }
+   }
+ 
+   @Override public void cancelPermissionRequest() {
+     if (!isTokenResolved) {
+-      dexterInstance.cleanPermission(permission);
++      dexterInstance.onCancelPermissionRequest(permission);
+       isTokenResolved = true;
+     }
+   }
+
+File: dexter/src/main/java/com/karumi/dexter/Dexter.java
+Patch:
+@@ -58,7 +58,7 @@ private void handleDeniedPermission(String permission) {
+   private void requestPermission(String permission) {
+     int permissionCode = getPermissionCodeForPermission(permission);
+     permissionCodes.put(permissionCode, permission);
+-    ActivityCompat.requestPermissions(activity, new String[] { permission }, permissionCode);
++    ActivityCompat.requestPermissions(activity, new String[] {permission}, permissionCode);
+     listener.onPermissionDialogShown(permission);
+   }
+ 
+

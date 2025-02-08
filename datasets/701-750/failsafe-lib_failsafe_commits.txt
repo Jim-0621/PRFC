@@ -1,0 +1,4373 @@
+File: core/src/main/java/dev/failsafe/CircuitBreakerBuilder.java
+Patch:
+@@ -271,7 +271,7 @@ private void assertFailureThresholdingPeriod(Duration failureThresholdingPeriod)
+    * occur when in a HALF_OPEN state in order to close the circuit, else the circuit is re-opened when a failure
+    * occurs.
+    *
+-   * @param successThreshold The number of consecutive successful executions that must occur in order to open the
++   * @param successThreshold The number of consecutive successful executions that must occur in order to close the
+    * circuit
+    * @throws IllegalArgumentException if {@code successThreshold} < 1
+    * @see CircuitBreakerConfig#getSuccessThreshold()
+@@ -285,7 +285,7 @@ public CircuitBreakerBuilder<R> withSuccessThreshold(int successThreshold) {
+    * HALF_OPEN state in order to close the circuit. For example: 5, 10 would close the circuit if 5 out of the last 10
+    * executions were successful.
+    *
+-   * @param successThreshold The number of successful executions that must occur in order to open the circuit
++   * @param successThreshold The number of successful executions that must occur in order to close the circuit
+    * @param successThresholdingCapacity The capacity for storing execution results when performing success thresholding
+    * @throws IllegalArgumentException if {@code successThreshold} < 1, {@code successThresholdingCapacity} < 1, or
+    * {@code successThreshold} > {@code successThresholdingCapacity}
+
+File: core/src/test/java/dev/failsafe/RetryPolicyBuilderTest.java
+Patch:
+@@ -99,7 +99,7 @@ public void shouldReplaceWithFixedDelay() {
+     assertNull(rpb.config.delayMax);
+   }
+ 
+-  public void shouldDeplaceWithBackoffDelay() {
++  public void shouldReplaceWithBackoffDelay() {
+     // Replace fixed with backoff delay
+     RetryPolicyBuilder<Object> rpb = RetryPolicy.builder()
+       .withDelay(Duration.ofMillis(5))
+
+File: core/src/test/java/dev/failsafe/ListenersTest.java
+Patch:
+@@ -483,15 +483,17 @@ public void testFailingFallbackAsync() throws Throwable {
+   }
+ 
+   public void shouldGetElapsedAttemptTime() {
++    Recorder recorder = new Recorder();
+     RetryPolicy<Object> retryPolicy = RetryPolicy.builder()
+       .withMaxAttempts(3)
+       .handleResult(false)
+-      .onRetry(e -> assertTrue(e.getElapsedAttemptTime().toMillis() >= 90))
++      .onRetryScheduled(e -> recorder.assertTrue(e.getElapsedAttemptTime().toMillis() >= 90))
+       .build();
+     Failsafe.with(retryPolicy).get(() -> {
+       Thread.sleep(100);
+       return false;
+     });
++    recorder.throwFailures();
+   }
+ 
+   /**
+
+File: core/src/test/java/dev/failsafe/functional/BulkheadTest.java
+Patch:
+@@ -52,7 +52,7 @@ public void testPermitAcquiredAfterWait() {
+   }
+ 
+   public void testPermitAcquiredAfterWaitWithLargeQueue(){
+-    Bulkhead<Object> bulkhead = Bulkhead.builder(1).withMaxWaitTime(Duration.ofSeconds(15)).build();
++    Bulkhead<Object> bulkhead = Bulkhead.builder(1).withMaxWaitTime(Duration.ofSeconds(1)).build();
+     FailsafeExecutor<Object> exec = Failsafe.with(bulkhead);
+     CompletableFuture<Void>[] tasks = new CompletableFuture[10];
+     for(int i = 0; i < tasks.length; i++){
+
+File: core/src/main/java/dev/failsafe/internal/BulkheadImpl.java
+Patch:
+@@ -99,8 +99,10 @@ public synchronized void releasePermit() {
+     if (permits < maxPermits) {
+       permits += 1;
+       CompletableFuture<Void> future = futures.pollFirst();
+-      if (future != null)
++      if (future != null){
++        permits -= 1;
+         future.complete(null);
++      }
+     }
+   }
+ 
+
+File: core/src/main/java/dev/failsafe/event/ExecutionCompletedEvent.java
+Patch:
+@@ -18,7 +18,7 @@
+ import dev.failsafe.ExecutionContext;
+ 
+ /**
+- * Indicates an execution was completed.
++ * Indicates an execution was completed or cancelled.
+  *
+  * @param <R> result type
+  * @author Jonathan Halterman
+
+File: core/src/main/java/dev/failsafe/event/ExecutionEvent.java
+Patch:
+@@ -60,7 +60,7 @@ public int getExecutionCount() {
+   }
+ 
+   /**
+-   * Returns the time that the initial execution started, else {code null} if an execution has not started yet.
++   * Returns the time that the initial execution started, else {@link Optional#empty()} if an execution has not started yet.
+    */
+   public Optional<Instant> getStartTime() {
+     return Optional.ofNullable(context.getStartTime());
+
+File: core/src/main/java/dev/failsafe/ExecutionContext.java
+Patch:
+@@ -18,6 +18,7 @@
+ import dev.failsafe.function.CheckedRunnable;
+ 
+ import java.time.Duration;
++import java.time.Instant;
+ import java.util.concurrent.CompletableFuture;
+ 
+ /**
+@@ -78,9 +79,9 @@ public interface ExecutionContext<R> {
+   R getLastResult(R defaultValue);
+ 
+   /**
+-   * Returns the time that the initial execution started.
++   * Returns the time that the initial execution started, else {code null} if an execution has not started yet.
+    */
+-  Duration getStartTime();
++  Instant getStartTime();
+ 
+   /**
+    * Returns whether the execution has been cancelled. In this case the implementor should attempt to stop execution.
+
+File: core/src/main/java/dev/failsafe/Functions.java
+Patch:
+@@ -30,7 +30,7 @@
+  */
+ final class Functions {
+   /**
+-   * Returns a Supplier that for synchronous executions, that pre-executes the {@code execution}, applies the {@code
++   * Returns a Supplier for synchronous executions that pre-executes the {@code execution}, applies the {@code
+    * supplier}, records the result and returns the result. This implementation also handles Thread interrupts.
+    *
+    * @param <R> result type
+@@ -90,7 +90,7 @@ static <R> Function<AsyncExecutionInternal<R>, CompletableFuture<ExecutionResult
+   }
+ 
+   /**
+-   * Returns a Function for asynchronous executions, that pre-executes the {@code execution}, runs the {@code runnable},
++   * Returns a Function for asynchronous executions that pre-executes the {@code execution}, runs the {@code runnable},
+    * and attempts to complete the {@code execution} if a failure occurs. Locks to ensure the resulting supplier cannot
+    * be applied multiple times concurrently.
+    *
+@@ -117,7 +117,7 @@ public synchronized CompletableFuture<ExecutionResult<R>> apply(AsyncExecutionIn
+   }
+ 
+   /**
+-   * Returns a Function that for asynchronous executions, that pre-executes the {@code execution}, applies the {@code
++   * Returns a Function that for asynchronous executions that pre-executes the {@code execution}, applies the {@code
+    * supplier}, records the result and returns a promise containing the result.
+    *
+    * @param <R> result type
+
+File: core/src/main/java/dev/failsafe/event/ExecutionEvent.java
+Patch:
+@@ -19,6 +19,7 @@
+ import dev.failsafe.ExecutionContext;
+ 
+ import java.time.Duration;
++import java.time.Instant;
+ 
+ /**
+  * Encapsulates information about a Failsafe execution.
+@@ -58,9 +59,9 @@ public int getExecutionCount() {
+   }
+ 
+   /**
+-   * Returns the time that the initial execution started.
++   * Returns the time that the initial execution started, else {code null} if an execution has not started yet.
+    */
+-  public Duration getStartTime() {
++  public Instant getStartTime() {
+     return context.getStartTime();
+   }
+ 
+
+File: core/src/main/java/dev/failsafe/RetryPolicyBuilder.java
+Patch:
+@@ -32,7 +32,7 @@
+ import java.util.List;
+ 
+ /**
+- * Builds {@link RetryPolicy instances}.
++ * Builds {@link RetryPolicy} instances.
+  * <ul>
+  *   <li>By default, a RetryPolicy will retry up to {@code 2} times when any {@code Exception} is thrown, with no delay
+  *   between retry attempts.</li>
+
+File: core/src/main/java/dev/failsafe/FailsafeExecutor.java
+Patch:
+@@ -175,8 +175,8 @@ public <T extends R> CompletableFuture<T> getAsync(ContextualSupplier<T, T> supp
+    * AsyncExecution#recordException(Throwable)}.
+    * </p>
+    *
+-   * @throws NullPointerException if the {@code supplier} is null
+-   * @throws RejectedExecutionException if the {@code supplier} cannot be scheduled for execution
++   * @throws NullPointerException if the {@code runnable} is null
++   * @throws RejectedExecutionException if the {@code runnable} cannot be scheduled for execution
+    */
+   public <T extends R> CompletableFuture<T> getAsyncExecution(AsyncRunnable<T> runnable) {
+     return callAsync(future -> getPromiseExecution(runnable, executor), true);
+
+File: core/src/main/java/dev/failsafe/Timeout.java
+Patch:
+@@ -35,7 +35,7 @@
+  * handlers can be used to handle a timeout being exceeded or not.
+  * </p>
+  * <p>Note: {@link TimeoutBuilder#withInterrupt() interruption} will have no effect when performing an {@link
+- * FailsafeExecutor#getAsyncExecution(AsyncRunnable) async execution} since the async thread is unkown to Failsafe.</p>
++ * FailsafeExecutor#getAsyncExecution(AsyncRunnable) async execution} since the async thread is unknown to Failsafe.</p>
+  * <p>
+  * This class is threadsafe.
+  * </p>
+
+File: core/src/main/java/dev/failsafe/TimeoutBuilder.java
+Patch:
+@@ -57,7 +57,7 @@ public Timeout<R> build() {
+    * Note: Only configure interrupts if the code being executed is designed to be interrupted.
+    * <p>
+    * <p>Note: interruption will have no effect when performing an {@link
+-   * FailsafeExecutor#getAsyncExecution(AsyncRunnable) async execution} since the async thread is unkown to
++   * FailsafeExecutor#getAsyncExecution(AsyncRunnable) async execution} since the async thread is unknown to
+    * Failsafe.</p>
+    */
+   public TimeoutBuilder<R> withInterrupt() {
+
+File: core/src/main/java/dev/failsafe/Execution.java
+Patch:
+@@ -29,7 +29,7 @@
+  */
+ public interface Execution<R> extends ExecutionContext<R> {
+   /**
+-   * Creates a new {@link SyncExecutionImpl} that will use the {@code outerPolicy} and {@code innerPolicies} to handle
++   * Creates a new {@code Execution} that will use the {@code outerPolicy} and {@code innerPolicies} to handle
+    * failures. Policies are applied in reverse order, with the last policy being applied first.
+    *
+    * @throws NullPointerException if {@code outerPolicy} is null
+
+File: src/test/java/dev/failsafe/functional/TimeoutTest.java
+Patch:
+@@ -206,7 +206,7 @@ public void testFallbackTimeoutWithBlockedSupplier() {
+       fbStats.reset();
+     }, Failsafe.with(fallback).compose(timeout), ctx -> {
+       System.out.println("Executing");
+-      Thread.sleep(100);
++      Thread.sleep(200);
+       throw new Exception();
+     }, (f, e) -> {
+       assertEquals(e.getAttemptCount(), 1);
+@@ -216,11 +216,11 @@ public void testFallbackTimeoutWithBlockedSupplier() {
+     }, IllegalStateException.class);
+ 
+     // Test without interrupt
+-    Timeout<Object> timeout = withStatsAndLogs(Timeout.builder(Duration.ofMillis(1)), timeoutStats).build();
++    Timeout<Object> timeout = withStatsAndLogs(Timeout.builder(Duration.ofMillis(100)), timeoutStats).build();
+     test.accept(timeout);
+ 
+     // Test with interrupt
+-    timeout = withStatsAndLogs(Timeout.builder(Duration.ofMillis(1)).withInterrupt(), timeoutStats).build();
++    timeout = withStatsAndLogs(Timeout.builder(Duration.ofMillis(100)).withInterrupt(), timeoutStats).build();
+     test.accept(timeout);
+   }
+ 
+
+File: src/test/java/dev/failsafe/functional/BulkheadTest.java
+Patch:
+@@ -98,5 +98,8 @@ public void testAcquirePermitWithInterrupt() {
+       System.out.println("Executing");
+       throw new Exception();
+     }, InterruptedException.class);
++
++    // Reset interrupt flag
++    Thread.interrupted();
+   }
+ }
+
+File: src/main/java/dev/failsafe/RateLimiter.java
+Patch:
+@@ -36,6 +36,8 @@
+  *   <li>{@link #tryAcquirePermit(Duration)}</li>
+  *   <li>{@link #tryAcquirePermits(int, Duration)}</li>
+  * </ul>
++ * </p>
++ * <p>
+  * The methods that return immediately include:
+  * <ul>
+  *   <li>{@link #tryAcquirePermit()}</li>
+
+File: src/main/java/dev/failsafe/package-info.java
+Patch:
+@@ -1,5 +1,5 @@
+ /**
+- * Core Failsafe APIs for performing failsafe executions.
++ * APIs for performing failsafe executions.
+  * <p>
+  * {@link dev.failsafe.Failsafe} is the entry point for the library. See {@link dev.failsafe.FailsafeExecutor}
+  * for execution options.
+
+File: src/main/java/dev/failsafe/spi/Scheduler.java
+Patch:
+@@ -48,6 +48,8 @@ static Scheduler of(ScheduledExecutorService scheduledExecutorService) {
+    * Returns a Scheduler adapted from the {@code executorService}.
+    */
+   static Scheduler of(ExecutorService executorService) {
+-    return new DelegatingScheduler(executorService);
++    return executorService instanceof ScheduledExecutorService ?
++      of((ScheduledExecutorService) executorService) :
++      new DelegatingScheduler(executorService);
+   }
+ }
+
+File: src/test/java/dev/failsafe/issues/Issue215Test.java
+Patch:
+@@ -6,7 +6,7 @@
+ import java.time.Duration;
+ 
+ @Test
+-public class Issue215 {
++public class Issue215Test {
+   public void test() {
+     RetryPolicy.builder()
+       .withBackoff(Duration.ofNanos(Long.MAX_VALUE).minusSeconds(1), Duration.ofSeconds(Long.MAX_VALUE), 1.50);
+
+File: src/main/java/dev/failsafe/CircuitBreakerBuilder.java
+Patch:
+@@ -19,6 +19,7 @@
+ import dev.failsafe.event.EventListener;
+ import dev.failsafe.internal.CircuitBreakerImpl;
+ import dev.failsafe.internal.util.Assert;
++import dev.failsafe.internal.util.Durations;
+ 
+ import java.time.Duration;
+ import java.util.function.BiPredicate;
+@@ -112,6 +113,7 @@ public CircuitBreakerBuilder<R> onOpen(EventListener<CircuitBreakerStateChangedE
+    */
+   public CircuitBreakerBuilder<R> withDelay(Duration delay) {
+     Assert.notNull(delay, "delay");
++    delay = Durations.ofSafeNanos(delay);
+     Assert.isTrue(delay.toNanos() >= 0, "delay must be >= 0");
+     config.delay = delay;
+     return this;
+
+File: src/main/java/dev/failsafe/spi/DelayablePolicy.java
+Patch:
+@@ -18,6 +18,7 @@
+ import dev.failsafe.DelayablePolicyConfig;
+ import dev.failsafe.ExecutionContext;
+ import dev.failsafe.Policy;
++import dev.failsafe.internal.util.Durations;
+ 
+ import java.time.Duration;
+ 
+@@ -48,7 +49,7 @@ default Duration computeDelay(ExecutionContext<R> context) {
+         delayFailure == null || (exFailure != null && delayFailure.isAssignableFrom(exFailure.getClass()));
+       if (delayResultMatched && delayFailureMatched) {
+         try {
+-          computed = config.getDelayFn().get(context);
++          computed = Durations.ofSafeNanos(config.getDelayFn().get(context));
+         } catch (Throwable e) {
+           if (e instanceof RuntimeException)
+             throw (RuntimeException) e;
+
+File: src/main/java/dev/failsafe/FailurePolicyConfig.java
+Patch:
+@@ -56,7 +56,7 @@ public boolean isFailuresChecked() {
+    * @see FailurePolicyBuilder#handle(List)
+    * @see FailurePolicyBuilder#handleIf(BiPredicate)
+    * @see FailurePolicyBuilder#handleIf(Predicate)
+-   * @see FailurePolicyBuilder#handleResult(R)
++   * @see FailurePolicyBuilder#handleResult(Object) 
+    * @see FailurePolicyBuilder#handleResultIf(Predicate)
+    */
+   public List<BiPredicate<R, Throwable>> getFailureConditions() {
+
+File: src/main/java/dev/failsafe/RetryPolicyConfig.java
+Patch:
+@@ -97,7 +97,7 @@ public boolean allowsRetries() {
+    * @see RetryPolicyBuilder#abortOn(Predicate)
+    * @see RetryPolicyBuilder#abortIf(BiPredicate)
+    * @see RetryPolicyBuilder#abortIf(Predicate)
+-   * @see RetryPolicyBuilder#abortWhen(R)
++   * @see RetryPolicyBuilder#abortWhen(Object) 
+    */
+   public List<BiPredicate<R, Throwable>> getAbortConditions() {
+     return abortConditions;
+
+File: src/main/java/dev/failsafe/event/CircuitBreakerStateChangedEvent.java
+Patch:
+@@ -20,7 +20,6 @@
+ /**
+  * Indicates a circuit breaker's state changed.
+  *
+- * @param <R> result type
+  * @author Jonathan Halterman
+  */
+ public class CircuitBreakerStateChangedEvent {
+
+File: src/main/java/dev/failsafe/spi/FailurePolicy.java
+Patch:
+@@ -40,7 +40,7 @@ public interface FailurePolicy<R> extends Policy<R> {
+    * @see FailurePolicyBuilder#handle(List)
+    * @see FailurePolicyBuilder#handleIf(BiPredicate)
+    * @see FailurePolicyBuilder#handleIf(Predicate)
+-   * @see FailurePolicyBuilder#handleResult(R)
++   * @see FailurePolicyBuilder#handleResult(Object) 
+    * @see FailurePolicyBuilder#handleResultIf(Predicate)
+    */
+   default boolean isFailure(R result, Throwable failure) {
+
+File: src/test/java/dev/failsafe/functional/TimeoutTest.java
+Patch:
+@@ -143,11 +143,11 @@ public void testTimeoutRetryWithBlockedSupplier() {
+     }, TimeoutExceededException.class);
+ 
+     // Test without interrupt
+-    Timeout<Object> timeout = withStatsAndLogs(Timeout.builder(Duration.ofMillis(1)), timeoutStats).build();
++    Timeout<Object> timeout = withStatsAndLogs(Timeout.builder(Duration.ofMillis(10)), timeoutStats).build();
+     test.accept(timeout);
+ 
+     // Test with interrupt
+-    timeout = withStatsAndLogs(Timeout.builder(Duration.ofMillis(1)).withInterrupt(), timeoutStats).build();
++    timeout = withStatsAndLogs(Timeout.builder(Duration.ofMillis(10)).withInterrupt(), timeoutStats).build();
+     test.accept(timeout);
+   }
+ 
+
+File: src/main/java/net/jodah/failsafe/AsyncExecutionImpl.java
+Patch:
+@@ -54,7 +54,7 @@ final class AsyncExecutionImpl<R> extends ExecutionImpl<R> implements AsyncExecu
+     outerFn = asyncExecution ? Functions.toExecutionAware(innerFn) : innerFn;
+     outerFn = Functions.toAsync(outerFn, scheduler, future);
+ 
+-    for (PolicyExecutor<R, ? extends Policy<R>> policyExecutor : policyExecutors)
++    for (PolicyExecutor<R> policyExecutor : policyExecutors)
+       outerFn = policyExecutor.applyAsync(outerFn, scheduler, future);
+   }
+ 
+
+File: src/main/java/net/jodah/failsafe/Execution.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import net.jodah.failsafe.internal.util.Assert;
+ import net.jodah.failsafe.internal.util.Lists;
+-import net.jodah.failsafe.spi.Policy;
+ 
+ import java.time.Duration;
+ 
+@@ -15,8 +14,8 @@
+  */
+ public interface Execution<R> extends ExecutionContext<R> {
+   /**
+-   * Creates a new {@link SyncExecutionImpl} that will use the {@code outerPolicy} and {@code innerPolicies} to
+-   * handle failures. Policies are applied in reverse order, with the last policy being applied first.
++   * Creates a new {@link SyncExecutionImpl} that will use the {@code outerPolicy} and {@code innerPolicies} to handle
++   * failures. Policies are applied in reverse order, with the last policy being applied first.
+    *
+    * @throws NullPointerException if {@code outerPolicy} is null
+    */
+
+File: src/main/java/net/jodah/failsafe/Failsafe.java
+Patch:
+@@ -17,7 +17,6 @@
+ 
+ import net.jodah.failsafe.internal.util.Assert;
+ import net.jodah.failsafe.internal.util.Lists;
+-import net.jodah.failsafe.spi.Policy;
+ 
+ import java.util.Arrays;
+ import java.util.Collections;
+
+File: src/main/java/net/jodah/failsafe/SyncExecutionImpl.java
+Patch:
+@@ -16,7 +16,6 @@
+ package net.jodah.failsafe;
+ 
+ import net.jodah.failsafe.spi.ExecutionResult;
+-import net.jodah.failsafe.spi.Policy;
+ import net.jodah.failsafe.spi.PolicyExecutor;
+ import net.jodah.failsafe.spi.SyncExecutionInternal;
+ import net.jodah.failsafe.spi.Scheduler;
+@@ -70,7 +69,7 @@ final class SyncExecutionImpl<R> extends ExecutionImpl<R> implements SyncExecuti
+     initial = this;
+ 
+     outerFn = innerFn;
+-    for (PolicyExecutor<R, ? extends Policy<R>> policyExecutor : policyExecutors)
++    for (PolicyExecutor<R> policyExecutor : policyExecutors)
+       outerFn = policyExecutor.apply(outerFn, scheduler);
+   }
+ 
+@@ -176,7 +175,7 @@ public SyncExecutionImpl<R> copy() {
+   ExecutionResult<R> executeSync() {
+     ExecutionResult<R> result = outerFn.apply(this);
+     completed = result.isComplete();
+-    executor.completionHandler.handleComplete(result, this);
++    executor.completionHandler.accept(result, this);
+     return result;
+   }
+ }
+
+File: src/main/java/net/jodah/failsafe/internal/CircuitStats.java
+Patch:
+@@ -24,9 +24,9 @@
+ public interface CircuitStats {
+   static CircuitStats create(CircuitBreaker<?> breaker, int capacity, boolean supportsTimeBased,
+     CircuitStats oldStats) {
+-    if (supportsTimeBased && breaker.getFailureThresholdingPeriod() != null)
+-      return new TimedCircuitStats(TimedCircuitStats.DEFAULT_BUCKET_COUNT, breaker.getFailureThresholdingPeriod(),
+-        new Clock(), oldStats);
++    if (supportsTimeBased && breaker.getConfig().getFailureThresholdingPeriod() != null)
++      return new TimedCircuitStats(TimedCircuitStats.DEFAULT_BUCKET_COUNT,
++        breaker.getConfig().getFailureThresholdingPeriod(), new Clock(), oldStats);
+     else if (capacity > 1) {
+       return new CountingCircuitStats(capacity, oldStats);
+     } else {
+
+File: src/main/java/net/jodah/failsafe/internal/OpenState.java
+Patch:
+@@ -15,7 +15,6 @@
+  */
+ package net.jodah.failsafe.internal;
+ 
+-import net.jodah.failsafe.CircuitBreaker;
+ import net.jodah.failsafe.CircuitBreaker.State;
+ 
+ import java.time.Duration;
+@@ -24,7 +23,7 @@ public class OpenState<R> extends CircuitState<R> {
+   private final long startTime = System.nanoTime();
+   private final long delayNanos;
+ 
+-  public OpenState(CircuitBreaker<R> breaker, CircuitState<R> previousState, Duration delay) {
++  public OpenState(CircuitBreakerImpl<R> breaker, CircuitState<R> previousState, Duration delay) {
+     super(breaker, previousState.stats);
+     this.delayNanos = delay.toNanos();
+   }
+
+File: src/main/java/net/jodah/failsafe/spi/ExecutionInternal.java
+Patch:
+@@ -44,10 +44,10 @@ public interface ExecutionInternal<R> extends ExecutionContext<R> {
+   /**
+    * Marks the execution as having been cancelled by the {@code policyExecutor}.
+    */
+-  void cancel(PolicyExecutor<R, ?> policyExecutor);
++  void cancel(PolicyExecutor<R> policyExecutor);
+ 
+   /**
+    * Returns whether the execution is considered cancelled for the {@code policyExecutor}.
+    */
+-  boolean isCancelled(PolicyExecutor<R, ?> policyExecutor);
++  boolean isCancelled(PolicyExecutor<R> policyExecutor);
+ }
+
+File: src/test/java/net/jodah/failsafe/FailsafeFutureTest.java
+Patch:
+@@ -41,7 +41,7 @@ protected void afterClass() {
+    */
+   public void shouldCallOnCompleteWhenCancelled() throws Throwable {
+     Waiter waiter = new Waiter();
+-    CompletableFuture<String> future = Failsafe.with(new RetryPolicy<String>()).with(executor).onComplete(e -> {
++    CompletableFuture<String> future = Failsafe.with(RetryPolicy.ofDefaults()).with(executor).onComplete(e -> {
+       waiter.assertNull(e.getResult());
+       waiter.assertTrue(e.getFailure() instanceof CancellationException);
+       waiter.resume();
+@@ -69,7 +69,7 @@ public void shouldCallOnCompleteWhenCancelled() throws Throwable {
+    */
+   public void shouldNotCancelCompletedFuture() throws Throwable {
+     // Given
+-    CompletableFuture<String> future = Failsafe.with(new RetryPolicy<String>()).with(executor).getAsync(() -> "test");
++    CompletableFuture<String> future = Failsafe.with(RetryPolicy.ofDefaults()).with(executor).getAsync(() -> "test");
+ 
+     // When
+     Thread.sleep(200);
+@@ -87,7 +87,7 @@ public void shouldNotCancelCompletedFuture() throws Throwable {
+    * Asserts that a cancelled future ignores subsequent completion attempts.
+    */
+   public void shouldNotCompleteCancelledFuture() {
+-    CompletableFuture<String> future = Failsafe.with(new RetryPolicy<>()).with(executor).getAsync(() -> {
++    CompletableFuture<String> future = Failsafe.with(RetryPolicy.ofDefaults()).with(executor).getAsync(() -> {
+       Thread.sleep(1000);
+       throw new IllegalStateException();
+     });
+
+File: src/test/java/net/jodah/failsafe/examples/Java8Example.java
+Patch:
+@@ -29,7 +29,7 @@ public class Java8Example {
+   @SuppressWarnings("unused")
+   public static void main(String... args) {
+     ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
+-    RetryPolicy<Object> retryPolicy = new RetryPolicy<>();
++    RetryPolicy<Object> retryPolicy = RetryPolicy.ofDefaults();
+ 
+     // Create a retryable functional interface
+     Function<String, String> bar = value -> Failsafe.with(retryPolicy).get(() -> value + "bar");
+
+File: src/test/java/net/jodah/failsafe/examples/RxJavaExample.java
+Patch:
+@@ -27,7 +27,7 @@
+ public class RxJavaExample {
+   public static void main(String... args) {
+     AtomicInteger failures = new AtomicInteger();
+-    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().withDelay(Duration.ofSeconds(1));
++    RetryPolicy<Object> retryPolicy = RetryPolicy.builder().withDelay(Duration.ofSeconds(1)).build();
+ 
+     Observable.create((Subscriber<? super String> s) -> {
+       // Fail 2 times then succeed
+
+File: src/test/java/net/jodah/failsafe/functional/ExecutorConfigurationTest.java
+Patch:
+@@ -21,7 +21,7 @@
+ public class ExecutorConfigurationTest extends Testing {
+   AtomicBoolean executorCalled;
+   AtomicBoolean executionCalled;
+-  RetryPolicy<String> retryPolicy = withLogs(new RetryPolicy<>());
++  RetryPolicy<String> retryPolicy = withLogs(RetryPolicy.<String>builder()).build();
+ 
+   Executor executor = execution -> {
+     executorCalled.set(true);
+
+File: src/test/java/net/jodah/failsafe/functional/ExecutorTest.java
+Patch:
+@@ -29,14 +29,14 @@ protected void beforeMethod() {
+   }
+ 
+   public void testExecutorWithSyncExecution() {
+-    assertThrows(() -> Failsafe.with(new RetryPolicy<>()).with(executor).run(() -> {
++    assertThrows(() -> Failsafe.with(RetryPolicy.ofDefaults()).with(executor).run(() -> {
+       throw new IllegalStateException();
+     }), IllegalStateException.class);
+     assertEquals(executions.get(), 3);
+   }
+ 
+   public void testExecutorWithAsyncExecution() {
+-    assertThrows(() -> Failsafe.with(new RetryPolicy<>()).with(executor).runAsync(() -> {
++    assertThrows(() -> Failsafe.with(RetryPolicy.ofDefaults()).with(executor).runAsync(() -> {
+       throw new IllegalStateException();
+     }).get(), ExecutionException.class, IllegalStateException.class);
+     assertEquals(executions.get(), 3);
+
+File: src/test/java/net/jodah/failsafe/functional/FallbackTest.java
+Patch:
+@@ -38,7 +38,7 @@ public void testFallbackWithoutConditions() {
+     }, true);
+ 
+     // Given
+-    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().withMaxRetries(2);
++    RetryPolicy<Object> retryPolicy = RetryPolicy.ofDefaults();
+ 
+     // When / Then
+     testRunSuccess(Failsafe.with(fallback, retryPolicy), ctx -> {
+@@ -51,7 +51,7 @@ public void testFallbackWithoutConditions() {
+    */
+   public void testFallbackWithConditions() {
+     // Given
+-    Fallback<Boolean> fallback = Fallback.of(true).handle(IllegalArgumentException.class);
++    Fallback<Boolean> fallback = Fallback.builder(true).handle(IllegalArgumentException.class).build();
+ 
+     // When / Then
+     testRunFailure(Failsafe.with(fallback), ctx -> {
+
+File: src/test/java/net/jodah/failsafe/issues/Issue165Test.java
+Patch:
+@@ -23,7 +23,7 @@ public void testOfStage() {
+   }
+ 
+   public void testOfStageAsync() throws Throwable {
+-    Fallback<Object> fallback = Fallback.ofStageAsync(e -> CompletableFuture.completedFuture("test"));
++    Fallback<Object> fallback = Fallback.builderOfStage(e -> CompletableFuture.completedFuture("test")).withAsync().build();
+     Object result = Failsafe.with(fallback).getAsync(() -> {
+       throw new IllegalStateException();
+     }).get();
+
+File: src/test/java/net/jodah/failsafe/issues/Issue177Test.java
+Patch:
+@@ -9,7 +9,7 @@
+ @Test
+ public class Issue177Test {
+   public void shouldSupportNullFallback() {
+-    Fallback<Boolean> fallback = Fallback.of((Boolean) null).handleResult(false);
++    Fallback<Boolean> fallback = Fallback.builder((Boolean) null).handleResult(false).build();
+     assertNull(Failsafe.with(fallback).get(() -> false));
+   }
+ }
+
+File: src/test/java/net/jodah/failsafe/issues/Issue190Test.java
+Patch:
+@@ -28,7 +28,7 @@ protected void afterClass() {
+   }
+ 
+   public void test() throws Throwable {
+-    RetryPolicy<Object> policy = new RetryPolicy<>().withMaxRetries(5);
++    RetryPolicy<Object> policy = RetryPolicy.builder().withMaxRetries(5).build();
+     AtomicInteger failureEvents = new AtomicInteger();
+     AtomicInteger successEvents = new AtomicInteger();
+     Waiter waiter = new Waiter();
+
+File: src/test/java/net/jodah/failsafe/issues/Issue206Test.java
+Patch:
+@@ -10,7 +10,7 @@
+ public class Issue206Test {
+   public void test() {
+     try {
+-      Failsafe.with(Fallback.of(e -> true).handleResultIf(r -> true))
++      Failsafe.with(Fallback.builder(e -> true).handleResultIf(r -> true).build())
+         .onFailure(e -> fail("Unexpected execution failure"))
+         .get(() -> true);
+     } catch (RuntimeException e) {
+
+File: src/test/java/net/jodah/failsafe/issues/Issue218Test.java
+Patch:
+@@ -8,8 +8,8 @@
+ @Test
+ public class Issue218Test {
+   public void test() {
+-    RetryPolicy<Void> retryPolicy = new RetryPolicy<Void>().withMaxAttempts(2);
+-    Fallback<Void> fallback = Fallback.VOID;
++    RetryPolicy<Void> retryPolicy = RetryPolicy.<Void>builder().withMaxAttempts(2).build();
++    Fallback<Void> fallback = Fallback.none();
+     Failsafe.with(fallback, retryPolicy).run(() -> {
+       throw new Exception();
+     });
+
+File: src/test/java/net/jodah/failsafe/issues/Issue231Test.java
+Patch:
+@@ -18,7 +18,7 @@ public class Issue231Test {
+    * Timeout, even with interruption, should wait for the execution to complete.
+    */
+   public void shouldWaitForExecutionCompletion() {
+-    Timeout<Object> timeout = Timeout.of(Duration.ofMillis(100)).withInterrupt(true);
++    Timeout<Object> timeout = Timeout.builder(Duration.ofMillis(100)).withInterrupt().build();
+     AtomicBoolean executionCompleted = new AtomicBoolean();
+     Asserts.assertThrows(() -> Failsafe.with(timeout).runAsync(() -> {
+       try {
+
+File: src/test/java/net/jodah/failsafe/issues/Issue242Test.java
+Patch:
+@@ -13,7 +13,7 @@
+ public class Issue242Test {
+   public void shouldDelayOnExplicitRetry() throws Throwable {
+     RetryPolicy<String> retryPolicy = withLogs(
+-      new RetryPolicy<String>().handleResult(null).withDelay(Duration.ofMillis(110)));
++      RetryPolicy.<String>builder().handleResult(null).withDelay(Duration.ofMillis(110))).build();
+ 
+     long startTime = System.currentTimeMillis();
+     Failsafe.with(retryPolicy).runAsyncExecution(exec -> {
+
+File: src/test/java/net/jodah/failsafe/issues/Issue267Test.java
+Patch:
+@@ -16,7 +16,7 @@
+ public class Issue267Test {
+   public void test() {
+     Timeout<Object> timeout = Timeout.of(Duration.ofMillis(1000L));
+-    Fallback<Object> notFoundFallback = Fallback.of(this::handleNotFound).handleIf(this::causedBy404);
++    Fallback<Object> notFoundFallback = Fallback.builder(this::handleNotFound).handleIf(this::causedBy404).build();
+     Fallback<Object> failureHandling = Fallback.ofException(this::handleException);
+ 
+     Integer result = Failsafe.with(failureHandling, notFoundFallback, timeout).get(this::connect);
+
+File: src/test/java/net/jodah/failsafe/issues/Issue298Test.java
+Patch:
+@@ -15,9 +15,10 @@ public class Issue298Test {
+   AtomicBoolean failedAttemptCalled = new AtomicBoolean();
+   AtomicBoolean failureCalled = new AtomicBoolean();
+ 
+-  Fallback<String> fallback = Fallback.<String>of(e -> "success")
++  Fallback<String> fallback = Fallback.<String>builder(e -> "success")
+     .onFailedAttempt(e -> failedAttemptCalled.set(true))
+-    .onFailure(e -> failureCalled.set(true));
++    .onFailure(e -> failureCalled.set(true))
++    .build();
+ 
+   @BeforeMethod
+   protected void beforeMethod() {
+
+File: src/test/java/net/jodah/failsafe/issues/Issue55Test.java
+Patch:
+@@ -32,12 +32,12 @@ public void shouldOnlyFallbackOnFailure() throws Throwable {
+     ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
+ 
+     AtomicInteger counter = new AtomicInteger();
+-    Failsafe.with(Fallback.of(counter::incrementAndGet), new RetryPolicy<>()).with(executor).getAsync(() -> null);
++    Failsafe.with(Fallback.of(counter::incrementAndGet), RetryPolicy.ofDefaults()).with(executor).getAsync(() -> null);
+ 
+     Thread.sleep(100);
+     assertEquals(counter.get(), 0);
+ 
+-    Failsafe.with(Fallback.of(counter::incrementAndGet), new RetryPolicy<>().withMaxRetries(1))
++    Failsafe.with(Fallback.of(counter::incrementAndGet), RetryPolicy.builder().withMaxRetries(1).build())
+         .with(executor)
+         .runAsync(() -> {
+           throw new RuntimeException();
+
+File: src/main/java/net/jodah/failsafe/Failsafe.java
+Patch:
+@@ -88,7 +88,7 @@ public static <R, P extends Policy<R>> FailsafeExecutor<R> with(P outerPolicy, P
+    * @param <P> policy type
+    * @throws NullPointerException if {@code policies} is null
+    * @throws IllegalArgumentException if {@code policies} is empty
+-   * @deprecated Use {@link #with(Policy, Policy[])} instead
++   * @deprecated This will be removed in 3.0. Use {@link #with(Policy, Policy[])} instead
+    */
+   @Deprecated
+   public static <R, P extends Policy<R>> FailsafeExecutor<R> with(P[] policies) {
+
+File: src/main/java/net/jodah/failsafe/FailsafeExecutor.java
+Patch:
+@@ -247,7 +247,10 @@ public <T extends R> CompletableFuture<T> getStageAsync(
+    *
+    * @throws NullPointerException if the {@code supplier} is null
+    * @throws RejectedExecutionException if the {@code supplier} cannot be scheduled for execution
++   * @deprecated This will be removed in 3.0. Use either {@link #getStageAsync(ContextualSupplier) getStageAsync} or
++   * {@link #getAsyncExecution(AsyncRunnable) getAsyncExecution} instead
+    */
++  @Deprecated
+   public <T extends R> CompletableFuture<T> getStageAsyncExecution(
+     AsyncSupplier<T, ? extends CompletionStage<T>> supplier) {
+     return callAsync(future -> getPromiseOfStageExecution(supplier, future), true);
+
+File: src/main/java/net/jodah/failsafe/spi/PolicyExecutor.java
+Patch:
+@@ -126,8 +126,8 @@ protected synchronized CompletableFuture<ExecutionResult<R>> postExecuteAsync(As
+     ExecutionResult<R> result, Scheduler scheduler, FailsafeFuture<R> future) {
+     CompletableFuture<ExecutionResult<R>> postFuture = null;
+ 
+-    // Guard against post executing twice for the same execution. This will happen if one async execution result
+-    // is recorded by a timeout and another asynchronously.
++    /* Guard against post executing twice for the same execution. This will happen if one async execution result is
++     * recorded by a timeout and another via AsyncExecution.record. */
+     if (!execution.isAsyncExecution() || !execution.isPostExecuted(policyIndex)) {
+       execution.recordAttempt();
+       if (isFailure(result)) {
+
+File: src/test/java/net/jodah/failsafe/ExecutionTest.java
+Patch:
+@@ -22,7 +22,7 @@
+ import java.util.List;
+ import java.util.concurrent.TimeUnit;
+ 
+-import static net.jodah.failsafe.Testing.failures;
++import static net.jodah.failsafe.testing.Testing.failures;
+ import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.when;
+ import static org.testng.Assert.*;
+
+File: src/test/java/net/jodah/failsafe/FailsafeFutureTest.java
+Patch:
+@@ -16,6 +16,7 @@
+ package net.jodah.failsafe;
+ 
+ import net.jodah.concurrentunit.Waiter;
++import net.jodah.failsafe.testing.Asserts;
+ import org.testng.annotations.AfterClass;
+ import org.testng.annotations.Test;
+ 
+
+File: src/test/java/net/jodah/failsafe/RetryPolicyTest.java
+Patch:
+@@ -15,6 +15,7 @@
+  */
+ package net.jodah.failsafe;
+ 
++import net.jodah.failsafe.testing.Asserts;
+ import org.testng.annotations.Test;
+ 
+ import java.io.IOException;
+
+File: src/test/java/net/jodah/failsafe/functional/BlockedExecutionTest.java
+Patch:
+@@ -1,6 +1,8 @@
+ package net.jodah.failsafe.functional;
+ 
+ import net.jodah.failsafe.*;
++import net.jodah.failsafe.testing.Asserts;
++import net.jodah.failsafe.testing.Testing;
+ import org.testng.annotations.Test;
+ 
+ import java.time.Duration;
+@@ -17,7 +19,6 @@ public class BlockedExecutionTest {
+   /**
+    * Asserts that a scheduled execution that is blocked on a threadpool is properly cancelled when a timeout occurs.
+    */
+-  @Test
+   public void shouldCancelScheduledExecutionOnTimeout() throws Throwable {
+     ExecutorService executor = Executors.newSingleThreadExecutor();
+     Timeout<Boolean> timeout = Timeout.of(Duration.ofMillis(100));
+
+File: src/test/java/net/jodah/failsafe/functional/ExecutorConfigurationTest.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import net.jodah.failsafe.Failsafe;
+ import net.jodah.failsafe.RetryPolicy;
+-import net.jodah.failsafe.Testing;
++import net.jodah.failsafe.testing.Testing;
+ import org.testng.annotations.BeforeMethod;
+ import org.testng.annotations.Test;
+ 
+
+File: src/test/java/net/jodah/failsafe/functional/NestedCircuitBreakerTest.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import net.jodah.failsafe.CircuitBreaker;
+ import net.jodah.failsafe.Failsafe;
+-import net.jodah.failsafe.Testing;
++import net.jodah.failsafe.testing.Testing;
+ import net.jodah.failsafe.function.CheckedRunnable;
+ import org.testng.annotations.Test;
+ 
+@@ -47,7 +47,7 @@ public void testCircuitBreakerCircuitBreaker() {
+       resetBreaker(cb2);
+     }, Failsafe.with(cb2, cb1), ctx -> {
+       throw new IllegalStateException();
+-    }, e -> {
++    }, (f, e) -> {
+       assertEquals(1, e.getAttemptCount());
+       assertEquals(cb1.getFailureCount(), 1);
+       assertTrue(cb1.isOpen());
+@@ -60,7 +60,7 @@ public void testCircuitBreakerCircuitBreaker() {
+       resetBreaker(cb2);
+     }, Failsafe.with(cb2, cb1), ctx -> {
+       throw new IllegalStateException();
+-    }, e -> {
++    }, (f, e) -> {
+       assertEquals(1, e.getAttemptCount());
+       assertEquals(cb1.getFailureCount(), 1);
+       assertTrue(cb1.isOpen());
+
+File: src/test/java/net/jodah/failsafe/functional/PolicyCompositionExecutionTest.java
+Patch:
+@@ -28,7 +28,7 @@
+  */
+ @Test
+ public class PolicyCompositionExecutionTest {
+-  public void testRetryPolicyThenCircuitBreaker() {
++  public void testRetryPolicyCircuitBreaker() {
+     RetryPolicy<Object> rp = new RetryPolicy<>().withMaxRetries(2);
+     CircuitBreaker<Object> cb = new CircuitBreaker<>().withFailureThreshold(5);
+ 
+@@ -42,7 +42,7 @@ public void testRetryPolicyThenCircuitBreaker() {
+     assertTrue(cb.isClosed());
+   }
+ 
+-  public void testCircuitBreakerThenRetryPolicy() {
++  public void testCircuitBreakerRetryPolicy() {
+     RetryPolicy<Object> rp = new RetryPolicy<>().withMaxRetries(1);
+     CircuitBreaker<Object> cb = new CircuitBreaker<>().withFailureThreshold(5);
+ 
+
+File: src/test/java/net/jodah/failsafe/functional/ShutdownExecutorTest.java
+Patch:
+@@ -9,8 +9,8 @@
+ import java.util.concurrent.*;
+ import java.util.concurrent.atomic.AtomicInteger;
+ 
+-import static net.jodah.failsafe.Asserts.assertThrows;
+-import static net.jodah.failsafe.Testing.runAsync;
++import static net.jodah.failsafe.testing.Asserts.assertThrows;
++import static net.jodah.failsafe.testing.Testing.runAsync;
+ import static org.testng.Assert.assertEquals;
+ 
+ /**
+
+File: src/test/java/net/jodah/failsafe/functional/package-info.java
+Patch:
+@@ -1,4 +1,5 @@
+ /**
+- * Functional tests for sets of behavior.
++ * Functional tests for sets of behavior. When possible, each behavior will be tested against sync and various async
++ * executions with the same assertions.
+  */
+ package net.jodah.failsafe.functional;
+
+File: src/test/java/net/jodah/failsafe/internal/ClosedStateTest.java
+Patch:
+@@ -16,10 +16,10 @@
+ package net.jodah.failsafe.internal;
+ 
+ import net.jodah.failsafe.CircuitBreaker;
+-import net.jodah.failsafe.Testing;
++import net.jodah.failsafe.testing.Testing;
+ import org.testng.annotations.Test;
+ 
+-import static net.jodah.failsafe.Testing.getInternals;
++import static net.jodah.failsafe.testing.Testing.getInternals;
+ import static org.testng.Assert.assertFalse;
+ import static org.testng.Assert.assertTrue;
+ 
+
+File: src/test/java/net/jodah/failsafe/internal/HalfOpenStateTest.java
+Patch:
+@@ -16,11 +16,11 @@
+ package net.jodah.failsafe.internal;
+ 
+ import net.jodah.failsafe.CircuitBreaker;
+-import net.jodah.failsafe.Testing;
++import net.jodah.failsafe.testing.Testing;
+ import org.testng.annotations.BeforeMethod;
+ import org.testng.annotations.Test;
+ 
+-import static net.jodah.failsafe.Testing.withLogs;
++import static net.jodah.failsafe.testing.Testing.withLogs;
+ import static org.testng.Assert.assertFalse;
+ import static org.testng.Assert.assertTrue;
+ 
+
+File: src/test/java/net/jodah/failsafe/internal/OpenStateTest.java
+Patch:
+@@ -17,7 +17,7 @@
+ 
+ import net.jodah.failsafe.CircuitBreaker;
+ import net.jodah.failsafe.CircuitBreaker.State;
+-import net.jodah.failsafe.Testing;
++import net.jodah.failsafe.testing.Testing;
+ import org.testng.annotations.Test;
+ 
+ import java.time.Duration;
+
+File: src/test/java/net/jodah/failsafe/internal/util/DelegatingSchedulerTest.java
+Patch:
+@@ -1,7 +1,7 @@
+ package net.jodah.failsafe.internal.util;
+ 
+ import net.jodah.concurrentunit.Waiter;
+-import net.jodah.failsafe.Asserts;
++import net.jodah.failsafe.testing.Asserts;
+ import net.jodah.failsafe.spi.Scheduler;
+ import org.testng.annotations.Test;
+ 
+
+File: src/test/java/net/jodah/failsafe/issues/Issue190Test.java
+Patch:
+@@ -3,7 +3,7 @@
+ import net.jodah.concurrentunit.Waiter;
+ import net.jodah.failsafe.Failsafe;
+ import net.jodah.failsafe.RetryPolicy;
+-import net.jodah.failsafe.Testing;
++import net.jodah.failsafe.testing.Testing;
+ import org.testng.Assert;
+ import org.testng.annotations.AfterClass;
+ import org.testng.annotations.BeforeClass;
+
+File: src/test/java/net/jodah/failsafe/issues/Issue192Test.java
+Patch:
+@@ -1,9 +1,9 @@
+ package net.jodah.failsafe.issues;
+ 
+-import net.jodah.failsafe.Asserts;
++import net.jodah.failsafe.testing.Asserts;
+ import net.jodah.failsafe.Failsafe;
+ import net.jodah.failsafe.RetryPolicy;
+-import net.jodah.failsafe.Testing;
++import net.jodah.failsafe.testing.Testing;
+ import org.testng.Assert;
+ import org.testng.annotations.AfterClass;
+ import org.testng.annotations.BeforeClass;
+
+File: src/test/java/net/jodah/failsafe/issues/Issue231Test.java
+Patch:
+@@ -1,6 +1,6 @@
+ package net.jodah.failsafe.issues;
+ 
+-import net.jodah.failsafe.Asserts;
++import net.jodah.failsafe.testing.Asserts;
+ import net.jodah.failsafe.Failsafe;
+ import net.jodah.failsafe.Timeout;
+ import net.jodah.failsafe.TimeoutExceededException;
+
+File: src/test/java/net/jodah/failsafe/issues/Issue240Test.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import net.jodah.failsafe.Failsafe;
+ import net.jodah.failsafe.RetryPolicy;
+-import net.jodah.failsafe.Testing;
++import net.jodah.failsafe.testing.Testing;
+ import org.testng.annotations.Test;
+ 
+ import java.util.concurrent.atomic.AtomicInteger;
+
+File: src/test/java/net/jodah/failsafe/issues/Issue242Test.java
+Patch:
+@@ -6,7 +6,7 @@
+ 
+ import java.time.Duration;
+ 
+-import static net.jodah.failsafe.Testing.withLogs;
++import static net.jodah.failsafe.testing.Testing.withLogs;
+ import static org.testng.Assert.assertTrue;
+ 
+ @Test
+
+File: src/test/java/net/jodah/failsafe/issues/Issue36Test.java
+Patch:
+@@ -17,7 +17,7 @@
+ 
+ import net.jodah.failsafe.Failsafe;
+ import net.jodah.failsafe.RetryPolicy;
+-import net.jodah.failsafe.Testing;
++import net.jodah.failsafe.testing.Testing;
+ import org.testng.annotations.BeforeMethod;
+ import org.testng.annotations.Test;
+ 
+
+File: src/test/java/net/jodah/failsafe/issues/Issue52Test.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package net.jodah.failsafe.issues;
+ 
+-import net.jodah.failsafe.Asserts;
++import net.jodah.failsafe.testing.Asserts;
+ import net.jodah.failsafe.Failsafe;
+ import net.jodah.failsafe.RetryPolicy;
+ import org.testng.annotations.AfterClass;
+
+File: src/test/java/net/jodah/failsafe/issues/Issue84Test.java
+Patch:
+@@ -1,6 +1,7 @@
+ package net.jodah.failsafe.issues;
+ 
+ import net.jodah.failsafe.*;
++import net.jodah.failsafe.testing.Asserts;
+ import org.testng.annotations.Test;
+ 
+ import java.time.Duration;
+
+File: src/test/java/net/jodah/failsafe/issues/Issue9Test.java
+Patch:
+@@ -25,7 +25,7 @@
+ import java.util.concurrent.ScheduledExecutorService;
+ import java.util.concurrent.atomic.AtomicInteger;
+ 
+-import static net.jodah.failsafe.Testing.failures;
++import static net.jodah.failsafe.testing.Testing.failures;
+ import static org.mockito.Mockito.*;
+ import static org.testng.Assert.assertEquals;
+ import static org.testng.Assert.assertTrue;
+
+File: src/main/java/net/jodah/failsafe/spi/Policy.java
+Patch:
+@@ -23,8 +23,7 @@
+  */
+ public interface Policy<R> {
+   /**
+-   * Returns an {@link PolicyExecutor} capable of performing an execution in the context of a Policy and handling
+-   * results or failures according to the Policy.
++   * Returns a {@link PolicyExecutor} capable of handling an execution for the Policy.
+    */
+   PolicyExecutor<R, ? extends Policy<R>> toExecutor(int policyIndex);
+ }
+
+File: src/test/java/net/jodah/failsafe/functional/BlockedExecutionTest.java
+Patch:
+@@ -43,7 +43,7 @@ public void shouldCancelScheduledRetryOnTimeout() {
+     Timeout<Boolean> timeout = Timeout.of(Duration.ofMillis(100));
+     RetryPolicy<Boolean> rp = new RetryPolicy<Boolean>().withDelay(Duration.ofMillis(1000)).handleResult(false);
+ 
+-    Future<Boolean> future = Failsafe.with(timeout, rp).with(executor).getAsync(() -> {
++    Future<Boolean> future = Failsafe.with(timeout).compose(rp).with(executor).getAsync(() -> {
+       // Tie up single thread immediately after execution, before the retry is scheduled
+       executor.submit(Testing.uncheck(() -> Thread.sleep(1000)));
+       return false;
+@@ -65,7 +65,7 @@ public void shouldCancelScheduledFallbackOnTimeout() {
+       return true;
+     }).handleResult(false);
+ 
+-    Future<Boolean> future = Failsafe.with(timeout, fallback).with(executor).getAsync(() -> {
++    Future<Boolean> future = Failsafe.with(timeout).compose(fallback).with(executor).getAsync(() -> {
+       // Tie up single thread immediately after execution, before the fallback is scheduled
+       executor.submit(Testing.uncheck(() -> Thread.sleep(1000)));
+       return false;
+
+File: src/main/java/net/jodah/failsafe/CircuitBreakerOpenException.java
+Patch:
+@@ -23,14 +23,14 @@
+ public class CircuitBreakerOpenException extends FailsafeException {
+   private static final long serialVersionUID = 1L;
+ 
+-  private final CircuitBreaker circuitBreaker;
++  private final CircuitBreaker<?> circuitBreaker;
+ 
+-  public CircuitBreakerOpenException(CircuitBreaker circuitBreaker) {
++  public CircuitBreakerOpenException(CircuitBreaker<?> circuitBreaker) {
+     this.circuitBreaker = circuitBreaker;
+   }
+ 
+   /** Returns the {@link CircuitBreaker} that caused the exception. */
+-  public CircuitBreaker getCircuitBreaker() {
++  public CircuitBreaker<?> getCircuitBreaker() {
+     return circuitBreaker;
+   }
+ }
+
+File: src/main/java/net/jodah/failsafe/Failsafe.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import net.jodah.failsafe.internal.util.Assert;
+ import net.jodah.failsafe.internal.util.Lists;
++import net.jodah.failsafe.spi.Policy;
+ 
+ import java.util.Arrays;
+ import java.util.Collections;
+
+File: src/main/java/net/jodah/failsafe/event/ExecutionScheduledEvent.java
+Patch:
+@@ -16,14 +16,15 @@
+ package net.jodah.failsafe.event;
+ 
+ import net.jodah.failsafe.ExecutionContext;
++import net.jodah.failsafe.spi.Scheduler;
+ 
+ import java.time.Duration;
+ 
+ /**
+  * Indicates an execution was scheduled. A scheduled execution will be executed after the {@link #getDelay() delay}
+  * unless it is cancelled, either explicitly or via {@link java.util.concurrent.Future#cancel(boolean)
+  * Future.cancel(boolean)}, a {@link net.jodah.failsafe.Timeout Timeout}, or if the underlying {@link
+- * net.jodah.failsafe.util.concurrent.Scheduler Scheduler} or {@link java.util.concurrent.ExecutorService
++ * Scheduler Scheduler} or {@link java.util.concurrent.ExecutorService
+  * ExecutorService} is shutdown.
+  *
+  * @param <R> result type
+
+File: src/main/java/net/jodah/failsafe/function/DelayFunction.java
+Patch:
+@@ -1,19 +1,20 @@
+ package net.jodah.failsafe.function;
+ 
+ import net.jodah.failsafe.ExecutionContext;
++import net.jodah.failsafe.spi.Policy;
+ 
+ import java.time.Duration;
+ 
+ /**
+- * A functional interface for computing delays between {@link net.jodah.failsafe.Policy} execution attempts.
++ * A functional interface for computing delays between {@link Policy} execution attempts.
+  *
+  * @param <R> result type
+  * @param <F> failure type
+  */
+ @FunctionalInterface
+ public interface DelayFunction<R, F extends Throwable> {
+   /**
+-   * Returns the amount of delay before the next {@link net.jodah.failsafe.Policy} execution attempt based on the result
++   * Returns the amount of delay before the next {@link Policy} execution attempt based on the result
+    * or failure of the last attempt and the execution context (executions so far). This method must complete quickly,
+    * not have side-effects, and always return the same result for the same input. Unchecked exceptions thrown by this
+    * method will <strong>not</strong> be treated as part of the fail-safe processing and will instead abort that
+
+File: src/main/java/net/jodah/failsafe/internal/OpenState.java
+Patch:
+@@ -20,11 +20,11 @@
+ 
+ import java.time.Duration;
+ 
+-public class OpenState extends CircuitState {
++public class OpenState<R> extends CircuitState<R> {
+   private final long startTime = System.nanoTime();
+   private final long delayNanos;
+ 
+-  public OpenState(CircuitBreaker<?> breaker, CircuitState previousState, Duration delay) {
++  public OpenState(CircuitBreaker<R> breaker, CircuitState<R> previousState, Duration delay) {
+     super(breaker, previousState.stats);
+     this.delayNanos = delay.toNanos();
+   }
+
+File: src/main/java/net/jodah/failsafe/internal/util/DelegatingScheduler.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package net.jodah.failsafe.internal.util;
+ 
+-import net.jodah.failsafe.util.concurrent.Scheduler;
++import net.jodah.failsafe.spi.Scheduler;
+ 
+ import java.util.concurrent.*;
+ 
+
+File: src/main/java/net/jodah/failsafe/internal/util/RandomDelay.java
+Patch:
+@@ -16,6 +16,8 @@
+ package net.jodah.failsafe.internal.util;
+ 
+ /**
++ * Utilities for computing random delays.
++ *
+  * @author Jonathan Halterman
+  */
+ public final class RandomDelay {
+
+File: src/main/java/net/jodah/failsafe/spi/Scheduler.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License
+  */
+-package net.jodah.failsafe.util.concurrent;
++package net.jodah.failsafe.spi;
+ 
+ import net.jodah.failsafe.internal.util.Assert;
+ import net.jodah.failsafe.internal.util.DelegatingExecutorService;
+@@ -25,7 +25,7 @@
+  * Schedules executions.
+  *
+  * @author Jonathan Halterman
+- * @see net.jodah.failsafe.util.concurrent.DefaultScheduledFuture
++ * @see DefaultScheduledFuture
+  */
+ public interface Scheduler {
+   /**
+
+File: src/test/java/net/jodah/failsafe/AbstractFailsafeTest.java
+Patch:
+@@ -19,6 +19,7 @@
+ import net.jodah.failsafe.event.ExecutionAttemptedEvent;
+ import net.jodah.failsafe.event.ExecutionCompletedEvent;
+ import net.jodah.failsafe.function.*;
++import net.jodah.failsafe.spi.Policy;
+ import org.testng.annotations.BeforeMethod;
+ import org.testng.annotations.Test;
+ 
+
+File: src/test/java/net/jodah/failsafe/DelayablePolicyTest.java
+Patch:
+@@ -1,6 +1,8 @@
+ package net.jodah.failsafe;
+ 
+ import net.jodah.failsafe.function.DelayFunction;
++import net.jodah.failsafe.spi.Policy;
++import net.jodah.failsafe.spi.PolicyExecutor;
+ import org.testng.annotations.Test;
+ 
+ import java.time.Duration;
+
+File: src/test/java/net/jodah/failsafe/RetryPolicyTest.java
+Patch:
+@@ -198,7 +198,7 @@ public void testCopy() {
+     assertEquals(rp2.getMaxDelay().toNanos(), rp.getMaxDelay().toNanos());
+     assertEquals(rp2.getMaxDuration().toNanos(), rp.getMaxDuration().toNanos());
+     assertEquals(rp2.getMaxRetries(), rp.getMaxRetries());
+-    assertEquals(rp2.failureListener, rp.failureListener);
+-    assertEquals(rp2.successListener, rp.successListener);
++    //    assertEquals(rp2.failureListener, rp.failureListener);
++    //    assertEquals(rp2.successListener, rp.successListener);
+   }
+ }
+
+File: src/test/java/net/jodah/failsafe/examples/RetryLoopExample.java
+Patch:
+@@ -35,9 +35,9 @@ public class RetryLoopExample {
+   }
+ 
+   public static void main(String... args) throws Throwable {
+-    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().handle(IllegalStateException.class).withBackoff(10, 40,
+-        ChronoUnit.MILLIS);
+-    Execution<Object> execution = new Execution<>(retryPolicy);
++    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().handle(IllegalStateException.class)
++      .withBackoff(10, 40, ChronoUnit.MILLIS);
++    Execution<Object> execution = Execution.of(retryPolicy);
+ 
+     while (!execution.isComplete()) {
+       try {
+
+File: src/test/java/net/jodah/failsafe/examples/RxJavaExample.java
+Patch:
+@@ -36,7 +36,7 @@ public static void main(String... args) {
+       else
+         System.out.println("Subscriber completed successfully");
+     }).retryWhen(attempts -> {
+-      Execution<Object> execution = new Execution<>(retryPolicy);
++      Execution<Object> execution = Execution.of(retryPolicy);
+       return attempts.flatMap(failure -> {
+         System.out.println("Failure detected");
+         execution.recordFailure(failure);
+
+File: src/test/java/net/jodah/failsafe/examples/VertxExample.java
+Patch:
+@@ -21,8 +21,8 @@
+ import io.vertx.core.eventbus.ReplyFailure;
+ import net.jodah.failsafe.Failsafe;
+ import net.jodah.failsafe.RetryPolicy;
+-import net.jodah.failsafe.util.concurrent.DefaultScheduledFuture;
+-import net.jodah.failsafe.util.concurrent.Scheduler;
++import net.jodah.failsafe.spi.DefaultScheduledFuture;
++import net.jodah.failsafe.spi.Scheduler;
+ 
+ import java.time.Duration;
+ import java.util.concurrent.atomic.AtomicInteger;
+
+File: src/test/java/net/jodah/failsafe/functional/PolicyCompositionExecutionTest.java
+Patch:
+@@ -32,7 +32,7 @@ public void testRetryPolicyThenCircuitBreaker() {
+     RetryPolicy<Object> rp = new RetryPolicy<>().withMaxRetries(2);
+     CircuitBreaker<Object> cb = new CircuitBreaker<>().withFailureThreshold(5);
+ 
+-    Execution<Object> execution = new Execution<>(rp, cb);
++    Execution<Object> execution = Execution.of(rp, cb);
+     execution.recordFailure(new Exception());
+     execution.recordFailure(new Exception());
+     assertFalse(execution.isComplete());
+@@ -46,7 +46,7 @@ public void testCircuitBreakerThenRetryPolicy() {
+     RetryPolicy<Object> rp = new RetryPolicy<>().withMaxRetries(1);
+     CircuitBreaker<Object> cb = new CircuitBreaker<>().withFailureThreshold(5);
+ 
+-    Execution<Object> execution = new Execution<>(cb, rp);
++    Execution<Object> execution = Execution.of(cb, rp);
+     execution.recordFailure(new Exception());
+     assertFalse(execution.isComplete());
+     execution.recordFailure(new Exception());
+
+File: src/test/java/net/jodah/failsafe/ExecutionTest.java
+Patch:
+@@ -19,7 +19,6 @@
+ 
+ import java.net.ConnectException;
+ import java.time.Duration;
+-import java.time.temporal.ChronoUnit;
+ import java.util.List;
+ import java.util.concurrent.TimeUnit;
+ 
+@@ -183,7 +182,7 @@ public void testIsComplete() {
+ 
+   public void shouldAdjustWaitTimeForBackoff() {
+     Execution<Object> exec = new Execution<>(
+-      new RetryPolicy<>().withMaxAttempts(10).withBackoff(1, 10, ChronoUnit.NANOS));
++      new RetryPolicy<>().withMaxAttempts(10).withBackoff(Duration.ofNanos(1), Duration.ofNanos(10)));
+     assertEquals(exec.getWaitTime().toNanos(), 0);
+     exec.recordFailure(e);
+     assertEquals(exec.getWaitTime().toNanos(), 1);
+@@ -234,7 +233,7 @@ public void shouldFallbackWaitTimeFromComputedToFixedDelay() {
+ 
+   public void shouldFallbackWaitTimeFromComputedToBackoffDelay() {
+     Execution<Object> exec = new Execution<>(new RetryPolicy<>().withMaxAttempts(10)
+-      .withBackoff(1, 10, ChronoUnit.NANOS)
++      .withBackoff(Duration.ofNanos(1), Duration.ofNanos(10))
+       .withDelay((r, f, ctx) -> Duration.ofNanos(ctx.getAttemptCount() % 2 == 0 ? ctx.getAttemptCount() * 2 : -1)));
+     assertEquals(exec.getWaitTime().toNanos(), 0);
+     exec.recordFailure(e);
+
+File: src/test/java/net/jodah/failsafe/Testing.java
+Patch:
+@@ -246,14 +246,14 @@ public static <T extends FailurePolicy<T, R>, R> T withLogs(T policy) {
+   }
+ 
+   public static <T> RetryPolicy<T> withStats(RetryPolicy<T> retryPolicy, Stats stats) {
+-    return withStats(retryPolicy, stats, false);
++    return withStatsAndLogs(retryPolicy, stats, false);
+   }
+ 
+   public static <T> RetryPolicy<T> withStatsAndLogs(RetryPolicy<T> retryPolicy, Stats stats) {
+-    return withStats(retryPolicy, stats, true);
++    return withStatsAndLogs(retryPolicy, stats, true);
+   }
+ 
+-  private static <T> RetryPolicy<T> withStats(RetryPolicy<T> retryPolicy, Stats stats, boolean withLogging) {
++  private static <T> RetryPolicy<T> withStatsAndLogs(RetryPolicy<T> retryPolicy, Stats stats, boolean withLogging) {
+     retryPolicy.onFailedAttempt(e -> {
+       stats.executionCount++;
+       stats.failedAttemptCount++;
+
+File: src/test/java/net/jodah/failsafe/AsyncFailsafeTest.java
+Patch:
+@@ -354,7 +354,7 @@ private void assertCancel(Function<FailsafeExecutor<?>, Future<?>> executorCalla
+ 
+     // Then
+     assertTrue(future.isCancelled());
+-    assertTrue(future.cancelFunctions.isEmpty());
++    // assertTrue(future.cancelFunctions.isEmpty());
+     assertTrue(future.isDone());
+     assertThrows(future::get, CancellationException.class);
+   }
+
+File: src/main/java/net/jodah/failsafe/CircuitBreaker.java
+Patch:
+@@ -662,7 +662,7 @@ public void open(ExecutionContext<R> context) {
+   };
+ 
+   @Override
+-  public PolicyExecutor toExecutor(AbstractExecution<R> execution) {
+-    return new CircuitBreakerExecutor<>(this, execution);
++  public PolicyExecutor<R, ? extends Policy<R>> toExecutor(int policyIndex) {
++    return new CircuitBreakerExecutor<>(this, policyIndex);
+   }
+ }
+
+File: src/main/java/net/jodah/failsafe/CircuitBreakerExecutor.java
+Patch:
+@@ -22,8 +22,8 @@
+  * @author Jonathan Halterman
+  */
+ class CircuitBreakerExecutor<R> extends PolicyExecutor<R, CircuitBreaker<R>> {
+-  CircuitBreakerExecutor(CircuitBreaker<R> circuitBreaker, AbstractExecution<R> execution) {
+-    super(circuitBreaker, execution);
++  CircuitBreakerExecutor(CircuitBreaker<R> circuitBreaker, int policyIndex) {
++    super(circuitBreaker, policyIndex);
+   }
+ 
+   @Override
+@@ -41,7 +41,7 @@ protected void onSuccess(ExecutionResult result) {
+   }
+ 
+   @Override
+-  protected ExecutionResult onFailure(ExecutionResult result) {
++  protected ExecutionResult onFailure(AbstractExecution<R> execution, ExecutionResult result) {
+     policy.recordExecutionFailure(execution);
+     return result;
+   }
+
+File: src/main/java/net/jodah/failsafe/Fallback.java
+Patch:
+@@ -246,7 +246,7 @@ CompletableFuture<R> applyStage(R result, Throwable failure, ExecutionContext<R>
+   }
+ 
+   @Override
+-  public PolicyExecutor toExecutor(AbstractExecution<R> execution) {
+-    return new FallbackExecutor<>(this, execution, failedAttemptListener);
++  public PolicyExecutor<R, ? extends Policy<R>> toExecutor(int policyIndex) {
++    return new FallbackExecutor<>(this, policyIndex, failedAttemptListener);
+   }
+ }
+
+File: src/main/java/net/jodah/failsafe/Policy.java
+Patch:
+@@ -28,5 +28,5 @@ public interface Policy<R> {
+    * Returns an {@link PolicyExecutor} capable of performing an execution in the context of a Policy and handling
+    * results according to the Policy.
+    */
+-  PolicyExecutor<R, Policy<R>> toExecutor(AbstractExecution<R> execution);
++  PolicyExecutor<R, ? extends Policy<R>> toExecutor(int policyIndex);
+ }
+
+File: src/main/java/net/jodah/failsafe/Timeout.java
+Patch:
+@@ -111,7 +111,7 @@ public static <R> Timeout<R> of(Duration timeout) {
+   }
+ 
+   @Override
+-  public PolicyExecutor toExecutor(AbstractExecution<R> execution) {
+-    return new TimeoutExecutor<>(this, execution);
++  public PolicyExecutor<R, ? extends Policy<R>> toExecutor(int policyIndex) {
++    return new TimeoutExecutor<>(this, policyIndex);
+   }
+ }
+
+File: src/main/java/net/jodah/failsafe/function/DelayFunction.java
+Patch:
+@@ -33,5 +33,5 @@ public interface DelayFunction<R, F extends Throwable> {
+    * @return a non-negative duration to be used as the delay before next execution attempt, otherwise (null or negative
+    * duration) means fall back to the otherwise configured delay
+    */
+-  Duration computeDelay(R result, F failure, ExecutionContext context);
++  Duration computeDelay(R result, F failure, ExecutionContext<R> context);
+ }
+\ No newline at end of file
+
+File: src/main/java/net/jodah/failsafe/internal/ClosedState.java
+Patch:
+@@ -22,7 +22,7 @@
+ public class ClosedState extends CircuitState {
+   private final CircuitBreakerInternals internals;
+ 
+-  public ClosedState(CircuitBreaker breaker, CircuitBreakerInternals internals) {
++  public ClosedState(CircuitBreaker<?> breaker, CircuitBreakerInternals internals) {
+     super(breaker, CircuitStats.create(breaker, capacityFor(breaker), true, null));
+     this.internals = internals;
+   }
+@@ -43,10 +43,10 @@ public synchronized void handleConfigChange() {
+   }
+ 
+   /**
+-   * Checks to see if the the executions and failure thresholds have been exceeded, opening the circuit if so.
++   * Checks to see if the executions and failure thresholds have been exceeded, opening the circuit if so.
+    */
+   @Override
+-  synchronized void checkThreshold(ExecutionContext context) {
++  synchronized void checkThreshold(ExecutionContext<?> context) {
+     // Execution threshold will only be set for time based thresholding
+     if (stats.getExecutionCount() >= breaker.getFailureExecutionThreshold()) {
+       double failureRateThreshold = breaker.getFailureRateThreshold();
+
+File: src/main/java/net/jodah/failsafe/internal/HalfOpenState.java
+Patch:
+@@ -22,7 +22,7 @@
+ public class HalfOpenState extends CircuitState {
+   private final CircuitBreakerInternals internals;
+ 
+-  public HalfOpenState(CircuitBreaker breaker, CircuitBreakerInternals internals) {
++  public HalfOpenState(CircuitBreaker<?> breaker, CircuitBreakerInternals internals) {
+     super(breaker, CircuitStats.create(breaker, capacityFor(breaker), false, null));
+     this.internals = internals;
+   }
+@@ -54,7 +54,7 @@ public synchronized void handleConfigChange() {
+    * Else the circuit is opened or closed based on whether the failure threshold was exceeded.
+    */
+   @Override
+-  synchronized void checkThreshold(ExecutionContext context) {
++  synchronized void checkThreshold(ExecutionContext<?> context) {
+     boolean successesExceeded;
+     boolean failuresExceeded;
+ 
+
+File: src/main/java/net/jodah/failsafe/internal/OpenState.java
+Patch:
+@@ -24,7 +24,7 @@ public class OpenState extends CircuitState {
+   private final long startTime = System.nanoTime();
+   private final long delayNanos;
+ 
+-  public OpenState(CircuitBreaker breaker, CircuitState previousState, Duration delay) {
++  public OpenState(CircuitBreaker<?> breaker, CircuitState previousState, Duration delay) {
+     super(breaker, previousState.stats);
+     this.delayNanos = delay.toNanos();
+   }
+
+File: src/main/java/net/jodah/failsafe/internal/util/Assert.java
+Patch:
+@@ -16,6 +16,8 @@
+ package net.jodah.failsafe.internal.util;
+ 
+ /**
++ * Assertion utilities.
++ *
+  * @author Jonathan Halterman
+  */
+ public final class Assert {
+
+File: src/test/java/net/jodah/failsafe/Asserts.java
+Patch:
+@@ -45,7 +45,7 @@ public static void assertMatches(Throwable actual, List<Class<? extends Throwabl
+       if (!expected.equals(current.getClass()))
+         Assert.fail(
+           String.format("Bad exception type. Expected %s but was %s", Arrays.toString(throwableHierarchy.toArray()),
+-            actual));
++            actual), actual);
+       current = current.getCause();
+     }
+   }
+
+File: src/test/java/net/jodah/failsafe/DelayablePolicyTest.java
+Patch:
+@@ -15,7 +15,7 @@ public class DelayablePolicyTest {
+ 
+   static class FooPolicy<R> extends DelayablePolicy<FooPolicy<R>, R> {
+     @Override
+-    public PolicyExecutor<R, Policy<R>> toExecutor(AbstractExecution<R> execution) {
++    public PolicyExecutor<R, Policy<R>> toExecutor(int policyIndex) {
+       return null;
+     }
+   }
+
+File: src/test/java/net/jodah/failsafe/functional/ShutdownExecutorTest.java
+Patch:
+@@ -38,7 +38,7 @@ public void shouldHandleInitialSchedulingFailure() {
+       .with(executor)
+       .runAsync(() -> waiter.fail("Should not execute supplier since executor has been shutdown"));
+ 
+-    assertThrows(future::get, ExecutionException.class, RejectedExecutionException.class);
++    assertThrows(() -> future.get(1000, TimeUnit.SECONDS), ExecutionException.class, RejectedExecutionException.class);
+   }
+ 
+   /**
+
+File: src/test/java/net/jodah/failsafe/issues/Issue190Test.java
+Patch:
+@@ -40,7 +40,7 @@ public void test() throws Throwable {
+       successEvents.incrementAndGet();
+       waiter.resume();
+     }).getAsyncExecution(execution -> Testing.futureResult(executor, true).whenComplete((result, failure) -> {
+-      execution.complete(result);
++      execution.recordResult(result);
+     })).get();
+ 
+     waiter.await(1000);
+
+File: src/test/java/net/jodah/failsafe/issues/Issue242Test.java
+Patch:
+@@ -17,8 +17,7 @@ public void shouldDelayOnExplicitRetry() throws Throwable {
+ 
+     long startTime = System.currentTimeMillis();
+     Failsafe.with(retryPolicy).runAsyncExecution(exec -> {
+-      if (!exec.complete(null, null))
+-        exec.retry();
++      exec.record(null, null);
+     }).get();
+     assertTrue(System.currentTimeMillis() - startTime > 200, "Expected delay between retries");
+   }
+
+File: src/main/java/net/jodah/failsafe/RetryPolicy.java
+Patch:
+@@ -563,8 +563,8 @@ public RetryPolicy<R> withMaxRetries(int maxRetries) {
+   }
+ 
+   @Override
+-  public PolicyExecutor toExecutor(AbstractExecution execution) {
+-    return new RetryPolicyExecutor(this, execution, abortListener, failedAttemptListener, retriesExceededListener,
++  public PolicyExecutor toExecutor(AbstractExecution<R> execution) {
++    return new RetryPolicyExecutor<>(this, execution, abortListener, failedAttemptListener, retriesExceededListener,
+       retryListener, retryScheduledListener);
+   }
+ }
+
+File: src/main/java/net/jodah/failsafe/TimeoutExceededException.java
+Patch:
+@@ -23,14 +23,14 @@
+ public class TimeoutExceededException extends FailsafeException {
+   private static final long serialVersionUID = 1L;
+ 
+-  private final Timeout timeout;
++  private final Timeout<?> timeout;
+ 
+-  public TimeoutExceededException(Timeout timeout) {
++  public TimeoutExceededException(Timeout<?> timeout) {
+     this.timeout = timeout;
+   }
+ 
+   /** Returns the {@link Timeout} that caused the exception. */
+-  public Timeout getTimeout() {
++  public Timeout<?> getTimeout() {
+     return timeout;
+   }
+ }
+
+File: src/main/java/net/jodah/failsafe/internal/CircuitBreakerInternals.java
+Patch:
+@@ -20,9 +20,10 @@
+ /**
+  * Internal CircuitBreaker APIs.
+  *
++ * @param <R> result type
+  * @author Jonathan Halterman
+  */
+-public interface CircuitBreakerInternals {
++public interface CircuitBreakerInternals<R> {
+   /**
+    * Returns the current number of executions occurring on the circuit breaker. Executions are started when a {@code
+    * Failsafe} call begins and ended when a result is recorded.
+@@ -33,5 +34,5 @@ public interface CircuitBreakerInternals {
+    * Opens the circuit breaker and considers the {@code context} when computing the delay before the
+    * circuit breaker will transition to half open.
+    */
+-  void open(ExecutionContext context);
++  void open(ExecutionContext<R> context);
+ }
+
+File: src/main/java/net/jodah/failsafe/Fallback.java
+Patch:
+@@ -220,9 +220,8 @@ public boolean isAsync() {
+   }
+ 
+   /**
+-   * Registers the {@code listener} to be called when an execution attempt fails. You can also use {@link
+-   * #onFailure(CheckedConsumer) onFailure} to determine when the execution attempt fails <i>and</i> and the fallback
+-   * result fails.
++   * Registers the {@code listener} to be called when the last execution attempt prior to the fallback failed. You can
++   * also use {@link #onFailure(CheckedConsumer) onFailure} to determine when the fallback attempt also fails.
+    * <p>Note: Any exceptions that are thrown from within the {@code listener} are ignored.</p>
+    */
+   public Fallback<R> onFailedAttempt(CheckedConsumer<? extends ExecutionAttemptedEvent<R>> listener) {
+
+File: src/test/java/net/jodah/failsafe/issues/Issue284Test.java
+Patch:
+@@ -44,7 +44,7 @@ public void testFallbackSuccess() {
+     String result = Failsafe.with(fallback).get(() -> null);
+ 
+     assertEquals(result, "hello");
+-    assertEquals(failedAttempt.get(), 0);
++    assertEquals(failedAttempt.get(), 1);
+     assertTrue(success.get(), "Fallback should have been successful");
+   }
+ 
+
+File: src/main/java/net/jodah/failsafe/CircuitBreakerExecutor.java
+Patch:
+@@ -18,10 +18,11 @@
+ /**
+  * A PolicyExecutor that handles failures according to a {@link CircuitBreaker}.
+  *
++ * @param <R> result type
+  * @author Jonathan Halterman
+  */
+-class CircuitBreakerExecutor extends PolicyExecutor<CircuitBreaker> {
+-  CircuitBreakerExecutor(CircuitBreaker circuitBreaker, AbstractExecution execution) {
++class CircuitBreakerExecutor<R> extends PolicyExecutor<R, CircuitBreaker<R>> {
++  CircuitBreakerExecutor(CircuitBreaker<R> circuitBreaker, AbstractExecution<R> execution) {
+     super(circuitBreaker, execution);
+   }
+ 
+
+File: src/main/java/net/jodah/failsafe/Policy.java
+Patch:
+@@ -28,5 +28,5 @@ public interface Policy<R> {
+    * Returns an {@link PolicyExecutor} capable of performing an execution in the context of a Policy and handling
+    * results according to the Policy.
+    */
+-  PolicyExecutor<Policy<R>> toExecutor(AbstractExecution execution);
++  PolicyExecutor<R, Policy<R>> toExecutor(AbstractExecution<R> execution);
+ }
+
+File: src/main/java/net/jodah/failsafe/event/ExecutionAttemptedEvent.java
+Patch:
+@@ -27,7 +27,7 @@ public class ExecutionAttemptedEvent<R> extends ExecutionEvent {
+   private final R result;
+   private final Throwable failure;
+ 
+-  public ExecutionAttemptedEvent(R result, Throwable failure, ExecutionContext context) {
++  public ExecutionAttemptedEvent(R result, Throwable failure, ExecutionContext<R> context) {
+     super(context);
+     this.result = result;
+     this.failure = failure;
+
+File: src/main/java/net/jodah/failsafe/event/ExecutionCompletedEvent.java
+Patch:
+@@ -27,7 +27,7 @@ public class ExecutionCompletedEvent<R> extends ExecutionEvent {
+   private final R result;
+   private final Throwable failure;
+ 
+-  public ExecutionCompletedEvent(R result, Throwable failure, ExecutionContext context) {
++  public ExecutionCompletedEvent(R result, Throwable failure, ExecutionContext<R> context) {
+     super(context);
+     this.result = result;
+     this.failure = failure;
+
+File: src/main/java/net/jodah/failsafe/event/ExecutionEvent.java
+Patch:
+@@ -25,9 +25,9 @@
+  * @author Jonathan Halterman
+  */
+ public abstract class ExecutionEvent {
+-  private final ExecutionContext context;
++  private final ExecutionContext<?> context;
+ 
+-  ExecutionEvent(ExecutionContext context) {
++  ExecutionEvent(ExecutionContext<?> context) {
+     this.context = context;
+   }
+ 
+
+File: src/main/java/net/jodah/failsafe/event/ExecutionScheduledEvent.java
+Patch:
+@@ -34,7 +34,7 @@ public class ExecutionScheduledEvent<R> extends ExecutionEvent {
+   private final Throwable failure;
+   private final Duration delay;
+ 
+-  public ExecutionScheduledEvent(R result, Throwable failure, Duration delay, ExecutionContext context) {
++  public ExecutionScheduledEvent(R result, Throwable failure, Duration delay, ExecutionContext<R> context) {
+     super(context);
+     this.result = result;
+     this.failure = failure;
+
+File: src/main/java/net/jodah/failsafe/function/AsyncRunnable.java
+Patch:
+@@ -24,5 +24,5 @@
+  */
+ @FunctionalInterface
+ public interface AsyncRunnable {
+-  void run(AsyncExecution execution) throws Exception;
++  void run(AsyncExecution<Void> execution) throws Exception;
+ }
+
+File: src/main/java/net/jodah/failsafe/function/CheckedConsumer.java
+Patch:
+@@ -19,7 +19,7 @@
+  * A Consumer that throws checked exceptions.
+  *
+  * @author Jonathan Halterman
+- * @param <T> result type
++ * @param <T> input type
+  */
+ @FunctionalInterface
+ public interface CheckedConsumer<T> {
+
+File: src/main/java/net/jodah/failsafe/function/CheckedFunction.java
+Patch:
+@@ -19,7 +19,8 @@
+  * A Function that throws checked exceptions.
+  *
+  * @author Jonathan Halterman
+- * @param <T> result type
++ * @param <T> input type
++ * @param <R> result type
+  */
+ @FunctionalInterface
+ public interface CheckedFunction<T, R> {
+
+File: src/main/java/net/jodah/failsafe/function/CheckedSupplier.java
+Patch:
+@@ -18,8 +18,8 @@
+ /**
+  * A Supplier that throws checked exceptions.
+  *
++ * @param <T> supplied type
+  * @author Jonathan Halterman
+- * @param <T> result type
+  */
+ @FunctionalInterface
+ public interface CheckedSupplier<T> {
+
+File: src/main/java/net/jodah/failsafe/function/ContextualRunnable.java
+Patch:
+@@ -24,5 +24,5 @@
+  */
+ @FunctionalInterface
+ public interface ContextualRunnable {
+-  void run(ExecutionContext context) throws Throwable;
++  void run(ExecutionContext<Void> context) throws Throwable;
+ }
+
+File: src/main/java/net/jodah/failsafe/internal/util/DelegatingScheduler.java
+Patch:
+@@ -125,7 +125,7 @@ private ExecutorService executorService() {
+   }
+ 
+   @Override
+-  @SuppressWarnings("unchecked")
++  @SuppressWarnings({ "unchecked", "rawtypes" })
+   public ScheduledFuture<?> schedule(Callable<?> callable, long delay, TimeUnit unit) {
+     ScheduledCompletableFuture promise = new ScheduledCompletableFuture<>(delay, unit);
+     ExecutorService es = executorService();
+
+File: src/test/java/net/jodah/failsafe/AbstractFailsafeTest.java
+Patch:
+@@ -74,14 +74,14 @@ <T> T get(FailsafeExecutor<T> failsafe, CheckedSupplier<T> supplier) {
+   /**
+    * Does a contextual failsafe get with an optional executor.
+    */
+-  <T> T failsafeGet(Policy<T> policy, ContextualSupplier<T> supplier) {
++  <T> T failsafeGet(Policy<T> policy, ContextualSupplier<T, T> supplier) {
+     return get(Failsafe.with(policy), supplier);
+   }
+ 
+   /**
+    * Does a contextual failsafe get with an optional executor.
+    */
+-  <T> T get(FailsafeExecutor<T> failsafe, ContextualSupplier<T> supplier) {
++  <T> T get(FailsafeExecutor<T> failsafe, ContextualSupplier<T, T> supplier) {
+     return unwrapExceptions(() -> getExecutor() == null ? failsafe.get(supplier) : failsafe.getAsync(supplier).get());
+   }
+ 
+
+File: src/test/java/net/jodah/failsafe/DelayablePolicyTest.java
+Patch:
+@@ -15,7 +15,7 @@ public class DelayablePolicyTest {
+ 
+   static class FooPolicy<R> extends DelayablePolicy<FooPolicy<R>, R> {
+     @Override
+-    public PolicyExecutor<Policy<R>> toExecutor(AbstractExecution execution) {
++    public PolicyExecutor<R, Policy<R>> toExecutor(AbstractExecution<R> execution) {
+       return null;
+     }
+   }
+
+File: src/test/java/net/jodah/failsafe/SyncFailsafeTest.java
+Patch:
+@@ -113,7 +113,7 @@ public void shouldGet() {
+   }
+ 
+   public void shouldGetContextual() {
+-    assertGet((ContextualSupplier<Boolean>) context -> {
++    assertGet((ContextualSupplier<Boolean, Boolean>) context -> {
+       assertEquals(context.getAttemptCount(), counter.get());
+       assertEquals(context.getExecutionCount(), counter.get());
+       counter.incrementAndGet();
+@@ -418,6 +418,6 @@ private <T> T get(FailsafeExecutor<T> failsafe, Object supplier) {
+     if (supplier instanceof CheckedSupplier)
+       return failsafe.get((CheckedSupplier<T>) supplier);
+     else
+-      return failsafe.get((ContextualSupplier<T>) supplier);
++      return failsafe.get((ContextualSupplier<T, T>) supplier);
+   }
+ }
+
+File: src/test/java/net/jodah/failsafe/functional/AsyncExecutionTest.java
+Patch:
+@@ -16,7 +16,6 @@
+ package net.jodah.failsafe.functional;
+ 
+ import net.jodah.failsafe.*;
+-import net.jodah.failsafe.Testing.Stats;
+ import org.testng.annotations.Test;
+ 
+ import java.time.Duration;
+@@ -45,14 +44,14 @@ public void testAsyncExecWithPassthroughPolicies() {
+         if (counter.getAndIncrement() < 3)
+           ex.retryOn(new IllegalStateException());
+         else
+-          ex.complete("done");
++          ex.complete();
+       });
+     }, e -> {
+       assertEquals(e.getAttemptCount(), 4);
+       assertEquals(e.getExecutionCount(), 4);
+       assertEquals(rpStats.failedAttemptCount, 3);
+       assertEquals(rpStats.retryCount, 3);
+-    }, "done");
++    }, null);
+ 
+     // Test RetryPolicy, Fallback
+     test.accept(Failsafe.with(rp, fb));
+
+File: src/test/java/net/jodah/failsafe/functional/DelayableCircuitBreakerTest.java
+Patch:
+@@ -35,7 +35,7 @@ public void testUncheckedExceptionInDelayFunction() {
+     });
+ 
+     assertFalse(breaker.isOpen());
+-    Failsafe.with(breaker).run((ExecutionContext context) -> {
++    Failsafe.with(breaker).run((ExecutionContext<Void> context) -> {
+       throw new RuntimeException("try again");
+     });
+     assertTrue(breaker.isOpen());
+
+File: src/test/java/net/jodah/failsafe/functional/DelayableRetryPolicyTest.java
+Patch:
+@@ -40,7 +40,7 @@ public void testUncheckedExceptionInDelayFunction() {
+       throw new UncheckedExpectedException();
+     });
+ 
+-    Failsafe.with(retryPolicy).run((ExecutionContext context) -> {
++    Failsafe.with(retryPolicy).run((ExecutionContext<Void> context) -> {
+       throw new RuntimeException("try again");
+     });
+   }
+
+File: src/test/java/net/jodah/failsafe/functional/FailsafePolicyOrderingTest.java
+Patch:
+@@ -183,7 +183,7 @@ private void assertFallbackRetryPolicyAndRetryPolicy(boolean sync) throws Throwa
+       waiter.assertEquals(5, e.getAttemptCount());
+       waiter.resume();
+     });
+-    ContextualSupplier<Object> supplier = ctx -> {
++    ContextualSupplier<Object, Object> supplier = ctx -> {
+       throw ctx.getAttemptCount() % 2 == 0 ? new IllegalStateException() : new IllegalArgumentException();
+     };
+ 
+@@ -294,11 +294,11 @@ private <T> T failsafeGet(FailsafeExecutor<T> failsafe, Object supplier, boolean
+     if (sync)
+       return Testing.ignoreExceptions(() -> supplier instanceof CheckedSupplier ?
+         failsafe.get((CheckedSupplier<T>) supplier) :
+-        failsafe.get((ContextualSupplier<T>) supplier));
++        failsafe.get((ContextualSupplier<T, T>) supplier));
+     else
+       return Testing.ignoreExceptions(() -> (supplier instanceof CheckedSupplier ?
+         failsafe.getAsync((CheckedSupplier<T>) supplier) :
+-        failsafe.getAsync((ContextualSupplier<T>) supplier)).get());
++        failsafe.getAsync((ContextualSupplier<T, T>) supplier)).get());
+   }
+ 
+   private <T> void assertFailsafeFailure(FailsafeExecutor<T> failsafe, CheckedSupplier<T> supplier, boolean sync,
+
+File: src/test/java/net/jodah/failsafe/issues/Issue267Test.java
+Patch:
+@@ -1,5 +1,6 @@
+ package net.jodah.failsafe.issues;
+ 
++import net.jodah.failsafe.ExecutionContext;
+ import net.jodah.failsafe.Failsafe;
+ import net.jodah.failsafe.Fallback;
+ import net.jodah.failsafe.Timeout;
+@@ -22,7 +23,7 @@ public void test() {
+     assertNull(result);
+   }
+ 
+-  private Integer connect() throws ConnectException {
++  private Integer connect(ExecutionContext<Integer> context) throws ConnectException {
+     throw new ConnectException();
+   }
+ 
+
+File: src/main/java/net/jodah/failsafe/FailurePolicy.java
+Patch:
+@@ -27,7 +27,8 @@
+ /**
+  * A Policy that captures conditions to determine whether an execution is a failure.
+  * <p>
+- * If no handlers are configured, the execution is considered a failure if an Exception was thrown.
++ * By default, if no handlers are configured, the execution is considered a failure if an Exception was thrown. If
++ * multuple handlers are configured, they are logically OR'ed.
+  * </p>
+  *
+  * @param <S> self type
+
+File: src/test/java/net/jodah/failsafe/functional/TimeoutTest.java
+Patch:
+@@ -317,14 +317,14 @@ public void testFallbackThenTimeoutWithBlockedSupplier() {
+   public void testFallbackThenTimeoutWithBlockedFallback() {
+     AtomicInteger timeoutCounter = new AtomicInteger();
+     AtomicInteger fallbackCounter = new AtomicInteger();
+-    Timeout<Object> timeout = Timeout.of(Duration.ofMillis(1)).onFailure(e -> {
++    Timeout<Object> timeout = Timeout.of(Duration.ofMillis(100)).onFailure(e -> {
+       System.out.println("Timed out");
+       timeoutCounter.incrementAndGet();
+     });
+     Fallback<Object> fallback = Fallback.of(() -> {
+       System.out.println("Falling back");
+       fallbackCounter.incrementAndGet();
+-      Thread.sleep(100);
++      Thread.sleep(200);
+       throw new IllegalStateException();
+     });
+ 
+
+File: src/main/java/net/jodah/failsafe/FailsafeExecutor.java
+Patch:
+@@ -31,7 +31,8 @@
+ /**
+  * <p>
+  * An executor that handles failures according to configured {@link FailurePolicy policies}. Can be created via {@link
+- * Failsafe#with(Policy[])}.
++ * Failsafe#with(Policy, Policy[])} to support policy based execution failure handling, or {@link Failsafe#none()} to
++ * support execution with no failure handling.
+  * <p>
+  * Async executions are run by default on the {@link ForkJoinPool#commonPool()}. Alternative executors can be configured
+  * via {@link #with(ScheduledExecutorService)} and similar methods. All async executions are cancellable and
+@@ -402,7 +403,7 @@ private <T> T call(Function<Execution, CheckedSupplier<?>> supplierFn) {
+    * @throws NullPointerException if the {@code supplierFn} is null
+    * @throws RejectedExecutionException if the {@code supplierFn} cannot be scheduled for execution
+    */
+-  @SuppressWarnings("unchecked")
++  @SuppressWarnings({ "unchecked", "rawtypes" })
+   private <T> CompletableFuture<T> callAsync(
+     Function<AsyncExecution, Supplier<CompletableFuture<ExecutionResult>>> supplierFn, boolean asyncExecution) {
+     FailsafeFuture<T> future = new FailsafeFuture(this);
+
+File: src/main/java/net/jodah/failsafe/PolicyExecutor.java
+Patch:
+@@ -31,7 +31,8 @@
+ public abstract class PolicyExecutor<P extends Policy> {
+   protected final P policy;
+   protected final AbstractExecution execution;
+-  /* Index of the policy relative to other policies in a composition, inner-most first */ int policyIndex;
++  // Index of the policy relative to other policies in a composition, inner-most first
++  int policyIndex;
+ 
+   protected PolicyExecutor(P policy, AbstractExecution execution) {
+     this.policy = policy;
+
+File: src/test/java/net/jodah/failsafe/AbstractFailsafeTest.java
+Patch:
+@@ -347,7 +347,7 @@ public void shouldTimeout() throws Throwable {
+     };
+ 
+     // When / Then
+-    FailsafeExecutor<Object> failsafe = Failsafe.with(rp, timeout).onSuccess(e -> {
++    FailsafeExecutor<Object> failsafe = Failsafe.with(rp, timeout).onComplete(e -> {
+       waiter.assertEquals(e.getAttemptCount(), 3);
+       waiter.assertEquals(e.getExecutionCount(), 3);
+       waiter.assertEquals("foo2", e.getResult());
+
+File: src/main/java/net/jodah/failsafe/AsyncExecution.java
+Patch:
+@@ -182,7 +182,7 @@ void executeAsync(boolean asyncExecution) {
+     if (!asyncExecution)
+       outerExecutionSupplier.get().whenComplete(this::complete);
+     else
+-      future.inject(scheduler.schedule(innerExecutionSupplier::get, 0, TimeUnit.NANOSECONDS));
++      future.injectPolicy(scheduler.schedule(innerExecutionSupplier::get, 0, TimeUnit.NANOSECONDS));
+   }
+ 
+   /**
+
+File: src/main/java/net/jodah/failsafe/FallbackExecutor.java
+Patch:
+@@ -96,7 +96,7 @@ protected Supplier<CompletableFuture<ExecutionResult>> supplyAsync(
+           if (!policy.isAsync())
+             callable.call();
+           else
+-            future.inject(scheduler.schedule(callable, result.getWaitNanos(), TimeUnit.NANOSECONDS));
++            future.injectPolicy(scheduler.schedule(callable, result.getWaitNanos(), TimeUnit.NANOSECONDS));
+         } catch (Throwable t) {
+           promise.completeExceptionally(t);
+         }
+
+File: src/main/java/net/jodah/failsafe/RetryPolicyExecutor.java
+Patch:
+@@ -133,7 +133,7 @@ else if (postResult != null) {
+                               retryScheduledListener.handle(postResult, execution);
+ 
+                             previousResult = postResult;
+-                            future.inject(scheduler.schedule(this, postResult.getWaitNanos(), TimeUnit.NANOSECONDS));
++                            future.injectPolicy(scheduler.schedule(this, postResult.getWaitNanos(), TimeUnit.NANOSECONDS));
+                             future.injectCancelFn(() -> {
+                               // Ensure that the promise completes if a scheduled retry is cancelled
+                               if (executionCancelled())
+
+File: src/main/java/net/jodah/failsafe/RetryPolicyExecutor.java
+Patch:
+@@ -37,7 +37,7 @@ class RetryPolicyExecutor extends PolicyExecutor<RetryPolicy> {
+   private volatile int failedAttempts;
+   private volatile boolean retriesExceeded;
+   /** The fixed, backoff, random or computed delay time in nanoseconds. */
+-  private volatile long delayNanos = -1;
++  private volatile long delayNanos;
+ 
+   // Listeners
+   private final EventListener abortListener;
+@@ -221,7 +221,7 @@ private long getFixedOrRandomDelayNanos(long waitNanos) {
+     Duration delayMin = policy.getDelayMin();
+     Duration delayMax = policy.getDelayMax();
+ 
+-    if (waitNanos == -1 && delay != null && !delay.equals(Duration.ZERO))
++    if (waitNanos == 0 && delay != null && !delay.equals(Duration.ZERO))
+       waitNanos = delay.toNanos();
+     else if (delayMin != null && delayMax != null)
+       waitNanos = randomDelayInRange(delayMin.toNanos(), delayMax.toNanos(), Math.random());
+
+File: src/test/java/net/jodah/failsafe/examples/RetryLoopExample.java
+Patch:
+@@ -35,7 +35,7 @@ public class RetryLoopExample {
+   }
+ 
+   public static void main(String... args) throws Throwable {
+-    RetryPolicy retryPolicy = new RetryPolicy<>().handle(IllegalStateException.class).withBackoff(10, 40,
++    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().handle(IllegalStateException.class).withBackoff(10, 40,
+         ChronoUnit.MILLIS);
+     Execution execution = new Execution(retryPolicy);
+ 
+
+File: src/test/java/net/jodah/failsafe/examples/RxJavaExample.java
+Patch:
+@@ -27,11 +27,11 @@
+ public class RxJavaExample {
+   public static void main(String... args) {
+     AtomicInteger failures = new AtomicInteger();
+-    RetryPolicy retryPolicy = new RetryPolicy().withDelay(Duration.ofSeconds(1));
++    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().withDelay(Duration.ofSeconds(1));
+ 
+     Observable.create((Subscriber<? super String> s) -> {
+-      // Fail 3 times then succeed
+-      if (failures.getAndIncrement() < 3)
++      // Fail 2 times then succeed
++      if (failures.getAndIncrement() < 2)
+         s.onError(new RuntimeException());
+       else
+         System.out.println("Subscriber completed successfully");
+
+File: src/main/java/net/jodah/failsafe/Timeout.java
+Patch:
+@@ -56,7 +56,7 @@ public boolean canCancel() {
+   /**
+    * Returns whether the policy can interrupt an execution if the timeout is exceeded.
+    *
+-   * @see #withCancel(boolean)
++   * @see #withInterrupt(boolean)
+    */
+   public boolean canInterrupt() {
+     return interruptable;
+
+File: src/main/java/net/jodah/failsafe/AsyncExecution.java
+Patch:
+@@ -155,7 +155,7 @@ boolean isAsyncExecution() {
+ 
+   /**
+    * Attempts to complete the parent execution, calls failure handlers, and completes the future if needed. Runs
+-   * synchrnously since a concrete result is needed.
++   * synchronously since a concrete result is needed.
+    *
+    * @throws IllegalStateException if the execution is already complete
+    */
+
+File: src/main/java/net/jodah/failsafe/CircuitBreaker.java
+Patch:
+@@ -477,7 +477,7 @@ public synchronized CircuitBreaker<R> withFailureThreshold(int failureThreshold,
+   /**
+    * Configures time based failure thresholding by setting the number of failures that must occur within the {@code
+    * failureThresholdingPeriod} when in a CLOSED state in order to open the circuit. The number of executions must also
+-   * exceed the {@code failureExecutionThreshod} within the {@code failureThresholdingPeriod} when in the CLOSED state
++   * exceed the {@code failureExecutionThreshold} within the {@code failureThresholdingPeriod} when in the CLOSED state
+    * before the circuit can be opened.
+    * <p>
+    * If a {@link #withSuccessThreshold(int) success threshold} is not configured, the {@code failureThreshold} will also
+@@ -515,7 +515,7 @@ public synchronized CircuitBreaker<R> withFailureThreshold(int failureThreshold,
+   /**
+    * Configures time based failure rate thresholding by setting the percentage rate of failures, from 1 to 100, that
+    * must occur within the rolling {@code failureThresholdingPeriod} when in a CLOSED state in order to open the
+-   * circuit. The number of executions must also exceed the {@code failureExecutionThreshod} within the {@code
++   * circuit. The number of executions must also exceed the {@code failureExecutionThreshold} within the {@code
+    * failureThresholdingPeriod} before the circuit can be opened.
+    * <p>
+    * If a {@link #withSuccessThreshold(int) success threshold} is not configured, the {@code failureExecutionThreshold}
+
+File: src/main/java/net/jodah/failsafe/CircuitBreakerOpenException.java
+Patch:
+@@ -29,7 +29,7 @@ public CircuitBreakerOpenException(CircuitBreaker circuitBreaker) {
+     this.circuitBreaker = circuitBreaker;
+   }
+ 
+-  /** Retruns the {@link CircuitBreaker} that caused the exception. */
++  /** Returns the {@link CircuitBreaker} that caused the exception. */
+   public CircuitBreaker getCircuitBreaker() {
+     return circuitBreaker;
+   }
+
+File: src/main/java/net/jodah/failsafe/ExecutionContext.java
+Patch:
+@@ -100,7 +100,7 @@ public Duration getStartTime() {
+   }
+ 
+   /**
+-   * Returns whether the execution has ben cancelled. In this case the implementor shuold attempt to stop execution.
++   * Returns whether the execution has ben cancelled. In this case the implementor should attempt to stop execution.
+    */
+   public boolean isCancelled() {
+     return cancelled;
+
+File: src/main/java/net/jodah/failsafe/FailsafeFuture.java
+Patch:
+@@ -22,7 +22,7 @@
+ import java.util.concurrent.Future;
+ 
+ /**
+- * A CompletableFuture implementation that propogates cancellations and calls completion handlers.
++ * A CompletableFuture implementation that propagates cancellations and calls completion handlers.
+  * <p>
+  * Part of the Failsafe SPI.
+  *
+
+File: src/main/java/net/jodah/failsafe/FailurePolicy.java
+Patch:
+@@ -184,7 +184,7 @@ static <R> BiPredicate<R, Throwable> failurePredicateFor(Predicate<? extends Thr
+   /**
+    * Returns a predicate that evaluates the {@code resultPredicate} against a result, when present.
+    * <p>
+-   * Short-circuts to false without invoking {@code resultPredicate}, when result is not present (i.e.
++   * Short-circuits to false without invoking {@code resultPredicate}, when result is not present (i.e.
+    * BiPredicate.test(null, Throwable)).
+    */
+   static <R> BiPredicate<R, Throwable> resultPredicateFor(Predicate<R> resultPredicate) {
+
+File: src/main/java/net/jodah/failsafe/TimeoutExceededException.java
+Patch:
+@@ -29,7 +29,7 @@ public TimeoutExceededException(Timeout timeout) {
+     this.timeout = timeout;
+   }
+ 
+-  /** Retruns the {@link Timeout} that caused the exception. */
++  /** Returns the {@link Timeout} that caused the exception. */
+   public Timeout getTimeout() {
+     return timeout;
+   }
+
+File: src/main/java/net/jodah/failsafe/event/ExecutionAttemptedEvent.java
+Patch:
+@@ -34,14 +34,14 @@ public ExecutionAttemptedEvent(R result, Throwable failure, ExecutionContext con
+   }
+ 
+   /**
+-   * Returns the failure that preceeded the event, else {@code null} if there was none.
++   * Returns the failure that preceded the event, else {@code null} if there was none.
+    */
+   public Throwable getLastFailure() {
+     return failure;
+   }
+ 
+   /**
+-   * Returns the result that preceeded the event, else {@code null} if there was none.
++   * Returns the result that preceded the event, else {@code null} if there was none.
+    */
+   public R getLastResult() {
+     return result;
+
+File: src/main/java/net/jodah/failsafe/event/ExecutionCompletedEvent.java
+Patch:
+@@ -34,14 +34,14 @@ public ExecutionCompletedEvent(R result, Throwable failure, ExecutionContext con
+   }
+ 
+   /**
+-   * Returns the failure that preceeded the event, else {@code null} if there was none.
++   * Returns the failure that preceded the event, else {@code null} if there was none.
+    */
+   public Throwable getFailure() {
+     return failure;
+   }
+ 
+   /**
+-   * Returns the result that preceeded the event, else {@code null} if there was none.
++   * Returns the result that preceded the event, else {@code null} if there was none.
+    */
+   public R getResult() {
+     return result;
+
+File: src/main/java/net/jodah/failsafe/internal/TimedCircuitStats.java
+Patch:
+@@ -105,7 +105,7 @@ public TimedCircuitStats(int bucketCount, Duration thresholdingPeriod, Clock clo
+ 
+   /**
+    * Copies the most recent stats from the {@code oldStats} into this in order from oldest to newest and orders buckets
+-   * from oldest to newest, with unitialized buckets counting as oldest.
++   * from oldest to newest, with uninitialized buckets counting as oldest.
+    */
+   void copyStats(CircuitStats oldStats) {
+     if (oldStats instanceof TimedCircuitStats) {
+
+File: src/test/java/net/jodah/failsafe/AbstractFailsafeTest.java
+Patch:
+@@ -417,7 +417,7 @@ public void shouldTimeoutAndCancelAndInterrupt() throws Throwable {
+   }
+ 
+   /**
+-   * Ensures that an interrupted execution should always have the interrupt flag cleared aferwards.
++   * Ensures that an interrupted execution should always have the interrupt flag cleared afterwards.
+    */
+   public void shouldHandleNonInterruptableExecution() throws Throwable {
+     // Given
+
+File: src/test/java/net/jodah/failsafe/AsyncFailsafeTest.java
+Patch:
+@@ -287,7 +287,7 @@ public void shouldCompleteFutureExternally() throws Throwable {
+   /**
+    * Tests a scenario where three timeouts should cause all delegates to be cancelled with interrupts.
+    */
+-  public void shouldCancelNestedTimeoutsWithInterupt() throws Throwable {
++  public void shouldCancelNestedTimeoutsWithInterrupt() throws Throwable {
+     // Given
+     RetryPolicy<Boolean> rp = new RetryPolicy<Boolean>().withMaxRetries(2);
+     Timeout<Boolean> timeout1 = Timeout.of(Duration.ofMillis(1000));
+
+File: src/test/java/net/jodah/failsafe/CircuitBreakerTest.java
+Patch:
+@@ -112,7 +112,7 @@ public void shouldRequireValidSuccessThresholdRatio() {
+     assertThrows(() -> new CircuitBreaker().withSuccessThreshold(2, 1), IllegalArgumentException.class);
+   }
+ 
+-  public void shouldDefaulDelay() throws Throwable {
++  public void shouldDefaultDelay() throws Throwable {
+     CircuitBreaker breaker = new CircuitBreaker();
+     breaker.recordFailure();
+     Thread.sleep(100);
+
+File: src/test/java/net/jodah/failsafe/FailsafeFutureTest.java
+Patch:
+@@ -50,12 +50,12 @@ public void shouldCallOnCompleteWhenCancelled() throws Throwable {
+ 
+     future.cancel(true);
+     waiter.await(1000, 2);
+-    future.complete("unxpected2");
++    future.complete("unexpected2");
+     Asserts.assertThrows(future::get, CancellationException.class);
+   }
+ 
+   /**
+-   * Asserts that a completed future ignroes subsequent completion attempts.
++   * Asserts that a completed future ignores subsequent completion attempts.
+    */
+   public void shouldNotCancelCompletedFuture() throws Throwable {
+     // Given
+@@ -83,7 +83,7 @@ public void shouldNotCompleteCancelledFuture() {
+     });
+ 
+     future.cancel(true);
+-    future.complete("unxpected2");
++    future.complete("unexpected2");
+     Asserts.assertThrows(future::get, CancellationException.class);
+   }
+ }
+
+File: src/test/java/net/jodah/failsafe/ListenersTest.java
+Patch:
+@@ -241,7 +241,7 @@ public void testForUnhandledFailureAsync() throws Throwable {
+   }
+ 
+   /**
+-   * Asserts that listeners aree called the expected number of times when retries are exceeded.
++   * Asserts that listeners are called the expected number of times when retries are exceeded.
+    */
+   private void assertForRetriesExceeded(boolean sync) throws Throwable {
+     // Given - Fail 4 times and exceed retries
+
+File: src/test/java/net/jodah/failsafe/internal/CountingCircuitStatsTest.java
+Patch:
+@@ -11,7 +11,7 @@
+ public class CountingCircuitStatsTest extends CircuitStatsTest {
+   CountingCircuitStats stats;
+ 
+-  public void shouldReturnUnitializedValues() {
++  public void shouldReturnUninitializedValues() {
+     stats = new CountingCircuitStats(100, null);
+     for (int i = 0; i < 100; i++) {
+       assertEquals(stats.setNext(true), -1);
+
+File: src/test/java/net/jodah/failsafe/internal/HalfOpenStateTest.java
+Patch:
+@@ -431,7 +431,7 @@ public void shouldHandleLateSetFailureRatio() {
+    * Asserts that the late configuration of a success ratio is handled by resetting the state's internal tracking. Also
+    * asserts that executions from prior configurations are carried over to a new configuration.
+    */
+-  public void shouldHandleLateSetSucessRatio() {
++  public void shouldHandleLateSetSuccessRatio() {
+     // Given
+     breaker.halfOpen();
+     HalfOpenState state = Testing.stateFor(breaker);
+
+File: src/test/java/net/jodah/failsafe/internal/TimedCircuitStatsTest.java
+Patch:
+@@ -47,7 +47,7 @@ public void testMetrics() {
+     assertEquals(stats.getExecutionCount(), 0);
+ 
+     // Record into bucket 1
+-    recordExecutions(stats, 50, i -> i % 5 == 0); // currenetTime = 0
++    recordExecutions(stats, 50, i -> i % 5 == 0); // currentTime = 0
+     assertEquals(stats.currentIndex, 0);
+     assertEquals(stats.getCurrentBucket().startTimeMillis, 0);
+     assertEquals(stats.getSuccessCount(), 10);
+
+File: src/test/java/net/jodah/failsafe/issues/Issue131Test.java
+Patch:
+@@ -32,7 +32,7 @@ public class Issue131Test {
+ 
+   /**
+    * This predicate is invoked in failure scenarios with an arg of null,
+-   * producing a {@link NullPointerException} yielding surpising results.
++   * producing a {@link NullPointerException} yielding surprising results.
+    */
+   private static Predicate<String> handleIfEqualsIgnoreCaseFoo = s -> {
+     return s.equalsIgnoreCase("foo"); // produces NPE when invoked in failing scenarios.
+
+File: src/test/java/net/jodah/failsafe/issues/Issue192Test.java
+Patch:
+@@ -40,7 +40,7 @@ protected void afterTest() {
+   /**
+    * Asserts the handling of multiple retry policies with an async execution.
+    */
+-  public void testAsnc() {
++  public void testAsync() {
+     AtomicInteger exceptionA = new AtomicInteger();
+     AtomicInteger exceptionB = new AtomicInteger();
+     AtomicInteger exceptionC = new AtomicInteger();
+
+File: src/main/java/net/jodah/failsafe/RetryPolicy.java
+Patch:
+@@ -229,7 +229,9 @@ public RetryPolicy<R> onAbort(CheckedConsumer<? extends ExecutionCompletedEvent<
+   }
+ 
+   /**
+-   * Registers the {@code listener} to be called when an execution attempt fails.
++   * Registers the {@code listener} to be called when an execution attempt fails. You can also use {@link
++   * #onFailure(CheckedConsumer) onFailure} to determine when the execution attempt fails <i>and</i> and all retries
++   * have failed.
+    * <p>Note: Any exceptions that are thrown from within the {@code listener} are ignored.</p>
+    */
+   public RetryPolicy<R> onFailedAttempt(CheckedConsumer<? extends ExecutionAttemptedEvent<R>> listener) {
+
+File: src/main/java/net/jodah/failsafe/CircuitBreakerExecutor.java
+Patch:
+@@ -52,6 +52,6 @@ protected void onSuccess(ExecutionResult result) {
+   @Override
+   protected ExecutionResult onFailure(ExecutionResult result) {
+     policy.recordExecutionFailure(execution);
+-    return result.withComplete();
++    return result;
+   }
+ }
+
+File: src/main/java/net/jodah/failsafe/TimeoutExecutor.java
+Patch:
+@@ -44,7 +44,7 @@ protected ExecutionResult onFailure(ExecutionResult result) {
+     // Handle async execution timeouts
+     if (!(result.getFailure() instanceof TimeoutExceededException))
+       result = ExecutionResult.failure(new TimeoutExceededException(policy));
+-    return result.withComplete();
++    return result;
+   }
+ 
+   /**
+
+File: src/test/java/net/jodah/failsafe/issues/Issue242Test.java
+Patch:
+@@ -10,9 +10,9 @@
+ 
+ @Test
+ public class Issue242Test {
+-  public void test() throws Throwable {
++  public void shouldDelayOnExplicitRetry() throws Throwable {
+     RetryPolicy<String> retryPolicy = new RetryPolicy<String>().handleResult(null)
+-      .withDelay(Duration.ofMillis(100))
++      .withDelay(Duration.ofMillis(110))
+       .withMaxAttempts(3);
+ 
+     long startTime = System.currentTimeMillis();
+
+File: src/main/java/net/jodah/failsafe/CircuitBreaker.java
+Patch:
+@@ -434,7 +434,7 @@ private void transitionTo(State newState, CheckedRunnable listener, ExecutionCon
+     if (transitioned && listener != null) {
+       try {
+         listener.run();
+-      } catch (Exception ignore) {
++      } catch (Throwable ignore) {
+       }
+     }
+   }
+
+File: src/main/java/net/jodah/failsafe/Fallback.java
+Patch:
+@@ -214,15 +214,15 @@ public boolean isAsync() {
+   /**
+    * Returns the applied fallback result.
+    */
+-  R apply(R result, Throwable failure, ExecutionContext context) throws Exception {
++  R apply(R result, Throwable failure, ExecutionContext context) throws Throwable {
+     ExecutionAttemptedEvent<R> event = new ExecutionAttemptedEvent<>(result, failure, context);
+     return fallback != null ? fallback.apply(event) : fallbackStage.apply(event).get();
+   }
+ 
+   /**
+    * Returns a future applied fallback result.
+    */
+-  CompletableFuture<R> applyStage(R result, Throwable failure, ExecutionContext context) throws Exception {
++  CompletableFuture<R> applyStage(R result, Throwable failure, ExecutionContext context) throws Throwable {
+     ExecutionAttemptedEvent<R> event = new ExecutionAttemptedEvent<>(result, failure, context);
+     return fallback != null ? CompletableFuture.completedFuture(fallback.apply(event)) : fallbackStage.apply(event);
+   }
+
+File: src/main/java/net/jodah/failsafe/function/CheckedConsumer.java
+Patch:
+@@ -23,5 +23,5 @@
+  */
+ @FunctionalInterface
+ public interface CheckedConsumer<T> {
+-  void accept(T t) throws Exception;
++  void accept(T t) throws Throwable;
+ }
+\ No newline at end of file
+
+File: src/main/java/net/jodah/failsafe/function/CheckedFunction.java
+Patch:
+@@ -23,5 +23,5 @@
+  */
+ @FunctionalInterface
+ public interface CheckedFunction<T, R> {
+-  R apply(T t) throws Exception;
++  R apply(T t) throws Throwable;
+ }
+
+File: src/main/java/net/jodah/failsafe/function/CheckedRunnable.java
+Patch:
+@@ -22,5 +22,5 @@
+  */
+ @FunctionalInterface
+ public interface CheckedRunnable {
+-  void run() throws Exception;
++  void run() throws Throwable;
+ }
+
+File: src/main/java/net/jodah/failsafe/function/CheckedSupplier.java
+Patch:
+@@ -23,5 +23,5 @@
+  */
+ @FunctionalInterface
+ public interface CheckedSupplier<T> {
+-  T get() throws Exception;
++  T get() throws Throwable;
+ }
+
+File: src/main/java/net/jodah/failsafe/function/ContextualRunnable.java
+Patch:
+@@ -24,5 +24,5 @@
+  */
+ @FunctionalInterface
+ public interface ContextualRunnable {
+-  void run(ExecutionContext context) throws Exception;
++  void run(ExecutionContext context) throws Throwable;
+ }
+
+File: src/main/java/net/jodah/failsafe/function/ContextualSupplier.java
+Patch:
+@@ -25,5 +25,5 @@
+  */
+ @FunctionalInterface
+ public interface ContextualSupplier<T> {
+-  T get(ExecutionContext context) throws Exception;
++  T get(ExecutionContext context) throws Throwable;
+ }
+
+File: src/main/java/net/jodah/failsafe/AbstractExecution.java
+Patch:
+@@ -42,7 +42,7 @@ public abstract class AbstractExecution extends ExecutionContext {
+   /* Whether the execution has been interrupted */
+   volatile boolean interrupted;
+   /* The wait time in nanoseconds. */
+-  private volatile long waitNanos;
++  volatile long waitNanos;
+   /* Whether the execution has been completed */
+   volatile boolean completed;
+ 
+
+File: src/main/java/net/jodah/failsafe/AsyncExecution.java
+Patch:
+@@ -196,7 +196,7 @@ void executeAsync(boolean asyncExecution) {
+    */
+   boolean completeOrHandle(Object result, Throwable failure) {
+     synchronized (future) {
+-      ExecutionResult er = new ExecutionResult(result, failure);
++      ExecutionResult er = new ExecutionResult(result, failure).withWaitNanos(waitNanos);
+       if (!completeCalled)
+         record(er);
+       completeCalled = true;
+
+File: src/main/java/net/jodah/failsafe/FailurePolicy.java
+Patch:
+@@ -170,7 +170,7 @@ public boolean isFailure(R result, Throwable failure) {
+    * Returns a predicate that evaluates whether the {@code result} equals an execution result.
+    */
+   static <R> BiPredicate<R, Throwable> resultPredicateFor(R result) {
+-    return (t, u) -> Objects.equals(result, t);
++    return (t, u) -> result == null ? t == null && u == null : Objects.equals(result, t);
+   }
+ 
+   /**
+
+File: src/main/java/net/jodah/failsafe/RetryPolicyExecutor.java
+Patch:
+@@ -162,7 +162,7 @@ protected ExecutionResult onFailure(ExecutionResult result) {
+       if (delayNanos == -1 && delay != null && !delay.equals(Duration.ZERO))
+         delayNanos = delay.toNanos();
+       else if (delayMin != null && delayMax != null)
+-        delayNanos = randomDelayInRange(delayMin.toNanos(), delayMin.toNanos(), Math.random());
++        delayNanos = randomDelayInRange(delayMin.toNanos(), delayMax.toNanos(), Math.random());
+ 
+       // Adjust for backoff
+       if (execution.getAttemptCount() != 1 && policy.getMaxDelay() != null)
+
+File: src/main/java/net/jodah/failsafe/FailsafeExecutor.java
+Patch:
+@@ -19,7 +19,6 @@
+ import net.jodah.failsafe.function.*;
+ import net.jodah.failsafe.internal.EventListener;
+ import net.jodah.failsafe.internal.util.Assert;
+-import net.jodah.failsafe.internal.util.DelegatingScheduler;
+ import net.jodah.failsafe.util.concurrent.Scheduler;
+ 
+ import java.util.List;
+@@ -42,7 +41,7 @@
+  * @author Jonathan Halterman
+  */
+ public class FailsafeExecutor<R> extends PolicyListeners<FailsafeExecutor<R>, R> {
+-  private Scheduler scheduler = DelegatingScheduler.INSTANCE;
++  private Scheduler scheduler = Scheduler.DEFAULT;
+   /** Policies sorted outer-most first */
+   final List<Policy<R>> policies;
+   private EventListener completeListener;
+
+File: src/main/java/net/jodah/failsafe/ExecutionResult.java
+Patch:
+@@ -100,10 +100,11 @@ public boolean isSuccess() {
+   }
+ 
+   /**
+-   * Returns a copy of the ExecutionResult with the {@code result} value, and completed and success set to true.
++   * Returns a copy of the ExecutionResult with the {@code result} value, and completed and success set to true. Returns
++   * {@code this} if {@link #success}, and {@link #result} are unchanged.
+    */
+   public ExecutionResult withResult(Object result) {
+-    return (this.result == null && result == null) || (this.result != null && this.result.equals(result)) ?
++    return success && ((this.result == null && result == null) || (this.result != null && this.result.equals(result))) ?
+       this :
+       new ExecutionResult(result, null, nonResult, waitNanos, true, true, successAll);
+   }
+
+File: src/main/java/net/jodah/failsafe/FailsafeFuture.java
+Patch:
+@@ -23,11 +23,13 @@
+ 
+ /**
+  * A CompletableFuture implementation that propogates cancellations and calls completion handlers.
++ * <p>
++ * Part of the Failsafe SPI.
+  *
+  * @param <T> result type
+  * @author Jonathan Halterman
+  */
+-class FailsafeFuture<T> extends CompletableFuture<T> {
++public class FailsafeFuture<T> extends CompletableFuture<T> {
+   private final FailsafeExecutor<T> executor;
+   private AbstractExecution execution;
+ 
+
+File: src/main/java/net/jodah/failsafe/Timeout.java
+Patch:
+@@ -23,6 +23,7 @@
+  *
+  * @param <R> result type
+  * @author Jonathan Halterman
++ * @see TimeoutExceededException
+  */
+ public class Timeout<R> extends PolicyListeners<Timeout<R>, R> implements Policy<R> {
+   private final Duration timeout;
+
+File: src/main/java/net/jodah/failsafe/FailurePolicy.java
+Patch:
+@@ -63,7 +63,8 @@ public S handle(Class<? extends Throwable> failure) {
+    * @throws NullPointerException if {@code failures} is null
+    * @throws IllegalArgumentException if failures is empty
+    */
+-  public S handle(Class<? extends Throwable>... failures) {
++  @SafeVarargs
++  public final S handle(Class<? extends Throwable>... failures) {
+     Assert.notNull(failures, "failures");
+     Assert.isTrue(failures.length > 0, "Failures cannot be empty");
+     return handle(Arrays.asList(failures));
+
+File: src/main/java/net/jodah/failsafe/internal/EventListener.java
+Patch:
+@@ -33,7 +33,7 @@ static <R> EventListener of(CheckedConsumer<? extends ExecutionCompletedEvent<R>
+       try {
+         ((CheckedConsumer<ExecutionCompletedEvent<R>>) handler).accept(
+             new ExecutionCompletedEvent<>((R) result, failure, context));
+-      } catch (Exception ignore) {
++      } catch (Throwable ignore) {
+       }
+     };
+   }
+@@ -44,7 +44,7 @@ static <R> EventListener ofAttempt(CheckedConsumer<? extends ExecutionAttemptedE
+       try {
+         ((CheckedConsumer<ExecutionAttemptedEvent<R>>) handler).accept(
+             new ExecutionAttemptedEvent<>((R) result, failure, context));
+-      } catch (Exception ignore) {
++      } catch (Throwable ignore) {
+       }
+     };
+   }
+
+File: src/main/java/net/jodah/failsafe/Failsafe.java
+Patch:
+@@ -52,7 +52,8 @@ public class Failsafe {
+    */
+   @SafeVarargs
+   public static <R, P extends Policy<R>> FailsafeExecutor<R> with(P... policies) {
+-    return new FailsafeExecutor<>(Arrays.asList(Assert.notNull(policies, "policies")));
++    Assert.notNull(policies, "policies");
++    return new FailsafeExecutor<>(Arrays.asList(policies));
+   }
+ 
+   /**
+@@ -75,7 +76,6 @@ public static <R, P extends Policy<R>> FailsafeExecutor<R> with(P... policies) {
+    * represents a failure. This allows different policies to be used for handling different types of failures.
+    *
+    * @param <R> result type
+-   * @param <P> policy type
+    * @throws NullPointerException if {@code policies} is null
+    * @throws IllegalArgumentException if {@code policies} is empty
+    */
+
+File: src/test/java/net/jodah/failsafe/AbstractFailsafeTest.java
+Patch:
+@@ -35,6 +35,7 @@
+ import static net.jodah.failsafe.Testing.*;
+ import static org.mockito.Mockito.*;
+ import static org.testng.Assert.assertEquals;
++import static org.testng.Assert.fail;
+ 
+ @Test
+ public abstract class AbstractFailsafeTest {
+@@ -333,6 +334,7 @@ public void shouldTimeoutAndCancelAndInterrupt() throws Throwable {
+         waiter.resume();
+         throw e;
+       }
++      fail("Expected interruption");
+       return "foo";
+     };
+ 
+
+File: src/test/java/net/jodah/failsafe/AsyncFailsafeTest.java
+Patch:
+@@ -317,6 +317,7 @@ public void shouldCancelNestedTimeoutsWithInterupt() throws Throwable {
+         waiter.resume();
+         throw e;
+       }
++      fail("Expected interruption");
+       return false;
+     });
+     futureRef.set(future);
+
+File: src/main/java/net/jodah/failsafe/CircuitBreakerExecutor.java
+Patch:
+@@ -57,7 +57,7 @@ protected void onSuccess(ExecutionResult result) {
+ 
+   @Override
+   protected ExecutionResult onFailure(ExecutionResult result) {
+-    breakerInternals.recordFailure(execution);
++    policy.recordExecutionFailure(execution);
+     return result.withComplete();
+   }
+ }
+
+File: src/main/java/net/jodah/failsafe/Functions.java
+Patch:
+@@ -68,10 +68,10 @@ static Supplier<CompletableFuture<ExecutionResult>> makeAsync(Supplier<Completab
+       CompletableFuture<ExecutionResult> promise = new CompletableFuture<>();
+       Callable<Object> callable = () -> supplier.get().handle((result, error) -> {
+         // Propagate result
+-        if (result != null)
+-          promise.complete(result);
+-        else
++        if (error != null)
+           promise.completeExceptionally(error);
++        else
++          promise.complete(result);
+         return result;
+       });
+ 
+
+File: src/main/java/net/jodah/failsafe/Fallback.java
+Patch:
+@@ -25,6 +25,9 @@
+ 
+ /**
+  * A Policy that handles failures using a fallback function or result.
++ * <p>
++ * Note: Fallback extends {@link FailurePolicy} which offers additional configuration.
++ * </p>
+  *
+  * @param <R> result type
+  * @author Jonathan Halterman
+
+File: src/test/java/net/jodah/failsafe/CircuitBreakerTest.java
+Patch:
+@@ -89,7 +89,7 @@ public void testIsFailureForResult() {
+   }
+ 
+   public void shouldRequireValidDelay() {
+-    assertThrows(() -> new CircuitBreaker().withDelay(null), NullPointerException.class);
++    assertThrows(() -> new CircuitBreaker().withDelay((Duration) null), NullPointerException.class);
+     assertThrows(() -> new CircuitBreaker().withDelay(Duration.ofMillis(-1)), IllegalArgumentException.class);
+   }
+ 
+
+File: src/main/java/net/jodah/failsafe/internal/executor/CircuitBreakerExecutor.java
+Patch:
+@@ -35,7 +35,7 @@ protected ExecutionResult preExecute() {
+       policy.preExecute();
+       return null;
+     }
+-    return ExecutionResult.failure(new CircuitBreakerOpenException());
++    return ExecutionResult.failure(new CircuitBreakerOpenException(policy));
+   }
+ 
+   @Override
+
+File: src/main/java/net/jodah/failsafe/Functions.java
+Patch:
+@@ -284,7 +284,8 @@ static <T> Supplier<ExecutionResult> resultSupplierOf(CheckedSupplier<T> supplie
+       } catch (Throwable t) {
+         result = ExecutionResult.failure(t);
+       } finally {
+-        execution.record(result);
++        if (result != null)
++          execution.record(result);
+       }
+       return result;
+     };
+
+File: src/main/java/net/jodah/failsafe/ExecutionResult.java
+Patch:
+@@ -45,7 +45,7 @@ public class ExecutionResult {
+    * Records an initial execution result where {@code success} is set to true if {@code failure} is not null.
+    */
+   public ExecutionResult(Object result, Throwable failure) {
+-    this(result, failure, false, 0, false, failure == null, null);
++    this(result, failure, false, 0, false, failure == null, failure == null);
+   }
+ 
+   private ExecutionResult(Object result, Throwable failure, boolean nonResult, long waitNanos, boolean complete,
+
+File: src/main/java/net/jodah/failsafe/AsyncExecution.java
+Patch:
+@@ -138,6 +138,7 @@ public boolean retryOn(Throwable failure) {
+    * Prepares for an execution by resetting internal flags.
+    */
+   void preExecute() {
++    super.preExecute();
+     completeCalled = false;
+     retryCalled = false;
+   }
+@@ -155,6 +156,7 @@ boolean postExecute(ExecutionResult result) {
+         if (super.postExecute(result))
+           complete(result, null);
+         completeCalled = true;
++        resultHandled = true;
+       }
+ 
+       return completed;
+
+File: src/main/java/net/jodah/failsafe/PolicyExecutor.java
+Patch:
+@@ -141,7 +141,7 @@ protected ExecutionResult onFailure(ExecutionResult result) {
+    */
+   protected CompletableFuture<ExecutionResult> onFailureAsync(ExecutionResult result, Scheduler scheduler,
+       FailsafeFuture<Object> future) {
+-    return CompletableFuture.completedFuture(onFailure(result));
++    return CompletableFuture.completedFuture(execution.resultHandled ? result : onFailure(result));
+   }
+ 
+   private void callSuccessListener(ExecutionResult result) {
+
+File: src/test/java/net/jodah/failsafe/functional/ExecutionPolicyOrderingTest.java
+Patch:
+@@ -28,11 +28,13 @@ public void testRetryPolicyAndCircuitBreaker() {
+   }
+ 
+   public void testCircuitBreakerAndRetryPolicy() {
+-    RetryPolicy rp = new RetryPolicy().withMaxRetries(2);
++    RetryPolicy rp = new RetryPolicy().withMaxRetries(1);
+     CircuitBreaker cb = new CircuitBreaker().withFailureThreshold(5);
+ 
+     Execution execution = new Execution(cb, rp);
+     execution.recordFailure(new Exception());
++    assertFalse(execution.isComplete());
++    execution.recordFailure(new Exception());
+     assertTrue(execution.isComplete());
+ 
+     assertTrue(cb.isClosed());
+
+File: src/test/java/net/jodah/failsafe/functional/PolicyOrderingTest.java
+Patch:
+@@ -59,13 +59,14 @@ public void testExecutionWithCircuitBreakerThenRetry() {
+   }
+ 
+   public void testExecutionWithRetryThenCircuitBreaker() {
+-    RetryPolicy rp = new RetryPolicy().withMaxRetries(2);
++    RetryPolicy rp = new RetryPolicy().withMaxRetries(1);
+     CircuitBreaker cb = new CircuitBreaker().withFailureThreshold(5);
+ 
+     Execution execution = new Execution(cb, rp);
+     execution.recordFailure(new Exception());
++    assertFalse(execution.isComplete());
++    execution.recordFailure(new Exception());
+     assertTrue(execution.isComplete());
+-
+     assertTrue(cb.isClosed());
+   }
+ 
+
+File: src/main/java/net/jodah/failsafe/FailurePolicy.java
+Patch:
+@@ -48,7 +48,7 @@ public abstract class FailurePolicy<S, R> extends PolicyListeners<S, R> implemen
+   }
+ 
+   /**
+-   * Specifies the failure to retryOn. Any failure that is assignable from the {@code failure} will be handled.
++   * Specifies the failure to handle. Any failure that is assignable from the {@code failure} will be handled.
+    *
+    * @throws NullPointerException if {@code failure} is null
+    */
+@@ -58,7 +58,7 @@ public S handle(Class<? extends Throwable> failure) {
+   }
+ 
+   /**
+-   * Specifies the failures to retryOn. Any failures that are assignable from the {@code failures} will be handled.
++   * Specifies the failures to handle. Any failures that are assignable from the {@code failures} will be handled.
+    *
+    * @throws NullPointerException if {@code failures} is null
+    * @throws IllegalArgumentException if failures is empty
+@@ -70,7 +70,7 @@ public S handle(Class<? extends Throwable>... failures) {
+   }
+ 
+   /**
+-   * Specifies the failures to retryOn. Any failures that are assignable from the {@code failures} will be handled.
++   * Specifies the failures to handle. Any failures that are assignable from the {@code failures} will be handled.
+    *
+    * @throws NullPointerException if {@code failures} is null
+    * @throws IllegalArgumentException if failures is null or empty
+
+File: src/main/java/net/jodah/failsafe/Fallback.java
+Patch:
+@@ -134,7 +134,7 @@ public static <R> Fallback<R> of(R fallback) {
+   }
+ 
+   public R apply(R result, Throwable failure, ExecutionContext context) throws Exception {
+-    return fallback.apply(new ExecutionAttemptedEvent<R>(result, failure, context));
++    return fallback.apply(new ExecutionAttemptedEvent<>(result, failure, context));
+   }
+ 
+   /**
+
+File: src/main/java/net/jodah/failsafe/CircuitBreaker.java
+Patch:
+@@ -81,7 +81,7 @@ public void close() {
+   }
+ 
+   /**
+-   * Returns the delay before allowing another execution on the circuit. Defaults to {@link Duration#ZERO}.
++   * Returns the delay before allowing another execution on the circuit. Defaults to 1 minute.
+    *
+    * @see #withDelay(Duration)
+    */
+
+File: src/main/java/net/jodah/failsafe/Failsafe.java
+Patch:
+@@ -41,6 +41,7 @@ public class Failsafe {
+    * represents a failure. This allows different policies to be used for handling different types of failures.
+    *
+    * @param <R> result type
++   * @param <P> policy type
+    * @throws NullPointerException if {@code policies} is null
+    * @throws IllegalArgumentException if {@code policies} is empty
+    */
+
+File: src/test/java/net/jodah/failsafe/AbstractFailsafeTest.java
+Patch:
+@@ -36,7 +36,7 @@
+ 
+ @Test
+ public abstract class AbstractFailsafeTest {
+-  RetryPolicy<Boolean> retryAlways = new RetryPolicy<>();
++  RetryPolicy<Boolean> retryAlways = new RetryPolicy<Boolean>().withMaxRetries(-1);
+   RetryPolicy<Boolean> retryNever = new RetryPolicy<Boolean>().withMaxRetries(0);
+   RetryPolicy<Boolean> retryTwice = new RetryPolicy<Boolean>().withMaxRetries(2);
+   Service service = mock(Service.class);
+
+File: src/test/java/net/jodah/failsafe/AsyncExecutionTest.java
+Patch:
+@@ -124,7 +124,7 @@ public void testRetryForResult() {
+ 
+   public void testRetryForResultAndThrowable() {
+     // Given rpRetry for null
+-    exec = new AsyncExecution(scheduler, future, executorFor(new RetryPolicy<>().handleResult(null)));
++    exec = new AsyncExecution(scheduler, future, executorFor(new RetryPolicy<>().withMaxAttempts(10).handleResult(null)));
+ 
+     // When / Then
+     assertFalse(exec.complete(null));
+
+File: src/test/java/net/jodah/failsafe/AsyncFailsafeTest.java
+Patch:
+@@ -119,7 +119,7 @@ public void shouldRunAsync() throws Throwable {
+   private void assertGetAsync(Object supplier) throws Throwable {
+     // Given - Fail twice then succeed
+     when(service.connect()).thenThrow(failures(2, new ConnectException())).thenReturn(false, false, true);
+-    RetryPolicy<Boolean> retryPolicy = new RetryPolicy<Boolean>().handleResult(false);
++    RetryPolicy<Boolean> retryPolicy = new RetryPolicy<Boolean>().handleResult(false).withMaxAttempts(10);
+     AtomicInteger expectedExecutions = new AtomicInteger(5);
+ 
+     // When / Then
+@@ -184,7 +184,7 @@ public void shouldGetAsync() throws Throwable {
+   private void assertFuture(Object supplier) throws Throwable {
+     // Given - Fail twice then succeed
+     when(service.connect()).thenThrow(failures(2, new ConnectException())).thenReturn(false, false, true);
+-    RetryPolicy<Boolean> retryPolicy = new RetryPolicy<Boolean>().handleResult(false);
++    RetryPolicy<Boolean> retryPolicy = new RetryPolicy<Boolean>().handleResult(false).withMaxAttempts(10);
+ 
+     // When
+     CompletableFuture<Boolean> future = futureAsync(Failsafe.with(retryPolicy).with(executor), supplier);
+
+File: src/test/java/net/jodah/failsafe/ListenersTest.java
+Patch:
+@@ -147,7 +147,7 @@ private <T> FailsafeExecutor<T> registerListeners(RetryPolicy<T> retryPolicy, Ci
+   private void assertForSuccess(boolean sync) throws Throwable {
+     // Given - Fail 4 times then succeed
+     when(service.connect()).thenThrow(failures(2, new IllegalStateException())).thenReturn(false, false, true);
+-    RetryPolicy<Boolean> retryPolicy = new RetryPolicy<Boolean>().handleResult(false);
++    RetryPolicy<Boolean> retryPolicy = new RetryPolicy<Boolean>().withMaxAttempts(10).handleResult(false);
+     CircuitBreaker<Boolean> circuitBreaker = new CircuitBreaker<Boolean>().handleResult(false).withDelay(Duration.ZERO);
+     Fallback<Boolean> fallback = Fallback.of(true);
+     FailsafeExecutor<Boolean> failsafe = registerListeners(retryPolicy, circuitBreaker, fallback);
+
+File: src/test/java/net/jodah/failsafe/SyncFailsafeTest.java
+Patch:
+@@ -90,7 +90,7 @@ public void shouldRunContextual() {
+   private void assertGet(Object supplier) {
+     // Given - Fail twice then succeed
+     when(service.connect()).thenThrow(failures(2, new ConnectException())).thenReturn(false, false, true);
+-    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().handleResult(false);
++    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().withMaxAttempts(10).handleResult(false);
+ 
+     assertEquals(get(Failsafe.with(retryPolicy), supplier), Boolean.TRUE);
+     verify(service, times(5)).connect();
+@@ -120,7 +120,7 @@ public void testPerStageRetries() throws Throwable {
+     // Given - Fail twice then succeed
+     when(service.connect()).thenThrow(failures(2, new ConnectException())).thenReturn(false, true);
+     when(service.disconnect()).thenThrow(failures(2, new ConnectException())).thenReturn(false, true);
+-    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().handleResult(false);
++    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().withMaxAttempts(10).handleResult(false);
+ 
+     // When
+     CompletableFuture.supplyAsync(() -> Failsafe.with(retryPolicy).get(() -> service.connect()))
+
+File: src/main/java/net/jodah/failsafe/internal/executor/RetryPolicyExecutor.java
+Patch:
+@@ -179,9 +179,11 @@ else if (policy.getJitterFactor() > 0.0)
+     boolean completed = isAbortable || !shouldRetry;
+     boolean success = completed && result.success && !isAbortable;
+ 
+-    // Call listeners
++    // Call attempt listeners
+     if (failedAttemptListener != null && !success)
+       failedAttemptListener.handle(result, execution);
++
++    // Call completion listeners
+     if (abortListener != null && isAbortable)
+       abortListener.handle(result, execution);
+     else if (retriesExceededListener != null && !success && retriesExceeded)
+
+File: src/test/java/net/jodah/failsafe/FailsafeFutureTest.java
+Patch:
+@@ -32,8 +32,8 @@ public class FailsafeFutureTest {
+   public void shouldCallOnCompleteWhenCancelled() throws Throwable {
+     Waiter waiter = new Waiter();
+     CompletableFuture<String> future = Failsafe.with(new RetryPolicy<String>()).with(executor).onComplete(e -> {
+-      waiter.assertNull(e.result);
+-      waiter.assertTrue(e.failure instanceof CancellationException);
++      waiter.assertNull(e.getResult());
++      waiter.assertTrue(e.getFailure() instanceof CancellationException);
+       waiter.resume();
+     }).getAsync(() -> {
+       Thread.sleep(1000);
+
+File: src/test/java/net/jodah/failsafe/SyncFailsafeTest.java
+Patch:
+@@ -232,8 +232,8 @@ public void shouldCompleteWhenMaxDurationExceeded() {
+     RetryPolicy<Object> retryPolicy = new RetryPolicy<>().handleResult(false).withMaxDuration(Duration.ofMillis(100));
+ 
+     assertEquals(Failsafe.with(retryPolicy).onFailure(e -> {
+-      assertEquals(e.result, Boolean.FALSE);
+-      assertNull(e.failure);
++      assertEquals(e.getResult(), Boolean.FALSE);
++      assertNull(e.getFailure());
+     }).get(() -> {
+       Testing.sleep(120);
+       return service.connect();
+
+File: src/test/java/net/jodah/failsafe/issues/Issue5Test.java
+Patch:
+@@ -37,8 +37,8 @@ public void test() throws Throwable {
+ 
+     ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
+     Failsafe.with(retryPolicy).with(executor).onFailure(e -> {
+-      waiter.assertNull(e.result);
+-      waiter.assertNull(e.failure);
++      waiter.assertNull(e.getResult());
++      waiter.assertNull(e.getFailure());
+       waiter.resume();
+     }).getAsync(() -> null);
+ 
+
+File: src/test/java/net/jodah/failsafe/issues/Issue76Test.java
+Patch:
+@@ -32,7 +32,7 @@ public void shouldAbortOnAsyncError() throws Exception {
+     Waiter waiter = new Waiter();
+     Future<?> future = Failsafe.with(new RetryPolicy<>().abortOn(AssertionError.class)
+         .onAbort(e -> {
+-          waiter.assertEquals(e.failure, error);
++          waiter.assertEquals(e.getFailure(), error);
+           waiter.resume();
+         }))
+         .with(Executors.newSingleThreadScheduledExecutor())
+
+File: src/test/java/net/jodah/failsafe/SyncFailsafeTest.java
+Patch:
+@@ -244,7 +244,7 @@ public void shouldCompleteWhenMaxDurationExceeded() {
+    * Tests the handling of a fallback with no conditions.
+    */
+   public void testCircuitBreakerWithoutConditions() {
+-    CircuitBreaker<Object> circuitBreaker = new CircuitBreaker<>();
++    CircuitBreaker<Object> circuitBreaker = new CircuitBreaker<>().withDelay(1, TimeUnit.MILLISECONDS);
+ 
+     Asserts.assertThrows(() -> Failsafe.with(circuitBreaker).get(() -> {
+       throw new IllegalStateException();
+@@ -272,7 +272,7 @@ public void testFallbackWithoutConditions() {
+     }));
+ 
+     RetryPolicy<Object> retryPolicy = new RetryPolicy<>().withMaxRetries(2);
+-    assertTrue(Failsafe.with(retryPolicy).withFallback(fallback).get(() -> {
++    assertTrue(Failsafe.with(retryPolicy).with(fallback).get(() -> {
+       throw new ConnectException();
+     }));
+   }
+
+File: src/main/java/net/jodah/failsafe/Execution.java
+Patch:
+@@ -34,12 +34,12 @@ public class Execution extends AbstractExecution {
+    * @throws IllegalArgumentException if {@code policies} is empty
+    */
+   public Execution(Policy... policies) {
+-    super(new FailsafeConfig<Object, FailsafeConfig<Object, ?>>(Arrays.asList(Assert.notNull(policies, "policies"))));
++    super(new FailsafeExecutor<>(Arrays.asList(Assert.notNull(policies, "policies"))));
+   }
+ 
+   @SuppressWarnings("unchecked")
+-  Execution(FailsafeConfig<?, ?> config) {
+-    super((FailsafeConfig<Object, ?>) config);
++  Execution(FailsafeExecutor<?> executor) {
++    super((FailsafeExecutor<Object>) executor);
+   }
+ 
+   /**
+
+File: src/main/java/net/jodah/failsafe/Functions.java
+Patch:
+@@ -122,7 +122,7 @@ static <T> Callable<T> asyncOf(ContextualRunnable runnable, AsyncExecution execu
+     };
+   }
+ 
+-  static <T> Callable<T> asyncOfFuture(AsyncCallable<? extends CompletionStage<T>> callable, AsyncExecution execution) {
++  static <T> Callable<T> asyncOfFuture(AsyncCallable<? extends CompletionStage<? extends T>> callable, AsyncExecution execution) {
+     Assert.notNull(callable, "callable");
+     return new Callable<T>() {
+       Semaphore asyncFutureLock = new Semaphore(1);
+@@ -153,7 +153,7 @@ public T call() {
+     };
+   }
+ 
+-  static <T> Callable<T> asyncOfFuture(Callable<? extends CompletionStage<T>> callable, AsyncExecution execution) {
++  static <T> Callable<T> asyncOfFuture(Callable<? extends CompletionStage<? extends T>> callable, AsyncExecution execution) {
+     Assert.notNull(callable, "callable");
+     return () -> {
+       try {
+@@ -172,7 +172,7 @@ static <T> Callable<T> asyncOfFuture(Callable<? extends CompletionStage<T>> call
+     };
+   }
+ 
+-  static <T> Callable<T> asyncOfFuture(ContextualCallable<? extends CompletionStage<T>> callable, AsyncExecution execution) {
++  static <T> Callable<T> asyncOfFuture(ContextualCallable<? extends CompletionStage<? extends T>> callable, AsyncExecution execution) {
+     Assert.notNull(callable, "callable");
+     return () -> {
+       try {
+
+File: src/main/java/net/jodah/failsafe/Policy.java
+Patch:
+@@ -20,8 +20,9 @@
+  * <p>
+  * Part of the Failsafe SPI.
+  *
++ * @param <R> result type
+  * @author Jonathan Halterman
+  */
+-public interface Policy {
+-  PolicyExecutor toExecutor();
++public interface Policy<R> {
++  PolicyExecutor<Policy<R>> toExecutor();
+ }
+
+File: src/main/java/net/jodah/failsafe/internal/executor/CircuitBreakerExecutor.java
+Patch:
+@@ -37,7 +37,7 @@ protected ExecutionResult preExecute(ExecutionResult result) {
+     boolean allowsExecution = policy.allowsExecution();
+     if (allowsExecution)
+       policy.preExecute();
+-    return allowsExecution ? result : new ExecutionResult(null, new CircuitBreakerOpenException(), true, false);
++    return allowsExecution ? result : ExecutionResult.failure(new CircuitBreakerOpenException());
+   }
+ 
+   @Override
+
+File: src/main/java/net/jodah/failsafe/internal/executor/FallbackExecutor.java
+Patch:
+@@ -30,9 +30,9 @@ public FallbackExecutor(Fallback fallback) {
+   @Override
+   protected ExecutionResult onFailure(ExecutionResult result) {
+     try {
+-      return new ExecutionResult(policy.apply(result.result, result.failure), null, true, true);
++      return result.success(policy.apply(result.result, result.failure));
+     } catch (Exception e) {
+-      return new ExecutionResult(null, e, true, false);
++      return ExecutionResult.failure(e);
+     }
+   }
+ }
+
+File: src/test/java/net/jodah/failsafe/FailsafeFutureTest.java
+Patch:
+@@ -37,7 +37,7 @@ public void shouldGetWithTimeout() throws Throwable {
+ 
+   public void shouldCompleteFutureOnCancel() throws Throwable {
+     Waiter waiter = new Waiter();
+-    Future<String> future = Failsafe.with(new RetryPolicy()).with(executor).onComplete(e -> {
++    Future<String> future = Failsafe.with(new RetryPolicy<String>()).with(executor).onComplete(e -> {
+       waiter.assertNull(e.result);
+       waiter.assertTrue(e.failure instanceof CancellationException);
+       waiter.resume();
+@@ -60,7 +60,7 @@ public void shouldCompleteFutureOnCancel() throws Throwable {
+    */
+   public void shouldNotCancelCompletedExecution() throws Throwable {
+     Waiter waiter = new Waiter();
+-    Future<String> future = Failsafe.with(new RetryPolicy()).with(executor).onComplete(e -> {
++    Future<String> future = Failsafe.with(new RetryPolicy<String>()).with(executor).onComplete(e -> {
+       waiter.assertEquals("test", e.result);
+       waiter.assertNull(e.failure);
+       waiter.resume();
+
+File: src/test/java/net/jodah/failsafe/examples/VertxExample.java
+Patch:
+@@ -30,7 +30,7 @@ public class VertxExample {
+   static Vertx vertx = Vertx.vertx();
+ 
+   /** Create RetryPolicy to handle Vert.x failures */
+-  static RetryPolicy retryPolicy = new RetryPolicy()
++  static RetryPolicy retryPolicy = new RetryPolicy<>()
+       .handleIf((ReplyException failure) -> ReplyFailure.RECIPIENT_FAILURE.equals(failure.failureType())
+           || ReplyFailure.TIMEOUT.equals(failure.failureType()));
+ 
+
+File: src/test/java/net/jodah/failsafe/functional/ComputedDelayTest.java
+Patch:
+@@ -61,7 +61,7 @@ public void testUncheckedExceptionInDelayFunction() {
+ 
+   public void shouldDelayOnMatchingResult() {
+     AtomicInteger delays = new AtomicInteger(0);
+-    RetryPolicy retryPolicy = new RetryPolicy().handleResultIf(result -> true).withMaxRetries(4).withDelayWhen((r, f, c) -> {
++    RetryPolicy retryPolicy = new RetryPolicy<>().handleResultIf(result -> true).withMaxRetries(4).withDelayWhen((r, f, c) -> {
+       delays.incrementAndGet(); // side-effect for test purposes
+       return Duration.ofNanos(1);
+     }, "expected");
+@@ -85,7 +85,7 @@ public void shouldDelayOnMatchingResult() {
+ 
+   public void shouldDelayOnMatchingFailureType() {
+     AtomicInteger delays = new AtomicInteger(0);
+-    RetryPolicy retryPolicy = new RetryPolicy()
++    RetryPolicy<Integer> retryPolicy = new RetryPolicy<Integer>()
+         .handle(UncheckedExpectedException.class)
+         .withMaxRetries(4)
+         .withDelayOn((r, f, c) -> {
+
+File: src/test/java/net/jodah/failsafe/issues/Issue52Test.java
+Patch:
+@@ -31,7 +31,7 @@ public class Issue52Test {
+   @Test(expectedExceptions = CancellationException.class)
+   public void shouldCancelExecutionViaFuture() throws Throwable {
+     ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+-    Future<String> proxyFuture = Failsafe.with(new RetryPolicy().withDelay(10, TimeUnit.MILLISECONDS))
++    Future<String> proxyFuture = Failsafe.with(new RetryPolicy<>().withDelay(10, TimeUnit.MILLISECONDS))
+         .with(scheduler)
+         .getAsync(exec -> {
+           throw new IllegalStateException();
+@@ -46,7 +46,7 @@ public void shouldCancelExecutionViaFuture() throws Throwable {
+   public void shouldCancelExecutionViaCompletableFuture() throws Throwable {
+     ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+     AtomicInteger counter = new AtomicInteger();
+-    CompletableFuture<String> proxyFuture = Failsafe.with(new RetryPolicy().withDelay(10, TimeUnit.MILLISECONDS))
++    CompletableFuture<String> proxyFuture = Failsafe.with(new RetryPolicy<>().withDelay(10, TimeUnit.MILLISECONDS))
+         .with(scheduler)
+         .future(exec -> {
+           counter.incrementAndGet();
+
+File: src/test/java/net/jodah/failsafe/issues/Issue5Test.java
+Patch:
+@@ -31,7 +31,7 @@ public class Issue5Test {
+    */
+   public void test() throws Throwable {
+     Waiter waiter = new Waiter();
+-    RetryPolicy retryPolicy = new RetryPolicy().withDelay(100, TimeUnit.MILLISECONDS)
++    RetryPolicy<Object> retryPolicy = new RetryPolicy<>().withDelay(100, TimeUnit.MILLISECONDS)
+         .withMaxDuration(2, TimeUnit.SECONDS)
+         .withMaxRetries(3)
+         .handleResult(null);
+
+File: src/test/java/net/jodah/failsafe/issues/Issue9Test.java
+Patch:
+@@ -46,9 +46,9 @@ public void test() throws Throwable {
+ 
+     // When
+     AtomicInteger successCounter = new AtomicInteger();
+-    Future<Boolean> future = Failsafe.with(new RetryPolicy().withMaxRetries(2))
++    Future<Boolean> future = Failsafe.with(new RetryPolicy<Boolean>().withMaxRetries(2)
++        .onRetry(e -> retryCounter.incrementAndGet()))
+         .with(executor)
+-        .onRetry(e -> retryCounter.incrementAndGet())
+         .onSuccess(p -> {
+           successCounter.incrementAndGet();
+           waiter.resume();
+
+File: src/main/java/net/jodah/failsafe/RetryPolicy.java
+Patch:
+@@ -538,7 +538,7 @@ public RetryPolicy withMaxDuration(long maxDuration, TimeUnit timeUnit) {
+   /**
+    * Sets the max number of retries to perform. {@code -1} indicates to retry forever.
+    * 
+-   * @throws IllegalArgumentException if {@code maxRetries} < -1
++   * @throws IllegalArgumentException if {@code maxRetries} &lt -1
+    */
+   public RetryPolicy withMaxRetries(int maxRetries) {
+     Assert.isTrue(maxRetries >= -1, "maxRetries must be greater than or equal to -1");
+
+File: src/test/java/net/jodah/failsafe/AbstractFailsafeTest.java
+Patch:
+@@ -130,7 +130,7 @@ public void shouldSucceedWithoutRetries() throws Throwable {
+   public void shouldThrowOnNonRetriableFailure() throws Throwable {
+     // Given
+     when(service.connect()).thenThrow(ConnectException.class, ConnectException.class, IllegalStateException.class);
+-    RetryPolicy retryPolicy = new RetryPolicy().retryOn(ConnectException.class);
++    RetryPolicy retryPolicy = new RetryPolicy().handle(ConnectException.class);
+ 
+     // When / Then
+     assertThrows(() -> failsafeGet(retryPolicy, service::connect), IllegalStateException.class);
+
+File: src/test/java/net/jodah/failsafe/AsyncFailsafeTest.java
+Patch:
+@@ -113,7 +113,7 @@ public void shouldRunAsync() throws Throwable {
+   private void assertGetWithExecutor(Object callable) throws Throwable {
+     // Given - Fail twice then succeed
+     when(service.connect()).thenThrow(failures(2, new ConnectException())).thenReturn(false, false, true);
+-    RetryPolicy retryPolicy = new RetryPolicy().retryWhen(false);
++    RetryPolicy retryPolicy = new RetryPolicy().handleResult(false);
+ 
+     // When / Then
+     Future<Boolean> future = get(
+@@ -174,7 +174,7 @@ public void shouldGetAsync() throws Throwable {
+   private void assertGetFuture(Object callable) throws Throwable {
+     // Given - Fail twice then succeed
+     when(service.connect()).thenThrow(failures(2, new ConnectException())).thenReturn(false, false, true);
+-    RetryPolicy retryPolicy = new RetryPolicy().retryWhen(false);
++    RetryPolicy retryPolicy = new RetryPolicy().handleResult(false);
+ 
+     // When
+     CompletableFuture<Boolean> future = future(Failsafe.with(retryPolicy).with(executor), callable);
+@@ -350,7 +350,7 @@ public void shouldHandleRejectedRetryExecution() throws Throwable {
+     AtomicInteger counter = new AtomicInteger();
+ 
+     // When
+-    Future future = Failsafe.with(new RetryPolicy().retryWhen(null).retryOn(Exception.class))
++    Future future = Failsafe.with(new RetryPolicy().handleResult(null).handle(Exception.class))
+         .with(executor)
+         .get(() -> {
+           counter.incrementAndGet();
+
+File: src/test/java/net/jodah/failsafe/examples/RetryLoopExample.java
+Patch:
+@@ -35,7 +35,7 @@ public class RetryLoopExample {
+   }
+ 
+   public static void main(String... args) throws Throwable {
+-    RetryPolicy retryPolicy = new RetryPolicy().retryOn(IllegalStateException.class).withBackoff(10, 40,
++    RetryPolicy retryPolicy = new RetryPolicy().handle(IllegalStateException.class).withBackoff(10, 40,
+         TimeUnit.MILLISECONDS);
+     Execution execution = new Execution(retryPolicy);
+ 
+
+File: src/test/java/net/jodah/failsafe/examples/RxJavaExample.java
+Patch:
+@@ -24,7 +24,7 @@
+ import rx.Subscriber;
+ 
+ public class RxJavaExample {
+-  public static void main(String... args) throws Throwable {
++  public static void main(String... args) {
+     AtomicInteger failures = new AtomicInteger();
+     RetryPolicy retryPolicy = new RetryPolicy().withDelay(1, TimeUnit.SECONDS);
+ 
+
+File: src/test/java/net/jodah/failsafe/functional/ComputedDelayTest.java
+Patch:
+@@ -61,7 +61,7 @@ public void testUncheckedExceptionInDelayFunction() {
+ 
+   public void shouldDelayOnMatchingResult() {
+     AtomicInteger delays = new AtomicInteger(0);
+-    RetryPolicy retryPolicy = new RetryPolicy().retryIf(result -> true).withMaxRetries(4).withDelayWhen((r, f, c) -> {
++    RetryPolicy retryPolicy = new RetryPolicy().handleResultIf(result -> true).withMaxRetries(4).withDelayWhen((r, f, c) -> {
+       delays.incrementAndGet(); // side-effect for test purposes
+       return Duration.ofNanos(1);
+     }, "expected");
+@@ -86,7 +86,7 @@ public void shouldDelayOnMatchingResult() {
+   public void shouldDelayOnMatchingFailureType() {
+     AtomicInteger delays = new AtomicInteger(0);
+     RetryPolicy retryPolicy = new RetryPolicy()
+-        .retryOn(UncheckedExpectedException.class)
++        .handle(UncheckedExpectedException.class)
+         .withMaxRetries(4)
+         .withDelayOn((r, f, c) -> {
+           delays.incrementAndGet(); // side-effect for test purposes
+
+File: src/test/java/net/jodah/failsafe/issues/Issue115Test.java
+Patch:
+@@ -13,12 +13,12 @@
+ public class Issue115Test {
+   @Test(expectedExceptions = IllegalStateException.class)
+   public void shouldFailWithJitterLargerThanDelay() {
+-    new RetryPolicy().retryOn(IllegalArgumentException.class).withDelay(100, TimeUnit.MILLISECONDS).withJitter(200,
++    new RetryPolicy().handle(IllegalArgumentException.class).withDelay(100, TimeUnit.MILLISECONDS).withJitter(200,
+         TimeUnit.MILLISECONDS);
+   }
+ 
+   @Test(expectedExceptions = IllegalStateException.class)
+   public void shouldFailWithJitterWithNoDelay() {
+-    new RetryPolicy().retryOn(IllegalArgumentException.class).withJitter(200, TimeUnit.MILLISECONDS);
++    new RetryPolicy().handle(IllegalArgumentException.class).withJitter(200, TimeUnit.MILLISECONDS);
+   }
+ }
+
+File: src/test/java/net/jodah/failsafe/issues/Issue5Test.java
+Patch:
+@@ -35,7 +35,7 @@ public void test() throws Throwable {
+     RetryPolicy retryPolicy = new RetryPolicy().withDelay(100, TimeUnit.MILLISECONDS)
+         .withMaxDuration(2, TimeUnit.SECONDS)
+         .withMaxRetries(3)
+-        .retryWhen(null);
++        .handleResult(null);
+ 
+     ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
+     Failsafe.with(retryPolicy).with(executor).onFailure((result, failure) -> {
+
+File: src/test/java/net/jodah/failsafe/issues/Issue84Test.java
+Patch:
+@@ -20,7 +20,7 @@
+ public class Issue84Test {
+   public void shouldHandleCircuitBreakerOpenException() throws Throwable {
+     ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
+-    CircuitBreaker circuitBreaker = new CircuitBreaker().withDelay(10, TimeUnit.MINUTES).failWhen(false);
++    CircuitBreaker circuitBreaker = new CircuitBreaker().withDelay(10, TimeUnit.MINUTES).handleResult(false);
+     circuitBreaker.open();
+ 
+     // Synchronous
+
+File: src/main/java/net/jodah/failsafe/CircuitBreaker.java
+Patch:
+@@ -39,7 +39,7 @@
+ @SuppressWarnings("WeakerAccess")
+ public class CircuitBreaker implements FailsafePolicy {
+   /** Writes guarded by "this" */
+-  private final AtomicReference<CircuitState> state = new AtomicReference<CircuitState>();
++  private final AtomicReference<CircuitState> state = new AtomicReference<>();
+   private final AtomicInteger currentExecutions = new AtomicInteger();
+   private final CircuitBreakerStats stats = currentExecutions::get;
+   private Duration delay = Duration.NONE;
+
+File: src/test/java/net/jodah/failsafe/AsyncExecutionTest.java
+Patch:
+@@ -214,10 +214,10 @@ public void testCompleteOrRetry() {
+     exec = new AsyncExecution(callable, scheduler, future, configFor(new RetryPolicy()));
+ 
+     // When / Then
+-    exec.completeOrRetry(null, e);
++    exec.completeOrHandle(null, e);
+     assertFalse(exec.isComplete());
+     exec.preExecute();
+-    exec.completeOrRetry(null, null);
++    exec.completeOrHandle(null, null);
+ 
+     // Then
+     assertEquals(exec.getExecutions(), 2);
+
+File: src/test/java/net/jodah/failsafe/ExecutionTest.java
+Patch:
+@@ -269,7 +269,7 @@ public void shouldSupportMaxDuration() throws Exception {
+     assertTrue(exec.isComplete());
+   }
+ 
+-  public void shouldSupportMaxRetries() throws Exception {
++  public void shouldSupportMaxRetries() {
+     Execution exec = new Execution(new RetryPolicy().withMaxRetries(3));
+     assertTrue(exec.canRetryOn(e));
+     assertTrue(exec.canRetryOn(e));
+
+File: src/test/java/net/jodah/failsafe/issues/Issue115Test.java
+Patch:
+@@ -10,7 +10,7 @@
+  * Tests https://github.com/jhalterman/failsafe/issues/115 and https://github.com/jhalterman/failsafe/issues/116
+  */
+ @Test
+-public class Issue115 {
++public class Issue115Test {
+   @Test(expectedExceptions = IllegalStateException.class)
+   public void shouldFailWithJitterLargerThanDelay() {
+     new RetryPolicy().retryOn(IllegalArgumentException.class).withDelay(100, TimeUnit.MILLISECONDS).withJitter(200,
+
+File: src/test/java/net/jodah/failsafe/issues/Issue36Test.java
+Patch:
+@@ -30,7 +30,7 @@
+  * https://github.com/jhalterman/failsafe/issues/36
+  */
+ @Test
+-public class Issue36 {
++public class Issue36Test {
+   RetryPolicy retryPolicy = new RetryPolicy().retryIf((Boolean r) -> r == null || !r)
+       .retryOn(Exception.class)
+       .withMaxRetries(3);
+
+File: src/test/java/net/jodah/failsafe/issues/Issue52Test.java
+Patch:
+@@ -33,7 +33,8 @@
+ import net.jodah.failsafe.RetryPolicy;
+ 
+ @Test
+-public class Issue52 {
++public class Issue52Test {
++  @Test(expectedExceptions = CancellationException.class)
+   public void shouldCancelExecutionViaFuture() throws Throwable {
+     ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+     FailsafeFuture<String> proxyFuture = Failsafe.with(new RetryPolicy().withDelay(10, TimeUnit.MILLISECONDS))
+@@ -45,7 +46,7 @@ public void shouldCancelExecutionViaFuture() throws Throwable {
+     Thread.sleep(100);
+     proxyFuture.cancel(true);
+ 
+-    assertNull(proxyFuture.get());
++    proxyFuture.get(); // should throw CancellationException per .get() javadoc.
+   }
+ 
+   public void shouldCancelExecutionViaCompletableFuture() throws Throwable {
+
+File: src/test/java/net/jodah/failsafe/issues/Issue55Test.java
+Patch:
+@@ -27,7 +27,7 @@
+ import net.jodah.failsafe.RetryPolicy;
+ 
+ @Test
+-public class Issue55 {
++public class Issue55Test {
+   public void shouldOnlyFallbackOnFailure() throws Throwable {
+     ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
+ 
+
+File: src/test/java/net/jodah/failsafe/issues/Issue5Test.java
+Patch:
+@@ -26,7 +26,7 @@
+ import net.jodah.failsafe.RetryPolicy;
+ 
+ @Test
+-public class Issue5 {
++public class Issue5Test {
+   /**
+    * Asserts that a failure is handled as expected by a listener registered via whenFailure.
+    */
+
+File: src/test/java/net/jodah/failsafe/issues/Issue75Test.java
+Patch:
+@@ -11,7 +11,7 @@
+ import net.jodah.failsafe.CircuitBreaker;
+ import net.jodah.failsafe.Failsafe;
+ 
+-public class Issue75 {
++public class Issue75Test {
+   @Test
+   public void testThatFailSafeIsBrokenWithFallback() throws Exception {
+     CircuitBreaker breaker = new CircuitBreaker().withFailureThreshold(10, 100).withSuccessThreshold(2).withDelay(100,
+
+File: src/test/java/net/jodah/failsafe/issues/Issue76Test.java
+Patch:
+@@ -15,7 +15,7 @@
+ import net.jodah.failsafe.RetryPolicy;
+ 
+ @Test
+-public class Issue76 {
++public class Issue76Test {
+   public void shouldAbortOnSyncError() throws Exception {
+     AssertionError error = new AssertionError();
+     try {
+
+File: src/test/java/net/jodah/failsafe/issues/Issue84Test.java
+Patch:
+@@ -17,7 +17,7 @@
+ import net.jodah.failsafe.Failsafe;
+ 
+ @Test
+-public class Issue84 {
++public class Issue84Test {
+   public void shouldHandleCircuitBreakerOpenException() throws Throwable {
+     ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
+     CircuitBreaker circuitBreaker = new CircuitBreaker().withDelay(10, TimeUnit.MINUTES).failWhen(false);
+
+File: src/test/java/net/jodah/failsafe/issues/Issue9Test.java
+Patch:
+@@ -35,7 +35,7 @@
+ import net.jodah.failsafe.RetryPolicy;
+ 
+ @Test
+-public class Issue9 {
++public class Issue9Test {
+   public interface Service {
+     boolean connect();
+   }
+
+File: src/main/java/net/jodah/failsafe/RetryPolicy.java
+Patch:
+@@ -530,7 +530,7 @@ public RetryPolicy withDelay(long delayMin, long delayMax, TimeUnit timeUnit) {
+    * 
+    * @param delayFunction the function to use to compute the delay before a next attempt
+    * @throws NullPointerException if {@code delayFunction} is null
+-   * @see {@link DelayFunction}
++   * @see DelayFunction
+    */
+   public RetryPolicy withDelay(DelayFunction<?, ? extends Throwable> delayFunction) {
+     Assert.notNull(delayFunction, "delayFunction");
+@@ -546,7 +546,7 @@ public RetryPolicy withDelay(DelayFunction<?, ? extends Throwable> delayFunction
+    * @param failure the execution failure that is expected in order to trigger the delay
+    * @param <F> failure type
+    * @throws NullPointerException if {@code delayFunction} or {@code failure} are null
+-   * @see {@link DelayFunction}
++   * @see DelayFunction
+    */
+   public <F extends Throwable> RetryPolicy withDelayOn(DelayFunction<Object, F> delayFunction, Class<F> failure) {
+     withDelay(delayFunction);
+@@ -563,7 +563,7 @@ public <F extends Throwable> RetryPolicy withDelayOn(DelayFunction<Object, F> de
+    * @param result the execution result that is expected in order to trigger the delay
+    * @param <R> result type
+    * @throws NullPointerException if {@code delayFunction} or {@code result} are null
+-   * @see {@link DelayFunction}
++   * @see DelayFunction
+    */
+   public <R> RetryPolicy withDelayWhen(DelayFunction<R, ? extends Throwable> delayFunction, R result) {
+     withDelay(delayFunction);
+
+File: src/main/java/net/jodah/failsafe/RetryPolicy.java
+Patch:
+@@ -561,6 +561,7 @@ public RetryPolicy withJitter(long jitter, TimeUnit timeUnit) {
+     Assert.isTrue(jitter > 0, "jitter must be > 0");
+     Assert.state(delay != null, "A fixed or exponential backoff delay must be configured");
+     Assert.state(jitterFactor == 0.0, "withJitter(double) has already been called");
++    Assert.state(timeUnit.toNanos(jitter) <= delay.toNanos(), "jitter must be less than the configured delay");
+     this.jitter = new Duration(jitter, timeUnit);
+     return this;
+   }
+
+File: src/main/java/net/jodah/failsafe/AsyncExecution.java
+Patch:
+@@ -172,7 +172,7 @@ boolean completeOrRetry(Object result, Throwable failure) {
+     synchronized (future) {
+       if (!complete(result, failure, true) && !future.isDone() && !future.isCancelled()) {
+         try {
+-          future.inject((Future) scheduler.schedule(callable, delayNanos, TimeUnit.NANOSECONDS));
++          future.inject((Future) scheduler.schedule(callable, waitNanos, TimeUnit.NANOSECONDS));
+           return true;
+         } catch (Throwable t) {
+           failure = t;
+
+File: src/main/java/net/jodah/failsafe/RetryPolicy.java
+Patch:
+@@ -458,7 +458,7 @@ public RetryPolicy withJitter(long jitter, TimeUnit timeUnit) {
+     Assert.notNull(timeUnit, "timeUnit");
+     Assert.isTrue(jitter > 0, "jitter must be > 0");
+     Assert.state(delay != null, "A fixed or exponential backoff delay must be configured");
+-    Assert.state(jitterFactor == 0.0, "withJitter(long) has already been called");
++    Assert.state(jitterFactor == 0.0, "withJitter(double) has already been called");
+     this.jitter = new Duration(jitter, timeUnit);
+     return this;
+   }
+
+File: src/main/java/net/jodah/failsafe/RetryPolicy.java
+Patch:
+@@ -458,7 +458,7 @@ public RetryPolicy withJitter(long jitter, TimeUnit timeUnit) {
+     Assert.notNull(timeUnit, "timeUnit");
+     Assert.isTrue(jitter > 0, "jitter must be > 0");
+     Assert.state(delay != null, "A fixed or exponential backoff delay must be configured");
+-    Assert.state(jitterFactor == 0.0, "withJitter(long) has already been called");
++    Assert.state(jitterFactor == 0.0, "withJitter(double) has already been called");
+     this.jitter = new Duration(jitter, timeUnit);
+     return this;
+   }
+
+File: src/main/java/net/jodah/failsafe/SyncFailsafe.java
+Patch:
+@@ -29,7 +29,7 @@
+ /**
+  * Performs synchronous executions with failures handled according to a configured {@link #with(RetryPolicy) retry
+  * policy}, {@link #with(CircuitBreaker) circuit breaker} and
+- * {@link #withFallback(net.jodah.failsafe.function.BiFunction) fallback}.
++ * {@link #withFallback(net.jodah.failsafe.function.CheckedBiFunction) fallback}.
+  * 
+  * @author Jonathan Halterman
+  * @param <R> listener result type
+
+File: src/test/java/net/jodah/failsafe/ExecutionTest.java
+Patch:
+@@ -189,6 +189,8 @@ public void shouldAdjustWaitTimeForBackoff() {
+     Execution exec = new Execution(new RetryPolicy().withBackoff(1, 10, TimeUnit.NANOSECONDS));
+     assertEquals(exec.getWaitTime().toNanos(), 1);
+     exec.recordFailure(e);
++    assertEquals(exec.getWaitTime().toNanos(), 1);
++    exec.recordFailure(e);
+     assertEquals(exec.getWaitTime().toNanos(), 2);
+     exec.recordFailure(e);
+     assertEquals(exec.getWaitTime().toNanos(), 4);
+
+File: src/main/java/net/jodah/failsafe/RetryPolicy.java
+Patch:
+@@ -245,7 +245,7 @@ public Duration getJitter() {
+   }
+ 
+   /**
+-   * Returns the jitter factor, else {@code 0.0} is none has been configured.
++   * Returns the jitter factor, else {@code 0.0} if none has been configured.
+    * 
+    * @see #withJitter(double)
+    */
+
+File: src/main/java/net/jodah/failsafe/CircuitBreaker.java
+Patch:
+@@ -123,9 +123,10 @@ public <T> CircuitBreaker failIf(Predicate<T> resultPredicate) {
+    * 
+    * @throws NullPointerException if {@code failure} is null
+    */
++  @SuppressWarnings({ "unchecked", "rawtypes" })
+   public CircuitBreaker failOn(Class<? extends Throwable> failure) {
+     Assert.notNull(failure, "failure");
+-    return failOn(Arrays.asList(failure));
++    return failOn((List)Arrays.asList(failure));
+   }
+   
+   /**
+
+File: src/main/java/net/jodah/failsafe/AsyncFailsafe.java
+Patch:
+@@ -182,8 +182,6 @@ private <T> FailsafeFuture<T> call(AsyncCallableWrapper<T> callable, FailsafeFut
+ 
+     if (circuitBreaker != null && !circuitBreaker.allowsExecution()) {
+       CircuitBreakerOpenException e = new CircuitBreakerOpenException();
+-      if (fallback == null)
+-        throw e;
+       future.complete(null, e, (CheckedBiFunction<T, Throwable, T>) fallback, false);
+       return future;
+     }
+
+File: src/test/java/net/jodah/failsafe/Testing.java
+Patch:
+@@ -59,9 +59,6 @@ public static void runInThread(CheckedRunnable runnable) {
+     new Thread(() -> ignoreExceptions(runnable)).start();
+   }
+ 
+-  public static void noop() {
+-  }
+-
+   @SuppressWarnings("unchecked")
+   public static <T extends CircuitState> T stateFor(CircuitBreaker breaker) {
+     Field stateField;
+
+File: src/main/java/net/jodah/failsafe/FailsafeFuture.java
+Patch:
+@@ -149,10 +149,10 @@ synchronized void complete(T result, Throwable failure, CheckedBiFunction<T, Thr
+     if (done)
+       return;
+ 
+-    if (fallback == null) {
++    if (success || fallback == null) {
+       this.result = result;
+       this.failure = failure;
+-    } else if (!success) {
++    } else {
+       try {
+         this.result = fallback.apply(result, failure);
+       } catch (Throwable fallbackFailure) {
+
+File: src/main/java/net/jodah/failsafe/FailsafeException.java
+Patch:
+@@ -24,10 +24,10 @@
+ public class FailsafeException extends RuntimeException {
+   private static final long serialVersionUID = 1L;
+ 
+-  FailsafeException() {
++  public FailsafeException() {
+   }
+ 
+-  FailsafeException(Throwable t) {
++  public FailsafeException(Throwable t) {
+     super(t);
+   }
+ }
+
+File: src/test/java/net/jodah/failsafe/ExecutionTest.java
+Patch:
+@@ -213,7 +213,7 @@ public void shouldSupportMaxDuration() throws Exception {
+     Execution exec = new Execution(new RetryPolicy().withMaxDuration(100, TimeUnit.MILLISECONDS));
+     assertTrue(exec.canRetryOn(e));
+     assertTrue(exec.canRetryOn(e));
+-    Thread.sleep(100);
++    Thread.sleep(105);
+     assertFalse(exec.canRetryOn(e));
+     assertTrue(exec.isComplete());
+   }
+
+File: src/main/java/net/jodah/failsafe/AsyncFailsafe.java
+Patch:
+@@ -147,7 +147,7 @@ public FailsafeFuture<Void> runAsync(AsyncRunnable runnable) {
+   @SuppressWarnings("unchecked")
+   private <T> java.util.concurrent.CompletableFuture<T> call(AsyncCallableWrapper<T> callable) {
+     FailsafeFuture<T> future = new FailsafeFuture<T>((FailsafeConfig<T, ?>) this);
+-    java.util.concurrent.CompletableFuture<T> response = Functions.cancellableFutureOf(future);
++    java.util.concurrent.CompletableFuture<T> response = net.jodah.failsafe.internal.util.CancellableFuture.of(future);
+     future.inject(response);
+     call(callable, future);
+     return response;
+
+File: src/test/java/net/jodah/failsafe/SyncFailsafeTest.java
+Patch:
+@@ -182,6 +182,8 @@ public void shouldThrowWhenInterruptedDuringSynchronousDelay() throws Throwable
+     } catch (Exception e) {
+       assertTrue(e instanceof FailsafeException);
+       assertTrue(e.getCause() instanceof InterruptedException);
++      // Clear interrupt flag
++      Thread.interrupted();
+     }
+   }
+ 
+
+File: src/main/java/net/jodah/failsafe/AsyncExecution.java
+Patch:
+@@ -154,7 +154,7 @@ synchronized boolean complete(Object result, Throwable failure, boolean checkArg
+   synchronized boolean completeOrRetry(Object result, Throwable failure) {
+     if (!complete(result, failure, true) && !future.isDone() && !future.isCancelled()) {
+       try {
+-        future.setFuture((Future) scheduler.schedule(callable, delayNanos, TimeUnit.NANOSECONDS));
++        future.inject((Future) scheduler.schedule(callable, delayNanos, TimeUnit.NANOSECONDS));
+         return true;
+       } catch (Throwable t) {
+         failure = t;
+
+File: src/main/java/net/jodah/failsafe/CircuitBreakerOpenException.java
+Patch:
+@@ -5,6 +5,6 @@
+  * 
+  * @author Jonathan Halterman
+  */
+-public class CircuitBreakerOpenException extends RuntimeException {
++public class CircuitBreakerOpenException extends FailsafeException {
+   private static final long serialVersionUID = 1L;
+ }
+
+File: src/main/java/net/jodah/failsafe/FailsafeException.java
+Patch:
+@@ -9,6 +9,9 @@
+ public class FailsafeException extends RuntimeException {
+   private static final long serialVersionUID = 1L;
+ 
++  FailsafeException() {
++  }
++
+   FailsafeException(Throwable t) {
+     super(t);
+   }
+
+File: src/main/java/net/jodah/failsafe/SyncFailsafe.java
+Patch:
+@@ -156,8 +156,7 @@ private <T> T fallbackFor(R result, Throwable failure) {
+     try {
+       return (T) fallback.apply(result, failure);
+     } catch (Exception e) {
+-      throw e instanceof CircuitBreakerOpenException ? (CircuitBreakerOpenException) e
+-          : e instanceof FailsafeException ? (FailsafeException) e : new FailsafeException(e);
++      throw e instanceof FailsafeException ? (FailsafeException) e : new FailsafeException(e);
+     }
+   }
+ }
+\ No newline at end of file
+
+File: src/main/java/net/jodah/failsafe/AsyncExecution.java
+Patch:
+@@ -117,7 +117,7 @@ void before() {
+       Exception failure = new CircuitBreakerOpenException();
+       if (config != null)
+         config.handleComplete(null, failure, this, false);
+-      future.complete(null, failure, config.fallback);
++      future.complete(null, failure, config.fallback, false);
+       return;
+     }
+ 
+@@ -138,7 +138,7 @@ void before() {
+   synchronized boolean complete(Object result, Throwable failure, boolean checkArgs) {
+     if (!completeCalled) {
+       if (super.complete(result, failure, checkArgs))
+-        future.complete(result, failure, config.fallback);
++        future.complete(result, failure, config.fallback, success);
+       completeCalled = true;
+     }
+ 
+@@ -160,7 +160,7 @@ synchronized boolean completeOrRetry(Object result, Throwable failure) {
+         failure = t;
+         if (config != null)
+           config.handleComplete(null, t, this, false);
+-        future.complete(null, failure, config.fallback);
++        future.complete(null, failure, config.fallback, false);
+       }
+     }
+ 
+
+File: src/main/java/net/jodah/failsafe/AsyncFailsafe.java
+Patch:
+@@ -168,7 +168,7 @@ private <T> FailsafeFuture<T> call(AsyncCallableWrapper<T> callable, FailsafeFut
+       CircuitBreakerOpenException e = new CircuitBreakerOpenException();
+       if (fallback == null)
+         throw e;
+-      future.complete(null, e, (CheckedBiFunction<T, Throwable, T>) fallback);
++      future.complete(null, e, (CheckedBiFunction<T, Throwable, T>) fallback, false);
+       return future;
+     }
+ 
+@@ -179,7 +179,7 @@ private <T> FailsafeFuture<T> call(AsyncCallableWrapper<T> callable, FailsafeFut
+       future.setFuture((Future<T>) scheduler.schedule(callable, 0, TimeUnit.MILLISECONDS));
+     } catch (Throwable t) {
+       handleComplete(null, t, execution, false);
+-      future.complete(null, t, (CheckedBiFunction<T, Throwable, T>) fallback);
++      future.complete(null, t, (CheckedBiFunction<T, Throwable, T>) fallback, false);
+     }
+ 
+     return future;
+
+File: src/main/java/net/jodah/failsafe/FailsafeFuture.java
+Patch:
+@@ -118,11 +118,12 @@ public boolean isDone() {
+     return done;
+   }
+ 
+-  synchronized void complete(T result, Throwable failure, CheckedBiFunction<T, Throwable, T> fallback) {
++  synchronized void complete(T result, Throwable failure, CheckedBiFunction<T, Throwable, T> fallback,
++      boolean success) {
+     if (fallback == null) {
+       this.result = result;
+       this.failure = failure;
+-    } else {
++    } else if (!success) {
+       try {
+         this.result = fallback.apply(result, failure);
+       } catch (Throwable fallbackFailure) {
+
+File: src/main/java/net/jodah/failsafe/SyncFailsafe.java
+Patch:
+@@ -134,7 +134,7 @@ private <T> T call(Callable<T> callable) {
+ 
+       // Attempt to complete execution
+       if (execution.complete(result, failure, true)) {
+-        if (execution.success || failure == null)
++        if (execution.success || (failure == null && fallback == null))
+           return result;
+         if (fallback != null)
+           return fallbackFor((R) result, failure);
+
+File: src/test/java/net/jodah/failsafe/FailsafeConfigTest.java
+Patch:
+@@ -18,7 +18,6 @@
+ 
+ import org.testng.Assert;
+ import org.testng.annotations.AfterMethod;
+-import org.testng.annotations.AfterTest;
+ import org.testng.annotations.BeforeMethod;
+ import org.testng.annotations.Test;
+ 
+
+File: src/main/java/net/jodah/failsafe/FailsafeFuture.java
+Patch:
+@@ -5,7 +5,7 @@
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.TimeoutException;
+ 
+-import net.jodah.failsafe.function.BiFunction;
++import net.jodah.failsafe.function.CheckedBiFunction;
+ import net.jodah.failsafe.internal.util.Assert;
+ import net.jodah.failsafe.internal.util.ReentrantCircuit;
+ 
+@@ -76,7 +76,7 @@ public boolean isDone() {
+     return done;
+   }
+ 
+-  synchronized void complete(T result, Throwable failure, BiFunction<T, Throwable, T> fallback) {
++  synchronized void complete(T result, Throwable failure, CheckedBiFunction<T, Throwable, T> fallback) {
+     if (fallback == null) {
+       this.result = result;
+       this.failure = failure;
+
+File: src/main/java/net/jodah/failsafe/event/ContextualResultListener.java
+Patch:
+@@ -16,5 +16,5 @@ public interface ContextualResultListener<R, F extends Throwable> {
+    * @param result The execution result, else {@code null} if the call failed
+    * @param failure The execution failure, else {@code null} if the call was successful
+    */
+-  void onResult(R result, F failure, ExecutionContext context);
++  void onResult(R result, F failure, ExecutionContext context) throws Exception;
+ }
+
+File: src/test/java/net/jodah/failsafe/AbstractFailsafeTest.java
+Patch:
+@@ -18,7 +18,7 @@
+ import org.testng.annotations.Test;
+ 
+ import net.jodah.concurrentunit.Waiter;
+-import net.jodah.failsafe.function.BiFunction;
++import net.jodah.failsafe.function.CheckedBiFunction;
+ import net.jodah.failsafe.function.CheckedRunnable;
+ 
+ @Test
+@@ -66,7 +66,7 @@ void failsafeRun(CircuitBreaker breaker, CheckedRunnable runnable) throws Execut
+   /**
+    * Does a failsafe get with an optional executor.
+    */
+-  <T> T failsafeGet(CircuitBreaker breaker, BiFunction<T, Throwable, T> fallback, Callable<T> callable)
++  <T> T failsafeGet(CircuitBreaker breaker, CheckedBiFunction<T, Throwable, T> fallback, Callable<T> callable)
+       throws ExecutionException, InterruptedException {
+     ScheduledExecutorService executor = getExecutor();
+     return unwrapExceptions(() -> executor == null ? (T) Failsafe.with(breaker).withFallback(fallback).get(callable)
+@@ -76,7 +76,7 @@ <T> T failsafeGet(CircuitBreaker breaker, BiFunction<T, Throwable, T> fallback,
+   /**
+    * Does a failsafe get with an optional executor.
+    */
+-  <T> T failsafeGet(RetryPolicy retryPolicy, BiFunction<T, Throwable, T> fallback, Callable<T> callable)
++  <T> T failsafeGet(RetryPolicy retryPolicy, CheckedBiFunction<T, Throwable, T> fallback, Callable<T> callable)
+       throws ExecutionException, InterruptedException {
+     ScheduledExecutorService executor = getExecutor();
+     return unwrapExceptions(() -> executor == null ? (T) Failsafe.with(retryPolicy).withFallback(fallback).get(callable)
+
+File: src/main/java/net/jodah/failsafe/AsyncFailsafe.java
+Patch:
+@@ -193,7 +193,6 @@ public <T> AsyncFailsafe<T> with(Listeners<T> listeners) {
+   @SuppressWarnings("unchecked")
+   private <T> FailsafeFuture<T> call(AsyncCallableWrapper<T> callable, FailsafeFuture<T> future) {
+     if (circuitBreaker != null) {
+-      circuitBreaker.initialize();
+       if (!circuitBreaker.allowsExecution())
+         throw new CircuitBreakerOpenException();
+     }
+
+File: src/main/java/net/jodah/failsafe/SyncFailsafe.java
+Patch:
+@@ -143,8 +143,6 @@ public AsyncFailsafe<R> with(Scheduler scheduler) {
+    */
+   @SuppressWarnings("unchecked")
+   private <T> T call(Callable<T> callable) {
+-    if (circuitBreaker != null)
+-      circuitBreaker.initialize();
+     Execution execution = new Execution(retryPolicy, circuitBreaker, (ListenerConfig<?, Object>) this);
+ 
+     // Handle contextual calls
+
+File: src/main/java/net/jodah/failsafe/internal/OpenState.java
+Patch:
+@@ -31,11 +31,9 @@ public State getState() {
+ 
+   @Override
+   public void recordFailure() {
+-    throw new IllegalStateException("Cannot record result for open circuit");
+   }
+ 
+   @Override
+   public void recordSuccess() {
+-    throw new IllegalStateException("Cannot record result for open circuit");
+   }
+ }
+\ No newline at end of file
+
+File: src/main/java/net/jodah/failsafe/internal/OpenState.java
+Patch:
+@@ -31,11 +31,9 @@ public State getState() {
+ 
+   @Override
+   public void recordFailure() {
+-    throw new IllegalStateException("Cannot record result for open circuit");
+   }
+ 
+   @Override
+   public void recordSuccess() {
+-    throw new IllegalStateException("Cannot record result for open circuit");
+   }
+ }
+\ No newline at end of file
+
+File: src/main/java/net/jodah/failsafe/RetryPolicy.java
+Patch:
+@@ -87,7 +87,6 @@ public <T> RetryPolicy abortIf(Predicate<T> resultPredicate) {
+    * @throws NullPointerException if {@code failures} is null
+    * @throws IllegalArgumentException if failures is empty
+    */
+-  @SuppressWarnings("unchecked")
+   public RetryPolicy abortOn(Class<? extends Throwable>... failures) {
+     Assert.notNull(failures, "failures");
+     Assert.isTrue(failures.length > 0, "Failures cannot be empty");
+
+File: src/test/java/net/jodah/failsafe/examples/RxJavaExample.java
+Patch:
+@@ -20,11 +20,11 @@ public static void main(String... args) throws Throwable {
+       else
+         System.out.println("Subscriber completed successfully");
+     }).retryWhen(attempts -> {
+-      Execution context = new Execution(retryPolicy);
++      Execution execution = new Execution(retryPolicy);
+       return attempts.flatMap(failure -> {
+         System.out.println("Failure detected");
+-        if (context.canRetryOn(failure))
+-          return Observable.timer(context.getWaitTime().toNanos(), TimeUnit.NANOSECONDS);
++        if (execution.canRetryOn(failure))
++          return Observable.timer(execution.getWaitTime().toNanos(), TimeUnit.NANOSECONDS);
+         else
+           return Observable.error(failure);
+       });
+
+File: src/main/java/net/jodah/recurrent/RetryPolicy.java
+Patch:
+@@ -96,11 +96,11 @@ public boolean allowsRetriesFor(Object result, Throwable failure) {
+         return true;
+       if (abortableFailures != null)
+         for (Class<? extends Throwable> failureType : abortableFailures)
+-          if (failure.getClass().isAssignableFrom(failureType))
++          if (failureType.isAssignableFrom(failure.getClass()))
+             return false;
+       if (retryableFailures != null)
+         for (Class<? extends Throwable> failureType : retryableFailures)
+-          if (failure.getClass().isAssignableFrom(failureType))
++          if (failureType.isAssignableFrom(failure.getClass()))
+             return true;
+ 
+       // Retry if the failure was not examined
+
+File: src/main/java/net/jodah/recurrent/Recurrent.java
+Patch:
+@@ -70,17 +70,17 @@ public <T> RecurrentFuture<T> getAsync(AsyncCallable<T> callable) {
+ 
+     @Override
+     public RecurrentFuture<Void> run(CheckedRunnable runnable) {
+-      return call(AsyncContextualCallable.of(runnable), null);
++      return call(AsyncContextualCallable.<Void>of(runnable), null);
+     }
+ 
+     @Override
+     public RecurrentFuture<Void> run(ContextualRunnable runnable) {
+-      return call(AsyncContextualCallable.of(runnable), null);
++      return call(AsyncContextualCallable.<Void>of(runnable), null);
+     }
+ 
+     @Override
+     public RecurrentFuture<Void> runAsync(AsyncRunnable runnable) {
+-      return call(AsyncContextualCallable.of(runnable), null);
++      return call(AsyncContextualCallable.<Void>of(runnable), null);
+     }
+ 
+     @Override
+
+File: src/main/java/net/jodah/recurrent/Invocation.java
+Patch:
+@@ -48,7 +48,7 @@ public void complete() {
+    * @throws IllegalStateException if complete or retry has already been called
+    */
+   public void completeExceptionally(Throwable failure) {
+-    Assert.state(!completionRequested, "Retry has already been called");
++    Assert.state(!completionRequested, "Complete has already been called");
+     Assert.state(!retryRequested, "Retry has already been called");
+     completionRequested = true;
+     this.failure = failure;
+@@ -60,7 +60,7 @@ public void completeExceptionally(Throwable failure) {
+    * @throws IllegalStateException if complete or retry has already been called
+    */
+   public void complete(Object result) {
+-    Assert.state(!completionRequested, "Retry has already been called");
++    Assert.state(!completionRequested, "Complete has already been called");
+     Assert.state(!retryRequested, "Retry has already been called");
+     completionRequested = true;
+     this.result = result;
+
+File: src/test/java/net/jodah/recurrent/internal/util/concurrent/ReentrantCircuitTest.java
+Patch:
+@@ -78,7 +78,6 @@ public void shouldHandleConcurrentWaiters() throws Throwable {
+     circuit.open();
+ 
+     final Waiter waiter = new Waiter();
+-    waiter.expectResumes(3);
+     for (int i = 0; i < 3; i++)
+       new Thread(new Runnable() {
+         @Override
+@@ -97,7 +96,6 @@ public void shouldInterruptWaiters() throws Throwable {
+     circuit.open();
+ 
+     final Waiter waiter = new Waiter();
+-    waiter.expectResumes(3);
+     for (int i = 0; i < 3; i++)
+       new Thread(new Runnable() {
+         @Override
+@@ -116,7 +114,6 @@ public void shouldNotBlockOpenWhenSyncAcquired() throws Throwable {
+     circuit.open();
+ 
+     final Waiter waiter = new Waiter();
+-    waiter.expectResume();
+     new Thread(new Runnable() {
+       @Override
+       public void run() {
+
+File: src/test/java/net/jodah/recurrent/examples/Java8Example.java
+Patch:
+@@ -24,7 +24,7 @@ public void example() {
+ 
+     // Create a retryable runnable Stream
+     Recurrent.run(() -> Stream.of("foo")
+-        .map(value -> Recurrent.get(() -> value + "bar", retryPolicy))
++        .map(value -> value + "bar")
+         .forEach(System.out::println), retryPolicy);
+         
+     // Create a retryable callable Stream
+

@@ -1,0 +1,928 @@
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/JobManager.java
+Patch:
+@@ -203,9 +203,11 @@ public void waitUntilConsumersAreFinished() {
+     private void waitUntilConsumersAreFinished(boolean stop) {
+         assertNotInMainThread();
+         final CountDownLatch latch = new CountDownLatch(1);
++        JqLog.v("adding no consumers listener.");
+         jobManagerThread.consumerManager.addNoConsumersListener(new Runnable() {
+             @Override
+             public void run() {
++                JqLog.v("received no consumers callback");
+                 latch.countDown();
+                 jobManagerThread.consumerManager.removeNoConsumersListener(this);
+             }
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/Job.java
+Patch:
+@@ -268,6 +268,8 @@ final int safeRun(JobHolder holder, int currentRunCount, Timer timer) {
+             return JobHolder.RUN_RESULT_HIT_DEADLINE;
+         }
+         if (currentRunCount < getRetryLimit()) {
++            // only set the Throwable if we are sure the Job is not gonna run again
++            holder.setThrowable(throwable);
+             return JobHolder.RUN_RESULT_FAIL_SHOULD_RE_RUN;
+         } else {
+             // only set the Throwable if we are sure the Job is not gonna run again
+
+File: jobqueue/src/test/java/com/birbit/android/jobqueue/test/jobmanager/CallbackTest.java
+Patch:
+@@ -118,7 +118,7 @@ public void assertJob(Job job) {
+ 
+         verify(callback).onJobAdded(job);
+         verify(callback, times(1)).onJobRun(job, JobManagerCallback.RESULT_CANCEL_CANCELLED_VIA_SHOULD_RE_RUN);
+-        verify(callback).onJobCancelled(job, false, null);
++        verify(callback).onJobCancelled(eq(job), eq(false), any(Throwable.class));
+     }
+ 
+     @Test
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/CancelHandler.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.birbit.android.jobqueue;
+ 
+ import com.birbit.android.jobqueue.log.JqLog;
++import com.birbit.android.jobqueue.network.NetworkUtil;
+ 
+ import java.util.ArrayList;
+ import java.util.Collection;
+@@ -34,6 +35,7 @@ void query(JobManagerThread jobManagerThread, ConsumerManager consumerManager) {
+         queryConstraint.setExcludeJobIds(running);
+         queryConstraint.setTags(tags);
+         queryConstraint.setExcludeRunning(true);
++        queryConstraint.setMaxNetworkType(NetworkUtil.UNMETERED);
+         Set<JobHolder> nonPersistentInQueue = jobManagerThread.nonPersistentJobQueue
+                 .findJobs(queryConstraint);
+         Set<JobHolder> persistentInQueue = jobManagerThread.persistentJobQueue
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/JobManager.java
+Patch:
+@@ -30,7 +30,7 @@
+ public class JobManager {
+     public static final long NS_PER_MS = 1000000;
+     public static final long NOT_RUNNING_SESSION_ID = Long.MIN_VALUE;
+-    public static final long NOT_DELAYED_JOB_DELAY = Long.MIN_VALUE;
++    public static final long NOT_DELAYED_JOB_DELAY = Params.NEVER;
+     public static final long NETWORK_CHECK_INTERVAL = TimeUnit.MILLISECONDS.toNanos(10000);
+     /**
+      * The min delay in MS which will trigger usage of JobScheduler.
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/scheduling/FrameworkScheduler.java
+Patch:
+@@ -102,6 +102,9 @@ public void request(SchedulerConstraint constraint) {
+                 builder.setRequiresDeviceIdle(true);
+                 break;
+         }
++        if (constraint.getOverrideDeadlineInMs() != null) {
++            builder.setOverrideDeadline(constraint.getOverrideDeadlineInMs());
++        }
+         int scheduled = jobScheduler.schedule(builder.build());
+         JqLog.d("[FW Scheduler] scheduled a framework job. Success? %s id: %d" +
+                 " created id: %d", scheduled > 0, scheduled, id);
+
+File: jobqueue/src/test/java/com/birbit/android/jobqueue/ConsumerTest.java
+Patch:
+@@ -87,7 +87,7 @@ public void runJobMessage() {
+         Consumer consumer = new Consumer(pmq, mq, factory, timer);
+         RunJobMessage rjm = factory.obtain(RunJobMessage.class);
+         JobHolder mockHolder = mock(JobHolder.class);
+-        when(mockHolder.safeRun(0)).thenReturn(JobHolder.RUN_RESULT_SUCCESS);
++        when(mockHolder.safeRun(0, timer)).thenReturn(JobHolder.RUN_RESULT_SUCCESS);
+         rjm.setJobHolder(mockHolder);
+         timer.setNow(3001);
+         consumer.queueConsumer.handleMessage(rjm);
+@@ -111,7 +111,7 @@ public void removePokesAfterJobTest() {
+         Consumer consumer = new Consumer(pmq, mq, factory, timer);
+         RunJobMessage rjm = factory.obtain(RunJobMessage.class);
+         JobHolder mockHolder = mock(JobHolder.class);
+-        when(mockHolder.safeRun(0)).thenReturn(JobHolder.RUN_RESULT_SUCCESS);
++        when(mockHolder.safeRun(0, new MockTimer())).thenReturn(JobHolder.RUN_RESULT_SUCCESS);
+         rjm.setJobHolder(mockHolder);
+         timer.setNow(3001);
+         verify(mq, times(0)).cancelMessages(Consumer.pokeMessagePredicate);
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/persistentQueue/sqlite/SqlHelper.java
+Patch:
+@@ -12,6 +12,7 @@ public class SqlHelper {
+ 
+     /**package**/ String FIND_BY_ID_QUERY;
+     /**package**/ String FIND_BY_TAG_QUERY;
++    /**package**/ String LOAD_ALL_IDS_QUERY;
+ 
+     private SQLiteStatement insertStatement;
+     private SQLiteStatement insertTagsStatement;
+@@ -44,6 +45,7 @@ public SqlHelper(SQLiteDatabase db, String tableName, String primaryKeyColumnNam
+         FIND_BY_TAG_QUERY = "SELECT * FROM " + tableName + " WHERE " + DbOpenHelper.ID_COLUMN.columnName
+                 + " IN ( SELECT " + DbOpenHelper.TAGS_JOB_ID_COLUMN.columnName + " FROM " + tagsTableName
+                 + " WHERE " + DbOpenHelper.TAGS_NAME_COLUMN.columnName + " = ?)";
++        LOAD_ALL_IDS_QUERY = "SELECT " + DbOpenHelper.ID_COLUMN.columnName + " FROM " + tableName;
+     }
+ 
+     public static String create(String tableName, Property primaryKey, Property... properties) {
+
+File: examples/twitter/TwitterClient/src/com/birbit/android/jobqueue/examples/twitter/TwitterApplication.java
+Patch:
+@@ -26,6 +26,7 @@ public TwitterApplication() {
+     @Override
+     public void onCreate() {
+         super.onCreate();
++        getJobManager();// ensure it is created
+     }
+ 
+     private void configureJobManager() {
+
+File: examples/twitter/TwitterClient/src/com/birbit/android/jobqueue/examples/twitter/jobs/FetchTweetsJob.java
+Patch:
+@@ -1,5 +1,7 @@
+ package com.birbit.android.jobqueue.examples.twitter.jobs;
+ 
++import android.support.annotation.Nullable;
++
+ import com.birbit.android.jobqueue.CancelReason;
+ import com.birbit.android.jobqueue.Job;
+ import com.birbit.android.jobqueue.Params;
+@@ -46,7 +48,7 @@ public void onRun() throws Throwable {
+     }
+ 
+     @Override
+-    protected void onCancel(@CancelReason int cancelReason) {
++    protected void onCancel(@CancelReason int cancelReason, @Nullable Throwable throwable) {
+ 
+     }
+ 
+
+File: examples/twitter/TwitterClient/src/com/birbit/android/jobqueue/examples/twitter/jobs/PostTweetJob.java
+Patch:
+@@ -1,5 +1,7 @@
+ package com.birbit.android.jobqueue.examples.twitter.jobs;
+ 
++import android.support.annotation.Nullable;
++
+ import com.birbit.android.jobqueue.CancelReason;
+ import com.birbit.android.jobqueue.Job;
+ import com.birbit.android.jobqueue.Params;
+@@ -65,7 +67,7 @@ public void onRun() throws Throwable {
+     }
+ 
+     @Override
+-    protected void onCancel(@CancelReason int cancelReason) {
++    protected void onCancel(@CancelReason int cancelReason, @Nullable Throwable throwable) {
+         //delete local tweet
+         Tweet localTweet = TweetModel.getInstance().getTweetByLocalId(localId);
+         if(localTweet != null) {
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/JobManagerThread.java
+Patch:
+@@ -628,20 +628,20 @@ JobHolder getNextJob(Collection<String> runningJobGroups, boolean ignoreRunning)
+         final int networkStatus = getNetworkStatus();
+         JobHolder jobHolder;
+         boolean persistent = false;
+-        JqLog.d("looking for next job");
++        JqLog.v("looking for next job");
+         queryConstraint.clear();
+         queryConstraint.setNowInNs(timer.nanoTime());
+         queryConstraint.setNetworkStatus(networkStatus);
+         queryConstraint.setExcludeGroups(runningJobGroups);
+         queryConstraint.setExcludeRunning(true);
+         queryConstraint.setTimeLimit(timer.nanoTime());
+         jobHolder = nonPersistentJobQueue.nextJobAndIncRunCount(queryConstraint);
+-        JqLog.d("non persistent result %s", jobHolder);
++        JqLog.v("non persistent result %s", jobHolder);
+         if (jobHolder == null) {
+             //go to disk, there aren't any non-persistent jobs
+             jobHolder = persistentJobQueue.nextJobAndIncRunCount(queryConstraint);
+             persistent = true;
+-            JqLog.d("persistent result %s", jobHolder);
++            JqLog.v("persistent result %s", jobHolder);
+         }
+         if(jobHolder == null) {
+             return null;
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/log/CustomLogger.java
+Patch:
+@@ -13,4 +13,5 @@ public interface CustomLogger {
+     void d(String text, Object... args);
+     void e(Throwable t, String text, Object... args);
+     void e(String text, Object... args);
++    void v(String text, Object... args);
+ }
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/log/CustomLogger.java
+Patch:
+@@ -7,7 +7,7 @@
+ public interface CustomLogger {
+     /**
+      * JobManager may call this before logging something that is (relatively) expensive to calculate
+-     * @return
++     * @return True if debug logs are enabled
+      */
+     boolean isDebugEnabled();
+     void d(String text, Object... args);
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/ConsumerManager.java
+Patch:
+@@ -184,7 +184,8 @@ void handleIdle(JobConsumerIdleMessage message) {
+             }
+             consumer.messageQueue.post(runJobMessage);
+         } else {
+-            long keepAliveTimeout = message.getLastJobCompleted() + consumerKeepAliveNs;
++            long keepAliveTimeout = Math.max(timer.nanoTime(), message.getLastJobCompleted())
++                    + consumerKeepAliveNs;
+             JqLog.d("keep alive: %s", keepAliveTimeout);
+             boolean kill = false;
+             if (!mJobManagerThread.isRunning()) {
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/ConsumerManager.java
+Patch:
+@@ -221,6 +221,7 @@ void handleIdle(JobConsumerIdleMessage message) {
+                 CommandMessage cm = factory.obtain(CommandMessage.class);
+                 cm.set(CommandMessage.POKE);
+                 consumer.messageQueue.postAt(cm, keepAliveTimeout);
++                JqLog.d("poke consumer manager at %s", keepAliveTimeout);
+             }
+         }
+     }
+@@ -315,6 +316,7 @@ public void handleMessage(Message message) {
+ 
+             @Override
+             public void onIdle() {
++                JqLog.d("consumer manager on idle");
+                 JobConsumerIdleMessage idle = factory.obtain(JobConsumerIdleMessage.class);
+                 idle.setWorker(Consumer.this);
+                 idle.setLastJobCompleted(lastJobCompleted);
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/messaging/DelayedMessageBag.java
+Patch:
+@@ -19,6 +19,7 @@ Long flushReadyMessages(long now, MessageQueue addInto) {
+             addInto.post(msg);
+         }
+         if (queue != null) {
++            JqLog.d("returning next ready at %d ns", (queue.readyNs - now));
+             return queue.readyNs;
+         }
+         return null;
+
+File: jobqueue/src/main/java/com/birbit/android/jobqueue/messaging/SafeMessageQueue.java
+Patch:
+@@ -80,13 +80,16 @@ Message next(MessageQueueConsumer consumer) {
+                     continue; // callback added a message, requery
+                 }
+                 if (nextDelayedReadyAt != null && nextDelayedReadyAt <= now) {
++                    JqLog.d("next message is ready, requery");
+                     continue;
+                 }
+                 if (running.get()) {
+                     try {
+                         if (nextDelayedReadyAt == null) {
++                            JqLog.d("will wait on the lock forever");
+                             timer.waitOnObject(LOCK);
+                         } else {
++                            JqLog.d("will wait on the lock until %d", nextDelayedReadyAt);
+                             timer.waitOnObjectUntilNs(LOCK, nextDelayedReadyAt);
+                         }
+                     } catch (InterruptedException ignored) {
+
+File: jobqueue/src/main/java/com/path/android/jobqueue/timer/SystemTimer.java
+Patch:
+@@ -24,7 +24,7 @@ public long nanoTime() {
+     @Override
+     public void waitOnObjectUntilNs(Object object, long untilNs) throws InterruptedException {
+         long now = nanoTime();
+-        if (now < untilNs) {
++        if (now > untilNs) {
+             //noinspection TIMED_WAIT
+             object.wait(1);
+         } else {
+
+File: jobqueue/src/main/java/com/path/android/jobqueue/persistentQueue/sqlite/SqlHelper.java
+Patch:
+@@ -224,8 +224,9 @@ public void vacuum() {
+     public void resetDelayTimesTo(long newDelayTime) {
+         db.execSQL("UPDATE " + DbOpenHelper.JOB_HOLDER_TABLE_NAME + " SET "
+                 + DbOpenHelper.DELAY_UNTIL_NS_COLUMN.columnName + "=?,"
+-                + DbOpenHelper.REQUIRES_NETWORK_UNTIL_COLUMN.columnName + "=?"
+-            , new Object[]{newDelayTime, newDelayTime});
++                + DbOpenHelper.REQUIRES_NETWORK_UNTIL_COLUMN.columnName + "=?, "
++                + DbOpenHelper.REQUIRES_WIFI_NETWORK_UNTIL_COLUMN.columnName + "=?"
++            , new Object[]{newDelayTime, newDelayTime, newDelayTime});
+     }
+ 
+     public static class Property {
+
+File: lint/src/main/java/com/birbit/android/jobqueue/lint/SleepDetector.java
+Patch:
+@@ -17,7 +17,7 @@ public class SleepDetector extends Detector implements Detector.JavaScanner {
+             Category.CORRECTNESS,
+             6,
+             Severity.ERROR,
+-            new Implementation(SleepDetector.class, EnumSet.of(Scope.JAVA_FILE))
++            new Implementation(SleepDetector.class, EnumSet.of(Scope.JAVA_FILE, Scope.TEST_SOURCES))
+     );
+ 
+     @Override
+@@ -27,7 +27,7 @@ public AstVisitor createJavaVisitor(@NonNull final JavaContext context) {
+             public boolean visitMethodInvocation(MethodInvocation node) {
+                 Expression operand = node.astOperand();
+                 if (node.astName().toString().equals("sleep") && operand.toString().equals("Thread") && !context.isSuppressedWithComment(node, ISSUE)) {
+-                    context.report(ISSUE, context.getLocation(node), "Don't call sleep. Use MockTimer instead.");
++                    context.report(ISSUE, node, context.getLocation(node), "Don't call sleep. Use MockTimer instead.");
+                 }
+                 return super.visitMethodInvocation(node);
+             }
+
+File: jobqueue/src/main/java/com/path/android/jobqueue/RetryConstraint.java
+Patch:
+@@ -60,7 +60,8 @@ public void setNewPriority(Integer newPriority) {
+ 
+     public static RetryConstraint createExponentialBackoff(int runCount, long initialBackOffInMs) {
+         RetryConstraint constraint = new RetryConstraint(true);
+-        constraint.setNewDelayInMs((long) Math.pow(initialBackOffInMs, runCount));
++        constraint.setNewDelayInMs(initialBackOffInMs *
++                (long) Math.pow(2, Math.max(0, runCount - 1)));
+         return constraint;
+     }
+ 
+
+File: jobqueue/src/main/java/com/path/android/jobqueue/JobManager.java
+Patch:
+@@ -189,7 +189,7 @@ public long addJob(Job job) {
+                 clearOnAddedLock(nonPersistentOnAddedLocks, id);
+             }
+         }
+-        notifyJobConsumer();
++        ensureConsumerWhenNeeded(null);
+         return id;
+     }
+ 
+
+File: jobqueue/src/main/java/com/path/android/jobqueue/JobManager.java
+Patch:
+@@ -178,6 +178,7 @@ public long addJob(Job job) {
+             //inject members b4 calling onAdded
+             dependencyInjector.inject(job);
+         }
++        jobHolder.getJob().setApplicationContext(appContext);
+         jobHolder.getJob().onAdded();
+         if(job.isPersistent()) {
+             synchronized (persistentJobQueue) {
+@@ -530,7 +531,7 @@ private JobHolder getNextJob() {
+         } else {
+             waitForOnAddedLock(nonPersistentOnAddedLocks, jobHolder.getId());
+         }
+-
++        jobHolder.getJob().setApplicationContext(appContext);
+         return jobHolder;
+     }
+ 
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/AddInBackgroundTest.java
+Patch:
+@@ -13,11 +13,13 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.atomic.AtomicLong;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class AddInBackgroundTest extends JobManagerTestBase {
+     @Test
+     public void testAddInBackground() throws InterruptedException {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/ClearTest.java
+Patch:
+@@ -8,8 +8,10 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class ClearTest extends JobManagerTestBase {
+     @Test
+     public void testClear() throws Exception {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/CountTest.java
+Patch:
+@@ -8,8 +8,10 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class CountTest extends JobManagerTestBase {
+     @Test
+     public void testCount() throws Exception {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/DelayTest.java
+Patch:
+@@ -11,8 +11,10 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class DelayTest extends JobManagerTestBase {
+     @Test
+     public void testDelay() throws Exception {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/DelayedRunTest.java
+Patch:
+@@ -8,8 +8,10 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class DelayedRunTest extends JobManagerTestBase {
+     @Test
+     public void testDelayedRun() throws Exception {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/JobManagerTestBase.java
+Patch:
+@@ -28,14 +28,14 @@
+ public class JobManagerTestBase extends TestBase {
+     List<JobManager> createdJobManagers = new ArrayList<JobManager>();
+     protected JobManager createJobManager() {
+-        final JobManager jobManager = new JobManager(Robolectric.application,
++        final JobManager jobManager = new JobManager(RuntimeEnvironment.application,
+                 UUID.randomUUID().toString());
+         createdJobManagers.add(jobManager);
+         return jobManager;
+     }
+ 
+     protected JobManager createJobManager(Configuration.Builder configurationBuilder) {
+-        final JobManager jobManager = new JobManager(Robolectric.application,
++        final JobManager jobManager = new JobManager(RuntimeEnvironment.application,
+                 configurationBuilder.id(UUID.randomUUID().toString()).build());
+         createdJobManagers.add(jobManager);
+         return jobManager;
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/PersistentJobTest.java
+Patch:
+@@ -8,11 +8,13 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.TimeUnit;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class PersistentJobTest extends JobManagerTestBase {
+     //TEST parallel running
+     public static CountDownLatch persistentRunLatch = new CountDownLatch(1);
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/RunFailingJobTest.java
+Patch:
+@@ -9,11 +9,13 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.TimeUnit;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class RunFailingJobTest extends JobManagerTestBase {
+     @Test
+     public void runFailingJob() throws Exception {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/RunManyNonPersistentTest.java
+Patch:
+@@ -7,11 +7,13 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.TimeUnit;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class RunManyNonPersistentTest extends JobManagerTestBase {
+     @Test
+     public void runManyNonPersistentJobs() throws Exception {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/SessionIdTest.java
+Patch:
+@@ -13,8 +13,10 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class SessionIdTest extends JobManagerTestBase {
+     @Test
+     public void testSessionId() throws Exception {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobmanager/SlowOnAddedTest.java
+Patch:
+@@ -9,10 +9,12 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+ import java.util.concurrent.CountDownLatch;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class SlowOnAddedTest extends JobManagerTestBase {
+     @Test
+     public void testNonPersistent() throws InterruptedException {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobqueue/CachedNonPersistentJobQueueTest.java
+Patch:
+@@ -7,8 +7,10 @@
+ import com.path.android.jobqueue.test.util.JobQueueFactory;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class CachedNonPersistentJobQueueTest extends JobQueueTestBase {
+     public CachedNonPersistentJobQueueTest() {
+         super(new JobQueueFactory() {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobqueue/JobParamsTest.java
+Patch:
+@@ -8,8 +8,10 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class JobParamsTest extends TestBase {
+     @Test
+     public void assertParamsUnderstood() {
+
+File: jobqueue/src/test/java/com/path/android/jobqueue/test/jobqueue/NonPersistentJobQueueTest.java
+Patch:
+@@ -12,12 +12,14 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.robolectric.*;
++import org.robolectric.annotation.Config;
+ 
+ import java.util.Collections;
+ 
+ import static com.path.android.jobqueue.TagConstraint.ANY;
+ 
+-@RunWith(RobolectricTestRunner.class)
++@RunWith(RobolectricGradleTestRunner.class)
++@Config(constants = com.path.android.jobqueue.BuildConfig.class)
+ public class NonPersistentJobQueueTest extends JobQueueTestBase {
+     public NonPersistentJobQueueTest() {
+         super(new JobQueueFactory() {
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobqueue/CachedPersistentJobQueueTest.java
+Patch:
+@@ -12,7 +12,7 @@ public CachedPersistentJobQueueTest() {
+         super(new JobQueueFactory() {
+             @Override
+             public JobQueue createNew(long sessionId, String id) {
+-                return new SqliteJobQueue(Robolectric.application, sessionId, id);
++                return new SqliteJobQueue(Robolectric.application, sessionId, id, new SqliteJobQueue.JavaSerializer());
+             }
+         });
+     }
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobqueue/SqliteJobQueueTest.java
+Patch:
+@@ -21,7 +21,7 @@ public SqliteJobQueueTest() {
+         super(new JobQueueFactory() {
+             @Override
+             public JobQueue createNew(long sessionId, String id) {
+-                return new SqliteJobQueue(Robolectric.application, sessionId, id);
++                return new SqliteJobQueue(Robolectric.application, sessionId, id, new SqliteJobQueue.JavaSerializer());
+             }
+         });
+     }
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobmanager/JobManagerTestBase.java
+Patch:
+@@ -25,8 +25,8 @@ protected JobManager createJobManager() {
+         return new JobManager(Robolectric.application, UUID.randomUUID().toString());
+     }
+ 
+-    protected JobManager createJobManager(Configuration configuration) {
+-        return new JobManager(Robolectric.application, configuration.id(UUID.randomUUID().toString()));
++    protected JobManager createJobManager(Configuration.Builder configurationBuilder) {
++        return new JobManager(Robolectric.application, configurationBuilder.id(UUID.randomUUID().toString()).build());
+     }
+ 
+ 
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobmanager/LoadFactorTest.java
+Patch:
+@@ -1,7 +1,8 @@
+ package com.path.android.jobqueue.test.jobmanager;
+ 
+-import com.path.android.jobqueue.JobManager;
++import com.path.android.jobqueue.config.Configuration;
+ import com.path.android.jobqueue.executor.JobConsumerExecutor;
++import com.path.android.jobqueue.log.CustomLogger;
+ import com.path.android.jobqueue.test.jobs.DummyJob;
+ import static org.hamcrest.CoreMatchers.*;
+ import org.hamcrest.*;
+@@ -14,7 +15,6 @@
+ import java.util.concurrent.Semaphore;
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicInteger;
+-import com.path.android.jobqueue.log.CustomLogger;
+ 
+ @RunWith(RobolectricTestRunner.class)
+ public class LoadFactorTest extends JobManagerTestBase {
+@@ -24,7 +24,7 @@ public void testLoadFactor() throws Exception {
+         int maxConsumerCount = 5;
+         int minConsumerCount = 2;
+         int loadFactor = 5;
+-        com.path.android.jobqueue.JobManager jobManager = createJobManager(JobManager.createDefaultConfiguration()
++        com.path.android.jobqueue.JobManager jobManager = createJobManager(new Configuration.Builder()
+                 .maxConsumerCount(maxConsumerCount)
+                 .minConsumerCount(minConsumerCount)
+                 .customLogger(new CustomLogger() {
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobmanager/MultiThreadTest.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import android.util.Log;
+ import com.path.android.jobqueue.JobManager;
++import com.path.android.jobqueue.config.Configuration;
+ import com.path.android.jobqueue.test.jobs.DummyJob;
+ import static org.hamcrest.CoreMatchers.*;
+ import org.hamcrest.*;
+@@ -24,7 +25,7 @@ public class MultiThreadTest extends JobManagerTestBase {
+     @Test
+     public void testMultiThreaded() throws Exception {
+         multiThreadedJobCounter = new AtomicInteger(0);
+-        final JobManager jobManager = createJobManager(JobManager.createDefaultConfiguration()
++        final JobManager jobManager = createJobManager(new Configuration.Builder()
+             .loadFactor(3).maxConsumerCount(10));
+         int limit = 200;
+         ExecutorService executor = new ThreadPoolExecutor(20, 20, 60, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(limit));
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobmanager/NetworkJobTest.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.path.android.jobqueue.test.jobmanager;
+ 
+ import com.path.android.jobqueue.JobManager;
++import com.path.android.jobqueue.config.Configuration;
+ import com.path.android.jobqueue.test.jobs.DummyJob;
+ import com.path.android.jobqueue.test.jobs.PersistentDummyJob;
+ import org.hamcrest.MatcherAssert;
+@@ -15,7 +16,7 @@ public class NetworkJobTest extends JobManagerTestBase {
+     @Test
+     public void testNetworkJob() throws Exception {
+         JobManagerTestBase.DummyNetworkUtil dummyNetworkUtil = new JobManagerTestBase.DummyNetworkUtil();
+-        JobManager jobManager = createJobManager(JobManager.createDefaultConfiguration().networkUtil(dummyNetworkUtil));
++        JobManager jobManager = createJobManager(new Configuration.Builder().networkUtil(dummyNetworkUtil));
+         jobManager.stop();
+ 
+         DummyJob networkDummyJob = new DummyJob(true, false);
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobmanager/NetworkJobWithConnectivityListenerTest.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.path.android.jobqueue.test.jobmanager;
+ 
+ import com.path.android.jobqueue.JobManager;
++import com.path.android.jobqueue.config.Configuration;
+ import com.path.android.jobqueue.test.jobs.DummyJob;
+ import org.hamcrest.MatcherAssert;
+ import org.junit.Test;
+@@ -14,7 +15,7 @@ public class NetworkJobWithConnectivityListenerTest extends JobManagerTestBase {
+     @Test
+     public void testNetworkJobWithConnectivityListener() throws Exception {
+         DummyNetworkUtilWithConnectivityEventSupport dummyNetworkUtil = new DummyNetworkUtilWithConnectivityEventSupport();
+-        JobManager jobManager = createJobManager(JobManager.createDefaultConfiguration().networkUtil(dummyNetworkUtil));
++        JobManager jobManager = createJobManager(new Configuration.Builder().networkUtil(dummyNetworkUtil));
+         dummyNetworkUtil.setHasNetwork(false, true);
+         DummyJob dummyJob = new DummyJob(true, false);
+         long dummyJobId = jobManager.addJob(0, dummyJob);
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobmanager/NetworkNextJobTest.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.path.android.jobqueue.JobHolder;
+ import com.path.android.jobqueue.JobManager;
++import com.path.android.jobqueue.config.Configuration;
+ import com.path.android.jobqueue.test.jobs.DummyJob;
+ import org.fest.reflect.method.Invoker;
+ import org.hamcrest.MatcherAssert;
+@@ -18,7 +19,7 @@ public class NetworkNextJobTest extends JobManagerTestBase {
+     @Test
+     public void testNetworkNextJob() throws Exception {
+         DummyNetworkUtil dummyNetworkUtil = new DummyNetworkUtil();
+-        JobManager jobManager = createJobManager(JobManager.createDefaultConfiguration().networkUtil(dummyNetworkUtil));
++        JobManager jobManager = createJobManager(new Configuration.Builder().networkUtil(dummyNetworkUtil));
+         jobManager.stop();
+         DummyJob dummyJob = new DummyJob(true, false);
+         long dummyJobId = jobManager.addJob(0, dummyJob);
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobmanager/PriorityTest.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.path.android.jobqueue.BaseJob;
+ import com.path.android.jobqueue.JobManager;
++import com.path.android.jobqueue.config.Configuration;
+ import static org.hamcrest.CoreMatchers.*;
+ import org.hamcrest.*;
+ import org.junit.Test;
+@@ -18,7 +19,7 @@ public class PriorityTest extends JobManagerTestBase {
+ 
+     @Test
+     public void testPriority() throws Exception {
+-        JobManager jobManager = createJobManager(JobManager.createDefaultConfiguration().maxConsumerCount(1).id("" + System.nanoTime()));
++        JobManager jobManager = createJobManager(new Configuration.Builder().maxConsumerCount(1));
+         testPriority(jobManager, false);
+     }
+ 
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobmanager/PriorityTest.java
+Patch:
+@@ -19,8 +19,7 @@ public class PriorityTest extends JobManagerTestBase {
+ 
+     @Test
+     public void testPriority() throws Exception {
+-        JobManager jobManager = createJobManager();
+-        jobManager.setMaxConsumerCount(1);
++        JobManager jobManager = createJobManager(JobManager.createDefaultConfiguration().maxConsumerCount(1).id("" + System.nanoTime()));
+         testPriority(jobManager, false);
+     }
+ 
+
+File: jobqueue/test/com/path/android/jobqueue/test/jobmanager/MultiThreadTest.java
+Patch:
+@@ -18,7 +18,7 @@
+ import static org.hamcrest.CoreMatchers.equalTo;
+ 
+ @RunWith(RobolectricTestRunner.class)
+-public class JobManagerMultiThreadTest extends JobManagerTestBase {
++public class MultiThreadTest extends JobManagerTestBase {
+     private static AtomicInteger multiThreadedJobCounter;
+     @Test
+     public void testMultiThreaded() throws Exception {
+
+File: examples/twitter/TwitterClient/src/com/path/android/jobqueue/examples/twitter/TwitterApplication.java
+Patch:
+@@ -14,7 +14,7 @@ public TwitterApplication() {
+     @Override
+     public void onCreate() {
+         super.onCreate();
+-        jobManager = new JobManager(this, JobManager.createDefaultConfiguration().withMaxConsumerCount(1));
++        jobManager = new JobManager(this, JobManager.createDefaultConfiguration().maxConsumerCount(1));
+     }
+ 
+     public JobManager getJobManager() {
+
+File: jobqueue/src/com/path/android/jobqueue/nonPersistentQueue/JobSet.java
+Patch:
+@@ -15,4 +15,6 @@ public interface JobSet {
+     public boolean remove(JobHolder holder);
+     public void clear();
+     public int size();
++    public CountWithGroupIdsResult countReadyJobs(long now, Collection<String> excludeGroups);
++    public CountWithGroupIdsResult countReadyJobs(Collection<String> excludeGroups);
+ }
+
+File: jobqueue/src/com/path/android/jobqueue/BaseJob.java
+Patch:
+@@ -111,8 +111,7 @@ public final boolean requiresNetwork() {
+      * Some jobs may require being run synchronously. For instance, if it is a job like sending a comment, we should
+      * never run them in parallel (unless they are being sent to different conversations).
+      * By assigning same groupId to jobs, you can ensure that that type of jobs will be run in the order they were given
+-     * (if their priority is the same). Keep in mind that, withing group, {@link JobManager} will ignore {@link JobHolder#runCount}
+-     * and will always do first in first out (assuming priority is the same)
++     * (if their priority is the same).
+      * @return
+      */
+     public final String getRunGroupId() {
+
+File: jobqueue/src/com/path/android/jobqueue/nonPersistentQueue/NetworkAwarePriorityQueue.java
+Patch:
+@@ -16,7 +16,7 @@ public class NetworkAwarePriorityQueue extends MergedQueue {
+      * @param comparator
+      */
+     public NetworkAwarePriorityQueue(int initialCapacity, Comparator<JobHolder> comparator) {
+-        super(initialCapacity, comparator, comparator);
++        super(initialCapacity, comparator, new TimeAwareComparator(comparator));
+     }
+ 
+     /**
+@@ -54,12 +54,13 @@ protected QeueuId decideQueue(JobHolder jobHolder) {
+ 
+     /**
+      * create a {@link TimeAwarePriorityQueue}
++     * @param ignoredQueueId
+      * @param initialCapacity
+      * @param comparator
+      * @return
+      */
+     @Override
+-    protected Queue<JobHolder> createQueue(int initialCapacity, Comparator<JobHolder> comparator) {
++    protected Queue<JobHolder> createQueue(QeueuId ignoredQueueId, int initialCapacity, Comparator<JobHolder> comparator) {
+         return new TimeAwarePriorityQueue(initialCapacity, comparator);
+     }
+ 
+
+File: jobqueue/src/com/path/android/jobqueue/nonPersistentQueue/NonPersistentPriorityQueue.java
+Patch:
+@@ -89,14 +89,15 @@ public JobHolder nextJobAndIncRunCount(boolean hasNetwork) {
+      * {@inheritDoc}
+      */
+     @Override
+-    public Long getNextJobDelayUntilNs() {
+-        JobHolder next = jobs.peek();
++    public Long getNextJobDelayUntilNs(boolean hasNetwork) {
++        JobHolder next = jobs.peek(hasNetwork);
+         return next == null ? null : next.getDelayUntilNs();
+     }
+ 
+     public final Comparator<JobHolder> jobComparator = new Comparator<JobHolder>() {
+         @Override
+         public int compare(JobHolder holder1, JobHolder holder2) {
++            //we should not check delay here. TimeAwarePriorityQueue does it for us.
+             //high priority first
+             int cmp = compareInt(holder1.getPriority(), holder2.getPriority());
+             if(cmp != 0) {
+
+File: jobqueue/src/com/path/android/jobqueue/JobManager.java
+Patch:
+@@ -66,14 +66,15 @@ public long count() {
+     }
+ 
+     public long addJob(int priority, BaseJob baseJob) {
+-        JobHolder jobHolder = new JobHolder(null, priority, 0, null, new Date(), Long.MIN_VALUE);
++        JobHolder jobHolder = new JobHolder(null, priority, 0, null, System.nanoTime(), Long.MIN_VALUE);
+         jobHolder.setBaseJob(baseJob);
+         long id;
+         if(baseJob.shouldPersist()) {
+             id = persistentJobQueue.insert(jobHolder);
+         } else {
+             id = nonPersistentJobQueue.insert(jobHolder);
+         }
++        jobHolder.getBaseJob().onAdded();
+         if(runningConsumerCount.get() == 0) {
+             addConsumer();
+         }
+
+File: jobqueue/src/com/path/android/jobqueue/persistentQueue/sqlite/DbOpenHelper.java
+Patch:
+@@ -11,7 +11,7 @@ public class DbOpenHelper extends SQLiteOpenHelper {
+     /*package*/ static final SqlHelper.Property PRIORITY_COLUMN = new SqlHelper.Property("priority", "integer");
+     /*package*/ static final SqlHelper.Property RUN_COUNT_COLUMN = new SqlHelper.Property("run_count", "integer");
+     /*package*/ static final SqlHelper.Property BASE_JOB_COLUMN = new SqlHelper.Property("base_job", "byte");
+-    /*package*/ static final SqlHelper.Property CREATED_COLUMN = new SqlHelper.Property("created", "long");
++    /*package*/ static final SqlHelper.Property CREATED_NS_COLUMN = new SqlHelper.Property("created_ns", "long");
+     /*package*/ static final SqlHelper.Property RUNNING_SESSION_ID_COLUMN = new SqlHelper.Property("running_session_id", "long");
+     /*package*/ static final int COLUMN_COUNT = 6;
+ 
+@@ -26,7 +26,7 @@ public void onCreate(SQLiteDatabase sqLiteDatabase) {
+                 PRIORITY_COLUMN,
+                 RUN_COUNT_COLUMN,
+                 BASE_JOB_COLUMN,
+-                CREATED_COLUMN,
++                CREATED_NS_COLUMN,
+                 RUNNING_SESSION_ID_COLUMN
+                 );
+         sqLiteDatabase.execSQL(createQuery);
+

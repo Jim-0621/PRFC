@@ -1,0 +1,193 @@
+File: search-service/search-provider/src/main/java/com/gpmall/search/bootstrap/SearchProviderApplication.java
+Patch:
+@@ -1,11 +1,11 @@
+ package com.gpmall.search.bootstrap;
+ 
+ 
+-import org.mybatis.spring.annotation.MapperScan;
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ import org.springframework.context.annotation.ComponentScan;
+ import org.springframework.data.elasticsearch.repository.config.EnableElasticsearchRepositories;
++import tk.mybatis.spring.annotation.MapperScan;
+ 
+ /**
+  * 搜索服务启动类
+@@ -15,7 +15,7 @@
+ 
+ @SpringBootApplication
+ @ComponentScan(basePackages = "com.gpmall.search")
+-@MapperScan(basePackages = "com.gpmall.search.mapper")
++@MapperScan(basePackages = "com.gpmall.search.dal")
+ @EnableElasticsearchRepositories(basePackages = "com.gpmall.search.repository")
+ public class SearchProviderApplication {
+ 
+
+File: search-service/search-provider/src/main/java/com/gpmall/search/services/ProductSearchServiceImpl.java
+Patch:
+@@ -101,8 +101,10 @@ public SearchResponse fuzzySearch(SearchRequest request) {
+ 			//统计搜索热词
+ 			staticsSearchHotWord(request);
+             // todo 分页
++            BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
++            boolQueryBuilder.must(QueryBuilders.matchQuery("title", request.getKeyword()));
+             Iterable<ItemDocument> elasticRes =
+-                    productRepository.search(QueryBuilders.fuzzyQuery("title", request.getKeyword()));
++                    productRepository.search(boolQueryBuilder);
+             ArrayList<ItemDocument> itemDocuments = Lists.newArrayList(elasticRes);
+             List<ProductDto> productDtos = productConverter.items2Dto(itemDocuments);
+             response.ok(productDtos);
+
+File: shopping-service/shopping-provider/src/main/java/com/gpmall/shopping/dal/entitys/Item.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import javax.persistence.Id;
+ import javax.persistence.Table;
++import javax.persistence.Transient;
+ import java.io.Serializable;
+ import java.math.BigDecimal;
+ import java.util.Date;
+@@ -32,6 +33,7 @@ public class Item implements Serializable {
+ 
+     private Date updated;
+ 
++    @Transient
+     private String imageBig;
+ 
+     private static final long serialVersionUID = 1L;
+
+File: search-service/search-provider/src/main/java/com/gpmall/search/services/ProductSearchServiceImpl.java
+Patch:
+@@ -58,7 +58,7 @@ public SearchResponse search(SearchRequest request) {
+ 			staticsSearchHotWord(request);
+             // todo 分页
+             Iterable<ItemDocument> elasticRes =
+-                    productRepository.search(QueryBuilders.termsQuery("title", request.getKeyword()));
++                    productRepository.search(QueryBuilders.matchQuery("title", request.getKeyword()));
+             ArrayList<ItemDocument> itemDocuments = Lists.newArrayList(elasticRes);
+ 
+             List<ProductDto> productDtos = productConverter.items2Dto(itemDocuments);
+
+File: shopping-service/shopping-provider/src/main/java/com/gpmall/shopping/dal/entitys/Panel.java
+Patch:
+@@ -5,6 +5,7 @@
+ 
+ import javax.persistence.Id;
+ import javax.persistence.Table;
++import javax.persistence.Transient;
+ import java.io.Serializable;
+ import java.util.Date;
+ import java.util.List;
+@@ -36,6 +37,7 @@ public class Panel implements Serializable {
+ 
+     private List<PanelContentItem> panelContentItems;
+ 
++    @Transient
+     private Long productId;
+ 
+     private static final long serialVersionUID = 1L;
+
+File: pay-service/pay-provider/src/main/java/com/gpmall/pay/services/PayCoreServiceImpl.java
+Patch:
+@@ -26,7 +26,6 @@ public class PayCoreServiceImpl implements PayCoreService {
+ 
+ 
+     @Override
+-    @CustomerLock(lockKey = "#request.tradeNo",lockType = "zookeeper", tryLock = true)
+     public PaymentResponse execPay(PaymentRequest request) {
+ 
+         PaymentResponse paymentResponse=new PaymentResponse();
+
+File: user-service/user-provider/src/main/java/com/gpmall/user/converter/AddressConverter.java
+Patch:
+@@ -17,10 +17,10 @@
+ public interface AddressConverter {
+ 
+     @Mappings({})
+-    AddressDto address2List(Address address);
++    AddressDto address2List(Address addresses);
+ 
+-    @Mappings({})
+-    AddressDto address2Res(Address address);
++    /*@Mappings({})
++    AddressDto address2Res(Address address);*/
+ 
+     List<AddressDto> address2List(List<Address> addresses);
+ 
+
+File: user-service/user-provider/src/main/java/com/gpmall/user/services/AddressServiceImpl.java
+Patch:
+@@ -56,7 +56,7 @@ public AddressDetailResponse addressDetail(AddressDetailRequest request) {
+         try{
+             request.requestCheck();
+             Address address=addressMapper.selectByPrimaryKey(request.getAddressId());
+-            response.setAddressDto(converter.address2Res(address));
++            response.setAddressDto(converter.address2List(address));
+             response.setCode(SysRetCodeConstants.SUCCESS.getCode());
+             response.setMsg(SysRetCodeConstants.SUCCESS.getMessage());
+         }catch (Exception e){
+
+File: comment-service/comment-provider/src/main/java/com/gpmall/comment/bootstrap/CommentProviderApplication.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.gpmall.comment.bootstrap;
+ 
+-import org.mybatis.spring.annotation.MapperScan;
++import tk.mybatis.spring.annotation.MapperScan;
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ import org.springframework.context.annotation.ComponentScan;
+
+File: gpmall-shopping/src/main/java/com/gpmall/shopping/controller/OrderController.java
+Patch:
+@@ -16,6 +16,7 @@
+ import org.springframework.web.bind.annotation.*;
+ 
+ import javax.servlet.http.HttpServletRequest;
++import java.math.BigDecimal;
+ import java.util.UUID;
+ 
+ /**
+@@ -86,7 +87,7 @@ public ResponseData orderDetail(@PathVariable String id){
+         OrderDetailResponse response=orderQueryService.orderDetail(request);
+         if(response.getCode().equals(OrderRetCode.SUCCESS.getCode())){
+             OrderDetail orderDetail=new OrderDetail();
+-            orderDetail.setOrderTotal(response.getPayment());
++            orderDetail.setOrderTotal(BigDecimal.valueOf(response.getPayment()));
+             orderDetail.setUserId(response.getUserId());
+             orderDetail.setUserName(response.getBuyerNick());
+             orderDetail.setGoodsList(response.getOrderItemDto());
+
+File: order-services/order-api/src/main/java/com/gpmall/order/dto/OrderDto.java
+Patch:
+@@ -45,7 +45,7 @@ public class OrderDto implements Serializable {
+ 
+     private String buyerNick;
+ 
+-    private Boolean buyerComment;
++    private Integer buyerComment;
+ 
+     private String uniqueKey;
+ }
+
+File: gpmall-user/src/main/java/com/gpmall/user/controller/LoginController.java
+Patch:
+@@ -13,8 +13,6 @@
+ import com.gpmall.user.dto.UserLoginRequest;
+ import com.gpmall.user.dto.UserLoginResponse;
+ import com.gpmall.user.intercepter.TokenIntercepter;
+-import io.swagger.annotations.Api;
+-import io.swagger.annotations.ApiOperation;
+ import org.apache.dubbo.config.annotation.Reference;
+ import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.web.bind.annotation.*;
+@@ -49,7 +47,6 @@ public class LoginController {
+ 
+     @Anoymous
+     @PostMapping("/login")
+-    @ApiOperation("登录")
+     public ResponseData login(@RequestBody Map<String,String> map,
+                               HttpServletRequest request,HttpServletResponse response){
+         UserLoginRequest loginRequest=new UserLoginRequest();
+

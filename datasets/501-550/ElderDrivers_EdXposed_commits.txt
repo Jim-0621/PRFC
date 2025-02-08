@@ -1,0 +1,1431 @@
+File: xposed-bridge/src/main/java/de/robv/android/xposed/XposedBridge.java
+Patch:
+@@ -240,7 +240,7 @@ public static XC_MethodHook.Unhook hookMethod(Member hookMethod, XC_MethodHook c
+             if (reflectMethod != null) {
+ 				hookMethodNative(reflectMethod, declaringClass, slot, additionalInfo);
+ 			} else {
+-				PendingHooks.recordPendingMethod(hookMethod, additionalInfo);
++				PendingHooks.recordPendingMethod((Method)hookMethod, additionalInfo);
+ 			}
+         }
+ 
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/core/Yahfa.java
+Patch:
+@@ -12,7 +12,7 @@ public class Yahfa {
+ 
+     public static native void init(int sdkVersion);
+ 
+-    public static native void setMethodNonCompilable(Member member);
++//    public static native void setMethodNonCompilable(Member member);
+ 
+     public static native void recordHooked(Member member);
+ 
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/proxy/NormalProxy.java
+Patch:
+@@ -41,9 +41,9 @@ private void forkPostCommon(int pid, boolean isSystem, String appDataDir, String
+         mRouter.initResourcesHook();
+         mRouter.prepare(isSystem);
+         PrebuiltMethodsDeopter.deoptBootMethods(); // do it once for secondary zygote
+-        mRouter.installBootstrapHooks(isSystem);
+         ConfigManager.appDataDir = appDataDir;
+         ConfigManager.niceName = niceName;
++        mRouter.installBootstrapHooks(isSystem);
+         XposedInit.prefsBasePath = ConfigManager.getPrefsPath("");
+         mRouter.onEnterChildProcess();
+         Utils.logI("Loading modules for " + niceName);
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/util/FileUtils.java
+Patch:
+@@ -72,6 +72,6 @@ public static String getPackageName(String dataDir) {
+     }
+ 
+     public static String getDataPathPrefix() {
+-        return ConfigManager.getDataPathPrefix();
++        return ConfigManager.getDataPathPrefix() + "/";
+     }
+ }
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/core/SandHookRouter.java
+Patch:
+@@ -17,7 +17,6 @@
+ public class SandHookRouter extends BaseRouter {
+ 
+     public SandHookRouter() {
+-        useXposedApi = true;
+     }
+ 
+     private static boolean useSandHook = false;
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/core/YahfaRouter.java
+Patch:
+@@ -9,8 +9,6 @@
+ public class YahfaRouter extends BaseRouter {
+ 
+     YahfaRouter() {
+-        // TODO: disable for better performance
+-        useXposedApi = true;
+     }
+ 
+     public void onEnterChildProcess() {
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/config/ConfigManager.java
+Patch:
+@@ -35,6 +35,8 @@ private static boolean isFileExists(String path) {
+ 
+     public static native boolean isDeoptBootImageEnabled();
+ 
++    public static native boolean isSELinuxEnforced();
++
+     public static native String getInstallerPackageName();
+ 
+     public static native String getXposedPropPath();
+
+File: xposed-bridge/src/main/java/com/elderdrivers/riru/edxp/config/EdxpConfig.java
+Patch:
+@@ -14,6 +14,8 @@ public interface EdxpConfig {
+ 
+     boolean isResourcesHookEnabled();
+ 
++    boolean isSELinuxEnforced();
++
+     boolean isBlackWhiteListMode();
+ 
+     String getModulesList();
+
+File: xposed-bridge/src/main/java/de/robv/android/xposed/XposedInit.java
+Patch:
+@@ -338,6 +338,7 @@ public static boolean loadModules(boolean callInitZygote) throws IOException {
+                 if (loadedModules.contains(apk)) {
+                     newLoadedApk.add(apk);
+                 } else {
++                    loadedModules.add(apk); // temporarily add it for XSharedPreference
+                     boolean loadSuccess = loadModule(apk, topClassLoader, callInitZygote);
+                     if (loadSuccess) {
+                         newLoadedApk.add(apk);
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/config/SandHookProvider.java
+Patch:
+@@ -16,6 +16,8 @@
+ 
+ import de.robv.android.xposed.XposedBridge;
+ 
++import static com.elderdrivers.riru.edxp.util.ClassUtils.shouldDelayHook;
++
+ public class SandHookProvider extends BaseHookProvider {
+     @Override
+     public void hookMethod(Member method, XposedBridge.AdditionalHookInfo additionalInfo) {
+@@ -50,7 +52,7 @@ public Object invokeOriginalMethod(Member method, long methodId, Object thisObje
+ 
+     @Override
+     public Member findMethodNative(Member hookMethod) {
+-        return hookMethod;
++        return shouldDelayHook(hookMethod) ? null : hookMethod;
+     }
+ 
+     @Override
+
+File: sandhook-hooklib/src/main/java/com/swift/sandhook/SandHook.java
+Patch:
+@@ -95,8 +95,6 @@ public static synchronized void hook(HookWrapper.HookEntity entity) throws HookE
+         if (SandHookConfig.delayHook && PendingHookHandler.canWork() && ClassStatusUtils.isStaticAndNoInited(entity.target)) {
+             PendingHookHandler.addPendingHook(entity);
+             return;
+-        } else if (entity.initClass) {
+-            resolveStaticMethod(target);
+         }
+ 
+         resolveStaticMethod(backup);
+
+File: sandhook-hooklib/src/main/java/com/swift/sandhook/SandHook.java
+Patch:
+@@ -95,6 +95,8 @@ public static synchronized void hook(HookWrapper.HookEntity entity) throws HookE
+         if (SandHookConfig.delayHook && PendingHookHandler.canWork() && ClassStatusUtils.isStaticAndNoInited(entity.target)) {
+             PendingHookHandler.addPendingHook(entity);
+             return;
++        } else if (entity.initClass) {
++            resolveStaticMethod(target);
+         }
+ 
+         resolveStaticMethod(backup);
+
+File: sandhook-hooklib/src/main/java/com/swift/sandhook/SandHook.java
+Patch:
+@@ -95,8 +95,6 @@ public static synchronized void hook(HookWrapper.HookEntity entity) throws HookE
+         if (SandHookConfig.delayHook && PendingHookHandler.canWork() && ClassStatusUtils.isStaticAndNoInited(entity.target)) {
+             PendingHookHandler.addPendingHook(entity);
+             return;
+-        } else if (entity.initClass) {
+-            resolveStaticMethod(target);
+         }
+ 
+         resolveStaticMethod(backup);
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/config/BaseHookProvider.java
+Patch:
+@@ -48,7 +48,7 @@ public void setNativeFlag(Member hookMethod, boolean isNative) {
+ 
+     @Override
+     public boolean methodHooked(Member target) {
+-        return Yahfa.isHooked((Method)target);
++        return Yahfa.isHooked(target);
+     }
+ 
+     @Override
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/_hooker/yahfa/HandleBindAppHooker.java
+Patch:
+@@ -2,6 +2,8 @@
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+ import com.elderdrivers.riru.edxp._hooker.impl.HandleBindApp;
++import com.elderdrivers.riru.edxp.core.Yahfa;
++import com.elderdrivers.riru.edxp.util.Hookers;
+ 
+ import de.robv.android.xposed.XC_MethodHook;
+ import de.robv.android.xposed.annotation.ApiSensitive;
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/config/BaseHookProvider.java
+Patch:
+@@ -6,6 +6,7 @@
+ import com.elderdrivers.riru.edxp.hook.HookProvider;
+ 
+ import java.lang.reflect.Member;
++import java.lang.reflect.Method;
+ 
+ public abstract class BaseHookProvider implements HookProvider {
+ 
+@@ -47,7 +48,7 @@ public void setNativeFlag(Member hookMethod, boolean isNative) {
+ 
+     @Override
+     public boolean methodHooked(Member target) {
+-        return HookMain.hooked(target);
++        return Yahfa.isHooked((Method)target);
+     }
+ 
+     @Override
+
+File: xposed-bridge/src/main/java/de/robv/android/xposed/XposedBridge.java
+Patch:
+@@ -4,6 +4,7 @@
+ import android.content.res.TypedArray;
+ import android.util.Log;
+ 
++import com.elderdrivers.riru.edxp.bridge.BuildConfig;
+ import com.elderdrivers.riru.edxp.config.EdXpConfigGlobal;
+ 
+ import java.lang.reflect.AccessibleObject;
+@@ -145,8 +146,7 @@ public static void initXResources() {
+ 	 * Returns the currently installed version of the Xposed framework.
+ 	 */
+ 	public static int getXposedVersion() {
+-		// ed: fixed value for now
+-		return 93;
++		return BuildConfig.API_CODE;
+ 	}
+ 
+ 	/**
+
+File: xposed-bridge/src/main/java/android/content/res/XResources.java
+Patch:
+@@ -8,6 +8,7 @@
+ import android.graphics.drawable.ColorDrawable;
+ import android.graphics.drawable.Drawable;
+ import android.os.Build;
++import android.os.StrictMode;
+ import android.text.Html;
+ import android.util.AttributeSet;
+ import android.util.DisplayMetrics;
+@@ -115,8 +116,10 @@ public boolean isFirstLoad() {
+ 			if (mResDir == null)
+ 				return false;
+ 
++			final StrictMode.ThreadPolicy policy = StrictMode.allowThreadDiskReads();
+ 			Long lastModification = new File(mResDir).lastModified();
+ 			Long oldModified = sResDirLastModified.get(mResDir);
++			StrictMode.setThreadPolicy(policy);
+ 			if (lastModification.equals(oldModified))
+ 				return false;
+ 
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/config/ConfigManager.java
+Patch:
+@@ -39,6 +39,8 @@ private static boolean isFileExists(String path) {
+ 
+     public static native String getInstallerPackageName();
+ 
++    public static native String getXposedPropPath();
++
+     public static native String getInstallerConfigPath(String suffix);
+ 
+     public static native String getDataPathPrefix();
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/hooker/XposedInstallerHooker.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.elderdrivers.riru.edxp.hooker;
+ 
++import com.elderdrivers.riru.edxp.config.ConfigManager;
+ import com.elderdrivers.riru.edxp.util.Utils;
+ 
+ import java.io.File;
+@@ -37,7 +38,7 @@ protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                                 Utils.logD("reloadXposedProp already done, skip...");
+                                 return;
+                             }
+-                            File file = new File("/system/framework/edconfig.jar");
++                            File file = new File(ConfigManager.getXposedPropPath());
+                             FileInputStream is = null;
+                             try {
+                                 is = new FileInputStream(file);
+
+File: xposed-bridge/src/main/java/com/elderdrivers/riru/edxp/config/EdxpConfig.java
+Patch:
+@@ -8,6 +8,8 @@ public interface EdxpConfig {
+ 
+     String getInstallerPackageName();
+ 
++    String getXposedPropPath();
++
+     boolean isDynamicModulesMode();
+ 
+     boolean isNoModuleLogEnabled();
+
+File: xposed-bridge/src/main/java/de/robv/android/xposed/XSharedPreferences.java
+Patch:
+@@ -128,11 +128,11 @@ private void loadFromDiskLocked() {
+ 				map = mMap;
+ 			}
+ 		} catch (XmlPullParserException e) {
+-			Log.w(TAG, "getSharedPreferences", e);
++			Log.w(TAG, "getSharedPreferences failed for: " + mFilename, e);
+ 		} catch (FileNotFoundException ignored) {
+ 			// SharedPreferencesImpl has a canRead() check, so it doesn't log anything in case the file doesn't exist
+ 		} catch (IOException e) {
+-			Log.w(TAG, "getSharedPreferences", e);
++			Log.w(TAG, "getSharedPreferences failed for: " + mFilename, e);
+ 		} finally {
+ 			if (result != null && result.stream != null) {
+ 				try {
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/hooker/XposedInstallerHooker.java
+Patch:
+@@ -29,6 +29,9 @@ protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                             Utils.logD("before reloadXposedProp...");
+                             final String propFieldName = "mXposedProp";
+                             final Object thisObject = param.thisObject;
++                            if (thisObject == null) {
++                                return;
++                            }
+                             if (XposedHelpers.getObjectField(thisObject, propFieldName) != null) {
+                                 param.setResult(null);
+                                 Utils.logD("reloadXposedProp already done, skip...");
+
+File: xposed-bridge/src/main/java/de/robv/android/xposed/XposedBridge.java
+Patch:
+@@ -158,7 +158,7 @@ public synchronized static void log(String text) {
+ 		if (EdXpConfigGlobal.getConfig().isNoModuleLogEnabled()) {
+ 			return;
+ 		}
+-		Log.i(TAG, "Module: " + text);
++		Log.i(TAG, text);
+ 	}
+ 
+ 	/**
+@@ -186,7 +186,7 @@ public synchronized static void log(String name, String text) {
+ 		if (EdXpConfigGlobal.getConfig().isNoModuleLogEnabled()) {
+ 			return;
+ 		}
+-		Log.i(TAG, "Module: " + name + ": " + text);
++		Log.i(TAG, name + ": " + text);
+ 	}
+ 
+ 	/**
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/core/SandHookRouter.java
+Patch:
+@@ -4,14 +4,14 @@
+ import com.elderdrivers.riru.edxp.proxy.BaseRouter;
+ import com.elderdrivers.riru.edxp.sandhook.config.SandHookEdxpConfig;
+ import com.elderdrivers.riru.edxp.sandhook.config.SandHookProvider;
+-import com.elderdrivers.riru.edxp.sandhook.dexmaker.DynamicBridge;
+ import com.elderdrivers.riru.edxp.sandhook.entry.AppBootstrapHookInfo;
+ import com.elderdrivers.riru.edxp.sandhook.entry.SysBootstrapHookInfo;
+ import com.elderdrivers.riru.edxp.sandhook.entry.SysInnerHookInfo;
+ import com.elderdrivers.riru.edxp.sandhook.entry.WorkAroundHookInfo;
+ import com.elderdrivers.riru.edxp.sandhook.hooker.SystemMainHooker;
+ import com.elderdrivers.riru.edxp.util.Utils;
+ import com.swift.sandhook.xposedcompat.XposedCompat;
++import com.swift.sandhook.xposedcompat.methodgen.SandHookXposedBridge;
+ 
+ import de.robv.android.xposed.XposedBridge;
+ 
+@@ -54,7 +54,7 @@ public void startWorkAroundHook() {
+     }
+ 
+     public void onEnterChildProcess() {
+-        DynamicBridge.onForkPost();
++        SandHookXposedBridge.onForkPost();
+         //enable compile in child process
+         //SandHook.enableCompiler(!XposedInit.startsSystemServer);
+     }
+
+File: edxp-sandhook/src/main/java/com/swift/sandhook/xposedcompat/methodgen/HookerDexMakerNew.java
+Patch:
+@@ -172,7 +172,9 @@ private HookWrapper.HookEntity doMake(String className, String dexName) throws E
+ 
+         ClassLoader loader;
+         if (TextUtils.isEmpty(mDexDirPath)) {
+-            throw new IllegalArgumentException("dexDirPath should not be empty!!!");
++            byte[] dexBytes = mDexMaker.generate();
++            loader = new InMemoryDexClassLoader(ByteBuffer.wrap(dexBytes), mAppClassLoader);
++            return loadHookerClass(loader, className);
+         }
+         // Create the dex file and load it.
+         try {
+
+File: xposed-bridge/src/main/java/com/elderdrivers/riru/edxp/hook/HookProvider.java
+Patch:
+@@ -28,4 +28,6 @@ public interface HookProvider {
+ 
+     void setNativeFlag(Member hookMethod, boolean isNative);
+ 
++    boolean methodHooked(Member target);
++
+ }
+
+File: edxp-sandhook/src/main/java/com/swift/sandhook/xposedcompat/XposedCompat.java
+Patch:
+@@ -5,8 +5,8 @@
+ import android.text.TextUtils;
+ 
+ import com.elderdrivers.riru.edxp.config.ConfigManager;
+-import com.swift.sandhook.SandHook;
+ import com.elderdrivers.riru.edxp.util.ComposeClassLoader;
++import com.swift.sandhook.wrapper.HookWrapper;
+ import com.swift.sandhook.xposedcompat.methodgen.SandHookXposedBridge;
+ import com.swift.sandhook.xposedcompat.utils.ApplicationUtils;
+ import com.swift.sandhook.xposedcompat.utils.FileUtils;
+@@ -38,7 +38,7 @@ public static void addHookers(ClassLoader classLoader, Class[] hookers) {
+             return;
+         for (Class hooker : hookers) {
+             try {
+-                SandHook.addHookClass(classLoader, hooker);
++                HookWrapper.addHookClass(classLoader, hooker);
+             } catch (Throwable throwable) {
+             }
+         }
+
+File: edxp-sandhook/src/main/java/com/swift/sandhook/xposedcompat/hookstub/HookStubManager.java
+Patch:
+@@ -5,7 +5,7 @@
+ import com.swift.sandhook.SandHook;
+ import com.swift.sandhook.SandHookMethodResolver;
+ import com.swift.sandhook.utils.ParamWrapper;
+-import com.swift.sandhook.wrapper.BackupMethodStubs;
++import com.swift.sandhook.wrapper.StubMethodsFactory;
+ import com.swift.sandhook.xposedcompat.XposedCompat;
+ import com.swift.sandhook.xposedcompat.utils.DexLog;
+ 
+@@ -167,13 +167,13 @@ private static synchronized StubMethodsInfo getStubMethodPair(boolean is64Bit, i
+         try {
+             if (is64Bit) {
+                 Method hook = MethodHookerStubs64.class.getDeclaredMethod(getHookMethodName(curUseStubIndex), pars);
+-                Method backup = hasStubBackup ? MethodHookerStubs64.class.getDeclaredMethod(getBackupMethodName(curUseStubIndex), pars) : BackupMethodStubs.getStubMethod();
++                Method backup = hasStubBackup ? MethodHookerStubs64.class.getDeclaredMethod(getBackupMethodName(curUseStubIndex), pars) : StubMethodsFactory.getStubMethod();
+                 if (hook == null || backup == null)
+                     return null;
+                 return new StubMethodsInfo(stubArgs, curUseStubIndex, hook, backup);
+             } else {
+                 Method hook = MethodHookerStubs32.class.getDeclaredMethod(getHookMethodName(curUseStubIndex), pars);
+-                Method backup = hasStubBackup ? MethodHookerStubs32.class.getDeclaredMethod(getBackupMethodName(curUseStubIndex), pars) : BackupMethodStubs.getStubMethod();
++                Method backup = hasStubBackup ? MethodHookerStubs32.class.getDeclaredMethod(getBackupMethodName(curUseStubIndex), pars) : StubMethodsFactory.getStubMethod();
+                 if (hook == null || backup == null)
+                     return null;
+                 return new StubMethodsInfo(stubArgs, curUseStubIndex, hook, backup);
+
+File: xposed-bridge/src/main/java/de/robv/android/xposed/XposedBridge.java
+Patch:
+@@ -93,9 +93,6 @@ public static void main(String[] args) {
+ 	public static volatile ClassLoader dummyClassLoader = null;
+ 
+ 	public static void initXResources() {
+-	    if (!EdXpConfigGlobal.getConfig().isResourcesHookEnabled()) {
+-	        return;
+-        }
+         if (dummyClassLoader != null) {
+         	return;
+ 		}
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/core/Yahfa.java
+Patch:
+@@ -15,4 +15,6 @@ public class Yahfa {
+     public static native void init(int SDK_version);
+ 
+     public static native void setMethodNonCompilable(Member member);
++
++    public static native boolean setNativeFlag(Member member, boolean isNative);
+ }
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/util/ClassUtils.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import android.os.Build;
+ 
++import java.lang.reflect.Constructor;
+ import java.lang.reflect.Member;
+ import java.lang.reflect.Modifier;
+ 
+@@ -37,7 +38,7 @@ public static boolean isInitialized(Class clazz) {
+     }
+ 
+     public static boolean shouldDelayHook(Member hookMethod) {
+-        if (hookMethod == null) {
++        if (hookMethod == null || hookMethod instanceof Constructor) {
+             return false;
+         }
+         Class declaringClass = hookMethod.getDeclaringClass();
+
+File: xposed-bridge/src/main/java/com/elderdrivers/riru/edxp/hook/HookProvider.java
+Patch:
+@@ -25,4 +25,7 @@ public interface HookProvider {
+     boolean initXResourcesNative();
+ 
+     boolean removeFinalFlagNative(Class clazz);
++
++    void setNativeFlag(Member hookMethod, boolean isNative);
++
+ }
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/config/WhaleEdxpConfig.java
+Patch:
+@@ -3,5 +3,5 @@
+ import com.elderdrivers.riru.edxp.config.BaseEdxpConfig;
+ 
+ public class WhaleEdxpConfig extends BaseEdxpConfig {
+-    
++
+ }
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/core/WhaleEdxpImpl.java
+Patch:
+@@ -7,6 +7,7 @@
+ import com.elderdrivers.riru.edxp.core.BaseEdxpImpl;
+ import com.elderdrivers.riru.edxp.core.EdxpImpl;
+ import com.elderdrivers.riru.edxp.core.Main;
++import com.elderdrivers.riru.edxp.core.Proxy;
+ import com.elderdrivers.riru.edxp.core.Yahfa;
+ import com.elderdrivers.riru.edxp.core.yahfa.HookMethodResolver;
+ import com.elderdrivers.riru.edxp.proxy.Router;
+@@ -39,4 +40,5 @@ public void init() {
+ 
+         setInitialized();
+     }
++
+ }
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/config/YahfaHookProvider.java
+Patch:
+@@ -4,13 +4,14 @@
+ import com.elderdrivers.riru.edxp.config.BaseHookProvider;
+ import com.elderdrivers.riru.edxp.core.ResourcesHook;
+ import com.elderdrivers.riru.edxp.core.Yahfa;
+-import com.elderdrivers.riru.edxp.yahfa.dexmaker.DexMakerUtils;
+ import com.elderdrivers.riru.edxp.yahfa.dexmaker.DynamicBridge;
+ 
+ import java.lang.reflect.Member;
+ 
+ import de.robv.android.xposed.XposedBridge;
+ 
++import static com.elderdrivers.riru.edxp.util.ClassUtils.shouldDelayHook;
++
+ public class YahfaHookProvider extends BaseHookProvider {
+ 
+     @Override
+@@ -25,7 +26,7 @@ public Object invokeOriginalMethod(Member method, long methodId, Object thisObje
+ 
+     @Override
+     public Member findMethodNative(Member hookMethod) {
+-        return DexMakerUtils.findMethodNative(hookMethod);
++        return shouldDelayHook(hookMethod) ? null : hookMethod;
+     }
+ 
+     @Override
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/art/ClassLinker.java
+Patch:
+@@ -4,13 +4,13 @@
+ 
+ import java.lang.reflect.Member;
+ 
+-import de.robv.android.xposed.XposedBridge;
++import de.robv.android.xposed.PendingHooks;
+ 
+ public class ClassLinker implements KeepAll {
+ 
+     public static native void setEntryPointsToInterpreter(Member method);
+ 
+     public static void onPostFixupStaticTrampolines(Class clazz) {
+-        XposedBridge.hookPendingMethod(clazz);
++        PendingHooks.hookPendingMethod(clazz);
+     }
+ }
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/hooker/SystemMainHooker.java
+Patch:
+@@ -3,7 +3,7 @@
+ import android.app.ActivityThread;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+-import com.elderdrivers.riru.edxp._hooker.impl.OneplusWorkaround;
++import com.elderdrivers.riru.edxp._hooker.impl.SystemMain;
+ import com.swift.sandhook.SandHook;
+ import com.swift.sandhook.annotation.HookClass;
+ import com.swift.sandhook.annotation.HookMethod;
+@@ -30,7 +30,7 @@ public class SystemMainHooker implements KeepMembers {
+ 
+     @HookMethod("systemMain")
+     public static ActivityThread hook() throws Throwable {
+-        final XC_MethodHook methodHook = new OneplusWorkaround();
++        final XC_MethodHook methodHook = new SystemMain();
+         final XC_MethodHook.MethodHookParam param = new XC_MethodHook.MethodHookParam();
+         param.thisObject = null;
+         param.args = new Object[]{};
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/proxy/BaseRouter.java
+Patch:
+@@ -124,7 +124,8 @@ public void startBootstrapHook(boolean isSystem) {
+     public void startSystemServerHook() {
+         ClassLoader classLoader = BaseRouter.class.getClassLoader();
+         if (useXposedApi) {
+-            XposedHelpers.findAndHookMethod(StartBootstrapServicesHooker.className, classLoader,
++            XposedHelpers.findAndHookMethod(StartBootstrapServicesHooker.className,
++                    SystemMainHooker.systemServerCL,
+                     StartBootstrapServicesHooker.methodName, new StartBootstrapServices());
+         } else {
+             HookMain.doHookDefault(
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/_hooker/HandleBindAppHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.sandhook.entry.hooker;
++package com.elderdrivers.riru.edxp.sandhook._hooker;
+ 
+ import android.app.ActivityThread;
+ import android.app.LoadedApk;
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/_hooker/LoadedApkConstructorHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.sandhook.entry.hooker;
++package com.elderdrivers.riru.edxp.sandhook._hooker;
+ 
+ import android.app.ActivityThread;
+ import android.app.AndroidAppHelper;
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/_hooker/OnePlusWorkAroundHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.sandhook.entry.hooker;
++package com.elderdrivers.riru.edxp.sandhook._hooker;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+ import com.elderdrivers.riru.edxp.Main;
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/_hooker/StartBootstrapServicesHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.sandhook.entry.hooker;
++package com.elderdrivers.riru.edxp.sandhook._hooker;
+ 
+ import android.os.Build;
+ 
+@@ -7,7 +7,6 @@
+ import com.swift.sandhook.SandHook;
+ import com.swift.sandhook.annotation.HookMethod;
+ import com.swift.sandhook.annotation.HookMethodBackup;
+-import com.swift.sandhook.annotation.HookMode;
+ import com.swift.sandhook.annotation.HookReflectClass;
+ import com.swift.sandhook.annotation.SkipParamCheck;
+ import com.swift.sandhook.annotation.ThisObject;
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/_hooker/SystemMainHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.sandhook.entry.hooker;
++package com.elderdrivers.riru.edxp.sandhook._hooker;
+ 
+ import android.app.ActivityThread;
+ 
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/core/HookMain.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import com.elderdrivers.riru.edxp.util.Utils;
+ import com.elderdrivers.riru.edxp.Main;
+-import com.elderdrivers.riru.edxp.sandhook.entry.hooker.OnePlusWorkAroundHooker;
++import com.elderdrivers.riru.edxp.sandhook._hooker.OnePlusWorkAroundHooker;
+ 
+ import java.lang.reflect.Constructor;
+ import java.lang.reflect.Method;
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/entry/Router.java
+Patch:
+@@ -12,7 +12,7 @@
+ import com.elderdrivers.riru.edxp.sandhook.entry.bootstrap.SysBootstrapHookInfo;
+ import com.elderdrivers.riru.edxp.sandhook.entry.bootstrap.SysInnerHookInfo;
+ import com.elderdrivers.riru.edxp.sandhook.entry.bootstrap.WorkAroundHookInfo;
+-import com.elderdrivers.riru.edxp.sandhook.entry.hooker.SystemMainHooker;
++import com.elderdrivers.riru.edxp.sandhook._hooker.SystemMainHooker;
+ import com.elderdrivers.riru.edxp.util.Utils;
+ import com.swift.sandhook.xposedcompat.XposedCompat;
+ 
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/entry/bootstrap/AppBootstrapHookInfo.java
+Patch:
+@@ -1,9 +1,9 @@
+ package com.elderdrivers.riru.edxp.sandhook.entry.bootstrap;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+-import com.elderdrivers.riru.edxp.sandhook.entry.hooker.HandleBindAppHooker;
+-import com.elderdrivers.riru.edxp.sandhook.entry.hooker.LoadedApkConstructorHooker;
+-import com.elderdrivers.riru.edxp.sandhook.entry.hooker.OnePlusWorkAroundHooker;
++import com.elderdrivers.riru.edxp.sandhook._hooker.HandleBindAppHooker;
++import com.elderdrivers.riru.edxp.sandhook._hooker.LoadedApkConstructorHooker;
++import com.elderdrivers.riru.edxp.sandhook._hooker.OnePlusWorkAroundHooker;
+ 
+ public class AppBootstrapHookInfo implements KeepMembers {
+     public static String[] hookItemNames = {
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/entry/bootstrap/SysInnerHookInfo.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.elderdrivers.riru.edxp.sandhook.entry.bootstrap;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+-import com.elderdrivers.riru.edxp.sandhook.entry.hooker.StartBootstrapServicesHooker;
++import com.elderdrivers.riru.edxp.sandhook._hooker.StartBootstrapServicesHooker;
+ 
+ public class SysInnerHookInfo implements KeepMembers {
+     public static String[] hookItemNames = {
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/entry/bootstrap/WorkAroundHookInfo.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.elderdrivers.riru.edxp.sandhook.entry.bootstrap;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+-import com.elderdrivers.riru.edxp.sandhook.entry.hooker.OnePlusWorkAroundHooker;
++import com.elderdrivers.riru.edxp.sandhook._hooker.OnePlusWorkAroundHooker;
+ 
+ public class WorkAroundHookInfo implements KeepMembers {
+     public static String[] hookItemNames = {
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/_hooker/HandleBindAppHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.whale.entry.hooker;
++package com.elderdrivers.riru.edxp.whale._hooker;
+ 
+ import android.app.ActivityThread;
+ import android.app.LoadedApk;
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/_hooker/LoadedApkConstructorHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.whale.entry.hooker;
++package com.elderdrivers.riru.edxp.whale._hooker;
+ 
+ import android.app.ActivityThread;
+ import android.app.AndroidAppHelper;
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/_hooker/OnePlusWorkAroundHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.whale.entry.hooker;
++package com.elderdrivers.riru.edxp.whale._hooker;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+ import com.elderdrivers.riru.edxp.Main;
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/_hooker/StartBootstrapServicesHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.whale.entry.hooker;
++package com.elderdrivers.riru.edxp.whale._hooker;
+ 
+ import android.os.Build;
+ 
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/_hooker/SystemMainHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.whale.entry.hooker;
++package com.elderdrivers.riru.edxp.whale._hooker;
+ 
+ import android.app.ActivityThread;
+ 
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/core/HookMain.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.elderdrivers.riru.edxp.whale.core;
+ 
+ import com.elderdrivers.riru.edxp.Main;
+-import com.elderdrivers.riru.edxp.whale.entry.hooker.OnePlusWorkAroundHooker;
++import com.elderdrivers.riru.edxp.whale._hooker.OnePlusWorkAroundHooker;
+ import com.elderdrivers.riru.edxp.util.Utils;
+ 
+ import java.lang.reflect.Constructor;
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/entry/Router.java
+Patch:
+@@ -12,7 +12,7 @@
+ import com.elderdrivers.riru.edxp.whale.entry.bootstrap.SysBootstrapHookInfo;
+ import com.elderdrivers.riru.edxp.whale.entry.bootstrap.SysInnerHookInfo;
+ import com.elderdrivers.riru.edxp.whale.entry.bootstrap.WorkAroundHookInfo;
+-import com.elderdrivers.riru.edxp.whale.entry.hooker.SystemMainHooker;
++import com.elderdrivers.riru.edxp.whale._hooker.SystemMainHooker;
+ 
+ import java.util.concurrent.atomic.AtomicBoolean;
+ 
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/entry/bootstrap/AppBootstrapHookInfo.java
+Patch:
+@@ -1,9 +1,9 @@
+ package com.elderdrivers.riru.edxp.whale.entry.bootstrap;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+-import com.elderdrivers.riru.edxp.whale.entry.hooker.HandleBindAppHooker;
+-import com.elderdrivers.riru.edxp.whale.entry.hooker.LoadedApkConstructorHooker;
+-import com.elderdrivers.riru.edxp.whale.entry.hooker.OnePlusWorkAroundHooker;
++import com.elderdrivers.riru.edxp.whale._hooker.HandleBindAppHooker;
++import com.elderdrivers.riru.edxp.whale._hooker.LoadedApkConstructorHooker;
++import com.elderdrivers.riru.edxp.whale._hooker.OnePlusWorkAroundHooker;
+ 
+ public class AppBootstrapHookInfo implements KeepMembers {
+     public static String[] hookItemNames = {
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/entry/bootstrap/SysInnerHookInfo.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.elderdrivers.riru.edxp.whale.entry.bootstrap;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+-import com.elderdrivers.riru.edxp.whale.entry.hooker.StartBootstrapServicesHooker;
++import com.elderdrivers.riru.edxp.whale._hooker.StartBootstrapServicesHooker;
+ 
+ public class SysInnerHookInfo implements KeepMembers {
+     public static String[] hookItemNames = {
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/entry/bootstrap/WorkAroundHookInfo.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.elderdrivers.riru.edxp.whale.entry.bootstrap;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+-import com.elderdrivers.riru.edxp.whale.entry.hooker.OnePlusWorkAroundHooker;
++import com.elderdrivers.riru.edxp.whale._hooker.OnePlusWorkAroundHooker;
+ 
+ public class WorkAroundHookInfo implements KeepMembers {
+     public static String[] hookItemNames = {
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/_hooker/HandleBindAppHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.yahfa.entry.hooker;
++package com.elderdrivers.riru.edxp.yahfa._hooker;
+ 
+ import android.app.ActivityThread;
+ import android.app.LoadedApk;
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/_hooker/LoadedApkConstructorHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.yahfa.entry.hooker;
++package com.elderdrivers.riru.edxp.yahfa._hooker;
+ 
+ import android.app.ActivityThread;
+ import android.app.AndroidAppHelper;
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/_hooker/OnePlusWorkAroundHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.yahfa.entry.hooker;
++package com.elderdrivers.riru.edxp.yahfa._hooker;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+ import com.elderdrivers.riru.edxp.Main;
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/_hooker/StartBootstrapServicesHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.yahfa.entry.hooker;
++package com.elderdrivers.riru.edxp.yahfa._hooker;
+ 
+ import android.os.Build;
+ 
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/_hooker/SystemMainHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.yahfa.entry.hooker;
++package com.elderdrivers.riru.edxp.yahfa._hooker;
+ 
+ import android.app.ActivityThread;
+ 
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/core/HookMain.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.elderdrivers.riru.edxp.yahfa.core;
+ 
+ import com.elderdrivers.riru.edxp.Main;
+-import com.elderdrivers.riru.edxp.yahfa.entry.hooker.OnePlusWorkAroundHooker;
++import com.elderdrivers.riru.edxp.yahfa._hooker.OnePlusWorkAroundHooker;
+ import com.elderdrivers.riru.edxp.util.Utils;
+ 
+ import java.lang.reflect.Constructor;
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/entry/Router.java
+Patch:
+@@ -13,7 +13,7 @@
+ import com.elderdrivers.riru.edxp.yahfa.entry.bootstrap.SysBootstrapHookInfo;
+ import com.elderdrivers.riru.edxp.yahfa.entry.bootstrap.SysInnerHookInfo;
+ import com.elderdrivers.riru.edxp.yahfa.entry.bootstrap.WorkAroundHookInfo;
+-import com.elderdrivers.riru.edxp.yahfa.entry.hooker.SystemMainHooker;
++import com.elderdrivers.riru.edxp.yahfa._hooker.SystemMainHooker;
+ 
+ import java.util.concurrent.atomic.AtomicBoolean;
+ 
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/entry/bootstrap/AppBootstrapHookInfo.java
+Patch:
+@@ -1,9 +1,9 @@
+ package com.elderdrivers.riru.edxp.yahfa.entry.bootstrap;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+-import com.elderdrivers.riru.edxp.yahfa.entry.hooker.HandleBindAppHooker;
+-import com.elderdrivers.riru.edxp.yahfa.entry.hooker.LoadedApkConstructorHooker;
+-import com.elderdrivers.riru.edxp.yahfa.entry.hooker.OnePlusWorkAroundHooker;
++import com.elderdrivers.riru.edxp.yahfa._hooker.HandleBindAppHooker;
++import com.elderdrivers.riru.edxp.yahfa._hooker.LoadedApkConstructorHooker;
++import com.elderdrivers.riru.edxp.yahfa._hooker.OnePlusWorkAroundHooker;
+ 
+ public class AppBootstrapHookInfo implements KeepMembers {
+     public static String[] hookItemNames = {
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/entry/bootstrap/SysInnerHookInfo.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.elderdrivers.riru.edxp.yahfa.entry.bootstrap;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+-import com.elderdrivers.riru.edxp.yahfa.entry.hooker.StartBootstrapServicesHooker;
++import com.elderdrivers.riru.edxp.yahfa._hooker.StartBootstrapServicesHooker;
+ 
+ public class SysInnerHookInfo implements KeepMembers {
+     public static String[] hookItemNames = {
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/entry/bootstrap/WorkAroundHookInfo.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.elderdrivers.riru.edxp.yahfa.entry.bootstrap;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
+-import com.elderdrivers.riru.edxp.yahfa.entry.hooker.OnePlusWorkAroundHooker;
++import com.elderdrivers.riru.edxp.yahfa._hooker.OnePlusWorkAroundHooker;
+ 
+ public class WorkAroundHookInfo implements KeepMembers {
+     public static String[] hookItemNames = {
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/hooker/XposedBlackListHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.yahfa.entry.hooker;
++package com.elderdrivers.riru.edxp.hooker;
+ 
+ import android.annotation.TargetApi;
+ import android.app.Activity;
+
+File: edxp-common/src/main/java/com/elderdrivers/riru/edxp/hooker/XposedInstallerHooker.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.elderdrivers.riru.edxp.yahfa.entry.hooker;
++package com.elderdrivers.riru.edxp.hooker;
+ 
+ import com.elderdrivers.riru.edxp.util.Utils;
+ 
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/entry/hooker/LoadedApkConstructorHooker.java
+Patch:
+@@ -8,6 +8,7 @@
+ import android.util.Log;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
++import com.elderdrivers.riru.edxp.hooker.XposedBlackListHooker;
+ import com.elderdrivers.riru.edxp.sandhook.entry.Router;
+ import com.swift.sandhook.SandHook;
+ import com.swift.sandhook.annotation.HookClass;
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/entry/hooker/LoadedApkConstructorHooker.java
+Patch:
+@@ -8,6 +8,7 @@
+ import android.util.Log;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
++import com.elderdrivers.riru.edxp.hooker.XposedBlackListHooker;
+ import com.elderdrivers.riru.edxp.whale.entry.Router;
+ 
+ import de.robv.android.xposed.XposedBridge;
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/entry/hooker/LoadedApkConstructorHooker.java
+Patch:
+@@ -8,6 +8,7 @@
+ import android.util.Log;
+ 
+ import com.elderdrivers.riru.common.KeepMembers;
++import com.elderdrivers.riru.edxp.hooker.XposedBlackListHooker;
+ import com.elderdrivers.riru.edxp.yahfa.entry.Router;
+ 
+ import de.robv.android.xposed.XposedBridge;
+
+File: xposed-bridge/src/main/java/de/robv/android/xposed/XposedInit.java
+Patch:
+@@ -3,7 +3,6 @@
+ import android.app.ActivityThread;
+ import android.app.AndroidAppHelper;
+ import android.content.pm.ApplicationInfo;
+-import android.content.pm.PackageParser;
+ import android.content.res.Resources;
+ import android.content.res.ResourcesImpl;
+ import android.content.res.TypedArray;
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/entry/Router.java
+Patch:
+@@ -33,9 +33,10 @@ public class Router {
+     static boolean useSandHook = false;
+ 
+     public static void prepare(boolean isSystem) {
++        startWorkAroundHook();
++        XposedBridge.initXResources();
+         // this flag is needed when loadModules
+         startsSystemServer = isSystem;
+-//        InstallerChooser.setup();
+     }
+ 
+     public static void checkHookState(String appDataDir) {
+
+File: edxp-whale/src/main/java/com/elderdrivers/riru/edxp/whale/entry/Router.java
+Patch:
+@@ -27,9 +27,10 @@ public class Router {
+ 
+ 
+     public static void prepare(boolean isSystem) {
++        startWorkAroundHook();
++        XposedBridge.initXResources();
+         // this flag is needed when loadModules
+         XposedInit.startsSystemServer = isSystem;
+-//        InstallerChooser.setup();
+     }
+ 
+     public static void checkHookState(String appDataDir) {
+
+File: edxp-yahfa/src/main/java/com/elderdrivers/riru/edxp/yahfa/entry/Router.java
+Patch:
+@@ -29,9 +29,10 @@ public class Router {
+ 
+ 
+     public static void prepare(boolean isSystem) {
++        startWorkAroundHook();
++        XposedBridge.initXResources();
+         // this flag is needed when loadModules
+         XposedInit.startsSystemServer = isSystem;
+-//        InstallerChooser.setup();
+     }
+ 
+     public static void checkHookState(String appDataDir) {
+
+File: hiddenapi-stubs/src/main/java/xposed/dummy/XTypedArraySuperClass.java
+Patch:
+@@ -13,8 +13,8 @@
+  */
+ public class XTypedArraySuperClass extends TypedArray {
+ 	/** Dummy, will never be called (objects are transferred to this class only). */
+-	protected XTypedArraySuperClass(Resources resources, int[] data, int[] indices, int len) {
+-		super(null, null, null, 0);
++	protected XTypedArraySuperClass(Resources resources) {
++		super(resources);
+ 		throw new UnsupportedOperationException();
+ 	}
+ }
+
+File: edxp-sandhook/src/main/java/com/swift/sandhook/xposedcompat/methodgen/SandHookXposedBridge.java
+Patch:
+@@ -64,7 +64,7 @@ public static synchronized void hookMethod(Member hookMethod, XposedBridge.Addit
+             long timeStart = System.currentTimeMillis();
+             HookMethodEntity stub = null;
+             if (XposedCompat.useInternalStub) {
+-                stub = HookStubManager.getHookMethodEntity(hookMethod);
++                stub = HookStubManager.getHookMethodEntity(hookMethod, additionalHookInfo);
+             }
+             if (stub != null) {
+                 SandHook.hook(new HookWrapper.HookEntity(hookMethod, stub.hook, stub.backup, false));
+
+File: xposed-bridge/src/main/java/de/robv/android/xposed/XposedBridge.java
+Patch:
+@@ -14,10 +14,10 @@
+ import java.lang.reflect.Method;
+ import java.lang.reflect.Modifier;
+ import java.util.Arrays;
++import java.util.HashMap;
+ import java.util.HashSet;
+ import java.util.Map;
+ import java.util.Set;
+-import java.util.concurrent.ConcurrentHashMap;
+ 
+ import de.robv.android.xposed.XC_MethodHook.MethodHookParam;
+ import de.robv.android.xposed.callbacks.XC_InitPackageResources;
+@@ -60,7 +60,7 @@ public final class XposedBridge {
+ 	private static final Object[] EMPTY_ARRAY = new Object[0];
+ 
+ 	// built-in handlers
+-	public static final Map<Member, CopyOnWriteSortedSet<XC_MethodHook>> sHookedMethodCallbacks = new ConcurrentHashMap<>();
++	public static final Map<Member, CopyOnWriteSortedSet<XC_MethodHook>> sHookedMethodCallbacks = new HashMap<>();
+ 	public static final CopyOnWriteSortedSet<XC_LoadPackage> sLoadedPackageCallbacks = new CopyOnWriteSortedSet<>();
+ 	/*package*/ static final CopyOnWriteSortedSet<XC_InitPackageResources> sInitPackageResourcesCallbacks = new CopyOnWriteSortedSet<>();
+ 
+
+File: xposed-bridge/src/main/java/de/robv/android/xposed/XposedBridge.java
+Patch:
+@@ -14,10 +14,10 @@
+ import java.lang.reflect.Method;
+ import java.lang.reflect.Modifier;
+ import java.util.Arrays;
+-import java.util.HashMap;
+ import java.util.HashSet;
+ import java.util.Map;
+ import java.util.Set;
++import java.util.concurrent.ConcurrentHashMap;
+ 
+ import de.robv.android.xposed.XC_MethodHook.MethodHookParam;
+ import de.robv.android.xposed.callbacks.XC_InitPackageResources;
+@@ -60,7 +60,7 @@ public final class XposedBridge {
+ 	private static final Object[] EMPTY_ARRAY = new Object[0];
+ 
+ 	// built-in handlers
+-	public static final Map<Member, CopyOnWriteSortedSet<XC_MethodHook>> sHookedMethodCallbacks = new HashMap<>();
++	public static final Map<Member, CopyOnWriteSortedSet<XC_MethodHook>> sHookedMethodCallbacks = new ConcurrentHashMap<>();
+ 	public static final CopyOnWriteSortedSet<XC_LoadPackage> sLoadedPackageCallbacks = new CopyOnWriteSortedSet<>();
+ 	/*package*/ static final CopyOnWriteSortedSet<XC_InitPackageResources> sInitPackageResourcesCallbacks = new CopyOnWriteSortedSet<>();
+ 
+
+File: edxp-sandhook/src/main/java/com/elderdrivers/riru/edxp/sandhook/entry/Router.java
+Patch:
+@@ -61,6 +61,7 @@ public static void installBootstrapHooks(boolean isSystem) {
+             }
+             Router.startBootstrapHook(isSystem);
+             XposedInit.initForZygote(isSystem);
++            SandHookConfig.compiler = !isSystem;
+         } catch (Throwable t) {
+             Utils.logE("error during Xposed initialization", t);
+             XposedBridge.disableHooks = true;
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/Main.java
+Patch:
+@@ -10,6 +10,7 @@
+ import com.elderdrivers.riru.xposed.proxy.yahfa.NormalProxy;
+ import com.elderdrivers.riru.xposed.util.Utils;
+ 
++import java.lang.reflect.Member;
+ import java.lang.reflect.Method;
+ import java.util.Arrays;
+ 
+@@ -19,7 +20,6 @@ public class Main implements KeepAll {
+     public static String appDataDir = "";
+     public static String niceName = "";
+     public static String appProcessName = "";
+-    public static long closedFdTable = 0;
+     private static String forkAndSpecializePramsStr = "";
+     private static String forkSystemServerPramsStr = "";
+ 
+@@ -105,6 +105,8 @@ public static void forkSystemServerPost(int pid) {
+ 
+     public static native boolean backupAndHookNative(Object target, Method hook, Method backup);
+ 
++    public static native void setMethodNonCompilable(Object member);
++
+     public static native void ensureMethodCached(Method hook, Method backup);
+ 
+     // JNI.ToReflectedMethod() could return either Method or Constructor
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/proxy/yahfa/NormalProxy.java
+Patch:
+@@ -28,9 +28,10 @@ public static void forkAndSpecializePre(int uid, int gid, int[] gids, int debugF
+         }
+     }
+ 
+-    public static void forkAndSpecializePost(int pid, String appDataDir) {
++    public static void forkAndSpecializePost(int pid, String appDataDir, String niceName) {
+         // TODO consider processes without forkAndSpecializePost called
+         Main.appDataDir = appDataDir;
++        Main.niceName = niceName;
+         Router.prepare(false);
+         Router.reopenFilesIfNeeded();
+         Router.onEnterChildProcess();
+@@ -58,6 +59,7 @@ public static void forkSystemServerPre(int uid, int gid, int[] gids, int debugFl
+     public static void forkSystemServerPost(int pid) {
+         // in system_server process
+         Main.appDataDir = getDataPathPrefix() + "android";
++        Main.niceName = "system_server";
+         Router.prepare(true);
+         Router.reopenFilesIfNeeded();
+         Router.onEnterChildProcess();
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/Main.java
+Patch:
+@@ -18,6 +18,7 @@ public class Main implements KeepAll {
+ 
+     public static String appDataDir = "";
+     public static String appProcessName = "";
++    public static long closedFdTable = 0;
+     private static String forkAndSpecializePramsStr = "";
+     private static String forkSystemServerPramsStr = "";
+ 
+@@ -120,9 +121,9 @@ public static void forkSystemServerPost(int pid) {
+ 
+     // prevent from fatal error caused by holding not whitelisted file descriptors when forking zygote
+     // https://github.com/rovo89/Xposed/commit/b3ba245ad04cd485699fb1d2ebde7117e58214ff
+-    public static native void closeFilesBeforeForkNative();
++    public static native long closeFilesBeforeForkNative();
+ 
+-    public static native void reopenFilesAfterForkNative();
++    public static native void reopenFilesAfterForkNative(long fdTable);
+ 
+     public static native void deoptMethodNative(Object object);
+ 
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/core/HookMain.java
+Patch:
+@@ -111,6 +111,7 @@ public static void backupAndHook(Object target, Method hook, Method backup) {
+         if (backup != null) {
+             HookMethodResolver.resolveMethod(hook, backup);
+         }
++        Runtime.getRuntime().gc();
+         if (!backupAndHookNative(target, hook, backup)) {
+             throw new RuntimeException("Failed to hook " + target + " with " + hook);
+         }
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/Main.java
+Patch:
+@@ -116,6 +116,8 @@ public static void forkSystemServerPost(int pid) {
+ 
+     public static native boolean isDynamicModulesEnabled();
+ 
++    public static native boolean isAppNeedHook(String appDataDir);
++
+     // prevent from fatal error caused by holding not whitelisted file descriptors when forking zygote
+     // https://github.com/rovo89/Xposed/commit/b3ba245ad04cd485699fb1d2ebde7117e58214ff
+     public static native void closeFilesBeforeForkNative();
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/util/PrebuiltMethodsDeopter.java
+Patch:
+@@ -30,6 +30,7 @@ public static void deoptMethods(String where, ClassLoader cl) {
+     }
+ 
+     public static void deoptBootMethods() {
++        // todo check if has been done before
+         deoptMethods(KEY_BOOT_IMAGE, null);
+     }
+ 
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/proxy/yahfa/NormalProxy.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import com.elderdrivers.riru.xposed.Main;
+ import com.elderdrivers.riru.xposed.config.ConfigManager;
+-import com.elderdrivers.riru.xposed.dexmaker.DynamicBridge;
+ import com.elderdrivers.riru.xposed.entry.Router;
+ import com.elderdrivers.riru.xposed.util.PrebuiltMethodsDeopter;
+ 
+@@ -19,6 +18,7 @@ public static void forkAndSpecializePre(int uid, int gid, int[] gids, int debugF
+         Main.appDataDir = appDataDir;
+         ConfigManager.setDynamicModulesMode(isDynamicModulesMode);
+         PrebuiltMethodsDeopter.deoptBootMethods(); // do it once for secondary zygote
++        // call this to ensure the flag is set to false ASAP
+         Router.prepare(false);
+         // install bootstrap hooks for secondary zygote
+         Router.installBootstrapHooks(false);
+@@ -31,7 +31,6 @@ public static void forkAndSpecializePost(int pid, String appDataDir) {
+         // TODO consider processes without forkAndSpecializePost called
+         Main.reopenFilesAfterForkNative();
+         Router.onEnterChildProcess();
+-        DynamicBridge.onForkPost();
+         // load modules for each app process on its forked if dynamic modules mode is on
+         Router.loadModulesSafely();
+     }
+@@ -41,6 +40,7 @@ public static void forkSystemServerPre(int uid, int gid, int[] gids, int debugFl
+         final boolean isDynamicModulesMode = Main.isDynamicModulesEnabled();
+         Main.appDataDir = getDataPathPrefix() + "android";
+         ConfigManager.setDynamicModulesMode(isDynamicModulesMode);
++        // set startsSystemServer flag used when loadModules
+         Router.prepare(true);
+         PrebuiltMethodsDeopter.deoptBootMethods(); // do it once for main zygote
+         // install bootstrap hooks for main zygote as early as possible
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/entry/Router.java
+Patch:
+@@ -13,11 +13,11 @@
+ public class Router {
+ 
+     public static void onProcessForked(boolean isSystem) {
+-        // Initialize the Xposed framework and modules
++        // Initialize the Xposed framework
+         try {
+             XposedInit.initForZygote(isSystem);
+         } catch (Throwable t) {
+-            Utils.logE("Errors during Xposed initialization", t);
++            Utils.logE("error during Xposed initialization", t);
+             XposedBridge.disableHooks = true;
+         }
+     }
+
+File: Bridge/src/main/java/de/robv/android/xposed/XposedInit.java
+Patch:
+@@ -40,7 +40,7 @@ public final class XposedInit {
+     public static final String INSTALLER_PACKAGE_NAME = "com.solohsu.android.edxp.manager";
+     public static final String INSTALLER_LEGACY_PACKAGE_NAME = "de.robv.android.xposed.installer";
+     @SuppressLint("SdCardPath")
+-    private static final String BASE_DIR = Build.VERSION.SDK_INT >= 24
++    public static final String INSTALLER_DATA_BASE_DIR = Build.VERSION.SDK_INT >= 24
+             ? "/data/user_de/0/" + INSTALLER_PACKAGE_NAME + "/"
+             : "/data/data/" + INSTALLER_PACKAGE_NAME + "/";
+     private static final String INSTANT_RUN_CLASS = "com.android.tools.fd.runtime.BootstrapApplication";
+@@ -89,15 +89,15 @@ private static boolean needsToCloseFilesForFork() {
+     }
+ 
+     /**
+-     * Try to load all modules defined in <code>BASE_DIR/conf/modules.list</code>
++     * Try to load all modules defined in <code>INSTALLER_DATA_BASE_DIR/conf/modules.list</code>
+      */
+     private static volatile AtomicBoolean modulesLoaded = new AtomicBoolean(false);
+ 
+     public static void loadModules() throws IOException {
+         if (!modulesLoaded.compareAndSet(false, true)) {
+             return;
+         }
+-        final String filename = BASE_DIR + "conf/modules.list";
++        final String filename = INSTALLER_DATA_BASE_DIR + "conf/modules.list";
+         BaseService service = SELinuxHelper.getAppDataFileService();
+         if (!service.checkFileExists(filename)) {
+             Log.e(TAG, "Cannot load any modules because " + filename + " was not found");
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/dexmaker/DynamicBridge.java
+Patch:
+@@ -16,7 +16,7 @@
+ 
+ import de.robv.android.xposed.XposedBridge;
+ 
+-import static com.elderdrivers.riru.xposed.dexmaker.HookerDexMaker.SHOULD_USE_IN_MEMORY_DEX;
++import static com.elderdrivers.riru.xposed.dexmaker.DexMakerUtils.shouldUseInMemoryHook;
+ import static com.elderdrivers.riru.xposed.util.FileUtils.getDataPathPrefix;
+ 
+ public final class DynamicBridge {
+@@ -50,7 +50,7 @@ public static synchronized void hookMethod(Member hookMethod, XposedBridge.Addit
+         DexLog.d("start to generate class for: " + hookMethod);
+         try {
+             // for Android Oreo and later use InMemoryClassLoader
+-            if (!SHOULD_USE_IN_MEMORY_DEX) {
++            if (!shouldUseInMemoryHook()) {
+                 // under Android Oreo, using DexClassLoader
+                 if (dexPathInited.compareAndSet(false, true)) {
+                     // delete previous compiled dex to prevent potential crashing
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/entry/hooker/XposedBlackListHooker.java
+Patch:
+@@ -18,13 +18,13 @@
+ import de.robv.android.xposed.XSharedPreferences;
+ import de.robv.android.xposed.XposedBridge;
+ 
++import static com.elderdrivers.riru.xposed.util.FileUtils.IS_USING_PROTECTED_STORAGE;
+ import static de.robv.android.xposed.XposedHelpers.findAndHookMethod;
+ import static de.robv.android.xposed.XposedInit.INSTALLER_PACKAGE_NAME;
+ 
+ public class XposedBlackListHooker {
+ 
+     public static final String BLACK_LIST_PACKAGE_NAME = "com.flarejune.xposedblacklist";
+-    private static final boolean IS_USING_PROTECTED_STORAGE = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N;
+     private static final String BLACK_LIST_PREF_NAME = "list";
+     private static final String PREF_KEY_BLACK_LIST = "blackList";
+     public static final String PREF_FILE_PATH = (IS_USING_PROTECTED_STORAGE ? "/data/user_de/0/" : "/data/data")
+
+File: Bridge/src/main/java/de/robv/android/xposed/XposedBridge.java
+Patch:
+@@ -6,6 +6,7 @@
+ import com.elderdrivers.riru.xposed.core.HookMain;
+ import com.elderdrivers.riru.xposed.dexmaker.DynamicBridge;
+ import com.elderdrivers.riru.xposed.dexmaker.MethodInfo;
++import com.elderdrivers.riru.xposed.util.MethodHookUtils;
+ 
+ import java.io.File;
+ import java.io.IOException;
+@@ -154,6 +155,7 @@ public synchronized static void log(Throwable t) {
+ 	 * @see #hookAllConstructors
+ 	 */
+ 	public static XC_MethodHook.Unhook hookMethod(Member hookMethod, XC_MethodHook callback) {
++        hookMethod = MethodHookUtils.preCheck(hookMethod);
+ 		if (!(hookMethod instanceof Method) && !(hookMethod instanceof Constructor<?>)) {
+ 			throw new IllegalArgumentException("Only methods and constructors can be hooked: " + hookMethod.toString());
+ 		} else if (hookMethod.getDeclaringClass().isInterface()) {
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/entry/hooker/HandleBindAppHooker.java
+Patch:
+@@ -66,8 +66,9 @@ public static void hook(Object thiz, Object bindData) {
+             }
+         } catch (Throwable t) {
+             logE("error when hooking bindApp", t);
++        } finally {
++            backup(thiz, bindData);
+         }
+-        backup(thiz, bindData);
+     }
+ 
+     public static void backup(Object thiz, Object bindData) {
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/entry/hooker/LoadedApkConstructorHooker.java
+Patch:
+@@ -34,7 +34,8 @@ public static void hook(Object thiz, ActivityThread activityThread,
+                             boolean includeCode, boolean registerPackage) {
+ 
+         if (XposedBridge.disableHooks) {
+-            backup(thiz, activityThread, aInfo, compatInfo, baseLoader, securityViolation, includeCode, registerPackage);
++            backup(thiz, activityThread, aInfo, compatInfo, baseLoader, securityViolation,
++                    includeCode, registerPackage);
+             return;
+         }
+ 
+
+File: Bridge/src/main/java/com/elderdrivers/riru/xposed/core/HookMain.java
+Patch:
+@@ -82,6 +82,7 @@ public static void hook(Object target, Method hook) {
+     }
+ 
+     public static void backupAndHook(Object target, Method hook, Method backup) {
++        Utils.logD(String.format("target=%s, hook=%s, backup=%s", target, hook, backup));
+         if (target == null) {
+             throw new IllegalArgumentException("null target method");
+         }
+@@ -108,7 +109,7 @@ public static void backupAndHook(Object target, Method hook, Method backup) {
+         }
+     }
+ 
+-    private static Object findMethod(Class cls, String methodName, String methodSig) {
++    public static Object findMethod(Class cls, String methodName, String methodSig) {
+         if (cls == null) {
+             throw new IllegalArgumentException("null class");
+         }
+

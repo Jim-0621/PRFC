@@ -1,0 +1,1140 @@
+File: retrolambda-maven-plugin/src/main/java/net/orfjackal/retrolambda/maven/ProcessClassesMojo.java
+Patch:
+@@ -8,7 +8,7 @@
+ import com.google.common.collect.ImmutableMap;
+ import com.google.common.io.Files;
+ import net.orfjackal.retrolambda.api.RetrolambdaApi;
+-import org.apache.commons.lang3.*;
++import org.apache.commons.lang.SystemUtils;
+ import org.apache.maven.artifact.DependencyResolutionRequiredException;
+ import org.apache.maven.execution.MavenSession;
+ import org.apache.maven.plugin.*;
+@@ -143,7 +143,7 @@ private void validateTarget() throws MojoExecutionException {
+     }
+ 
+     private void validateFork() {
+-        if (!fork && !SystemUtils.isJavaVersionAtLeast(JavaVersion.JAVA_1_8)) {
++        if (!fork && !SystemUtils.isJavaVersionAtLeast(1.8f)) {
+             getLog().warn("Maven is not running under Java 8 - forced to fork the process");
+             fork = true;
+         }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/files/OutputDirectory.java
+Patch:
+@@ -1,10 +1,11 @@
+-// Copyright © 2013-2015 Esko Luontola <www.orfjackal.net>
++// Copyright © 2013-2018 Esko Luontola and other Retrolambda contributors
+ // This software is released under the Apache License 2.0.
+ // The license text is at http://www.apache.org/licenses/LICENSE-2.0
+ 
+ package net.orfjackal.retrolambda.files;
+ 
+ import net.orfjackal.retrolambda.ext.ow2asm.EnhancedClassReader;
++import org.objectweb.asm.ClassReader;
+ 
+ import java.io.IOException;
+ import java.nio.file.*;
+@@ -21,7 +22,7 @@ public void writeClass(byte[] bytecode, boolean isJavacHacksEnabled) throws IOEx
+         if (bytecode == null) {
+             return;
+         }
+-        EnhancedClassReader cr = new EnhancedClassReader(bytecode, isJavacHacksEnabled);
++        ClassReader cr = EnhancedClassReader.create(bytecode, isJavacHacksEnabled);
+         Path relativePath = outputDir.getFileSystem().getPath(cr.getClassName() + ".class");
+         writeFile(relativePath, bytecode);
+     }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/lambdas/LambdaClassSaverAgent.java
+Patch:
+@@ -1,4 +1,4 @@
+-// Copyright © 2013-2014 Esko Luontola <www.orfjackal.net>
++// Copyright © 2013-2018 Esko Luontola and other Retrolambda contributors
+ // This software is released under the Apache License 2.0.
+ // The license text is at http://www.apache.org/licenses/LICENSE-2.0
+ 
+@@ -24,7 +24,7 @@ public byte[] transform(ClassLoader loader, String className, Class<?> classBein
+         if (className == null) {
+             // Since JDK 8 build b121 or so, lambda classes have a null class name,
+             // but we can read it from the bytecode where the name still exists.
+-            className = new EnhancedClassReader(classfileBuffer, isJavacHacksEnabled).getClassName();
++            className = EnhancedClassReader.create(classfileBuffer, isJavacHacksEnabled).getClassName();
+         }
+         if (lambdaClassSaver != null) {
+             lambdaClassSaver.saveIfLambda(className, classfileBuffer);
+
+File: retrolambda-api/src/main/java/net/orfjackal/retrolambda/api/RetrolambdaApi.java
+Patch:
+@@ -16,4 +16,5 @@ public class RetrolambdaApi {
+     public static final String INPUT_DIR = PREFIX + "inputDir";
+     public static final String DEFAULT_METHODS = PREFIX + "defaultMethods";
+     public static final String BYTECODE_VERSION = PREFIX + "bytecodeVersion";
++    public static final String JAVAC_HACKS = PREFIX + "javacHacks";
+ }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Config.java
+Patch:
+@@ -21,5 +21,7 @@ public interface Config {
+ 
+     List<Path> getIncludedFiles();
+ 
++    boolean isJavacHacksEnabled();
++
+     boolean isQuiet();
+ }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/PreMain.java
+Patch:
+@@ -22,7 +22,7 @@ public static boolean isAgentLoaded() {
+         return agentLoaded;
+     }
+ 
+-    public static void setLambdaClassSaver(LambdaClassSaver lambdaClassSaver) {
+-        agent.setLambdaClassSaver(lambdaClassSaver);
++    public static void setLambdaClassSaver(LambdaClassSaver lambdaClassSaver, boolean isJavacHacksEnabled) {
++        agent.setLambdaClassSaver(lambdaClassSaver, isJavacHacksEnabled);
+     }
+ }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/files/OutputDirectory.java
+Patch:
+@@ -4,7 +4,7 @@
+ 
+ package net.orfjackal.retrolambda.files;
+ 
+-import org.objectweb.asm.ClassReader;
++import net.orfjackal.retrolambda.ext.ow2asm.EnhancedClassReader;
+ 
+ import java.io.IOException;
+ import java.nio.file.*;
+@@ -17,11 +17,11 @@ public OutputDirectory(Path outputDir) {
+         this.outputDir = outputDir;
+     }
+ 
+-    public void writeClass(byte[] bytecode) throws IOException {
++    public void writeClass(byte[] bytecode, boolean isJavacHacksEnabled) throws IOException {
+         if (bytecode == null) {
+             return;
+         }
+-        ClassReader cr = new ClassReader(bytecode);
++        EnhancedClassReader cr = new EnhancedClassReader(bytecode, isJavacHacksEnabled);
+         Path relativePath = outputDir.getFileSystem().getPath(cr.getClassName() + ".class");
+         writeFile(relativePath, bytecode);
+     }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/ClassInfo.java
+Patch:
+@@ -4,14 +4,15 @@
+ 
+ package net.orfjackal.retrolambda.interfaces;
+ 
++import net.orfjackal.retrolambda.ext.ow2asm.EnhancedClassReader;
+ import net.orfjackal.retrolambda.util.Flags;
+ import org.objectweb.asm.*;
+ 
+ import java.util.*;
+ 
+ public class ClassInfo {
+ 
+-    public final ClassReader reader;
++    public final EnhancedClassReader reader;
+     private final int access;
+     public final Type type;
+     public final Type superclass;
+@@ -26,7 +27,7 @@ public ClassInfo() {
+         this.superclass = null;
+     }
+ 
+-    public ClassInfo(ClassReader cr) {
++    public ClassInfo(EnhancedClassReader cr) {
+         this.reader = cr;
+         this.access = cr.getAccess();
+         this.type = Type.getObjectType(cr.getClassName());
+
+File: retrolambda/src/test/java/net/orfjackal/retrolambda/ClassAnalyzerTest.java
+Patch:
+@@ -513,7 +513,7 @@ private void analyze(Class<?>... classes) {
+         Collections.shuffle(inAnyOrder);
+         for (Class<?> clazz : inAnyOrder) {
+             byte[] bytecode = readBytecode(clazz);
+-            analyzer.analyze(bytecode);
++            analyzer.analyze(bytecode, false);
+         }
+     }
+ 
+
+File: retrolambda-api/src/main/java/net/orfjackal/retrolambda/api/RetrolambdaApi.java
+Patch:
+@@ -16,4 +16,5 @@ public class RetrolambdaApi {
+     public static final String INPUT_DIR = PREFIX + "inputDir";
+     public static final String DEFAULT_METHODS = PREFIX + "defaultMethods";
+     public static final String BYTECODE_VERSION = PREFIX + "bytecodeVersion";
++    public static final String JAVAC_HACKS = PREFIX + "javacHacks";
+ }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Config.java
+Patch:
+@@ -21,5 +21,7 @@ public interface Config {
+ 
+     List<Path> getIncludedFiles();
+ 
++    boolean isJavacHacksEnabled();
++
+     boolean isQuiet();
+ }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/PreMain.java
+Patch:
+@@ -22,7 +22,7 @@ public static boolean isAgentLoaded() {
+         return agentLoaded;
+     }
+ 
+-    public static void setLambdaClassSaver(LambdaClassSaver lambdaClassSaver) {
+-        agent.setLambdaClassSaver(lambdaClassSaver);
++    public static void setLambdaClassSaver(LambdaClassSaver lambdaClassSaver, boolean isJavacHacksEnabled) {
++        agent.setLambdaClassSaver(lambdaClassSaver, isJavacHacksEnabled);
+     }
+ }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/ClassInfo.java
+Patch:
+@@ -4,14 +4,15 @@
+ 
+ package net.orfjackal.retrolambda.interfaces;
+ 
++import net.orfjackal.retrolambda.ext.ow2asm.EnhancedClassReader;
+ import net.orfjackal.retrolambda.util.Flags;
+ import org.objectweb.asm.*;
+ 
+ import java.util.*;
+ 
+ public class ClassInfo {
+ 
+-    public final ClassReader reader;
++    public final EnhancedClassReader reader;
+     private final int access;
+     public final Type type;
+     public final Type superclass;
+@@ -26,7 +27,7 @@ public ClassInfo() {
+         this.superclass = null;
+     }
+ 
+-    public ClassInfo(ClassReader cr) {
++    public ClassInfo(EnhancedClassReader cr) {
+         this.reader = cr;
+         this.access = cr.getAccess();
+         this.type = Type.getObjectType(cr.getClassName());
+
+File: retrolambda/src/test/java/net/orfjackal/retrolambda/ClassAnalyzerTest.java
+Patch:
+@@ -513,7 +513,7 @@ private void analyze(Class<?>... classes) {
+         Collections.shuffle(inAnyOrder);
+         for (Class<?> clazz : inAnyOrder) {
+             byte[] bytecode = readBytecode(clazz);
+-            analyzer.analyze(bytecode);
++            analyzer.analyze(bytecode, false);
+         }
+     }
+ 
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/files/ClasspathVisitor.java
+Patch:
+@@ -38,6 +38,7 @@ public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IO
+     protected abstract void visitResource(Path relativePath, byte[] content) throws IOException;
+ 
+     private static boolean isJavaClass(Path file) {
+-        return file.getFileName().toString().endsWith(".class");
++        String fileName = file.getFileName().toString();
++        return fileName.endsWith(".class") && !fileName.equals("module-info.class");
+     }
+ }
+
+File: end-to-end-tests/src/test/java/net/orfjackal/retrolambda/test/LambdaTest.java
+Patch:
+@@ -6,7 +6,7 @@
+ 
+ import net.orfjackal.retrolambda.test.anotherpackage.DifferentPackageBase;
+ import org.apache.commons.lang.SystemUtils;
+-import org.junit.*;
++import org.junit.Test;
+ import org.objectweb.asm.*;
+ import org.objectweb.asm.Type;
+ 
+@@ -249,7 +249,6 @@ private static String privateClassMethod() {
+ 
+ 
+     @Test
+-    @Ignore // TODO: fix issue #121
+     public void enclosing_method_of_anonymous_class_inside_lambda_expression() throws Exception {
+         Callable<Object> lambda = () -> new Object() {
+         };
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -119,6 +119,7 @@ private byte[] transform(String className, Consumer<ClassVisitor> reader, ClassV
+                 next = new RequireNonNull(next);
+             }
+             next = new FixInvokeStaticOnInterfaceMethod(next);
++            next = new UpdateRenamedEnclosingMethods(next, analyzer);
+             next = chain.wrap(next);
+ 
+             reader.accept(next);
+
+File: end-to-end-tests/src/test/java/net/orfjackal/retrolambda/test/LambdaTest.java
+Patch:
+@@ -6,7 +6,7 @@
+ 
+ import net.orfjackal.retrolambda.test.anotherpackage.DifferentPackageBase;
+ import org.apache.commons.lang.SystemUtils;
+-import org.junit.*;
++import org.junit.Test;
+ import org.objectweb.asm.*;
+ import org.objectweb.asm.Type;
+ 
+@@ -314,7 +314,6 @@ Callable<String> childRef() {
+      * because a subclass may override the lambda by overriding its enclosing method
+      * and declaring another lambda expression there.
+      */
+-    @Ignore // TODO: fix issue #109
+     @Test
+     public void will_not_cause_lambda_expressions_to_be_overridable() {
+         List<String> spy = new ArrayList<>();
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -1,4 +1,4 @@
+-// Copyright © 2013-2015 Esko Luontola <www.orfjackal.net>
++// Copyright © 2013-2017 Esko Luontola and other Retrolambda contributors
+ // This software is released under the Apache License 2.0.
+ // The license text is at http://www.apache.org/licenses/LICENSE-2.0
+ 
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/ClassInfo.java
+Patch:
+@@ -30,7 +30,7 @@ public ClassInfo(ClassReader cr) {
+         this.reader = cr;
+         this.access = cr.getAccess();
+         this.type = Type.getObjectType(cr.getClassName());
+-        this.superclass = Type.getObjectType(cr.getSuperName());
++        this.superclass = cr.getSuperName() != null ? Type.getObjectType(cr.getSuperName()) : null;
+         for (String iface : cr.getInterfaces()) {
+             this.interfaces.add(Type.getObjectType(iface));
+         }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/lambdas/BackportLambdaClass.java
+Patch:
+@@ -1,4 +1,4 @@
+-// Copyright © 2013-2015 Esko Luontola <www.orfjackal.net>
++// Copyright © 2013-2017 Esko Luontola and other Retrolambda contributors
+ // This software is released under the Apache License 2.0.
+ // The license text is at http://www.apache.org/licenses/LICENSE-2.0
+ 
+@@ -50,6 +50,7 @@ public MethodVisitor visitMethod(int access, String name, String desc, String si
+             return null; // remove the JVM's factory method which will not be unused
+         }
+         MethodVisitor next = super.visitMethod(access, name, desc, signature, exceptions);
++        next = new RemoveLambdaFormHiddenAnnotation(next);
+         next = new RemoveMagicLambdaConstructorCall(next);
+         next = new CallPrivateImplMethodsViaAccessMethods(access, name, desc, signature, exceptions, next);
+         return next;
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/ClassInfo.java
+Patch:
+@@ -30,7 +30,7 @@ public ClassInfo(ClassReader cr) {
+         this.reader = cr;
+         this.access = cr.getAccess();
+         this.type = Type.getObjectType(cr.getClassName());
+-        this.superclass = Type.getObjectType(cr.getSuperName());
++        this.superclass = cr.getSuperName() != null ? Type.getObjectType(cr.getSuperName()) : null;
+         for (String iface : cr.getInterfaces()) {
+             this.interfaces.add(Type.getObjectType(iface));
+         }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -1,4 +1,4 @@
+-// Copyright © 2013-2015 Esko Luontola <www.orfjackal.net>
++// Copyright © 2013-2017 Esko Luontola and other Retrolambda contributors
+ // This software is released under the Apache License 2.0.
+ // The license text is at http://www.apache.org/licenses/LICENSE-2.0
+ 
+@@ -116,9 +116,9 @@ private byte[] transform(String className, Consumer<ClassVisitor> reader, ClassV
+             if (targetVersion < Opcodes.V1_7) {
+                 next = new SwallowSuppressedExceptions(next);
+                 next = new RemoveMethodHandlesLookupReferences(next);
+-                next = new RemoveLambdaHiddenReferences(next);
+                 next = new RequireNonNull(next);
+             }
++            next = new RemoveLambdaHiddenReferences(next);
+             next = new FixInvokeStaticOnInterfaceMethod(next);
+             next = chain.wrap(next);
+ 
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/ClassInfo.java
+Patch:
+@@ -30,7 +30,7 @@ public ClassInfo(ClassReader cr) {
+         this.reader = cr;
+         this.access = cr.getAccess();
+         this.type = Type.getObjectType(cr.getClassName());
+-        this.superclass = Type.getObjectType(cr.getSuperName());
++        this.superclass = cr.getSuperName() != null ? Type.getObjectType(cr.getSuperName()) : null;
+         for (String iface : cr.getInterfaces()) {
+             this.interfaces.add(Type.getObjectType(iface));
+         }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/MethodRef.java
+Patch:
+@@ -1,4 +1,4 @@
+-// Copyright © 2013-2015 Esko Luontola <www.orfjackal.net>
++// Copyright © 2013-2016 Esko Luontola and other Retrolambda contributors
+ // This software is released under the Apache License 2.0.
+ // The license text is at http://www.apache.org/licenses/LICENSE-2.0
+ 
+@@ -39,7 +39,7 @@ public int getOpcode() {
+     }
+ 
+     public Handle toHandle() {
+-        return new Handle(tag, owner, name, desc);
++        return new Handle(tag, owner, name, desc, tag == Opcodes.H_INVOKEINTERFACE);
+     }
+ 
+     @Override
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/lambdas/BackportLambdaInvocations.java
+Patch:
+@@ -1,4 +1,4 @@
+-// Copyright © 2013-2015 Esko Luontola <www.orfjackal.net>
++// Copyright © 2013-2016 Esko Luontola and other Retrolambda contributors
+ // This software is released under the Apache License 2.0.
+ // The license text is at http://www.apache.org/licenses/LICENSE-2.0
+ 
+@@ -78,14 +78,14 @@ Handle getLambdaAccessMethod(Handle implMethod) {
+             if (LambdaNaming.isBodyMethodName(implMethod.getName())) {
+                 if (implMethod.getTag() == H_INVOKESPECIAL) {
+                     // The private body method is now package so switch its invocation from special to virtual.
+-                    return new Handle(H_INVOKEVIRTUAL, implMethod.getOwner(), implMethod.getName(), implMethod.getDesc());
++                    return new Handle(H_INVOKEVIRTUAL, implMethod.getOwner(), implMethod.getName(), implMethod.getDesc(), false);
+                 }
+                 return implMethod;
+             }
+         }
+         String name = "access$lambda$" + lambdaAccessToImplMethods.size();
+         String desc = getLambdaAccessMethodDesc(implMethod);
+-        Handle accessMethod = new Handle(H_INVOKESTATIC, className, name, desc);
++        Handle accessMethod = new Handle(H_INVOKESTATIC, className, name, desc, false);
+         lambdaAccessToImplMethods.put(accessMethod, implMethod);
+         return accessMethod;
+     }
+
+File: retrolambda/src/test/java/net/orfjackal/retrolambda/lambdas/HandlesTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-// Copyright © 2013-2015 Esko Luontola <www.orfjackal.net>
++// Copyright © 2013-2016 Esko Luontola and other Retrolambda contributors
+ // This software is released under the Apache License 2.0.
+ // The license text is at http://www.apache.org/licenses/LICENSE-2.0
+ 
+@@ -54,7 +54,6 @@ public void testAccessToTag() {
+     }
+ 
+     private Handle handle(int tag) {
+-        return new Handle(tag, null, null, null);
++        return new Handle(tag, null, null, null, tag == Opcodes.H_INVOKEINTERFACE);
+     }
+-
+ }
+
+File: retrolambda/src/test/java/net/orfjackal/retrolambda/lambdas/TypesTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-// Copyright © 2013-2015 Esko Luontola <www.orfjackal.net>
++// Copyright © 2013-2016 Esko Luontola and other Retrolambda contributors
+ // This software is released under the Apache License 2.0.
+ // The license text is at http://www.apache.org/licenses/LICENSE-2.0
+ 
+@@ -30,7 +30,7 @@ public void asmToJdkType_MethodType() throws Exception {
+ 
+     @Test
+     public void asmToJdkType_MethodHandle() throws Exception {
+-        Handle input = new Handle(Opcodes.H_INVOKESTATIC, "java/lang/String", "valueOf", "(I)Ljava/lang/String;");
++        Handle input = new Handle(Opcodes.H_INVOKESTATIC, "java/lang/String", "valueOf", "(I)Ljava/lang/String;", false);
+         MethodHandle output = lookup.findStatic(String.class, "valueOf", MethodType.methodType(String.class, int.class));
+ 
+         assertThat(asmToJdkType(input, classLoader, lookup).toString(), is(output.toString()));
+
+File: end-to-end-tests/src/test/java/net/orfjackal/retrolambda/test/LambdaClassesTest.java
+Patch:
+@@ -78,7 +78,7 @@ private NonCapturing() {
+ 
+     @Test
+     public void lambda_bodies_contain_no_unnecessary_methods() throws ClassNotFoundException {
+-        assertThat(getDeclaredMethodNames(HasLambdaBody.class), is(ImmutableSet.of("lambda$main$0", "main")));
++        assertThat(getDeclaredMethodNames(HasLambdaBody.class), containsInAnyOrder(startsWith("lambda$main$"), equalTo("main")));
+     }
+ 
+     @SuppressWarnings("UnusedDeclaration")
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -6,6 +6,7 @@
+ 
+ import net.orfjackal.retrolambda.interfaces.*;
+ import net.orfjackal.retrolambda.lambdas.*;
++import net.orfjackal.retrolambda.requirenonnull.RequireNonNull;
+ import net.orfjackal.retrolambda.trywithresources.SwallowSuppressedExceptions;
+ import org.objectweb.asm.*;
+ import org.objectweb.asm.tree.ClassNode;
+@@ -115,6 +116,7 @@ private byte[] transform(String className, Consumer<ClassVisitor> reader, ClassV
+             if (targetVersion < Opcodes.V1_7) {
+                 next = new SwallowSuppressedExceptions(next);
+                 next = new RemoveMethodHandlesLookupReferences(next);
++                next = new RequireNonNull(next);
+             }
+             next = new FixInvokeStaticOnInterfaceMethod(next);
+             next = chain.wrap(next);
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -123,9 +123,6 @@ private byte[] transform(String className, Consumer<ClassVisitor> reader, ClassV
+             return writer.toByteArray();
+ 
+         } catch (Throwable t) {
+-            if (className != null) {
+-                className = className.replace('/', '.');
+-            }
+             throw new RuntimeException("Failed to backport class: " + className, t);
+         }
+     }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/files/OutputDirectory.java
+Patch:
+@@ -22,7 +22,7 @@ public void writeClass(byte[] bytecode) throws IOException {
+             return;
+         }
+         ClassReader cr = new ClassReader(bytecode);
+-        Path relativePath = Paths.get(cr.getClassName() + ".class");
++        Path relativePath = outputDir.getFileSystem().getPath(cr.getClassName() + ".class");
+         writeFile(relativePath, bytecode);
+     }
+ 
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -113,6 +113,7 @@ private byte[] transform(Consumer<ClassVisitor> reader, ClassVisitorChain chain)
+         next = new LowerBytecodeVersion(next, targetVersion);
+         if (targetVersion < Opcodes.V1_7) {
+             next = new SwallowSuppressedExceptions(next);
++            next = new RemoveMethodHandlesLookupReferences(next);
+         }
+         next = new FixInvokeStaticOnInterfaceMethod(next);
+         next = chain.wrap(next);
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/AddMethodDefaultImplementations.java
+Patch:
+@@ -29,7 +29,7 @@ public void visit(int version, int access, String name, String signature, String
+     public void visitEnd() {
+         for (MethodInfo method : analyzer.getDefaultMethods(Type.getObjectType(className))) {
+             Bytecode.generateDelegateMethod(cv,
+-                    ACC_PUBLIC | ACC_SYNTHETIC,
++                    ACC_PUBLIC,
+                     method.toMethodRef().toHandle(),
+                     method.getDefaultMethodImpl().toHandle());
+         }
+
+File: end-to-end-tests/src/test/java/net/orfjackal/retrolambda/test/DefaultMethodsTest.java
+Patch:
+@@ -472,7 +472,6 @@ default Callable<String> captureThis() {
+      */
+     @Test
+     public void default_methods_with_lambdas_in_another_package() throws Exception {
+-        System.out.println("DefaultMethodsTest.default_methods_with_lambdas_in_another_package");
+         UsesLambdasInAnotherPackage obj = new UsesLambdasInAnotherPackage() {
+         };
+         assertThat(obj.stateless().call(), is("foo"));
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/AddMethodDefaultImplementations.java
+Patch:
+@@ -30,8 +30,8 @@ public void visitEnd() {
+         for (MethodInfo method : analyzer.getDefaultMethods(Type.getObjectType(className))) {
+             Bytecode.generateDelegateMethod(cv,
+                     ACC_PUBLIC | ACC_SYNTHETIC,
+-                    method.toMethodRef().toHandle(H_INVOKEVIRTUAL),
+-                    method.getDefaultMethodImpl().toHandle(H_INVOKESTATIC));
++                    method.toMethodRef().toHandle(),
++                    method.getDefaultMethodImpl().toHandle());
+         }
+         super.visitEnd();
+     }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/ClassInfo.java
+Patch:
+@@ -47,7 +47,7 @@ public List<MethodInfo> getMethods() {
+     }
+ 
+     public void addMethod(MethodRef method, MethodKind kind) {
+-        methods.add(new MethodInfo(method.getSignature(), Type.getObjectType(method.owner), kind));
++        methods.add(new MethodInfo(method.tag, method.getSignature(), Type.getObjectType(method.owner), kind));
+     }
+ 
+     public Optional<Type> getCompanionClass() {
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Retrolambda.java
+Patch:
+@@ -66,8 +66,7 @@ protected void visit(byte[] bytecode) {
+ 
+             List<byte[]> transformed = new ArrayList<>();
+             for (ClassInfo c : interfaces) {
+-                transformed.add(transformers.extractInterfaceCompanion(c.reader));
+-                transformed.add(transformers.backportInterface(c.reader));
++                transformed.addAll(transformers.backportInterface(c.reader));
+             }
+             for (ClassInfo c : classes) {
+                 transformed.add(transformers.backportClass(c.reader));
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/ExtractInterfaceCompanionClass.java
+Patch:
+@@ -51,6 +51,7 @@ public MethodVisitor visitMethod(int access, String name, String desc, String si
+             access |= ACC_STATIC;
+             // TODO: this adding of the first argument is duplicated in ClassHierarchyAnalyzer
+             desc = Bytecode.prependArgumentType(desc, Type.getObjectType(interfaceName));
++            signature = null; // XXX: we should prepend the argument type also to the generic signature, but removing generics is easier
+         }
+         return super.visitMethod(access, name, desc, signature, exceptions);
+     }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -78,6 +78,9 @@ public byte[] extractInterfaceCompanion(ClassReader reader) {
+         return transform(reader, (next) -> {
+             next = new UpdateRelocatedMethodInvocations(next, analyzer);
+             next = new ExtractInterfaceCompanionClass(next, companion.get());
++            // XXX: We call BackportLambdaInvocations twice on the same interface (in backportInterface and extractInterfaceCompanion)
++            // - is this a problem, because it tries to load the lambda class twice?
++            next = new BackportLambdaInvocations(next);
+             return next;
+         });
+     }
+
+File: retrolambda-maven-plugin/src/main/java/net/orfjackal/retrolambda/maven/ProcessClassesMojo.java
+Patch:
+@@ -67,9 +67,10 @@ abstract class ProcessClassesMojo extends AbstractMojo {
+     public String target;
+ 
+     /**
+-     * Whether to backport default and static methods on interfaces.
++     * Whether to backport default methods and static methods on interfaces.
+      * LIMITATIONS: All backported interfaces and all classes which implement
+-     * them must be backported together with one execution of Retrolambda.
++     * them or call their static methods must be backported together,
++     * with one execution of Retrolambda.
+      *
+      * @since 2.0.0
+      */
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Config.java
+Patch:
+@@ -79,9 +79,10 @@ public String getJavaVersion() {
+ 
+     static {
+         optionalParameterHelp(DEFAULT_METHODS,
+-                "Whether to backport default and static methods on interfaces.",
++                "Whether to backport default methods and static methods on interfaces.",
+                 "LIMITATIONS: All backported interfaces and all classes which implement",
+-                "them must be backported together with one execution of Retrolambda.",
++                "them or call their static methods must be backported together,",
++                "with one execution of Retrolambda.",
+                 "Disabled by default. Enable by setting to \"true\"");
+ 
+     }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Retrolambda.java
+Patch:
+@@ -17,11 +17,13 @@ public class Retrolambda {
+ 
+     public static void run(Config config) throws Throwable {
+         int bytecodeVersion = config.getBytecodeVersion();
++        boolean defaultMethodsEnabled = config.isDefaultMethodsEnabled();
+         Path inputDir = config.getInputDir();
+         Path outputDir = config.getOutputDir();
+         String classpath = config.getClasspath();
+         List<Path> includedFiles = config.getIncludedFiles();
+         System.out.println("Bytecode version: " + bytecodeVersion + " (" + config.getJavaVersion() + ")");
++        System.out.println("Default methods:  " + defaultMethodsEnabled);
+         System.out.println("Input directory:  " + inputDir);
+         System.out.println("Output directory: " + outputDir);
+         System.out.println("Classpath:        " + classpath);
+@@ -38,7 +40,7 @@ public static void run(Config config) throws Throwable {
+ 
+         ClassHierarchyAnalyzer analyzer = new ClassHierarchyAnalyzer();
+         ClassSaver saver = new ClassSaver(outputDir);
+-        Transformers transformers = new Transformers(bytecodeVersion, analyzer);
++        Transformers transformers = new Transformers(bytecodeVersion, defaultMethodsEnabled, analyzer);
+         LambdaClassSaver lambdaClassSaver = new LambdaClassSaver(saver, transformers);
+ 
+         try (LambdaClassDumper dumper = new LambdaClassDumper(lambdaClassSaver)) {
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/WarnAboutDefaultAndStaticMethods.java
+Patch:
+@@ -49,7 +49,6 @@ public MethodVisitor visitMethod(int access, String name, String desc, String si
+ 
+     private void printWarning(String methodKind, String methodName) {
+         System.out.println("WARNING: The interface " + interfaceName + " has " + methodKind + " \"" + methodName + "\" " +
+-                "but the experimental support for them is not enabled " +
+-                "(set the environment variable DEFAULT_METHODS=2)");
++                "but backporting default methods is not enabled");
+     }
+ }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/ClassHierarchyAnalyzer.java
+Patch:
+@@ -164,7 +164,9 @@ public Collection<MethodInfo> getMethods(Type type) {
+         // - superclass methods
+         if (c.superclass != null) {
+             for (MethodInfo m : getMethods(c.superclass)) {
+-                methods.put(m.signature, m);
++                if (!isAlreadyInherited(m, methods)) {
++                    methods.put(m.signature, m);
++                }
+             }
+         }
+         // - own methods
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/ClassInfo.java
+Patch:
+@@ -49,7 +49,7 @@ public List<MethodRef> getMethodRefs() {
+     }
+ 
+     public void addMethod(MethodRef method, MethodKind kind) {
+-        methods.add(new MethodInfo(method.getSignature(), kind));
++        methods.add(new MethodInfo(method.getSignature(), Type.getObjectType(method.owner), kind));
+         methodRefs.add(method);
+     }
+ 
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/MethodRelocations.java
+Patch:
+@@ -14,5 +14,7 @@ public interface MethodRelocations {
+ 
+     List<MethodRef> getInterfaceMethods(String interfaceName);
+ 
++    List<MethodRef> getSuperclassMethods(String className);
++
+     String getCompanionClass(String className);
+ }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/MethodRelocations.java
+Patch:
+@@ -14,5 +14,7 @@ public interface MethodRelocations {
+ 
+     List<MethodRef> getInterfaceMethods(String interfaceName);
+ 
++    List<MethodRef> getSuperclassMethods(String className);
++
+     String getCompanionClass(String className);
+ }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -62,6 +62,7 @@ public byte[] backportInterface(ClassReader reader) {
+             } else {
+                 // needed for lambdas in an interface's constant initializer
+                 next = new RemoveStaticMethods(next);
++                next = new WarnAboutDefaultAndStaticMethods(next);
+             }
+             next = new BackportLambdaInvocations(next);
+             return next;
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/RemoveStaticMethods.java
+Patch:
+@@ -1,4 +1,4 @@
+-// Copyright © 2013-2014 Esko Luontola <www.orfjackal.net>
++// Copyright © 2013-2015 Esko Luontola <www.orfjackal.net>
+ // This software is released under the Apache License 2.0.
+ // The license text is at http://www.apache.org/licenses/LICENSE-2.0
+ 
+@@ -17,7 +17,7 @@ public RemoveStaticMethods(ClassVisitor next) {
+ 
+     @Override
+     public MethodVisitor visitMethod(int access, String name, String desc, String signature, String[] exceptions) {
+-        if (isStaticMethod(access)) {
++        if (isStaticMethod(access) && !Flags.isClassInitializer(name, desc, access)) {
+             return null;
+         } else {
+             return super.visitMethod(access, name, desc, signature, exceptions);
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -84,7 +84,7 @@ private byte[] transform(ClassReader reader, ClassVisitorChain chain) {
+         if (targetVersion < Opcodes.V1_7) {
+             next = new SwallowSuppressedExceptions(next);
+         }
+-        next = new FixInvokeStaticOnInterfaceMethod(next); // TODO: remove me?
++        next = new FixInvokeStaticOnInterfaceMethod(next);
+         next = chain.wrap(next);
+ 
+         reader.accept(next, 0);
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/ClassHierarchyAnalyzer.java
+Patch:
+@@ -4,7 +4,7 @@
+ 
+ package net.orfjackal.retrolambda.interfaces;
+ 
+-import net.orfjackal.retrolambda.util.Flags;
++import net.orfjackal.retrolambda.util.*;
+ import org.objectweb.asm.*;
+ 
+ import java.util.*;
+@@ -63,6 +63,7 @@ public MethodVisitor visitMethod(int access, String name, String desc, String si
+                     saveInterfaceMethod(method);
+ 
+                 } else if (isDefaultMethod(access)) {
++                    desc = Bytecode.prependArgumentType(desc, Type.getObjectType(owner));
+                     methodDefaultImpls.put(method, new MethodRef(companion, name, desc));
+                     companionClasses.put(owner, companion);
+                     saveInterfaceMethod(method);
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -25,6 +25,7 @@ public byte[] backportLambdaClass(ClassReader reader) {
+                 next = new ClassModifier(targetVersion, next);
+             } else if (FeatureToggles.DEFAULT_METHODS == 2) {
+                 next = new UpdateRelocatedMethodInvocations(next, methodRelocations);
++                next = new AddMethodDefaultImplementations(next, methodRelocations);
+             }
+             next = new BackportLambdaClass(next);
+             return next;
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Transformers.java
+Patch:
+@@ -38,6 +38,7 @@ public byte[] backportClass(ClassReader reader) {
+                 next = new InterfaceModifier(next, targetVersion);
+             } else if (FeatureToggles.DEFAULT_METHODS == 2) {
+                 next = new UpdateRelocatedMethodInvocations(next, methodRelocations);
++                next = new AddMethodDefaultImplementations(next, methodRelocations);
+             }
+             next = new BackportLambdaInvocations(next);
+             return next;
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/interfaces/MethodRelocations.java
+Patch:
+@@ -8,5 +8,7 @@ public interface MethodRelocations {
+ 
+     MethodRef getMethodCallTarget(MethodRef original);
+ 
++    MethodRef getMethodDefaultImplementation(MethodRef interfaceMethod);
++
+     String getCompanionClass(String className);
+ }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/NonDelegatingClassLoader.java
+Patch:
+@@ -14,6 +14,9 @@ public NonDelegatingClassLoader(URL[] urls) {
+ 
+     @Override
+     public Class<?> loadClass(String name) throws ClassNotFoundException {
++        if (name.startsWith("java.")) { // the java.* classes can only be loaded by the bootstrap class loader
++            return super.loadClass(name);
++        }
+         Class<?> c = findLoadedClass(name);
+         if (c != null) {
+             return c;
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/LambdaUsageBackporter.java
+Patch:
+@@ -23,7 +23,7 @@ public static byte[] transform(ClassReader reader, int targetVersion, MethodRelo
+             next = new ClassModifier(targetVersion, next);
+             next = new InterfaceModifier(next, targetVersion);
+         } else if (FeatureToggles.DEFAULT_METHODS == 2) {
+-            next = new RemoveDefaultMethods(next); // TODO: only needed for interfaces - skip else?
++            next = new RemoveDefaultMethodBodies(next); // TODO: only needed for interfaces - skip else?
+             next = new ApplyMethodRelocations(next, methodRelocations);
+             next = new InvokeStaticInterfaceMethodConverter(next);
+         } else {
+
+File: end-to-end-tests/src/test/java/net/orfjackal/retrolambda/test/InterfaceStaticMethodsTest.java
+Patch:
+@@ -76,7 +76,7 @@ public void calling_static_methods_of_library_interfaces__new_interface() {
+         assumeThat(SystemUtils.JAVA_VERSION_FLOAT, is(lessThan(1.8f)));
+ 
+         thrown.expect(NoClassDefFoundError.class);
+-        thrown.expectMessage("java.util.stream.Stream");
++        thrown.expectMessage("java/util/stream/Stream");
+         // We don't want this call to prevent loading this whole test class,
+         // it should only fail when this line is executed
+         Stream.of(1, 2, 3);
+@@ -86,8 +86,8 @@ public void calling_static_methods_of_library_interfaces__new_interface() {
+     public void calling_static_methods_of_library_interfaces__new_method_on_old_interface() {
+         assumeThat(SystemUtils.JAVA_VERSION_FLOAT, is(lessThan(1.8f)));
+ 
+-        thrown.expect(NoSuchMethodError.class);
+-        thrown.expectMessage("naturalOrder");
++        thrown.expect(IncompatibleClassChangeError.class);
++        thrown.expectMessage("Found interface java.util.Comparator, but class was expected");
+         // We don't want this call to prevent loading this whole test class,
+         // it should only fail when this line is executed
+         Comparator.naturalOrder();
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/ClassHierarchyAnalyzer.java
+Patch:
+@@ -7,6 +7,7 @@
+ import org.objectweb.asm.*;
+ 
+ import java.util.*;
++import java.util.stream.Stream;
+ 
+ import static java.util.stream.Collectors.toList;
+ 
+@@ -26,7 +27,7 @@ public List<Type> getInterfaces(Type type) {
+     }
+ 
+     private static List<Type> classNamesToTypes(String[] interfaces) {
+-        return Arrays.asList(interfaces).stream() // TODO: use Stream.of() once it's supported
++        return Stream.of(interfaces)
+                 .map(ClassHierarchyAnalyzer::classNameToType)
+                 .collect(toList());
+     }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/LambdaUsageBackporter.java
+Patch:
+@@ -24,7 +24,8 @@ public static byte[] transform(byte[] bytecode, int targetVersion) {
+             InvokeDynamicInsnConverter stage1 = new InvokeDynamicInsnConverter(stage2, targetVersion);
+             new ClassReader(bytecode).accept(stage1, 0);
+         } else {
+-            InvokeDynamicInsnConverter stage1 = new InvokeDynamicInsnConverter(writer, targetVersion);
++            InvokeStaticInterfaceMethodConverter stage2 = new InvokeStaticInterfaceMethodConverter(writer);
++            InvokeDynamicInsnConverter stage1 = new InvokeDynamicInsnConverter(stage2, targetVersion);
+             new ClassReader(bytecode).accept(stage1, 0);
+         }
+         return writer.toByteArray();
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/LambdaClassDumper.java
+Patch:
+@@ -35,7 +35,8 @@ public void install() {
+             Path p = new VirtualPath("");
+             dumperField.set(null, newProxyClassesDumper(p));
+         } catch (Exception e) {
+-            throw new RuntimeException("Cannot initialize dumper", e);
++            throw new IllegalStateException("Cannot initialize dumper; unexpected JDK implementation. " +
++                    "Please run Retrolambda using the Java agent (enable forking in the Maven plugin).", e);
+         }
+     }
+ 
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/Retrolambda.java
+Patch:
+@@ -30,7 +30,7 @@ public static void run(Config config) throws Throwable {
+             return;
+         }
+ 
+-        Thread.currentThread().setContextClassLoader(new URLClassLoader(asUrls(classpath)));
++        Thread.currentThread().setContextClassLoader(new NonDelegatingClassLoader(asUrls(classpath)));
+ 
+         try (LambdaClassDumper dumper = new LambdaClassDumper(new LambdaClassSaver(outputDir, bytecodeVersion))) {
+             if (!PreMain.isAgentLoaded()) {
+
+File: retrolambda-maven-plugin/src/main/java/net/orfjackal/retrolambda/maven/ProcessMainClassesMojo.java
+Patch:
+@@ -26,7 +26,7 @@ public class ProcessMainClassesMojo extends ProcessClassesMojo {
+     public File mainInputDir;
+ 
+     /**
+-     * Directory where to write the backported main classes.
++     * Directory where to write the backported classes.
+      * If same as the input directory, will overwrite the original classes.
+      *
+      * @since 1.3.0
+
+File: retrolambda-maven-plugin/src/main/java/net/orfjackal/retrolambda/maven/ProcessTestClassesMojo.java
+Patch:
+@@ -26,7 +26,7 @@ public class ProcessTestClassesMojo extends ProcessClassesMojo {
+     public File testInputDir;
+ 
+     /**
+-     * Directory where to write the backported main classes.
++     * Directory where to write the backported classes.
+      * If same as the input directory, will overwrite the original classes.
+      *
+      * @since 1.3.0
+@@ -48,4 +48,4 @@ protected File getOutputDir() {
+     protected String getClasspathId() {
+         return "maven.test.classpath";
+     }
+-}
+\ No newline at end of file
++}
+
+File: retrolambda-maven-plugin/src/main/java/net/orfjackal/retrolambda/maven/ProcessClassesMojo.java
+Patch:
+@@ -35,7 +35,7 @@ abstract class ProcessClassesMojo extends AbstractMojo {
+     private MavenProject project;
+ 
+     /**
+-     * The location of the Java 8 JDK (not JRE).
++     * Directory of the Java 8 installation for running Retrolambda.
+      *
+      * @since 1.2.0
+      */
+
+File: retrolambda-maven-plugin/src/main/java/net/orfjackal/retrolambda/maven/ProcessClassesMojo.java
+Patch:
+@@ -39,8 +39,8 @@ abstract class ProcessClassesMojo extends AbstractMojo {
+      *
+      * @since 1.2.0
+      */
+-    @Parameter(defaultValue = "${env.JAVA8_HOME}", property = "java8home", required = true)
+-    public String java8home;
++    @Parameter(defaultValue = "${java.home}", property = "java8home", required = true)
++    public File java8home;
+ 
+     /**
+      * The Java version targeted by the bytecode processing. Possible values are
+@@ -104,7 +104,7 @@ private void validateTarget() throws MojoExecutionException {
+     }
+ 
+     private void validateJava8home() throws MojoExecutionException {
+-        if (!new File(java8home).isDirectory()) {
++        if (!java8home.isDirectory()) {
+             throw new MojoExecutionException(
+                     "Must set configuration element java8home or environment variable JAVA8_HOME to a valid JDK 8 location: " + java8home);
+         }
+
+File: retrolambda-maven-plugin/src/test/java/net/orfjackal/retrolambda/maven/ProcessClassesMojoTest.java
+Patch:
+@@ -8,6 +8,8 @@
+ import org.junit.*;
+ import org.junit.rules.ExpectedException;
+ 
++import java.io.File;
++
+ public class ProcessClassesMojoTest {
+ 
+     private final ProcessMainClassesMojo mojo = new ProcessMainClassesMojo();
+@@ -18,7 +20,7 @@ public class ProcessClassesMojoTest {
+     @Before
+     public void sensibleDefaults() {
+         mojo.target = "1.7";
+-        mojo.java8home = System.getProperty("java.home");
++        mojo.java8home = new File(System.getProperty("java.home"));
+     }
+ 
+     @Test
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/LambdaSavingClassFileTransformer.java
+Patch:
+@@ -50,7 +50,7 @@ public byte[] transform(ClassLoader loader, String className, Class<?> classBein
+ 
+         } catch (Throwable t) {
+             // print to stdout to keep in sync with other log output
+-            System.out.println("ERROR: Failed so backport lambda class: " + className);
++            System.out.println("ERROR: Failed to backport lambda class: " + className);
+             t.printStackTrace(System.out);
+         }
+         return null;
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/LambdaUsageBackporter.java
+Patch:
+@@ -118,7 +118,6 @@ public InvokeDynamicInsnConvertingMethodVisitor(int api, MethodVisitor mv, Strin
+         @Override
+         public void visitInvokeDynamicInsn(String name, String desc, Handle bsm, Object... bsmArgs) {
+             if (bsm.getOwner().equals(LambdaNaming.LAMBDA_METAFACTORY)) {
+-                lambdaImplMethods.add((Handle) bsmArgs[1]);
+                 backportLambda(name, Type.getType(desc), bsm, bsmArgs);
+             } else {
+                 super.visitInvokeDynamicInsn(name, desc, bsm, bsmArgs);
+@@ -127,7 +126,9 @@ public void visitInvokeDynamicInsn(String name, String desc, Handle bsm, Object.
+ 
+         private void backportLambda(String invokedName, Type invokedType, Handle bsm, Object[] bsmArgs) {
+             Class<?> invoker = loadClass(myClassName);
+-            LambdaFactoryMethod factory = LambdaReifier.reifyLambdaClass(invoker, invokedName, invokedType, bsm, bsmArgs);
++            Handle lambdaImplMethod = (Handle) bsmArgs[1];
++            lambdaImplMethods.add(lambdaImplMethod);
++            LambdaFactoryMethod factory = LambdaReifier.reifyLambdaClass(lambdaImplMethod, invoker, invokedName, invokedType, bsm, bsmArgs);
+             super.visitMethodInsn(INVOKESTATIC, factory.getOwner(), factory.getName(), factory.getDesc());
+         }
+ 
+
+File: retrolambda-maven-plugin/src/main/java/net/orfjackal/retrolambda/maven/ProcessMainClassesMojo.java
+Patch:
+@@ -10,7 +10,9 @@
+  * Processes main (non-test) classes compiled with Java 8 so that they will be
+  * compatible with Java 5, 6 or 7 runtime.
+  */
+-@Mojo(name = "process-main", defaultPhase = LifecyclePhase.PROCESS_CLASSES)
++@Mojo(name = "process-main",
++        defaultPhase = LifecyclePhase.PROCESS_CLASSES,
++        requiresDependencyResolution = ResolutionScope.COMPILE)
+ public class ProcessMainClassesMojo extends ProcessClassesMojo {
+ 
+     public ProcessMainClassesMojo() {
+
+File: retrolambda-maven-plugin/src/main/java/net/orfjackal/retrolambda/maven/ProcessTestClassesMojo.java
+Patch:
+@@ -10,7 +10,9 @@
+  * Processes test classes compiled with Java 8 so that they will be compatible with
+  * Java 5, 6 or 7 runtime.
+  */
+-@Mojo(name = "process-test", defaultPhase = LifecyclePhase.PROCESS_TEST_CLASSES)
++@Mojo(name = "process-test",
++        defaultPhase = LifecyclePhase.PROCESS_TEST_CLASSES,
++        requiresDependencyResolution = ResolutionScope.TEST)
+ public class ProcessTestClassesMojo extends ProcessClassesMojo {
+ 
+     public ProcessTestClassesMojo() {
+
+File: retrolambda-maven-plugin/src/main/java/net/orfjackal/retrolambda/maven/ProcessClassesMojo.java
+Patch:
+@@ -103,7 +103,7 @@ public void execute() throws MojoExecutionException {
+ 
+     private void validateTarget() throws MojoExecutionException {
+         if (!targetBytecodeVersions.containsKey(target)) {
+-            String possibleValues = Joiner.on(", ").join(new ArrayList<String>(targetBytecodeVersions.keySet()));
++            String possibleValues = Joiner.on(", ").join(new TreeSet<String>(targetBytecodeVersions.keySet()));
+             throw new MojoExecutionException(
+                     "Unrecognized target '" + target + "'. Possible values are " + possibleValues);
+         }
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/LambdaFactoryMethod.java
+Patch:
+@@ -13,16 +13,15 @@ public class LambdaFactoryMethod {
+ 
+     public LambdaFactoryMethod(String lambdaClass, Type invokedType) {
+         owner = lambdaClass;
+-        // TODO: get rid of toFactoryMethodDesc by changing the method's return type to be same as invokedType
+-        desc = LambdaClassBackporter.toFactoryMethodDesc(lambdaClass, invokedType);
++        desc = invokedType.getDescriptor();
+     }
+ 
+     public String getOwner() {
+         return owner;
+     }
+ 
+     public String getName() {
+-        return LambdaClassBackporter.FACTORY_METHOD_NAME;
++        return "lambdaFactory$";
+     }
+ 
+     public String getDesc() {
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/LambdaClassBackporter.java
+Patch:
+@@ -10,7 +10,7 @@
+ 
+ public class LambdaClassBackporter {
+ 
+-    public static final String FACTORY_METHOD_NAME = "$create";
++    public static final String FACTORY_METHOD_NAME = "lambdaFactory$";
+     private static final String SINGLETON_FIELD_NAME = "instance";
+ 
+     private static final String MAGIC_LAMBDA_IMPL = "java/lang/invoke/MagicLambdaImpl";
+
+File: retrolambda/src/main/java/net/orfjackal/retrolambda/BytecodeTransformingFileVisitor.java
+Patch:
+@@ -21,7 +21,6 @@ public BytecodeTransformingFileVisitor(Path inputDir, Path outputDir) {
+     @Override
+     public FileVisitResult visitFile(Path inputFile, BasicFileAttributes attrs) throws IOException {
+         if (isJavaClass(inputFile)) {
+-            System.out.println(inputFile); // TODO: remove debug printing
+             byte[] originalBytes = Files.readAllBytes(inputFile);
+             byte[] transformedBytes = transform(originalBytes);
+ 
+

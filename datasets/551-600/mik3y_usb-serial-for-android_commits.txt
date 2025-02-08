@@ -1,0 +1,814 @@
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/UsbSerialPort.java
+Patch:
+@@ -175,7 +175,7 @@ enum FlowControl { NONE, RTS_CTS, DTR_DSR, XON_XOFF, XON_XOFF_INLINE }
+      * @param parity one of {@link #PARITY_NONE}, {@link #PARITY_ODD},
+      *               {@link #PARITY_EVEN}, {@link #PARITY_MARK}, or {@link #PARITY_SPACE}.
+      * @throws IOException on error setting the port parameters
+-     * @throws UnsupportedOperationException if values are not supported by a specific device
++     * @throws UnsupportedOperationException if not supported or values are not supported by a specific device
+      */
+     void setParameters(int baudRate, int dataBits, int stopBits, @Parity int parity) throws IOException;
+ 
+@@ -257,6 +257,7 @@ enum FlowControl { NONE, RTS_CTS, DTR_DSR, XON_XOFF, XON_XOFF_INLINE }
+      *
+      * @return EnumSet.contains(...) is {@code true} if set, else {@code false}
+      * @throws IOException if an error occurred during reading
++     * @throws UnsupportedOperationException if not supported
+      */
+     EnumSet<ControlLine> getControlLines() throws IOException;
+ 
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/UsbSerialPort.java
+Patch:
+@@ -58,7 +58,7 @@ public interface UsbSerialPort extends Closeable {
+     int STOPBITS_2 = 2;
+ 
+     /** Values for get[Supported]ControlLines() */
+-    enum ControlLine { RTS, CTS,  DTR, DSR,  CD, RI }
++    enum ControlLine { RTS, CTS, DTR, DSR, CD, RI }
+ 
+     /**
+      * Returns the driver used by this port.
+
+File: usbSerialForAndroid/src/androidTest/java/com/hoho/android/usbserial/DeviceTest.java
+Patch:
+@@ -320,8 +320,10 @@ public void run() {
+         try {
+             closer.wait = false;
+             usb.serialPort.read(new byte[256], 2000);
++
+             fail("closed expected");
+         } catch(IOException ex) {
++            assertFalse(usb.serialPort.isOpen());
+             assertEquals("Connection closed", ex.getMessage());
+         }
+         th.join();
+@@ -333,6 +335,7 @@ public void run() {
+             usb.serialPort.read(new byte[256], 0);
+             fail("closed expected");
+         } catch(IOException ex) {
++            assertFalse(usb.serialPort.isOpen());
+             assertEquals("Connection closed", ex.getMessage());
+         }
+         th.join();
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/FtdiSerialDriver.java
+Patch:
+@@ -165,8 +165,8 @@ public int read(final byte[] dest, int length, final int timeout) throws IOExcep
+                 do {
+                     nread = super.read(dest, length, Math.max(1, (int)(endTime - MonotonicClock.millis())), false);
+                 } while (nread == READ_HEADER_LENGTH && MonotonicClock.millis() < endTime);
+-                if(nread <= 0 && MonotonicClock.millis() < endTime)
+-                    testConnection();
++                if(nread <= 0)
++                    testConnection(MonotonicClock.millis() < endTime);
+             } else {
+                 do {
+                     nread = super.read(dest, length, timeout);
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/ProlificSerialDriver.java
+Patch:
+@@ -205,8 +205,8 @@ private void readStatusThreadFunction() {
+                     byte[] buffer = new byte[STATUS_BUFFER_SIZE];
+                     long endTime = MonotonicClock.millis() + 500;
+                     int readBytesCount = mConnection.bulkTransfer(mInterruptEndpoint, buffer, STATUS_BUFFER_SIZE, 500);
+-                    if(readBytesCount == -1 && MonotonicClock.millis() < endTime)
+-                        testConnection();
++                    if(readBytesCount == -1)
++                        testConnection(MonotonicClock.millis() < endTime);
+                     if (readBytesCount > 0) {
+                         if (readBytesCount != STATUS_BUFFER_SIZE) {
+                             throw new IOException("Invalid status notification, expected " + STATUS_BUFFER_SIZE + " bytes, got " + readBytesCount);
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/CommonUsbSerialPort.java
+Patch:
+@@ -158,6 +158,9 @@ public void close() throws IOException {
+      * use simple USB request supported by all devices to test if connection is still valid
+      */
+     protected void testConnection() throws IOException {
++        if(mConnection == null || mUsbRequest == null) {
++            throw new IOException("Connection closed");
++        }
+         byte[] buf = new byte[2];
+         int len = mConnection.controlTransfer(0x80 /*DEVICE*/, 0 /*GET_STATUS*/, 0, 0, buf, buf.length, 200);
+         if(len < 0)
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/FtdiSerialDriver.java
+Patch:
+@@ -156,7 +156,7 @@ public int read(final byte[] dest, final int timeout) throws IOException {
+                     testConnection();
+             } else {
+                 do {
+-                    nread = super.read(dest, timeout, false);
++                    nread = super.read(dest, timeout);
+                 } while (nread == READ_HEADER_LENGTH);
+             }
+             return readFilter(dest, nread);
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/CommonUsbSerialPort.java
+Patch:
+@@ -170,7 +170,7 @@ public int read(final byte[] dest, final int timeout) throws IOException {
+     }
+ 
+     protected int read(final byte[] dest, final int timeout, boolean testConnection) throws IOException {
+-        if(mConnection == null) {
++        if(mConnection == null || mUsbRequest == null) {
+             throw new IOException("Connection closed");
+         }
+         if(dest.length <= 0) {
+
+File: usbSerialExamples/src/main/java/com/hoho/android/usbserial/examples/CustomProber.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.hoho.android.usbserial.examples;
+ 
+-import com.hoho.android.usbserial.driver.CdcAcmSerialDriver;
++import com.hoho.android.usbserial.driver.FtdiSerialDriver;
+ import com.hoho.android.usbserial.driver.ProbeTable;
+ import com.hoho.android.usbserial.driver.UsbSerialProber;
+ 
+@@ -14,7 +14,8 @@ class CustomProber {
+ 
+     static UsbSerialProber getCustomProber() {
+         ProbeTable customTable = new ProbeTable();
+-        customTable.addProduct(0x16d0, 0x087e, CdcAcmSerialDriver.class); // e.g. Digispark CDC
++        customTable.addProduct(0x1234, 0x0001, FtdiSerialDriver.class); // e.g. device with custom VID+PID
++        customTable.addProduct(0x1234, 0x0002, FtdiSerialDriver.class); // e.g. device with custom VID+PID
+         return new UsbSerialProber(customTable);
+     }
+ 
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/Ch34xSerialDriver.java
+Patch:
+@@ -374,6 +374,7 @@ public void setBreak(boolean value) throws IOException {
+ 		}
+ 	}
+ 
++	@SuppressWarnings({"unused"})
+ 	public static Map<Integer, int[]> getSupportedDevices() {
+ 		final Map<Integer, int[]> supportedDevices = new LinkedHashMap<>();
+ 		supportedDevices.put(UsbId.VENDOR_QINHENG, new int[]{
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/Cp21xxSerialDriver.java
+Patch:
+@@ -320,6 +320,7 @@ public void setBreak(boolean value) throws IOException {
+         }
+     }
+ 
++    @SuppressWarnings({"unused"})
+     public static Map<Integer, int[]> getSupportedDevices() {
+         final Map<Integer, int[]> supportedDevices = new LinkedHashMap<>();
+         supportedDevices.put(UsbId.VENDOR_SILABS,
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/FtdiSerialDriver.java
+Patch:
+@@ -414,6 +414,7 @@ public int getLatencyTimer() throws IOException {
+ 
+     }
+ 
++    @SuppressWarnings({"unused"})
+     public static Map<Integer, int[]> getSupportedDevices() {
+         final Map<Integer, int[]> supportedDevices = new LinkedHashMap<>();
+         supportedDevices.put(UsbId.VENDOR_FTDI,
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/ProlificSerialDriver.java
+Patch:
+@@ -566,6 +566,7 @@ public void setBreak(boolean value) throws IOException {
+         }
+     }
+ 
++    @SuppressWarnings({"unused"})
+     public static Map<Integer, int[]> getSupportedDevices() {
+         final Map<Integer, int[]> supportedDevices = new LinkedHashMap<>();
+         supportedDevices.put(UsbId.VENDOR_PROLIFIC,
+
+File: usbSerialExamples/src/main/java/com/hoho/android/usbserial/examples/TerminalFragment.java
+Patch:
+@@ -8,6 +8,7 @@
+ import android.hardware.usb.UsbDevice;
+ import android.hardware.usb.UsbDeviceConnection;
+ import android.hardware.usb.UsbManager;
++import android.os.Build;
+ import android.os.Bundle;
+ import android.os.Handler;
+ import android.os.Looper;
+@@ -211,7 +212,8 @@ private void connect() {
+         UsbDeviceConnection usbConnection = usbManager.openDevice(driver.getDevice());
+         if(usbConnection == null && usbPermission == UsbPermission.Unknown && !usbManager.hasPermission(driver.getDevice())) {
+             usbPermission = UsbPermission.Requested;
+-            PendingIntent usbPermissionIntent = PendingIntent.getBroadcast(getActivity(), 0, new Intent(INTENT_ACTION_GRANT_USB), 0);
++            int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0;
++            PendingIntent usbPermissionIntent = PendingIntent.getBroadcast(getActivity(), 0, new Intent(INTENT_ACTION_GRANT_USB), flags);
+             usbManager.requestPermission(driver.getDevice(), usbPermissionIntent);
+             return;
+         }
+
+File: usbSerialForAndroid/src/androidTest/java/com/hoho/android/usbserial/driver/ProlificSerialPortWrapper.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.hoho.android.usbserial.driver;
+ 
+-public class ProlificWrapper {
++public class ProlificSerialPortWrapper {
+     public static boolean isDeviceTypeT(UsbSerialPort serialPort) {
+         ProlificSerialDriver.ProlificSerialPort prolificSerialPort = (ProlificSerialDriver.ProlificSerialPort) serialPort;
+         return prolificSerialPort.mDeviceType == ProlificSerialDriver.DeviceType.DEVICE_TYPE_T;
+
+File: usbSerialForAndroid/src/androidTest/java/com/hoho/android/usbserial/util/UsbWrapper.java
+Patch:
+@@ -12,6 +12,7 @@
+ import android.util.Log;
+ 
+ import com.hoho.android.usbserial.driver.CdcAcmSerialDriver;
++import com.hoho.android.usbserial.driver.CommonUsbSerialPort;
+ import com.hoho.android.usbserial.driver.UsbSerialDriver;
+ import com.hoho.android.usbserial.driver.UsbSerialPort;
+ 
+@@ -53,6 +54,7 @@ public UsbWrapper(Context context, UsbSerialDriver serialDriver, int devicePort)
+         this.serialDriver = serialDriver;
+         this.devicePort = devicePort;
+         serialPort = serialDriver.getPorts().get(devicePort);
++        CommonUsbSerialPort.DEBUG = true;
+     }
+ 
+     public void setUp() throws Exception {
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/util/SerialInputOutputManager.java
+Patch:
+@@ -223,7 +223,9 @@ private void step() throws IOException {
+         }
+         int len = mSerialPort.read(buffer, mReadTimeout);
+         if (len > 0) {
+-            if (DEBUG) Log.d(TAG, "Read data len=" + len);
++            if (DEBUG) {
++                Log.d(TAG, "Read data len=" + len);
++            }
+             final Listener listener = getListener();
+             if (listener != null) {
+                 final byte[] data = new byte[len];
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/UsbId.java
+Patch:
+@@ -53,8 +53,8 @@ public final class UsbId {
+     public static final int PROLIFIC_PL2303 = 0x2303;   // device type 01, T, HX
+     public static final int PROLIFIC_PL2303GC = 0x23a3; // device type HXN
+     public static final int PROLIFIC_PL2303GB = 0x23b3; // "
+-    public static final int PROLIFIC_PL2303GT = 0x23cd; // "
+-    public static final int PROLIFIC_PL2303GL = 0x23e3; // "
++    public static final int PROLIFIC_PL2303GT = 0x23c3; // "
++    public static final int PROLIFIC_PL2303GL = 0x23d3; // "
+     public static final int PROLIFIC_PL2303GE = 0x23e3; // "
+     public static final int PROLIFIC_PL2303GS = 0x23f3; // "
+ 
+
+File: usbSerialExamples/src/main/java/com/hoho/android/usbserial/examples/TerminalFragment.java
+Patch:
+@@ -243,8 +243,10 @@ private void connect() {
+     private void disconnect() {
+         connected = false;
+         controlLines.stop();
+-        if(usbIoManager != null)
++        if(usbIoManager != null) {
++            usbIoManager.setListener(null);
+             usbIoManager.stop();
++        }
+         usbIoManager = null;
+         try {
+             usbSerialPort.close();
+
+File: usbSerialExamples/src/main/java/com/hoho/android/usbserial/examples/MainActivity.java
+Patch:
+@@ -34,7 +34,7 @@ public boolean onSupportNavigateUp() {
+ 
+     @Override
+     protected void onNewIntent(Intent intent) {
+-        if(intent.getAction().equals("android.hardware.usb.action.USB_DEVICE_ATTACHED")) {
++        if("android.hardware.usb.action.USB_DEVICE_ATTACHED".equals(intent.getAction())) {
+             TerminalFragment terminal = (TerminalFragment)getSupportFragmentManager().findFragmentByTag("terminal");
+             if (terminal != null)
+                 terminal.status("USB device detected");
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/CdcAcmSerialDriver.java
+Patch:
+@@ -287,7 +287,7 @@ public void setBreak(boolean value) throws IOException {
+     }
+ 
+     public static Map<Integer, int[]> getSupportedDevices() {
+-        final Map<Integer, int[]> supportedDevices = new LinkedHashMap<Integer, int[]>();
++        final Map<Integer, int[]> supportedDevices = new LinkedHashMap<>();
+         supportedDevices.put(UsbId.VENDOR_ARDUINO,
+                 new int[] {
+                         UsbId.ARDUINO_UNO,
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/Ch34xSerialDriver.java
+Patch:
+@@ -363,7 +363,7 @@ public void setBreak(boolean value) throws IOException {
+ 	}
+ 
+ 	public static Map<Integer, int[]> getSupportedDevices() {
+-		final Map<Integer, int[]> supportedDevices = new LinkedHashMap<Integer, int[]>();
++		final Map<Integer, int[]> supportedDevices = new LinkedHashMap<>();
+ 		supportedDevices.put(UsbId.VENDOR_QINHENG, new int[]{
+ 				UsbId.QINHENG_CH340,
+ 				UsbId.QINHENG_CH341A,
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/Cp21xxSerialDriver.java
+Patch:
+@@ -322,7 +322,7 @@ public void setBreak(boolean value) throws IOException {
+     }
+ 
+     public static Map<Integer, int[]> getSupportedDevices() {
+-        final Map<Integer, int[]> supportedDevices = new LinkedHashMap<Integer, int[]>();
++        final Map<Integer, int[]> supportedDevices = new LinkedHashMap<>();
+         supportedDevices.put(UsbId.VENDOR_SILABS,
+                 new int[] {
+             UsbId.SILABS_CP2102, // same ID for CP2101, CP2103, CP2104, CP2109
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/FtdiSerialDriver.java
+Patch:
+@@ -415,7 +415,7 @@ public int getLatencyTimer() throws IOException {
+     }
+ 
+     public static Map<Integer, int[]> getSupportedDevices() {
+-        final Map<Integer, int[]> supportedDevices = new LinkedHashMap<Integer, int[]>();
++        final Map<Integer, int[]> supportedDevices = new LinkedHashMap<>();
+         supportedDevices.put(UsbId.VENDOR_FTDI,
+                 new int[] {
+                     UsbId.FTDI_FT232R,
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/ProbeTable.java
+Patch:
+@@ -21,7 +21,7 @@
+ public class ProbeTable {
+ 
+     private final Map<Pair<Integer, Integer>, Class<? extends UsbSerialDriver>> mProbeTable =
+-            new LinkedHashMap<Pair<Integer,Integer>, Class<? extends UsbSerialDriver>>();
++            new LinkedHashMap<>();
+ 
+     /**
+      * Adds or updates a (vendor, product) pair in the table.
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/ProlificSerialDriver.java
+Patch:
+@@ -35,7 +35,7 @@ public class ProlificSerialDriver implements UsbSerialDriver {
+             28800, 38400, 57600, 115200, 128000, 134400, 161280, 201600, 230400, 268800,
+             403200, 460800, 614400, 806400, 921600, 1228800, 2457600, 3000000, 6000000
+     };
+-    private enum DeviceType { DEVICE_TYPE_01, DEVICE_TYPE_HX};
++    private enum DeviceType { DEVICE_TYPE_01, DEVICE_TYPE_HX}
+ 
+     private final UsbDevice mDevice;
+     private final UsbSerialPort mPort;
+@@ -502,7 +502,7 @@ public void setBreak(boolean value) throws IOException {
+     }
+ 
+     public static Map<Integer, int[]> getSupportedDevices() {
+-        final Map<Integer, int[]> supportedDevices = new LinkedHashMap<Integer, int[]>();
++        final Map<Integer, int[]> supportedDevices = new LinkedHashMap<>();
+         supportedDevices.put(UsbId.VENDOR_PROLIFIC,
+                 new int[] { UsbId.PROLIFIC_PL2303, });
+         return supportedDevices;
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/UsbSerialProber.java
+Patch:
+@@ -46,11 +46,11 @@ public static ProbeTable getDefaultProbeTable() {
+      * not require permission from the Android USB system, since it does not
+      * open any of the devices.
+      *
+-     * @param usbManager
++     * @param usbManager usb manager
+      * @return a list, possibly empty, of all compatible drivers
+      */
+     public List<UsbSerialDriver> findAllDrivers(final UsbManager usbManager) {
+-        final List<UsbSerialDriver> result = new ArrayList<UsbSerialDriver>();
++        final List<UsbSerialDriver> result = new ArrayList<>();
+ 
+         for (final UsbDevice usbDevice : usbManager.getDeviceList().values()) {
+             final UsbSerialDriver driver = probeDevice(usbDevice);
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/util/SerialInputOutputManager.java
+Patch:
+@@ -52,12 +52,12 @@ public interface Listener {
+         /**
+          * Called when new incoming data is available.
+          */
+-        public void onNewData(byte[] data);
++        void onNewData(byte[] data);
+ 
+         /**
+          * Called when {@link SerialInputOutputManager#run()} aborts due to an error.
+          */
+-        public void onRunError(Exception e);
++        void onRunError(Exception e);
+     }
+ 
+     public SerialInputOutputManager(UsbSerialPort serialPort) {
+@@ -200,7 +200,7 @@ public void run() {
+ 
+     private void step() throws IOException {
+         // Handle incoming data.
+-        byte[] buffer = null;
++        byte[] buffer;
+         synchronized (mReadBufferLock) {
+             buffer = mReadBuffer.array();
+         }
+
+File: usbSerialForAndroid/src/test/java/com/hoho/android/usbserial/driver/FtdiSerialDriverTest.java
+Patch:
+@@ -48,7 +48,7 @@ public void readFilter() throws Exception {
+         len = port.readFilter(buf, 0);
+         assertEquals(len, 0);
+ 
+-        assertThrows(IOException.class, () -> {port.readFilter(buf, 1);});
++        assertThrows(IOException.class, () -> port.readFilter(buf, 1));
+ 
+         initBuf(buf);
+         len = port.readFilter(buf, 2);
+@@ -69,7 +69,7 @@ public void readFilter() throws Exception {
+         assertEquals(len, 62);
+         assertTrue(testBuf(buf, len));
+ 
+-        assertThrows(IOException.class, () -> {port.readFilter(buf, 65);});
++        assertThrows(IOException.class, () -> port.readFilter(buf, 65));
+ 
+         initBuf(buf);
+         len = port.readFilter(buf, 66);
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/CommonUsbSerialPort.java
+Patch:
+@@ -211,7 +211,7 @@ public void write(final byte[] src, final int timeout) throws IOException {
+             throw new IOException("Connection closed");
+         }
+         while (offset < src.length) {
+-            final int requestTimeout;
++            int requestTimeout;
+             final int requestLength;
+             final int actualLength;
+ 
+@@ -230,6 +230,8 @@ public void write(final byte[] src, final int timeout) throws IOException {
+                     requestTimeout = timeout;
+                 } else {
+                     requestTimeout = (int)(endTime - System.currentTimeMillis());
++                    if(requestTimeout == 0)
++                        requestTimeout = -1;
+                 }
+                 if (requestTimeout < 0) {
+                     actualLength = -2;
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/UsbSerialPort.java
+Patch:
+@@ -114,10 +114,11 @@ enum ControlLine { RTS, CTS,  DTR, DSR,  CD, RI }
+      *
+      * @param src the source byte buffer
+      * @param timeout the timeout for writing in milliseconds, 0 is infinite
+-     * @return the actual number of bytes written
++     * @throws SerialTimeoutException if timeout reached before sending all data.
++     *                                ex.bytesTransferred may contain bytes transferred
+      * @throws IOException if an error occurred during writing
+      */
+-    int write(final byte[] src, final int timeout) throws IOException;
++    void write(final byte[] src, final int timeout) throws IOException;
+ 
+     /**
+      * Sets various serial port parameters.
+
+File: usbSerialForAndroid/src/androidTest/java/com/hoho/android/usbserial/DeviceTest.java
+Patch:
+@@ -1846,7 +1846,7 @@ public void deviceConnection() throws Exception {
+         try {
+             usb.open(EnumSet.of(UsbWrapper.OpenCloseFlags.NO_IOMANAGER_THREAD, UsbWrapper.OpenCloseFlags.NO_DEVICE_CONNECTION));
+             fail("open error expected");
+-        } catch (IOException ignored) {
++        } catch (Exception ignored) {
+         }
+ 
+         usb.open(EnumSet.of(UsbWrapper.OpenCloseFlags.NO_IOMANAGER_THREAD));
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/CommonUsbSerialPort.java
+Patch:
+@@ -93,6 +93,9 @@ public void open(UsbDeviceConnection connection) throws IOException {
+         if (mConnection != null) {
+             throw new IOException("Already open");
+         }
++        if(connection == null) {
++            throw new IllegalArgumentException("Connection is null");
++        }
+         mConnection = connection;
+         try {
+             openInt(connection);
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/util/SerialInputOutputManager.java
+Patch:
+@@ -22,7 +22,7 @@
+ public class SerialInputOutputManager implements Runnable {
+ 
+     private static final String TAG = SerialInputOutputManager.class.getSimpleName();
+-    private static final boolean DEBUG = true;
++    public static boolean DEBUG = false;
+     private static final int BUFSIZ = 4096;
+ 
+     /**
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/util/SerialInputOutputManager.java
+Patch:
+@@ -22,7 +22,7 @@
+ public class SerialInputOutputManager implements Runnable {
+ 
+     private static final String TAG = SerialInputOutputManager.class.getSimpleName();
+-    private static final boolean DEBUG = true;
++    public static boolean DEBUG = false;
+     private static final int BUFSIZ = 4096;
+ 
+     /**
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/Ch34xSerialDriver.java
+Patch:
+@@ -123,15 +123,15 @@ public void closeInt() {
+ 		}
+ 
+ 		private int controlOut(int request, int value, int index) {
+-			final int REQTYPE_HOST_TO_DEVICE = 0x41;
++			final int REQTYPE_HOST_TO_DEVICE = UsbConstants.USB_TYPE_VENDOR | UsbConstants.USB_DIR_OUT;
+ 			return mConnection.controlTransfer(REQTYPE_HOST_TO_DEVICE, request,
+ 					value, index, null, 0, USB_TIMEOUT_MILLIS);
+ 		}
+ 
+ 
+ 		private int controlIn(int request, int value, int index, byte[] buffer) {
+-			final int REQTYPE_HOST_TO_DEVICE = UsbConstants.USB_TYPE_VENDOR | UsbConstants.USB_DIR_IN;
+-			return mConnection.controlTransfer(REQTYPE_HOST_TO_DEVICE, request,
++			final int REQTYPE_DEVICE_TO_HOST = UsbConstants.USB_TYPE_VENDOR | UsbConstants.USB_DIR_IN;
++			return mConnection.controlTransfer(REQTYPE_DEVICE_TO_HOST, request,
+ 					value, index, buffer, buffer.length, USB_TIMEOUT_MILLIS);
+ 		}
+ 
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/FtdiSerialDriver.java
+Patch:
+@@ -286,7 +286,7 @@ public int getLatencyTimer() throws IOException {
+ 
+         public int getModemStatus() throws IOException {
+             byte[] data = new byte[2];
+-            int result = mConnection.controlTransfer(FTDI_DEVICE_IN_REQTYPE, SIO_GET_LATENCY_TIMER_REQUEST,
++            int result = mConnection.controlTransfer(FTDI_DEVICE_IN_REQTYPE, SIO_GET_MODEM_STATUS_REQUEST,
+                     0, 0 /* index */, data, data.length, USB_WRITE_TIMEOUT_MILLIS);
+             if (result != 2) {
+                 throw new IOException("Get modem statusfailed: result=" + result);
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/CommonUsbSerialPort.java
+Patch:
+@@ -132,8 +132,7 @@ public final void setWriteBufferSize(int bufferSize) {
+     public abstract int write(final byte[] src, final int timeoutMillis) throws IOException;
+ 
+     @Override
+-    public abstract void setParameters(
+-            int baudRate, int dataBits, int stopBits, int parity) throws IOException;
++    public abstract void setParameters(int baudRate, int dataBits, int stopBits, int parity) throws IOException;
+ 
+     @Override
+     public abstract boolean getCD() throws IOException;
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/UsbId.java
+Patch:
+@@ -76,7 +76,7 @@ public final class UsbId {
+     public static final int ARM_MBED = 0x0204;
+ 
+     private UsbId() {
+-        throw new IllegalAccessError("Non-instantiable class.");
++        throw new IllegalAccessError("Non-instantiable class");
+     }
+ 
+ }
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/UsbSerialPort.java
+Patch:
+@@ -145,9 +145,9 @@ public interface UsbSerialPort {
+      *            {@link #PARITY_EVEN}, {@link #PARITY_MARK}, or
+      *            {@link #PARITY_SPACE}.
+      * @throws IOException on error setting the port parameters
++     * @throws UnsupportedOperationException if not supported by a specific device
+      */
+-    public void setParameters(
+-            int baudRate, int dataBits, int stopBits, int parity) throws IOException;
++    public void setParameters(int baudRate, int dataBits, int stopBits, int parity) throws IOException;
+ 
+     /**
+      * Gets the CD (Carrier Detect) bit from the underlying UART.
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/util/SerialInputOutputManager.java
+Patch:
+@@ -125,12 +125,12 @@ public synchronized State getState() {
+     public void run() {
+         synchronized (this) {
+             if (getState() != State.STOPPED) {
+-                throw new IllegalStateException("Already running.");
++                throw new IllegalStateException("Already running");
+             }
+             mState = State.RUNNING;
+         }
+ 
+-        Log.i(TAG, "Running ..");
++        Log.i(TAG, "Running ...");
+         try {
+             while (true) {
+                 if (getState() != State.RUNNING) {
+@@ -148,7 +148,7 @@ public void run() {
+         } finally {
+             synchronized (this) {
+                 mState = State.STOPPED;
+-                Log.i(TAG, "Stopped.");
++                Log.i(TAG, "Stopped");
+             }
+         }
+     }
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/UsbId.java
+Patch:
+@@ -33,6 +33,9 @@ public final class UsbId {
+ 
+     public static final int VENDOR_FTDI = 0x0403;
+     public static final int FTDI_FT232R = 0x6001;
++    public static final int FTDI_FT2232H = 0x6010;
++    public static final int FTDI_FT4232H = 0x6011;
++    public static final int FTDI_FT232H = 0x6014;
+     public static final int FTDI_FT231X = 0x6015;
+ 
+     public static final int VENDOR_ATMEL = 0x03EB;
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/CdcAcmSerialDriver.java
+Patch:
+@@ -334,6 +334,7 @@ public static Map<Integer, int[]> getSupportedDevices() {
+                         UsbId.ARDUINO_MEGA_ADK,
+                         UsbId.ARDUINO_MEGA_ADK_R3,
+                         UsbId.ARDUINO_LEONARDO,
++                        UsbId.ARDUINO_MICRO,
+                 });
+         supportedDevices.put(Integer.valueOf(UsbId.VENDOR_VAN_OOIJEN_TECH),
+                 new int[] {
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/UsbId.java
+Patch:
+@@ -48,6 +48,7 @@ public final class UsbId {
+     public static final int ARDUINO_MEGA_ADK_R3 = 0x0044;
+     public static final int ARDUINO_SERIAL_ADAPTER_R3 = 0x0044;
+     public static final int ARDUINO_LEONARDO = 0x8036;
++    public static final int ARDUINO_MICRO = 0x8037;
+ 
+     public static final int VENDOR_VAN_OOIJEN_TECH = 0x16c0;
+     public static final int VAN_OOIJEN_TECH_TEENSYDUINO_SERIAL = 0x0483;
+
+File: usbSerialForAndroid/src/main/java/com/hoho/android/usbserial/driver/FtdiSerialDriver.java
+Patch:
+@@ -210,7 +210,7 @@ public UsbSerialDriver getDriver() {
+          * @return The number of payload bytes
+          */
+         private final int filterStatusBytes(byte[] src, byte[] dest, int totalBytesRead, int maxPacketSize) {
+-            final int packetsCount = totalBytesRead / maxPacketSize + 1;
++            final int packetsCount = totalBytesRead / maxPacketSize + (totalBytesRead % maxPacketSize == 0 ? 0 : 1);
+             for (int packetIdx = 0; packetIdx < packetsCount; ++packetIdx) {
+                 final int count = (packetIdx == (packetsCount - 1))
+                         ? (totalBytesRead % maxPacketSize) - MODEM_STATUS_HEADER_LENGTH
+
+File: UsbSerialLibrary/src/com/hoho/android/usbserial/driver/FtdiSerialDriver.java
+Patch:
+@@ -243,6 +243,7 @@ public void open(UsbDeviceConnection connection) throws IOException {
+             if (mConnection != null) {
+                 throw new IOException("Already open");
+             }
++            mConnection = connection;
+ 
+             boolean opened = false;
+             try {
+@@ -258,8 +259,7 @@ public void open(UsbDeviceConnection connection) throws IOException {
+             } finally {
+                 if (!opened) {
+                     close();
+-                } else {
+-                    mConnection = connection;
++                    mConnection = null;
+                 }
+             }
+         }
+
+File: UsbSerialLibrary/src/com/hoho/android/usbserial/driver/FtdiSerialDriver.java
+Patch:
+@@ -243,10 +243,11 @@ public void open(UsbDeviceConnection connection) throws IOException {
+             if (mConnection != null) {
+                 throw new IOException("Already open");
+             }
++
+             boolean opened = false;
+             try {
+                 for (int i = 0; i < mDevice.getInterfaceCount(); i++) {
+-                    if (mConnection.claimInterface(mDevice.getInterface(i), true)) {
++                    if (connection.claimInterface(mDevice.getInterface(i), true)) {
+                         Log.d(TAG, "claimInterface " + i + " SUCCESS");
+                     } else {
+                         throw new IOException("Error claiming interface " + i);
+
+File: UsbSerialLibrary/src/com/hoho/android/usbserial/driver/FtdiSerialDriver.java
+Patch:
+@@ -90,9 +90,9 @@
+ public class FtdiSerialDriver extends CommonUsbSerialDriver {
+ 
+     public static final int USB_TYPE_STANDARD = 0x00 << 5;
+-    public static final int USB_TYPE_CLASS = 0x00 << 5;
+-    public static final int USB_TYPE_VENDOR = 0x00 << 5;
+-    public static final int USB_TYPE_RESERVED = 0x00 << 5;
++    public static final int USB_TYPE_CLASS = 0x01 << 5;
++    public static final int USB_TYPE_VENDOR = 0x02 << 5;
++    public static final int USB_TYPE_RESERVED = 0x03 << 5;
+ 
+     public static final int USB_RECIP_DEVICE = 0x00;
+     public static final int USB_RECIP_INTERFACE = 0x01;
+
+File: UsbSerialLibrary/src/com/hoho/android/usbserial/driver/FtdiSerialDriver.java
+Patch:
+@@ -90,9 +90,9 @@
+ public class FtdiSerialDriver extends CommonUsbSerialDriver {
+ 
+     public static final int USB_TYPE_STANDARD = 0x00 << 5;
+-    public static final int USB_TYPE_CLASS = 0x00 << 5;
+-    public static final int USB_TYPE_VENDOR = 0x00 << 5;
+-    public static final int USB_TYPE_RESERVED = 0x00 << 5;
++    public static final int USB_TYPE_CLASS = 0x01 << 5;
++    public static final int USB_TYPE_VENDOR = 0x02 << 5;
++    public static final int USB_TYPE_RESERVED = 0x03 << 5;
+ 
+     public static final int USB_RECIP_DEVICE = 0x00;
+     public static final int USB_RECIP_INTERFACE = 0x01;
+
+File: UsbSerialLibrary/src/com/hoho/android/usbserial/driver/UsbSerialDriver.java
+Patch:
+@@ -196,7 +196,7 @@ public void setParameters(
+      * @throws IOException if an error occurred during writing
+      */
+     public void setRTS(boolean value) throws IOException;
+-    
++
+     /**
+      * Flush non-transmitted output data and / or non-read input data
+      * @param flushRX {@code true} to flush non-transmitted output data
+@@ -205,6 +205,6 @@ public void setParameters(
+      * {@code false} if the operation is not supported by the driver or device
+      * @throws IOException if an error occurred during flush
+      */
+-    public boolean flush(boolean flushRX, boolean flushTX) throws IOException;
++    public boolean purgeHwBuffers(boolean flushRX, boolean flushTX) throws IOException;
+ 
+ }
+
+File: UsbSerialLibrary/src/com/hoho/android/usbserial/driver/UsbId.java
+Patch:
+@@ -55,6 +55,9 @@ public final class UsbId {
+     public static final int VENDOR_SILAB = 0x10c4;
+     public static final int SILAB_CP2102 = 0xea60;
+ 
++    public static final int VENDOR_PROLIFIC = 0x067b;
++    public static final int PROLIFIC_PL2303 = 0x2303;
++
+     private UsbId() {
+         throw new IllegalAccessError("Non-instantiable class.");
+     }
+
+File: UsbSerialExamples/src/com/hoho/android/usbserial/examples/DemoActivity.java
+Patch:
+@@ -110,7 +110,7 @@ protected void onPause() {
+     @Override
+     protected void onResume() {
+         super.onResume();
+-        mSerialDevice = UsbSerialProber.acquire(mUsbManager);
++        mSerialDevice = UsbSerialProber.findFirstDevice(mUsbManager);
+         Log.d(TAG, "Resumed, mSerialDevice=" + mSerialDevice);
+         if (mSerialDevice == null) {
+             mTitleTextView.setText("No serial device.");
+
+File: UsbSerialLibrary/src/com/hoho/android/usbserial/driver/CdcAcmSerialDriver.java
+Patch:
+@@ -142,9 +142,9 @@ public int write(byte[] src, int timeoutMillis) throws IOException {
+     public void setParameters(int baudRate, int dataBits, int stopBits, int parity) {
+         byte stopBitsByte;
+         switch (stopBits) {
+-            case STOPBITS_1: stopBitsByte = 1; break;
+-            case STOPBITS_1_5: stopBitsByte = 2; break;
+-            case STOPBITS_2: stopBitsByte = 3; break;
++            case STOPBITS_1: stopBitsByte = 0; break;
++            case STOPBITS_1_5: stopBitsByte = 1; break;
++            case STOPBITS_2: stopBitsByte = 2; break;
+             default: throw new IllegalArgumentException("Bad value for stopBits: " + stopBits);
+         }
+ 
+
+File: UsbSerialLibrary/src/com/hoho/android/usbserial/driver/UsbId.java
+Patch:
+@@ -32,6 +32,9 @@ public final class UsbId {
+     public static final int VENDOR_FTDI = 0x0403;
+     public static final int FTDI_FT232R = 0x6001;
+ 
++    public static final int VENDOR_LUFA = 0x03EB;
++    public static final int LUFA_VIRTUAL_SERIAL = 0x2044;
++
+     public static final int VENDOR_ARDUINO = 0x2341;
+     public static final int ARDUINO_UNO = 0x0001;
+     public static final int ARDUINO_MEGA_2560 = 0x0010;
+

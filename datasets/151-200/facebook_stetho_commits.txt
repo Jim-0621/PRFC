@@ -1,0 +1,3826 @@
+File: stetho/src/main/java/com/facebook/stetho/server/AddressNameHelper.java
+Patch:
+@@ -13,9 +13,11 @@ public class AddressNameHelper {
+   private static final String PREFIX = "stetho_";
+ 
+   public static String createCustomAddress(String suffix) {
++    final int userId = ProcessUtil.getUserId();
+     return
+         PREFIX +
+         ProcessUtil.getProcessName() +
++        (userId == 0 ? "" : ("_" + userId)) +
+         suffix;
+   }
+ }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/ChromeDiscoveryHandler.java
+Patch:
+@@ -43,15 +43,15 @@ public class ChromeDiscoveryHandler implements HttpHandler {
+   /**
+    * Latest version of the WebKit Inspector UI that we've tested again (ideally).
+    */
+-  private static final String WEBKIT_REV = "@188492";
++  private static final String WEBKIT_REV = "@cfede9db1d154de0468cb0538479f34c0755a0f4";
+   private static final String WEBKIT_VERSION = "537.36 (" + WEBKIT_REV + ")";
+ 
+   private static final String USER_AGENT = "Stetho";
+ 
+   /**
+    * Structured version of the WebKit Inspector protocol that we understand.
+    */
+-  private static final String PROTOCOL_VERSION = "1.1";
++  private static final String PROTOCOL_VERSION = "1.3";
+ 
+   private final Context mContext;
+   private final String mInspectorPath;
+@@ -124,7 +124,7 @@ private void handlePageList(LightHttpResponse response)
+           .authority("chrome-devtools-frontend.appspot.com")
+           .appendEncodedPath("serve_rev")
+           .appendEncodedPath(WEBKIT_REV)
+-          .appendEncodedPath("devtools.html")
++          .appendEncodedPath("inspector.html")
+           .appendQueryParameter("ws", mInspectorPath)
+           .build();
+       page.put("devtoolsFrontendUrl", chromeFrontendUrl.toString());
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/ChromeDiscoveryHandler.java
+Patch:
+@@ -36,6 +36,7 @@ public class ChromeDiscoveryHandler implements HttpHandler {
+   private static final String PAGE_ID = "1";
+ 
+   private static final String PATH_PAGE_LIST = "/json";
++  private static final String PATH_PAGE_LIST1 = "/json/list";
+   private static final String PATH_VERSION = "/json/version";
+   private static final String PATH_ACTIVATE = "/json/activate/" + PAGE_ID;
+ 
+@@ -65,6 +66,7 @@ public ChromeDiscoveryHandler(Context context, String inspectorPath) {
+ 
+   public void register(HandlerRegistry registry) {
+     registry.register(new ExactPathMatcher(PATH_PAGE_LIST), this);
++    registry.register(new ExactPathMatcher(PATH_PAGE_LIST1), this);
+     registry.register(new ExactPathMatcher(PATH_VERSION), this);
+     registry.register(new ExactPathMatcher(PATH_ACTIVATE), this);
+   }
+@@ -75,7 +77,7 @@ public boolean handleRequest(SocketLike socket, LightHttpRequest request, LightH
+     try {
+       if (PATH_VERSION.equals(path)) {
+         handleVersion(response);
+-      } else if (PATH_PAGE_LIST.equals(path)) {
++      } else if (PATH_PAGE_LIST.equals(path) || PATH_PAGE_LIST1.equals(path)) {
+         handlePageList(response);
+       } else if (PATH_ACTIVATE.equals(path)) {
+         handleActivate(response);
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/CSS.java
+Patch:
+@@ -315,7 +315,7 @@ private static class ShorthandEntry {
+     public String value;
+ 
+     @JsonProperty
+-    public Boolean imporant;
++    public Boolean important;
+   }
+ 
+   private static class CSSProperty {
+
+File: stetho/src/main/java/com/facebook/stetho/Stetho.java
+Patch:
+@@ -177,7 +177,7 @@ public void provideIfDesired(String name, T plugin) {
+ 
+     public void remove(String pluginName) {
+       throwIfFinished();
+-      mRemovedNames.remove(pluginName);
++      mRemovedNames.add(pluginName);
+     }
+ 
+     private void throwIfFinished() {
+
+File: stetho/src/main/java/com/facebook/stetho/Stetho.java
+Patch:
+@@ -177,7 +177,7 @@ public void provideIfDesired(String name, T plugin) {
+ 
+     public void remove(String pluginName) {
+       throwIfFinished();
+-      mRemovedNames.remove(pluginName);
++      mRemovedNames.add(pluginName);
+     }
+ 
+     private void throwIfFinished() {
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkEventReporterImpl.java
+Patch:
+@@ -384,6 +384,7 @@ public void webSocketHandshakeResponseReceived(InspectorWebSocketResponse respon
+       responseJSON.status = response.statusCode();
+       responseJSON.statusText = response.reasonPhrase();
+       params.response = responseJSON;
++      peerManager.sendNotificationToPeers("Network.webSocketHandshakeResponseReceived", params);
+     }
+   }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkEventReporter.java
+Patch:
+@@ -37,7 +37,7 @@
+  *                  |                                                              |
+  *                  |                     ,----------------------+-----------------+--------,
+  *                  |                     v                      v                          |
+- *                  +---------> [ webSocketFrameSent | webSocketFrameReceiver ] ---,        |
++ *                  +---------> [ webSocketFrameSent | webSocketFrameReceived ] ---,        |
+  *                  |                     ^                      ^                 |        |
+  *                  |                     `----------------------+-----------------+        |
+  *                  |                                                              |        |
+
+File: stetho-okhttp/src/test/java/com/facebook/stetho/okhttp/StethoInterceptorTest.java
+Patch:
+@@ -52,6 +52,7 @@
+ 
+ import static org.junit.Assert.*;
+ import static org.mockito.Matchers.*;
++import static org.mockito.Mockito.mock;
+ 
+ @Config(emulateSdk = Build.VERSION_CODES.JELLY_BEAN)
+ @RunWith(RobolectricTestRunner.class)
+@@ -69,7 +70,7 @@ public class StethoInterceptorTest {
+   public void setUp() {
+     PowerMockito.mockStatic(NetworkEventReporterImpl.class);
+ 
+-    mMockEventReporter = Mockito.mock(NetworkEventReporter.class);
++    mMockEventReporter = mock(NetworkEventReporter.class);
+     Mockito.when(mMockEventReporter.isEnabled()).thenReturn(true);
+     PowerMockito.when(NetworkEventReporterImpl.get()).thenReturn(mMockEventReporter);
+ 
+@@ -102,7 +103,7 @@ public void testHappyPath() throws IOException {
+         .build();
+     Response filteredResponse =
+         mInterceptor.intercept(
+-            new SimpleTestChain(request, reply, null));
++            new SimpleTestChain(request, reply, mock(Connection.class)));
+ 
+     inOrder.verify(mMockEventReporter).isEnabled();
+     inOrder.verify(mMockEventReporter)
+
+File: stetho-okhttp3/src/test/java/com/facebook/stetho/okhttp3/StethoInterceptorTest.java
+Patch:
+@@ -52,6 +52,7 @@
+ 
+ import static org.junit.Assert.*;
+ import static org.mockito.Matchers.*;
++import static org.mockito.Mockito.mock;
+ 
+ @Config(emulateSdk = Build.VERSION_CODES.JELLY_BEAN)
+ @RunWith(RobolectricTestRunner.class)
+@@ -69,7 +70,7 @@ public class StethoInterceptorTest {
+   public void setUp() {
+     PowerMockito.mockStatic(NetworkEventReporterImpl.class);
+ 
+-    mMockEventReporter = Mockito.mock(NetworkEventReporter.class);
++    mMockEventReporter = mock(NetworkEventReporter.class);
+     Mockito.when(mMockEventReporter.isEnabled()).thenReturn(true);
+     PowerMockito.when(NetworkEventReporterImpl.get()).thenReturn(mMockEventReporter);
+ 
+@@ -103,7 +104,7 @@ public void testHappyPath() throws IOException {
+         .build();
+     Response filteredResponse =
+         mInterceptor.intercept(
+-            new SimpleTestChain(request, reply, null));
++            new SimpleTestChain(request, reply, mock(Connection.class)));
+ 
+     inOrder.verify(mMockEventReporter).isEnabled();
+     inOrder.verify(mMockEventReporter)
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/Frame.java
+Patch:
+@@ -94,8 +94,8 @@ private long decodeLength(byte firstLenByte, InputStream in) throws IOException
+     } else if (firstLenByte == 127) {
+       long len = 0;
+       for (int i = 0; i < 8; i++) {
+-        len |= (readByteOrThrow(in) & 0xff);
+         len <<= 8;
++        len |= (readByteOrThrow(in) & 0xff);
+       }
+       return len;
+     } else {
+
+File: stetho-okhttp/src/main/java/com/facebook/stetho/okhttp/StethoInterceptor.java
+Patch:
+@@ -76,7 +76,9 @@ public Response intercept(Chain chain) throws IOException {
+ 
+       Connection connection = chain.connection();
+       if (connection == null) {
+-        throw new IllegalStateException("No connection associated with this request; did you use addInterceptor instead of addNetworkInterceptor?")
++        throw new IllegalStateException(
++            "No connection associated with this request; " +
++                "did you use addInterceptor instead of addNetworkInterceptor?");
+       }
+       mEventReporter.responseHeadersReceived(
+           new OkHttpInspectorResponse(
+
+File: stetho-okhttp/src/test/java/com/facebook/stetho/okhttp/StethoInterceptorTest.java
+Patch:
+@@ -52,6 +52,7 @@
+ 
+ import static org.junit.Assert.*;
+ import static org.mockito.Matchers.*;
++import static org.mockito.Mockito.mock;
+ 
+ @Config(emulateSdk = Build.VERSION_CODES.JELLY_BEAN)
+ @RunWith(RobolectricTestRunner.class)
+@@ -69,7 +70,7 @@ public class StethoInterceptorTest {
+   public void setUp() {
+     PowerMockito.mockStatic(NetworkEventReporterImpl.class);
+ 
+-    mMockEventReporter = Mockito.mock(NetworkEventReporter.class);
++    mMockEventReporter = mock(NetworkEventReporter.class);
+     Mockito.when(mMockEventReporter.isEnabled()).thenReturn(true);
+     PowerMockito.when(NetworkEventReporterImpl.get()).thenReturn(mMockEventReporter);
+ 
+@@ -102,7 +103,7 @@ public void testHappyPath() throws IOException {
+         .build();
+     Response filteredResponse =
+         mInterceptor.intercept(
+-            new SimpleTestChain(request, reply, null));
++            new SimpleTestChain(request, reply, mock(Connection.class)));
+ 
+     inOrder.verify(mMockEventReporter).isEnabled();
+     inOrder.verify(mMockEventReporter)
+
+File: stetho-okhttp3/src/main/java/com/facebook/stetho/okhttp3/StethoInterceptor.java
+Patch:
+@@ -68,7 +68,9 @@ public Response intercept(Chain chain) throws IOException {
+ 
+       Connection connection = chain.connection();
+       if (connection == null) {
+-        throw new IllegalStateException("No connection associated with this request; did you use addInterceptor instead of addNetworkInterceptor?")
++        throw new IllegalStateException(
++            "No connection associated with this request; " +
++                "did you use addInterceptor instead of addNetworkInterceptor?");
+       }
+       mEventReporter.responseHeadersReceived(
+           new OkHttpInspectorResponse(
+
+File: stetho-okhttp3/src/test/java/com/facebook/stetho/okhttp3/StethoInterceptorTest.java
+Patch:
+@@ -52,6 +52,7 @@
+ 
+ import static org.junit.Assert.*;
+ import static org.mockito.Matchers.*;
++import static org.mockito.Mockito.mock;
+ 
+ @Config(emulateSdk = Build.VERSION_CODES.JELLY_BEAN)
+ @RunWith(RobolectricTestRunner.class)
+@@ -69,7 +70,7 @@ public class StethoInterceptorTest {
+   public void setUp() {
+     PowerMockito.mockStatic(NetworkEventReporterImpl.class);
+ 
+-    mMockEventReporter = Mockito.mock(NetworkEventReporter.class);
++    mMockEventReporter = mock(NetworkEventReporter.class);
+     Mockito.when(mMockEventReporter.isEnabled()).thenReturn(true);
+     PowerMockito.when(NetworkEventReporterImpl.get()).thenReturn(mMockEventReporter);
+ 
+@@ -103,7 +104,7 @@ public void testHappyPath() throws IOException {
+         .build();
+     Response filteredResponse =
+         mInterceptor.intercept(
+-            new SimpleTestChain(request, reply, null));
++            new SimpleTestChain(request, reply, mock(Connection.class)));
+ 
+     inOrder.verify(mMockEventReporter).isEnabled();
+     inOrder.verify(mMockEventReporter)
+
+File: stetho-okhttp/src/main/java/com/facebook/stetho/okhttp/StethoInterceptor.java
+Patch:
+@@ -75,6 +75,9 @@ public Response intercept(Chain chain) throws IOException {
+       }
+ 
+       Connection connection = chain.connection();
++      if (connection == null) {
++        throw new IllegalStateException("No connection associated with this request; did you use addInterceptor instead of addNetworkInterceptor?")
++      }
+       mEventReporter.responseHeadersReceived(
+           new OkHttpInspectorResponse(
+               requestId,
+
+File: stetho-okhttp3/src/main/java/com/facebook/stetho/okhttp3/StethoInterceptor.java
+Patch:
+@@ -67,6 +67,9 @@ public Response intercept(Chain chain) throws IOException {
+       }
+ 
+       Connection connection = chain.connection();
++      if (connection == null) {
++        throw new IllegalStateException("No connection associated with this request; did you use addInterceptor instead of addNetworkInterceptor?")
++      }
+       mEventReporter.responseHeadersReceived(
+           new OkHttpInspectorResponse(
+               requestId,
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/Frame.java
+Patch:
+@@ -94,8 +94,8 @@ private long decodeLength(byte firstLenByte, InputStream in) throws IOException
+     } else if (firstLenByte == 127) {
+       long len = 0;
+       for (int i = 0; i < 8; i++) {
+-        len |= (readByteOrThrow(in) & 0xff);
+         len <<= 8;
++        len |= (readByteOrThrow(in) & 0xff);
+       }
+       return len;
+     } else {
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkEventReporter.java
+Patch:
+@@ -37,7 +37,7 @@
+  *                  |                                                              |
+  *                  |                     ,----------------------+-----------------+--------,
+  *                  |                     v                      v                          |
+- *                  +---------> [ webSocketFrameSent | webSocketFrameReceiver ] ---,        |
++ *                  +---------> [ webSocketFrameSent | webSocketFrameReceived ] ---,        |
+  *                  |                     ^                      ^                 |        |
+  *                  |                     `----------------------+-----------------+        |
+  *                  |                                                              |        |
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkEventReporterImpl.java
+Patch:
+@@ -384,6 +384,7 @@ public void webSocketHandshakeResponseReceived(InspectorWebSocketResponse respon
+       responseJSON.status = response.statusCode();
+       responseJSON.statusText = response.reasonPhrase();
+       params.response = responseJSON;
++      peerManager.sendNotificationToPeers("Network.webSocketHandshakeResponseReceived", params);
+     }
+   }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/CSS.java
+Patch:
+@@ -173,9 +173,7 @@ public SetPropertyTextResult setPropertyText(JsonRpcPeer peer, JSONObject params
+ 
+     final String value;
+     final String key;
+-    if ("/* undefined */".equals(request.text)) {
+-      // This gets sent when a key is disabled. Chrome does not send the key which was disabled
+-      // though so not much we can do here.
++    if (request.text == null || !request.text.contains(":")) {
+       key = null;
+       value = null;
+     } else {
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/CSS.java
+Patch:
+@@ -173,9 +173,7 @@ public SetPropertyTextResult setPropertyText(JsonRpcPeer peer, JSONObject params
+ 
+     final String value;
+     final String key;
+-    if ("/* undefined */".equals(request.text)) {
+-      // This gets sent when a key is disabled. Chrome does not send the key which was disabled
+-      // though so not much we can do here.
++    if (request.text == null || !request.text.contains(":")) {
+       key = null;
+       value = null;
+     } else {
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/MainActivity.java
+Patch:
+@@ -33,6 +33,7 @@ protected void onCreate(Bundle savedInstanceState) {
+ 
+     findViewById(R.id.settings_btn).setOnClickListener(mMainButtonClicked);
+     findViewById(R.id.apod_btn).setOnClickListener(mMainButtonClicked);
++    findViewById(R.id.irc_btn).setOnClickListener(mMainButtonClicked);
+   }
+ 
+   private static boolean isStethoPresent() {
+@@ -68,6 +69,8 @@ public void onClick(View v) {
+         SettingsActivity.show(MainActivity.this);
+       } else if (id == R.id.apod_btn) {
+         APODActivity.show(MainActivity.this);
++      } else if (id == R.id.irc_btn) {
++        IRCConnectActivity.show(MainActivity.this);
+       }
+     }
+   };
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/AndroidDocumentProvider.java
+Patch:
+@@ -383,7 +383,7 @@ public boolean onTouchEvent(MotionEvent event) {
+ 
+                 if (event.getAction() == MotionEvent.ACTION_UP) {
+                   if (mListener != null) {
+-                    mListener.onInspectRequested(viewToHighlight);
++                    mListener.onInspectRequested(elementToHighlight);
+                   }
+                 }
+               }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/AndroidDocumentProvider.java
+Patch:
+@@ -383,7 +383,7 @@ public boolean onTouchEvent(MotionEvent event) {
+ 
+                 if (event.getAction() == MotionEvent.ACTION_UP) {
+                   if (mListener != null) {
+-                    mListener.onInspectRequested(viewToHighlight);
++                    mListener.onInspectRequested(elementToHighlight);
+                   }
+                 }
+               }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/CSS.java
+Patch:
+@@ -201,7 +201,7 @@ public void run() {
+           return;
+         }
+ 
+-        if (key == null) {
++        if (key != null) {
+           mDocument.setElementStyle(elementForNodeId, ruleName, key, value);
+         }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/CSS.java
+Patch:
+@@ -201,7 +201,7 @@ public void run() {
+           return;
+         }
+ 
+-        if (key == null) {
++        if (key != null) {
+           mDocument.setElementStyle(elementForNodeId, ruleName, key, value);
+         }
+ 
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/APODRssFetcher.java
+Patch:
+@@ -31,7 +31,8 @@
+ 
+ public class APODRssFetcher {
+   private static final String TAG = "APODRssFetcher";
+-  private static final String APOD_RSS_URL = "http://apod.nasa.gov/apod.rss";
++  
++  private static final String APOD_RSS_URL = "https://apod.nasa.gov/apod.rss";
+ 
+   private final ContentResolver mContentResolver;
+ 
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/APODRssFetcher.java
+Patch:
+@@ -31,7 +31,8 @@
+ 
+ public class APODRssFetcher {
+   private static final String TAG = "APODRssFetcher";
+-  private static final String APOD_RSS_URL = "http://apod.nasa.gov/apod.rss";
++  
++  private static final String APOD_RSS_URL = "https://apod.nasa.gov/apod.rss";
+ 
+   private final ContentResolver mContentResolver;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/DOM.java
+Patch:
+@@ -337,7 +337,7 @@ public void onAttributeModified(Object element, String name, String value) {
+       message.nodeId = mDocument.getNodeIdForElement(element);
+       message.name = name;
+       message.value = value;
+-      mPeerManager.sendNotificationToPeers("DOM.onAttributeModified", message);
++      mPeerManager.sendNotificationToPeers("DOM.attributeModified", message);
+     }
+ 
+     public void onAttributeRemoved(Object element, String name) {
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/DOM.java
+Patch:
+@@ -337,7 +337,7 @@ public void onAttributeModified(Object element, String name, String value) {
+       message.nodeId = mDocument.getNodeIdForElement(element);
+       message.name = name;
+       message.value = value;
+-      mPeerManager.sendNotificationToPeers("DOM.onAttributeModified", message);
++      mPeerManager.sendNotificationToPeers("DOM.attributeModified", message);
+     }
+ 
+     public void onAttributeRemoved(Object element, String name) {
+
+File: stetho/src/main/java/com/facebook/stetho/Stetho.java
+Patch:
+@@ -31,6 +31,7 @@
+ import com.facebook.stetho.inspector.database.DefaultDatabaseConnectionProvider;
+ import com.facebook.stetho.inspector.database.DefaultDatabaseFilesProvider;
+ import com.facebook.stetho.inspector.database.SqliteDatabaseDriver;
++import com.facebook.stetho.inspector.elements.DescriptorProvider;
+ import com.facebook.stetho.inspector.elements.Document;
+ import com.facebook.stetho.inspector.elements.DocumentProviderFactory;
+ import com.facebook.stetho.inspector.elements.android.ActivityTracker;
+@@ -63,6 +64,7 @@
+ import javax.annotation.Nullable;
+ 
+ import java.util.ArrayList;
++import java.util.Collections;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Set;
+@@ -391,7 +393,7 @@ private DocumentProviderFactory resolveDocumentProvider() {
+         return mDocumentProvider;
+       }
+       if (Build.VERSION.SDK_INT >= AndroidDocumentConstants.MIN_API_LEVEL) {
+-        return new AndroidDocumentProviderFactory(mContext);
++        return new AndroidDocumentProviderFactory(mContext, Collections.<DescriptorProvider>emptyList());
+       }
+       return null;
+     }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/DescriptorMap.java
+Patch:
+@@ -16,7 +16,7 @@
+ 
+ import javax.annotation.Nullable;
+ 
+-public final class DescriptorMap {
++public final class DescriptorMap implements DescriptorRegistrar {
+   private final Map<Class<?>, Descriptor> mMap = new IdentityHashMap<>();
+   private boolean mIsInitializing;
+   private Descriptor.Host mHost;
+@@ -27,7 +27,8 @@ public DescriptorMap beginInit() {
+     return this;
+   }
+ 
+-  public DescriptorMap register(Class<?> elementClass, Descriptor descriptor) {
++  @Override
++  public DescriptorMap registerDescriptor(Class<?> elementClass, Descriptor descriptor) {
+     Util.throwIfNull(elementClass);
+     Util.throwIfNull(descriptor);
+     Util.throwIf(descriptor.isInitialized());
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/DialogFragmentDescriptor.java
+Patch:
+@@ -43,7 +43,7 @@ private static void maybeRegister(DescriptorMap map, @Nullable FragmentCompat co
+     if (compat != null) {
+       Class<?> dialogFragmentClass = compat.getDialogFragmentClass();
+       LogUtil.d("Adding support for %s", dialogFragmentClass);
+-      map.register(dialogFragmentClass, new DialogFragmentDescriptor(compat));
++      map.registerDescriptor(dialogFragmentClass, new DialogFragmentDescriptor(compat));
+     }
+   }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/FragmentDescriptor.java
+Patch:
+@@ -39,7 +39,7 @@ private static void maybeRegister(DescriptorMap map, @Nullable FragmentCompat co
+     if (compat != null) {
+       Class<?> fragmentClass = compat.getFragmentClass();
+       LogUtil.d("Adding support for %s", fragmentClass.getName());
+-      map.register(fragmentClass, new FragmentDescriptor(compat));
++      map.registerDescriptor(fragmentClass, new FragmentDescriptor(compat));
+     }
+   }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/TextViewDescriptor.java
+Patch:
+@@ -42,7 +42,7 @@ protected void onUnhook(TextView element) {
+   @Override
+   protected void onGetAttributes(TextView element, AttributeAccumulator attributes) {
+     CharSequence text = element.getText();
+-    if (text.length() != 0) {
++    if (text != null && text.length() != 0) {
+       attributes.store(TEXT_ATTRIBUTE_NAME, text.toString());
+     }
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/ChainedDescriptor.java
+Patch:
+@@ -52,6 +52,6 @@
+  * The third option is to implement {@link ChainedDescriptor} (e.g. by deriving from
+  * {@link AbstractChainedDescriptor}) which solves all of these issues for you.<p/>
+  */
+-public interface ChainedDescriptor {
+-  void setSuper(Descriptor superDescriptor);
++public interface ChainedDescriptor<E> {
++  void setSuper(Descriptor<? super E> superDescriptor);
+ }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/Descriptor.java
+Patch:
+@@ -17,7 +17,7 @@
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+-public abstract class Descriptor implements NodeDescriptor {
++public abstract class Descriptor<E> implements NodeDescriptor<E> {
+   private Host mHost;
+ 
+   protected Descriptor() {
+@@ -104,7 +104,7 @@ protected static Map<String, String> parseSetAttributesAsTextArg(String text) {
+ 
+   public interface Host extends ThreadBound {
+     @Nullable
+-    public Descriptor getDescriptor(@Nullable Object element);
++    public Descriptor<?> getDescriptor(@Nullable Object element);
+ 
+     public void onAttributeModified(
+         Object element,
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/ObjectDescriptor.java
+Patch:
+@@ -11,7 +11,7 @@
+ 
+ import com.facebook.stetho.common.Accumulator;
+ 
+-public final class ObjectDescriptor extends Descriptor {
++public final class ObjectDescriptor extends Descriptor<Object> {
+   @Override
+   public void hook(Object element) {
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/FragmentDescriptor.java
+Patch:
+@@ -23,7 +23,7 @@
+ import javax.annotation.Nullable;
+ 
+ final class FragmentDescriptor
+-    extends AbstractChainedDescriptor<Object> implements HighlightableDescriptor {
++    extends AbstractChainedDescriptor<Object> implements HighlightableDescriptor<Object> {
+   private static final String ID_ATTRIBUTE_NAME = "id";
+   private static final String TAG_ATTRIBUTE_NAME = "tag";
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/HighlightableDescriptor.java
+Patch:
+@@ -13,7 +13,7 @@
+ 
+ import javax.annotation.Nullable;
+ 
+-interface HighlightableDescriptor {
++interface HighlightableDescriptor<E> {
+   @Nullable
+-  View getViewForHighlighting(Object element);
++  View getViewForHighlighting(E element);
+ }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/TextViewDescriptor.java
+Patch:
+@@ -42,7 +42,7 @@ protected void onUnhook(TextView element) {
+   @Override
+   protected void onGetAttributes(TextView element, AttributeAccumulator attributes) {
+     CharSequence text = element.getText();
+-    if (text.length() != 0) {
++    if (text != null && text.length() != 0) {
+       attributes.store(TEXT_ATTRIBUTE_NAME, text.toString());
+     }
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/json/ObjectMapper.java
+Patch:
+@@ -111,7 +111,9 @@ private <T> T _convertFromJSONObject(JSONObject jsonObject, Class<T> type)
+       } catch (IllegalArgumentException e) {
+         throw new IllegalArgumentException(
+             "Class: " + type.getSimpleName() + " " +
+-            "Field: " + field.getName() + " type " + setValue.getClass().getName(),
++            "Field: " + field.getName() + " type " + (setValue != null ?
++                setValue.getClass().getName()
++                : "null"),
+             e);
+       }
+     }
+
+File: stetho/src/main/java/com/facebook/stetho/json/ObjectMapper.java
+Patch:
+@@ -111,7 +111,9 @@ private <T> T _convertFromJSONObject(JSONObject jsonObject, Class<T> type)
+       } catch (IllegalArgumentException e) {
+         throw new IllegalArgumentException(
+             "Class: " + type.getSimpleName() + " " +
+-            "Field: " + field.getName() + " type " + setValue.getClass().getName(),
++            "Field: " + field.getName() + " type " + (setValue != null ?
++                setValue.getClass().getName()
++                : "null"),
+             e);
+       }
+     }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/database/DefaultDatabaseFilesProvider.java
+Patch:
+@@ -28,8 +28,8 @@ public DefaultDatabaseFilesProvider(Context context) {
+   @Override
+   public List<File> getDatabaseFiles() {
+     List<File> databaseFiles = new ArrayList<File>();
+-    for (String filename : mContext.databaseList()) {
+-      databaseFiles.add(new File(filename));
++    for (String databaseName : mContext.databaseList()) {
++      databaseFiles.add(mContext.getDatabasePath(databaseName));
+     }
+     return databaseFiles;
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/database/DefaultDatabaseFilesProvider.java
+Patch:
+@@ -28,8 +28,8 @@ public DefaultDatabaseFilesProvider(Context context) {
+   @Override
+   public List<File> getDatabaseFiles() {
+     List<File> databaseFiles = new ArrayList<File>();
+-    for (String filename : mContext.databaseList()) {
+-      databaseFiles.add(new File(filename));
++    for (String databaseName : mContext.databaseList()) {
++      databaseFiles.add(mContext.getDatabasePath(databaseName));
+     }
+     return databaseFiles;
+   }
+
+File: stetho-js-rhino/src/main/java/com/facebook/stetho/rhino/JsRuntimeReplFactoryBuilder.java
+Patch:
+@@ -189,7 +189,7 @@ private void importClasses(@NonNull Context jsContext, @NonNull ScriptableObject
+     for (Class<?> aClass : mClasses) {
+       String className = aClass.getName();
+       try {
+-        String expression = String.format("importClass(%s)", className);
++        String expression = String.format("importClass(Packages.%s)", className);
+         jsContext.evaluateString(scope, expression, SOURCE_NAME, 1, null);
+       } catch (Exception e) {
+         throw new StethoJsException(e, "Failed to import class: %s", className);
+@@ -201,7 +201,7 @@ private void importPackages(@NonNull Context jsContext, @NonNull ScriptableObjec
+     // Import the packages that the caller requested
+     for (String packageName : mPackages) {
+       try {
+-        String expression = String.format("importPackage(%s)", packageName);
++        String expression = String.format("importPackage(Packages.%s)", packageName);
+         jsContext.evaluateString(scope, expression, SOURCE_NAME, 1, null);
+       } catch (Exception e) {
+         throw new StethoJsException(e, "Failed to import package: %s", packageName);
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/ShadowDocument.java
+Patch:
+@@ -233,6 +233,8 @@ private void setElementParent(Object element, Object parentElement) {
+ 
+       if (parentElement == null) {
+         mRootElementChanges.add(element);
++      } else {
++        mRootElementChanges.remove(element);
+       }
+     }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/ShadowDocument.java
+Patch:
+@@ -233,6 +233,8 @@ private void setElementParent(Object element, Object parentElement) {
+ 
+       if (parentElement == null) {
+         mRootElementChanges.add(element);
++      } else {
++        mRootElementChanges.remove(element);
+       }
+     }
+ 
+
+File: stetho-timber/src/main/java/com/facebook/stetho/timber/StethoTree.java
+Patch:
+@@ -47,6 +47,7 @@ protected void log(int priority, String tag, String message, Throwable t) {
+         logLevel = Console.MessageLevel.WARNING;
+         break;
+       case Log.ERROR:
++      case Log.ASSERT:
+         logLevel = Console.MessageLevel.ERROR;
+         break;
+       default:
+
+File: stetho-timber/src/main/java/com/facebook/stetho/timber/StethoTree.java
+Patch:
+@@ -47,6 +47,7 @@ protected void log(int priority, String tag, String message, Throwable t) {
+         logLevel = Console.MessageLevel.WARNING;
+         break;
+       case Log.ERROR:
++      case Log.ASSERT:
+         logLevel = Console.MessageLevel.ERROR;
+         break;
+       default:
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/ViewHighlighter.java
+Patch:
+@@ -103,10 +103,10 @@ private void highlightViewOnUiThread() {
+       }
+ 
+       if (viewToHighlight != null) {
+-
+         mHighlightOverlays.highlightView(viewToHighlight, mContentColor.get());
+-        mHighlightedView = viewToHighlight;
+       }
++
++      mHighlightedView = viewToHighlight;
+     }
+   }
+ }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/ViewHighlighter.java
+Patch:
+@@ -103,10 +103,10 @@ private void highlightViewOnUiThread() {
+       }
+ 
+       if (viewToHighlight != null) {
+-
+         mHighlightOverlays.highlightView(viewToHighlight, mContentColor.get());
+-        mHighlightedView = viewToHighlight;
+       }
++
++      mHighlightedView = viewToHighlight;
+     }
+   }
+ }
+
+File: stetho-js-rhino/src/main/java/com/facebook/stetho/rhino/JsConsole.java
+Patch:
+@@ -20,7 +20,7 @@
+ import org.mozilla.javascript.ScriptableObject;
+ import org.mozilla.javascript.annotations.JSFunction;
+ 
+-class JsConsole extends ScriptableObject {
++public class JsConsole extends ScriptableObject {
+ 
+   /**
+    * Serial version UID.
+
+File: stetho/src/main/java/com/facebook/stetho/Stetho.java
+Patch:
+@@ -259,14 +259,14 @@ public DefaultInspectorModulesBuilder remove(String moduleName) {
+ 
+     public Iterable<ChromeDevtoolsDomain> finish() {
+       provideIfDesired(new Console());
+-      provideIfDesired(new CSS());
+       provideIfDesired(new Debugger());
+       if (Build.VERSION.SDK_INT >= AndroidDOMConstants.MIN_API_LEVEL) {
+         Document document = new Document(
+             new AndroidDocumentProviderFactory(
+                 (Application) mContext.getApplicationContext()));
+ 
+         provideIfDesired(new DOM(document));
++        provideIfDesired(new CSS(document));
+       }
+       provideIfDesired(new DOMStorage(mContext));
+       provideIfDesired(new HeapProfiler());
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/NodeDescriptor.java
+Patch:
+@@ -33,4 +33,6 @@ public interface NodeDescriptor extends ThreadBound {
+   void getAttributes(Object element, AttributeAccumulator attributes);
+ 
+   void setAttributesAsText(Object element, String text);
++
++  void getStyles(Object element, StyleAccumulator accumulator);
+ }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/Document.java
+Patch:
+@@ -28,7 +28,7 @@
+ import java.util.regex.Pattern;
+ 
+ public final class Document extends ThreadBoundProxy {
+-  private final DocumentProvider.Factory mFactory;
++  private final DocumentProviderFactory mFactory;
+   private final ObjectIdMapper mObjectIdMapper;
+   private final Queue<Object> mCachedUpdateQueue;
+ 
+@@ -42,7 +42,7 @@ public final class Document extends ThreadBoundProxy {
+   @GuardedBy("this")
+   private int mReferenceCounter;
+ 
+-  public Document(DocumentProvider.Factory factory) {
++  public Document(DocumentProviderFactory factory) {
+     super(factory);
+ 
+     mFactory = factory;
+@@ -616,7 +616,7 @@ protected void onUnmapped(Object object, int id) {
+     }
+   }
+ 
+-  private final class ProviderListener implements DocumentProvider.Listener {
++  private final class ProviderListener implements DocumentProviderListener {
+     @Override
+     public void onPossiblyChanged() {
+       updateTree();
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/AndroidDocumentProviderFactory.java
+Patch:
+@@ -18,9 +18,10 @@
+ import com.facebook.stetho.common.Util;
+ import com.facebook.stetho.common.android.HandlerUtil;
+ import com.facebook.stetho.inspector.elements.DocumentProvider;
++import com.facebook.stetho.inspector.elements.DocumentProviderFactory;
+ 
+ public final class AndroidDocumentProviderFactory
+-    implements DocumentProvider.Factory, ThreadBound {
++    implements DocumentProviderFactory, ThreadBound {
+   private final Application mApplication;
+   private final Handler mHandler;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/Document.java
+Patch:
+@@ -28,7 +28,7 @@
+ import java.util.regex.Pattern;
+ 
+ public final class Document extends ThreadBoundProxy {
+-  private final DocumentProvider.Factory mFactory;
++  private final DocumentProviderFactory mFactory;
+   private final ObjectIdMapper mObjectIdMapper;
+   private final Queue<Object> mCachedUpdateQueue;
+ 
+@@ -42,7 +42,7 @@ public final class Document extends ThreadBoundProxy {
+   @GuardedBy("this")
+   private int mReferenceCounter;
+ 
+-  public Document(DocumentProvider.Factory factory) {
++  public Document(DocumentProviderFactory factory) {
+     super(factory);
+ 
+     mFactory = factory;
+@@ -616,7 +616,7 @@ protected void onUnmapped(Object object, int id) {
+     }
+   }
+ 
+-  private final class ProviderListener implements DocumentProvider.Listener {
++  private final class ProviderListener implements DocumentProviderListener {
+     @Override
+     public void onPossiblyChanged() {
+       updateTree();
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/AndroidDocumentProviderFactory.java
+Patch:
+@@ -18,9 +18,10 @@
+ import com.facebook.stetho.common.Util;
+ import com.facebook.stetho.common.android.HandlerUtil;
+ import com.facebook.stetho.inspector.elements.DocumentProvider;
++import com.facebook.stetho.inspector.elements.DocumentProviderFactory;
+ 
+ public final class AndroidDocumentProviderFactory
+-    implements DocumentProvider.Factory, ThreadBound {
++    implements DocumentProviderFactory, ThreadBound {
+   private final Application mApplication;
+   private final Handler mHandler;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/Stetho.java
+Patch:
+@@ -274,7 +274,7 @@ public Iterable<ChromeDevtoolsDomain> finish() {
+       provideIfDesired(new Network(mContext));
+       provideIfDesired(new Page(mContext));
+       provideIfDesired(new Profiler());
+-      provideIfDesired(new Runtime());
++      provideIfDesired(new Runtime(mContext));
+       provideIfDesired(new Worker());
+       if (Build.VERSION.SDK_INT >= DatabaseConstants.MIN_API_LEVEL) {
+         provideIfDesired(new Database(mContext, new DefaultDatabaseFilesProvider(mContext)));
+
+File: stetho/src/main/java/com/facebook/stetho/Stetho.java
+Patch:
+@@ -274,7 +274,7 @@ public Iterable<ChromeDevtoolsDomain> finish() {
+       provideIfDesired(new Network(mContext));
+       provideIfDesired(new Page(mContext));
+       provideIfDesired(new Profiler());
+-      provideIfDesired(new Runtime());
++      provideIfDesired(new Runtime(mContext));
+       provideIfDesired(new Worker());
+       if (Build.VERSION.SDK_INT >= DatabaseConstants.MIN_API_LEVEL) {
+         provideIfDesired(new Database(mContext, new DefaultDatabaseFilesProvider(mContext)));
+
+File: stetho-sample/src/debug/java/com/facebook/stetho/sample/SampleDebugApplication.java
+Patch:
+@@ -9,6 +9,7 @@
+ 
+ package com.facebook.stetho.sample;
+ 
++import android.annotation.TargetApi;
+ import android.content.Context;
+ import android.os.Build;
+ import android.os.SystemClock;
+@@ -64,6 +65,7 @@ private static class ExtInspectorModulesProvider implements InspectorModulesProv
+       mContext = context;
+     }
+ 
++    @TargetApi(Build.VERSION_CODES.ICE_CREAM_SANDWICH)
+     @Override
+     public Iterable<ChromeDevtoolsDomain> get() {
+       Stetho.DefaultInspectorModulesBuilder builder = new Stetho.DefaultInspectorModulesBuilder(mContext);
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkPeerManager.java
+Patch:
+@@ -60,6 +60,7 @@ public void setPrettyPrinterInitializer(AsyncPrettyPrinterInitializer initialize
+   private final PeersRegisteredListener mTempFileCleanup = new PeersRegisteredListener() {
+     @Override
+     protected void onFirstPeerRegistered() {
++      AsyncPrettyPrinterExecutorHolder.ensureInitialized();
+       if (mAsyncPrettyPrinterRegistry == null && mPrettyPrinterInitializer != null) {
+         mAsyncPrettyPrinterRegistry = new AsyncPrettyPrinterRegistry();
+         mPrettyPrinterInitializer.populatePrettyPrinters(mAsyncPrettyPrinterRegistry);
+@@ -70,7 +71,7 @@ protected void onFirstPeerRegistered() {
+     @Override
+     protected void onLastPeerUnregistered() {
+       mResponseBodyFileManager.cleanupFiles();
+-      AsyncPrettyPrinterExecutorHolder.sExecutorService.shutdownNow();
++      AsyncPrettyPrinterExecutorHolder.shutdown();
+     }
+   };
+ }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/RequestBodyHelper.java
+Patch:
+@@ -14,7 +14,7 @@
+ import java.io.ByteArrayOutputStream;
+ import java.io.IOException;
+ import java.io.OutputStream;
+-import java.util.zip.DeflaterOutputStream;
++import java.util.zip.InflaterOutputStream;
+ 
+ /**
+  * Helper which manages provides computed request sizes as well as transparent decompression.
+@@ -44,7 +44,7 @@ public OutputStream createBodySink(@Nullable String contentEncoding) throws IOEx
+     if (DecompressionHelper.GZIP_ENCODING.equals(contentEncoding)) {
+       deflatingOutput = GunzippingOutputStream.create(deflatedOutput);
+     } else if (DecompressionHelper.DEFLATE_ENCODING.equals(contentEncoding)) {
+-      deflatingOutput = new DeflaterOutputStream(deflatedOutput);
++      deflatingOutput = new InflaterOutputStream(deflatedOutput);
+     } else {
+       deflatingOutput = deflatedOutput;
+     }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/RequestBodyHelper.java
+Patch:
+@@ -14,7 +14,7 @@
+ import java.io.ByteArrayOutputStream;
+ import java.io.IOException;
+ import java.io.OutputStream;
+-import java.util.zip.DeflaterOutputStream;
++import java.util.zip.InflaterOutputStream;
+ 
+ /**
+  * Helper which manages provides computed request sizes as well as transparent decompression.
+@@ -44,7 +44,7 @@ public OutputStream createBodySink(@Nullable String contentEncoding) throws IOEx
+     if (DecompressionHelper.GZIP_ENCODING.equals(contentEncoding)) {
+       deflatingOutput = GunzippingOutputStream.create(deflatedOutput);
+     } else if (DecompressionHelper.DEFLATE_ENCODING.equals(contentEncoding)) {
+-      deflatingOutput = new DeflaterOutputStream(deflatedOutput);
++      deflatingOutput = new InflaterOutputStream(deflatedOutput);
+     } else {
+       deflatingOutput = deflatedOutput;
+     }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/database/DatabasePeerManager.java
+Patch:
+@@ -147,7 +147,8 @@ public <T> T executeSQL(String databaseName, String query, ExecuteResultHandler<
+         return executeUpdateDelete(database, query, handler);
+       } else if (firstWord.equalsIgnoreCase("INSERT")) {
+         return executeInsert(database, query, handler);
+-      } else if (firstWord.equalsIgnoreCase("SELECT")) {
++      } else if (firstWord.equalsIgnoreCase("SELECT") ||
++          firstWord.equalsIgnoreCase("PRAGMA")) {
+         return executeSelect(database, query, handler);
+       } else {
+         return executeRawQuery(database, query, handler);
+@@ -202,6 +203,7 @@ private <T> T executeRawQuery(
+     database.execSQL(query);
+     return handler.handleRawQuery();
+   }
++
+   private SQLiteDatabase openDatabase(String databaseName) throws SQLiteException {
+     Util.throwIfNull(databaseName);
+     File databaseFile = mContext.getDatabasePath(databaseName);
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/AttributeAccumulator.java
+Patch:
+@@ -10,5 +10,5 @@
+ package com.facebook.stetho.inspector.elements;
+ 
+ public interface AttributeAccumulator {
+-  public void add(String name, String value);
++  public void store(String name, String value);
+ }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/TextViewDescriptor.java
+Patch:
+@@ -40,10 +40,10 @@ protected void onUnhook(TextView element) {
+   }
+ 
+   @Override
+-  protected void onCopyAttributes(TextView element, AttributeAccumulator attributes) {
++  protected void onGetAttributes(TextView element, AttributeAccumulator attributes) {
+     CharSequence text = element.getText();
+     if (text.length() != 0) {
+-      attributes.add(TEXT_ATTRIBUTE_NAME, text.toString());
++      attributes.store(TEXT_ATTRIBUTE_NAME, text.toString());
+     }
+   }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/ViewDescriptor.java
+Patch:
+@@ -41,10 +41,10 @@ protected String onGetNodeName(View element) {
+   }
+ 
+   @Override
+-  protected void onCopyAttributes(View element, AttributeAccumulator attributes) {
++  protected void onGetAttributes(View element, AttributeAccumulator attributes) {
+     String id = getIdAttribute(element);
+     if (id != null) {
+-      attributes.add(ID_ATTRIBUTE_NAME, id);
++      attributes.store(ID_ATTRIBUTE_NAME, id);
+     }
+   }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/JsonRpcPeer.java
+Patch:
+@@ -35,8 +35,7 @@ public class JsonRpcPeer {
+   private long mNextRequestId;
+ 
+   @GuardedBy("this")
+-  private final Map<Long, PendingRequest> mPendingRequests =
+-      new HashMap<Long, PendingRequest>();
++  private final Map<Long, PendingRequest> mPendingRequests = new HashMap<>();
+ 
+   private final DisconnectObservable mDisconnectObservable = new DisconnectObservable();
+ 
+@@ -90,7 +89,8 @@ public synchronized PendingRequest getAndRemovePendingRequest(long requestId) {
+ 
+   private static class DisconnectObservable extends Observable<DisconnectReceiver> {
+     public void onDisconnect() {
+-      for (DisconnectReceiver observer : mObservers) {
++      for (int i = 0, N = mObservers.size(); i < N; ++i) {
++        final DisconnectReceiver observer = mObservers.get(i);
+         observer.onDisconnect();
+       }
+     }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/AttributeAccumulator.java
+Patch:
+@@ -10,5 +10,5 @@
+ package com.facebook.stetho.inspector.elements;
+ 
+ public interface AttributeAccumulator {
+-  public void add(String name, String value);
++  public void store(String name, String value);
+ }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/TextViewDescriptor.java
+Patch:
+@@ -40,10 +40,10 @@ protected void onUnhook(TextView element) {
+   }
+ 
+   @Override
+-  protected void onCopyAttributes(TextView element, AttributeAccumulator attributes) {
++  protected void onGetAttributes(TextView element, AttributeAccumulator attributes) {
+     CharSequence text = element.getText();
+     if (text.length() != 0) {
+-      attributes.add(TEXT_ATTRIBUTE_NAME, text.toString());
++      attributes.store(TEXT_ATTRIBUTE_NAME, text.toString());
+     }
+   }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/ViewDescriptor.java
+Patch:
+@@ -41,10 +41,10 @@ protected String onGetNodeName(View element) {
+   }
+ 
+   @Override
+-  protected void onCopyAttributes(View element, AttributeAccumulator attributes) {
++  protected void onGetAttributes(View element, AttributeAccumulator attributes) {
+     String id = getIdAttribute(element);
+     if (id != null) {
+-      attributes.add(ID_ATTRIBUTE_NAME, id);
++      attributes.store(ID_ATTRIBUTE_NAME, id);
+     }
+   }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/JsonRpcPeer.java
+Patch:
+@@ -35,8 +35,7 @@ public class JsonRpcPeer {
+   private long mNextRequestId;
+ 
+   @GuardedBy("this")
+-  private final Map<Long, PendingRequest> mPendingRequests =
+-      new HashMap<Long, PendingRequest>();
++  private final Map<Long, PendingRequest> mPendingRequests = new HashMap<>();
+ 
+   private final DisconnectObservable mDisconnectObservable = new DisconnectObservable();
+ 
+@@ -90,7 +89,8 @@ public synchronized PendingRequest getAndRemovePendingRequest(long requestId) {
+ 
+   private static class DisconnectObservable extends Observable<DisconnectReceiver> {
+     public void onDisconnect() {
+-      for (DisconnectReceiver observer : mObservers) {
++      for (int i = 0, N = mObservers.size(); i < N; ++i) {
++        final DisconnectReceiver observer = mObservers.get(i);
+         observer.onDisconnect();
+       }
+     }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/database/DatabasePeerManager.java
+Patch:
+@@ -159,7 +159,7 @@ public <T> T executeSQL(String databaseName, String query, ExecuteResultHandler<
+   }
+ 
+   private static String getFirstWord(String s) {
+-    s.trim();
++    s = s.trim();
+     int firstSpace = s.indexOf(' ');
+     return firstSpace >= 0 ? s.substring(0, firstSpace) : s;
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/common/android/FragmentCompatFramework.java
+Patch:
+@@ -24,8 +24,7 @@ final class FragmentCompatFramework
+     extends FragmentCompat<Fragment, FragmentManager, Activity> {
+   private static final FragmentAccessorFrameworkHoneycomb sFragmentAccessor;
+   private static final FragmentManagerAccessorViaReflection<FragmentManager, Fragment>
+-      sFragmentManagerAccessor =
+-          new FragmentManagerAccessorViaReflection<>(FragmentManager.class);
++      sFragmentManagerAccessor = new FragmentManagerAccessorViaReflection<>();
+   private static final FragmentActivityAccessorFramework sFragmentActivityAccessor =
+       new FragmentActivityAccessorFramework();
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/android/FragmentCompatSupportLib.java
+Patch:
+@@ -22,8 +22,7 @@ final class FragmentCompatSupportLib
+   private static final FragmentAccessorSupportLib sFragmentAccessor =
+       new FragmentAccessorSupportLib();
+   private static final FragmentManagerAccessorViaReflection<FragmentManager, Fragment>
+-      sFragmentManagerAccessor =
+-          new FragmentManagerAccessorViaReflection<>(FragmentManager.class);
++      sFragmentManagerAccessor = new FragmentManagerAccessorViaReflection<>();
+   private static final FragmentActivityAccessorSupportLib sFragmentActivityAccessor =
+       new FragmentActivityAccessorSupportLib();
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/android/FragmentCompatFramework.java
+Patch:
+@@ -24,8 +24,7 @@ final class FragmentCompatFramework
+     extends FragmentCompat<Fragment, FragmentManager, Activity> {
+   private static final FragmentAccessorFrameworkHoneycomb sFragmentAccessor;
+   private static final FragmentManagerAccessorViaReflection<FragmentManager, Fragment>
+-      sFragmentManagerAccessor =
+-          new FragmentManagerAccessorViaReflection<>(FragmentManager.class);
++      sFragmentManagerAccessor = new FragmentManagerAccessorViaReflection<>();
+   private static final FragmentActivityAccessorFramework sFragmentActivityAccessor =
+       new FragmentActivityAccessorFramework();
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/android/FragmentCompatSupportLib.java
+Patch:
+@@ -22,8 +22,7 @@ final class FragmentCompatSupportLib
+   private static final FragmentAccessorSupportLib sFragmentAccessor =
+       new FragmentAccessorSupportLib();
+   private static final FragmentManagerAccessorViaReflection<FragmentManager, Fragment>
+-      sFragmentManagerAccessor =
+-          new FragmentManagerAccessorViaReflection<>(FragmentManager.class);
++      sFragmentManagerAccessor = new FragmentManagerAccessorViaReflection<>();
+   private static final FragmentActivityAccessorSupportLib sFragmentActivityAccessor =
+       new FragmentActivityAccessorSupportLib();
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/android/FragmentCompat.java
+Patch:
+@@ -69,6 +69,7 @@ public static FragmentCompat getSupportLibInstance() {
+   }
+ 
+   public abstract Class<FRAGMENT> getFragmentClass();
++  public abstract Class<FRAGMENT_ACTIVITY> getFragmentActivityClass();
+   public abstract FragmentAccessor<FRAGMENT, FRAGMENT_MANAGER> forFragment();
+   public abstract FragmentManagerAccessor<FRAGMENT_MANAGER, FRAGMENT> forFragmentManager();
+   public abstract FragmentActivityAccessor<FRAGMENT_ACTIVITY, FRAGMENT_MANAGER> forFragmentActivity();
+
+File: stetho/src/main/java/com/facebook/stetho/common/android/FragmentCompatUtil.java
+Patch:
+@@ -29,7 +29,7 @@ private static Object findFragmentForViewInActivity(Activity activity, View view
+ 
+     // Try the support library version if it is present and the activity is FragmentActivity.
+     if (supportLib != null &&
+-        supportLib.getFragmentActivityClass() == activity.getClass()) {
++        supportLib.getFragmentActivityClass().isInstance(activity)) {
+       Object fragment = findFragmentForViewInActivity(supportLib, activity, view);
+       if (fragment != null) {
+         return fragment;
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/MainActivity.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.sample;
+ 
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/Networker.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.sample;
+ 
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/SettingsActivity.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.sample;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/DumperPluginsProvider.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/InspectorModulesProvider.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/Stetho.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2015-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/LogRedirector.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.common;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/Utf8Charset.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.common;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/Util.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.common;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumpException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumpUsageException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumpappHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumpappOutputBrokenException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/Dumper.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumperContext.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumperPlugin.java
+Patch:
+@@ -1,4 +1,3 @@
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ /*
+  * Copyright (c) 2014-present, Facebook, Inc.
+  * All rights reserved.
+@@ -8,7 +7,6 @@
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+ 
+-
+ package com.facebook.stetho.dumpapp;
+ 
+ /**
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/GlobalOptions.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/RawDumpappHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/StreamFramer.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/StreamingDumpappHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/plugins/SharedPreferencesDumperPlugin.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp.plugins;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/ChromeDevtoolsServer.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/MessageHandlingException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/MethodDispatcher.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/MismatchedResponseException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/database/DatabasePeerManager.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.database;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/helper/ChromePeerManager.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.helper;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/helper/PeerRegistrationListener.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.helper;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/helper/PeersRegisteredListener.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.helper;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/DisconnectReceiver.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/JsonRpcException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/JsonRpcPeer.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/JsonRpcResult.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/PendingRequest.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/PendingRequestCallback.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/protocol/EmptyResult.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/protocol/JsonRpcError.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/protocol/JsonRpcEvent.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/protocol/JsonRpcRequest.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/protocol/JsonRpcResponse.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/MimeMatcher.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkEventReporter.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkEventReporterImpl.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkPeerManager.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/ResourceTypeHelper.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/ResponseBodyData.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/ResponseBodyFileManager.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/ResponseHandlingInputStream.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/ChromeDevtoolsDomain.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/ChromeDevtoolsMethod.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/CSS.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Console.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/DOM.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/DOMStorage.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Database.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/DatabaseConstants.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2015-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Debugger.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/HeapProfiler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Inspector.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Network.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Page.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Profiler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Runtime.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/SimpleBooleanResult.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Worker.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/server/LocalSocketHttpServerConnection.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.server;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/server/RegistryInitializer.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.server;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/server/SecureHttpRequestHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.server;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/CloseCodes.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/CompositeInputStream.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/Frame.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/FrameHelper.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/MaskingHelper.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/ReadCallback.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/ReadHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/SimpleEndpoint.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/SimpleSession.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/WebSocketHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/WebSocketSession.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/WriteCallback.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/WriteHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/test/java/com/facebook/stetho/inspector/database/DatabasePeerManagerTest.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.database;
+ 
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/MainActivity.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.sample;
+ 
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/Networker.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.sample;
+ 
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/SettingsActivity.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.sample;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/DumperPluginsProvider.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/InspectorModulesProvider.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/Stetho.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2015-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/LogRedirector.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.common;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/Utf8Charset.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.common;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/Util.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.common;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumpException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumpUsageException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumpappHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumpappOutputBrokenException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/Dumper.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumperContext.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/DumperPlugin.java
+Patch:
+@@ -1,4 +1,3 @@
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ /*
+  * Copyright (c) 2014-present, Facebook, Inc.
+  * All rights reserved.
+@@ -8,7 +7,6 @@
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+ 
+-
+ package com.facebook.stetho.dumpapp;
+ 
+ /**
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/GlobalOptions.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/RawDumpappHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/StreamFramer.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/StreamingDumpappHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/plugins/SharedPreferencesDumperPlugin.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.dumpapp.plugins;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/ChromeDevtoolsServer.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/MessageHandlingException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/MethodDispatcher.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/MismatchedResponseException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/database/DatabasePeerManager.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.database;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/helper/ChromePeerManager.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.helper;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/helper/PeerRegistrationListener.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.helper;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/helper/PeersRegisteredListener.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.helper;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/DisconnectReceiver.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/JsonRpcException.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/JsonRpcPeer.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/JsonRpcResult.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/PendingRequest.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/PendingRequestCallback.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/protocol/EmptyResult.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/protocol/JsonRpcError.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/protocol/JsonRpcEvent.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/protocol/JsonRpcRequest.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/jsonrpc/protocol/JsonRpcResponse.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.jsonrpc.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/MimeMatcher.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkEventReporter.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkEventReporterImpl.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkPeerManager.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/ResourceTypeHelper.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/ResponseBodyData.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/ResponseBodyFileManager.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/ResponseHandlingInputStream.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.network;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/ChromeDevtoolsDomain.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/ChromeDevtoolsMethod.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/CSS.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Console.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/DOM.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/DOMStorage.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Database.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/DatabaseConstants.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2015-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Debugger.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/HeapProfiler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Inspector.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Network.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Page.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Profiler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Runtime.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/SimpleBooleanResult.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/Worker.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.protocol.module;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/server/LocalSocketHttpServerConnection.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.server;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/server/RegistryInitializer.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.server;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/server/SecureHttpRequestHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.server;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/CloseCodes.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/CompositeInputStream.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/Frame.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/FrameHelper.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/MaskingHelper.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/ReadCallback.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/ReadHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/SimpleEndpoint.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/SimpleSession.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/WebSocketHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/WebSocketSession.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/WriteCallback.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/websocket/WriteHandler.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.websocket;
+ 
+
+File: stetho/src/test/java/com/facebook/stetho/inspector/database/DatabasePeerManagerTest.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.inspector.database;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/android/FragmentCompat.java
+Patch:
+@@ -69,6 +69,7 @@ public static FragmentCompat getSupportLibInstance() {
+   }
+ 
+   public abstract Class<FRAGMENT> getFragmentClass();
++  public abstract Class<FRAGMENT_ACTIVITY> getFragmentActivityClass();
+   public abstract FragmentAccessor<FRAGMENT, FRAGMENT_MANAGER> forFragment();
+   public abstract FragmentManagerAccessor<FRAGMENT_MANAGER, FRAGMENT> forFragmentManager();
+   public abstract FragmentActivityAccessor<FRAGMENT_ACTIVITY, FRAGMENT_MANAGER> forFragmentActivity();
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/database/DatabasePeerManager.java
+Patch:
+@@ -38,7 +38,9 @@
+ public class DatabasePeerManager extends ChromePeerManager {
+   private static final String[] UNINTERESTING_FILENAME_SUFFIXES = new String[]{
+       "-journal",
+-      "-uid"
++      "-shm",
++      "-uid",
++      "-wal"
+   };
+ 
+   private final Context mContext;
+
+File: stetho-sample/src/debug/java/com/facebook/stetho/sample/SampleDebugApplication.java
+Patch:
+@@ -11,7 +11,6 @@
+ 
+ import java.util.ArrayList;
+ 
+-import android.app.Application;
+ import android.content.Context;
+ 
+ import com.facebook.stetho.DumperPluginsProvider;
+@@ -45,6 +44,7 @@ public Iterable<DumperPlugin> get() {
+         plugins.add(defaultPlugin);
+       }
+       plugins.add(new HelloWorldDumperPlugin());
++      plugins.add(new APODDumperPlugin(mContext.getContentResolver()));
+       return plugins;
+     }
+   }
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/APODContentProvider.java
+Patch:
+@@ -61,20 +61,23 @@ public String getType(Uri uri) {
+   public Uri insert(Uri uri, ContentValues values) {
+     SQLiteDatabase db = mOpenHelper.getWritableDatabase();
+     long id = db.insert(APODContract.TABLE_NAME, null /* nullColumnHack */, values);
++    notifyChange();
+     return uri.buildUpon().appendEncodedPath(String.valueOf(id)).build();
+   }
+ 
+   @Override
+   public int delete(Uri uri, String selection, String[] selectionArgs) {
+     SQLiteDatabase db = mOpenHelper.getWritableDatabase();
+     int count = db.delete(APODContract.TABLE_NAME, selection, selectionArgs);
++    notifyChange();
+     return count;
+   }
+ 
+   @Override
+   public int update(Uri uri, ContentValues values, String selection, String[] selectionArgs) {
+     SQLiteDatabase db = mOpenHelper.getWritableDatabase();
+     int count = db.update(APODContract.TABLE_NAME, values, selection, selectionArgs);
++    notifyChange();
+     return count;
+   }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/AndroidDOMProvider.java
+Patch:
+@@ -281,7 +281,7 @@ protected void onDraw(Canvas canvas) {
+       public boolean onTouchEvent(MotionEvent event) {
+         if (getParent() instanceof View) {
+           final View parent = (View)getParent();
+-          View view = ViewUtil.hitTestTouch(parent, event.getX(), event.getY(), mViewSelector);
++          View view = ViewUtil.hitTest(parent, event.getX(), event.getY(), mViewSelector);
+ 
+           if (event.getAction() != MotionEvent.ACTION_CANCEL) {
+             if (view != null) {
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/APODActivity.java
+Patch:
+@@ -109,7 +109,7 @@ public void bindView(View view, Context context, Cursor cursor) {
+       int bindPosition = cursor.getPosition();
+       holder.position = bindPosition;
+ 
+-      final String imageUrl = cursor.getString(APODPostsQuery.DESCRIPTION_IMAGE_URL_INDEX);
++      final String imageUrl = cursor.getString(APODPostsQuery.LARGE_IMAGE_URL_INDEX);
+       holder.image.setImageDrawable(null);
+       fetchImage(imageUrl, bindPosition, holder);
+ 
+@@ -181,13 +181,13 @@ private static class APODPostsQuery {
+         APODContract.Columns._ID,
+         APODContract.Columns.TITLE,
+         APODContract.Columns.DESCRIPTION_TEXT,
+-        APODContract.Columns.DESCRIPTION_IMAGE_URL,
++        APODContract.Columns.LARGE_IMAGE_URL,
+     };
+ 
+     public static final int ID_INDEX = 0;
+     public static final int TITLE_INDEX = 1;
+     public static final int DESCRIPTION_TEXT_INDEX = 2;
+-    public static final int DESCRIPTION_IMAGE_URL_INDEX = 3;
++    public static final int LARGE_IMAGE_URL_INDEX = 3;
+ 
+     public static CursorLoader createCursorLoader(Context context) {
+       return new CursorLoader(
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/APODContentProvider.java
+Patch:
+@@ -99,7 +99,7 @@ private void notifyChange() {
+ 
+   private static class APODSQLiteOpenHelper extends SQLiteOpenHelper {
+     private static final String DB_NAME = "apod.db";
+-    private static final int DB_VERSION = 1;
++    private static final int DB_VERSION = 2;
+ 
+     public APODSQLiteOpenHelper(Context context) {
+       super(context, DB_NAME, null /* factory */, DB_VERSION);
+@@ -112,7 +112,8 @@ public void onCreate(SQLiteDatabase db) {
+               APODContract.Columns._ID + " INTEGER PRIMARY KEY AUTOINCREMENT, " +
+               APODContract.Columns.TITLE + " TEXT, " +
+               APODContract.Columns.DESCRIPTION_IMAGE_URL + " TEXT, " +
+-              APODContract.Columns.DESCRIPTION_TEXT + " TEXT " +
++              APODContract.Columns.DESCRIPTION_TEXT + " TEXT, " +
++              APODContract.Columns.LARGE_IMAGE_URL + " TEXT " +
+               ")");
+     }
+ 
+
+File: stetho-sample/src/main/java/com/facebook/stetho/sample/APODContract.java
+Patch:
+@@ -22,5 +22,6 @@ public interface Columns extends BaseColumns {
+     public static final String TITLE = "title";
+     public static final String DESCRIPTION_TEXT = "description_text";
+     public static final String DESCRIPTION_IMAGE_URL = "description_image_url";
++    public static final String LARGE_IMAGE_URL = "large_image_url";
+   }
+ }
+
+File: stetho-sample/src/debug/java/com/facebook/stetho/sample/HelloWorldDumperPlugin.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.sample;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/ApplicationDescriptor.java
+Patch:
+@@ -99,7 +99,6 @@ private final class ElementContextICS extends ElementContext {
+     @Override
+     public void hook(Application element) {
+       mElement = Util.throwIfNull(element);
+-      mActivities = new ArrayList<Activity>();
+ 
+       // TODO: tree diffing will remove the need to even worry about installing this callback,
+       //       which will then allow ~realtime updates for pre-ICS. for now, pre-ICS will just
+@@ -141,7 +140,7 @@ public void onActivityDestroyed(Activity activity) {
+ 
+       mElement.registerActivityLifecycleCallbacks(mCallbacks);
+ 
+-      mActivities = ApplicationUtil.getAllActivities();
++      mActivities = new ArrayList<Activity>(ApplicationUtil.getAllActivities());
+     }
+ 
+     @Override
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/helper/ObjectIdMapper.java
+Patch:
+@@ -107,7 +107,9 @@ public Integer removeObject(Object object) {
+   }
+ 
+   public int size() {
+-    return mObjectToIdMap.size();
++    synchronized (mSync) {
++      return mObjectToIdMap.size();
++    }
+   }
+ 
+   protected void onMapped(Object object, int id) {
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/DOM.java
+Patch:
+@@ -181,9 +181,6 @@ protected synchronized void onFirstPeerRegistered() {
+ 
+     @Override
+     protected synchronized void onLastPeerUnregistered() {
+-      Object rootElement = mDOMProvider.getRootElement();
+-      removeElementTree(rootElement);
+-
+       mObjectIdMapper.clear();
+ 
+       mDOMProvider.dispose();
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/helper/ObjectIdMapper.java
+Patch:
+@@ -85,7 +85,9 @@ public Integer removeObject(Object object) {
+   }
+ 
+   public int size() {
+-    return mObjectToIdMap.size();
++    synchronized (mSync) {
++      return mObjectToIdMap.size();
++    }
+   }
+ 
+   protected void onMapped(Object object, int id) {
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/protocol/module/DOM.java
+Patch:
+@@ -158,9 +158,6 @@ protected synchronized void onFirstPeerRegistered() {
+ 
+     @Override
+     protected synchronized void onLastPeerUnregistered() {
+-      Object rootElement = mDOMProvider.getRootElement();
+-      removeElementTree(rootElement);
+-
+       mObjectIdMapper.clear();
+ 
+       mDOMProvider.dispose();
+
+File: stetho-sample/src/debug/java/com/facebook/stetho/sample/HelloWorldDumperPlugin.java
+Patch:
+@@ -6,8 +6,6 @@
+  * LICENSE file in the root directory of this source tree. An additional grant
+  * of patent rights can be found in the PATENTS file in the same directory.
+  */
+-//
+-// Copyright 2004-present Facebook. All Rights Reserved.
+ 
+ package com.facebook.stetho.sample;
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/common/Util.java
+Patch:
+@@ -80,10 +80,10 @@ public static void sleepUninterruptibly(long millis) {
+     } while (remaining > 0);
+   }
+ 
+-  public static void awaitUninterruptibly(CountDownLatch latch) {
++  public static void joinUninterruptibly(Thread t) {
+     while (true) {
+       try {
+-        latch.await();
++        t.join();
+         return;
+       } catch (InterruptedException e) {
+         // Keep going...
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/plugins/CrashDumperPlugin.java
+Patch:
+@@ -131,8 +131,7 @@ private void doUncaughtException(Iterator<String> argsIter) throws DumpException
+       Thread crashThread = new Thread(new ThrowRunnable(t));
+       crashThread.start();
+ 
+-      CountDownLatch impossibleLatch = new CountDownLatch(1);
+-      Util.awaitUninterruptibly(impossibleLatch);
++      Util.joinUninterruptibly(crashThread);
+     } catch (
+         ClassNotFoundException |
+         ClassCastException |
+@@ -143,7 +142,7 @@ private void doUncaughtException(Iterator<String> argsIter) throws DumpException
+     } catch (InvocationTargetException e) {
+       // This means that the method invoked actually threw, independent of reflection.  Best
+       // reflect that as a normal unchecked exception in dumpapp output.
+-      ExceptionUtil.propagate(e.getCause());
++      throw ExceptionUtil.propagate(e.getCause());
+     }
+   }
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/dumpapp/plugins/CrashDumperPlugin.java
+Patch:
+@@ -114,8 +114,6 @@ private void doKill(DumperContext dumpContext, Iterator<String> argsIter) throws
+ 
+   private void doUncaughtException(Iterator<String> argsIter) throws DumpException {
+     String throwableClassString = ArgsHelper.nextOptionalArg(argsIter, OPTION_THROW_DEFAULT);
+-
+-
+     try {
+       Class<? extends Throwable> throwableClass =
+           (Class<? extends Throwable>)Class.forName(throwableClassString);
+
+File: stetho/src/main/java/com/facebook/stetho/common/android/ApplicationUtil.java
+Patch:
+@@ -14,16 +14,14 @@
+ import java.util.Map;
+ 
+ public class ApplicationUtil {
+-  private static final String TAG = "ApplicationUtil";
+-
+   private ApplicationUtil() {
+   }
+ 
+   public static List<Activity> getAllActivities() {
+     try {
+       return getAllActivitiesHack();
+     } catch (Exception e) {
+-      LogUtil.w(TAG, e, "Cannot retrieve list of Activity instances. UI inspection may not work!");
++      LogUtil.w(e, "Cannot retrieve list of Activity instances. UI inspection may not work!");
+       return Collections.emptyList();
+     }
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/ApplicationDescriptor.java
+Patch:
+@@ -21,8 +21,6 @@
+ import java.util.Map;
+ 
+ final class ApplicationDescriptor extends ChainedDescriptor<Application> {
+-  private static final String TAG = "ApplicationDescriptor";
+-
+   private final Map<Application, ElementContext> mElementToContextMap =
+       Collections.synchronizedMap(new IdentityHashMap<Application, ElementContext>());
+ 
+@@ -64,7 +62,7 @@ private ElementContext newElementContext() {
+     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
+       return new ElementContextICS();
+     } else {
+-      LogUtil.w(TAG, "Running on pre-ICS: must manually reload inspector when Activity changes");
++      LogUtil.w("Running on pre-ICS: must manually reload inspector when Activity changes");
+       return new ElementContextPreICS();
+     }
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/ViewHighlighter.java
+Patch:
+@@ -19,14 +19,12 @@
+ import javax.annotation.Nullable;
+ 
+ abstract class ViewHighlighter {
+-  private static final String TAG = "ViewHighlighter";
+-
+   public static ViewHighlighter newInstance() {
+     // TODO: find ways to do highlighting on older versions too
+     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
+       return new OverlayHighlighter();
+     } else {
+-      LogUtil.w(TAG, "Running on pre-JBMR2: View highlighting is not supported");
++      LogUtil.w("Running on pre-JBMR2: View highlighting is not supported");
+       return new NoopHighlighter();
+     }
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/WindowDescriptor.java
+Patch:
+@@ -22,8 +22,6 @@
+ import java.util.Map;
+ 
+ final class WindowDescriptor extends ChainedDescriptor<Window> {
+-  private static final String TAG = "WindowDescriptor";
+-
+   private final Map<Window, ElementContext> mElementToContextMap =
+       Collections.synchronizedMap(new IdentityHashMap<Window, ElementContext>());
+ 
+@@ -66,7 +64,6 @@ private ElementContext newElementContext() {
+       return new ElementContextHCMR1();
+     } else {
+       LogUtil.w(
+-          TAG,
+           "Running on pre-HCMR1: must manually reload inspector after Window installs DecorView");
+ 
+       return new ElementContext();
+
+File: stetho/src/main/java/com/facebook/stetho/common/android/ApplicationUtil.java
+Patch:
+@@ -14,16 +14,14 @@
+ import java.util.Map;
+ 
+ public class ApplicationUtil {
+-  private static final String TAG = "ApplicationUtil";
+-
+   private ApplicationUtil() {
+   }
+ 
+   public static List<Activity> getAllActivities() {
+     try {
+       return getAllActivitiesHack();
+     } catch (Exception e) {
+-      LogUtil.w(TAG, e, "Cannot retrieve list of Activity instances. UI inspection may not work!");
++      LogUtil.w(e, "Cannot retrieve list of Activity instances. UI inspection may not work!");
+       return Collections.emptyList();
+     }
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/ApplicationDescriptor.java
+Patch:
+@@ -21,8 +21,6 @@
+ import java.util.Map;
+ 
+ final class ApplicationDescriptor extends ChainedDescriptor<Application> {
+-  private static final String TAG = "ApplicationDescriptor";
+-
+   private final Map<Application, ElementContext> mElementToContextMap =
+       Collections.synchronizedMap(new IdentityHashMap<Application, ElementContext>());
+ 
+@@ -64,7 +62,7 @@ private ElementContext newElementContext() {
+     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
+       return new ElementContextICS();
+     } else {
+-      LogUtil.w(TAG, "Running on pre-ICS: must manually reload inspector when Activity changes");
++      LogUtil.w("Running on pre-ICS: must manually reload inspector when Activity changes");
+       return new ElementContextPreICS();
+     }
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/ViewHighlighter.java
+Patch:
+@@ -19,14 +19,12 @@
+ import javax.annotation.Nullable;
+ 
+ abstract class ViewHighlighter {
+-  private static final String TAG = "ViewHighlighter";
+-
+   public static ViewHighlighter newInstance() {
+     // TODO: find ways to do highlighting on older versions too
+     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
+       return new OverlayHighlighter();
+     } else {
+-      LogUtil.w(TAG, "Running on pre-JBMR2: View highlighting is not supported");
++      LogUtil.w("Running on pre-JBMR2: View highlighting is not supported");
+       return new NoopHighlighter();
+     }
+   }
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/elements/android/WindowDescriptor.java
+Patch:
+@@ -22,8 +22,6 @@
+ import java.util.Map;
+ 
+ final class WindowDescriptor extends ChainedDescriptor<Window> {
+-  private static final String TAG = "WindowDescriptor";
+-
+   private final Map<Window, ElementContext> mElementToContextMap =
+       Collections.synchronizedMap(new IdentityHashMap<Window, ElementContext>());
+ 
+@@ -66,7 +64,6 @@ private ElementContext newElementContext() {
+       return new ElementContextHCMR1();
+     } else {
+       LogUtil.w(
+-          TAG,
+           "Running on pre-HCMR1: must manually reload inspector after Window installs DecorView");
+ 
+       return new ElementContext();
+
+File: stetho/src/main/java/com/facebook/stetho/server/LocalSocketHttpServer.java
+Patch:
+@@ -276,6 +276,8 @@ private void bindToSocket(String address) {
+             LogUtil.d("Binding server to " + address);
+           }
+           mServerSocket = new LocalServerSocket(address);
++          LogUtil.i("Listening on @" + address);
++          return;
+         } catch (BindException be) {
+           LogUtil.w(be, "Binding error, sleep 1 second ...");
+           if (retries == 0)
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/ChromeDevtoolsServer.java
+Patch:
+@@ -27,9 +27,9 @@
+ import org.json.JSONObject;
+ 
+ /**
+- * Implements a limited version of the WebKit Inspector WebSocket protocol (using JSON-RPC 2.0).
+- * The most up-to-date documentation can be found in the WebKit source code:
+- * <a href="https://github.com/WebKit/webkit/blob/master/Source/WebCore/inspector/protocol">https://github.com/WebKit/webkit/blob/master/Source/WebCore/inspector/protocol</a>
++ * Implements a limited version of the Chrome Debugger WebSocket protocol (using JSON-RPC 2.0).
++ * The most up-to-date documentation can be found in the Blink source code:
++ * <a href="https://code.google.com/p/chromium/codesearch#chromium/src/third_party/WebKit/Source/devtools/protocol.json&q=protocol.json&sq=package:chromium&type=cs">protocol.json</a>
+  */
+ public class ChromeDevtoolsServer implements SimpleEndpoint {
+   private static final String TAG = "ChromeDevtoolsServer";
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/ChromeDevtoolsServer.java
+Patch:
+@@ -27,9 +27,9 @@
+ import org.json.JSONObject;
+ 
+ /**
+- * Implements a limited version of the WebKit Inspector WebSocket protocol (using JSON-RPC 2.0).
+- * The most up-to-date documentation can be found in the WebKit source code:
+- * <a href="https://github.com/WebKit/webkit/blob/master/Source/WebCore/inspector/protocol">https://github.com/WebKit/webkit/blob/master/Source/WebCore/inspector/protocol</a>
++ * Implements a limited version of the Chrome Debugger WebSocket protocol (using JSON-RPC 2.0).
++ * The most up-to-date documentation can be found in the Blink source code:
++ * <a href="https://code.google.com/p/chromium/codesearch#chromium/src/third_party/WebKit/Source/devtools/protocol.json&q=protocol.json&sq=package:chromium&type=cs">protocol.json</a>
+  */
+ public class ChromeDevtoolsServer implements SimpleEndpoint {
+   private static final String TAG = "ChromeDevtoolsServer";
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkEventReporterImpl.java
+Patch:
+@@ -94,6 +94,7 @@ public void requestWillBeSent(InspectorRequest request) {
+       params.timestamp = stethoNow() / 1000.0;
+       params.initiator = initiatorJSON;
+       params.redirectResponse = null;
++      params.type = Page.ResourceType.OTHER;
+       peerManager.sendNotificationToPeers("Network.requestWillBeSent", params);
+     }
+   }
+@@ -143,7 +144,7 @@ public void responseHeadersReceived(InspectorResponse response) {
+       }
+       receivedParams.response = responseJSON;
+       peerManager.sendNotificationToPeers("Network.responseReceived", receivedParams);
+-      }
++    }
+   }
+ 
+   @Override
+
+File: stetho/src/test/java/com/facebook/stetho/inspector/network/ResponseHandlingInputStreamTest.java
+Patch:
+@@ -56,6 +56,7 @@ public void setup() {
+         new ByteArrayInputStream(TEST_RESPONSE_BODY),
+         TEST_REQUEST_ID,
+         mTestOutputStream,
++        null /* decompressedCounter */,
+         mNetworkPeerManager,
+         new DefaultResponseHandler(mNetworkEventReporter, TEST_REQUEST_ID));
+   }
+@@ -153,6 +154,7 @@ public void write(int oneByte) throws IOException {
+         new ByteArrayInputStream(TEST_RESPONSE_BODY),
+         TEST_REQUEST_ID,
+         exceptionOutputStream,
++        null /* decompressedCounter */,
+         mNetworkPeerManager,
+         new DefaultResponseHandler(mNetworkEventReporter, TEST_REQUEST_ID));
+ 
+
+File: stetho/src/main/java/com/facebook/stetho/inspector/network/NetworkEventReporterImpl.java
+Patch:
+@@ -97,6 +97,7 @@ public void requestWillBeSent(InspectorRequest request) {
+       params.timestamp = stethoNow() / 1000.0;
+       params.initiator = initiatorJSON;
+       params.redirectResponse = null;
++      params.type = Page.ResourceType.OTHER;
+       peerManager.sendNotificationToPeers("Network.requestWillBeSent", params);
+     }
+   }
+@@ -146,7 +147,7 @@ public void responseHeadersReceived(InspectorResponse response) {
+       }
+       receivedParams.response = responseJSON;
+       peerManager.sendNotificationToPeers("Network.responseReceived", receivedParams);
+-      }
++    }
+   }
+ 
+   @Override
+

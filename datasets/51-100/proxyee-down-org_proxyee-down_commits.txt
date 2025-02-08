@@ -1,0 +1,1316 @@
+File: main/src/main/java/org/pdown/gui/http/controller/PacController.java
+Patch:
+@@ -27,7 +27,7 @@ public class PacController {
+       + "      break;"
+       + "    }"
+       + "  }"
+-      + "  return match ? 'PROXY 127.0.0.1:{port}' : 'DIRECT';"
++      + "  return match ? 'PROXY 127.0.0.1:{port};DIRECT' : 'DIRECT';"
+       + "}";
+ 
+   @RequestMapping("pdown.pac")
+
+File: main/src/main/java/org/pdown/gui/extension/ExtensionContent.java
+Patch:
+@@ -1,5 +1,6 @@
+ package org.pdown.gui.extension;
+ 
++import com.fasterxml.jackson.databind.DeserializationFeature;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import java.io.File;
+ import java.io.FileInputStream;
+@@ -81,7 +82,7 @@ public synchronized static ExtensionInfo refresh(String path, boolean isLocal) t
+       boolean match = false;
+       for (int i = 0; i < EXTENSION_INFO_LIST.size(); i++) {
+         ExtensionInfo extensionInfo = EXTENSION_INFO_LIST.get(i);
+-        if (path.equals(extensionInfo.getMeta().getPath())
++        if (loadExt.getMeta().getPath().equals(extensionInfo.getMeta().getPath())
+             && loadExt.getMeta().isLocal() == extensionInfo.getMeta().isLocal()) {
+           match = true;
+           EXTENSION_INFO_LIST.set(i, loadExt);
+@@ -165,6 +166,7 @@ public synchronized static void refresh() {
+   private static ExtensionInfo parseExtensionDir(File extendDir, boolean isLocal) {
+     ExtensionInfo extensionInfo = null;
+     ObjectMapper objectMapper = new ObjectMapper();
++    objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+     try {
+       extensionInfo = objectMapper.readValue(new FileInputStream(extendDir + File.separator + EXT_MANIFEST), ExtensionInfo.class);
+     } catch (IOException e) {
+
+File: main/src/main/java/org/pdown/gui/extension/Meta.java
+Patch:
+@@ -7,12 +7,12 @@
+ 
+ public class Meta {
+ 
+-  public transient static final String CONFIG_FILE = ".config.dat";
++  public transient static final String CONFIG_FILE = ".ext_data/.config.dat";
+ 
+   private transient String path;
+   private transient String fullPath;
+   private boolean enabled = true;
+-  private boolean local;
++  private boolean local = true;
+   private Map<String, Object> data;
+ 
+   public String getPath() {
+
+File: main/src/main/java/org/pdown/gui/extension/mitm/intercept/CookieIntercept.java
+Patch:
+@@ -28,7 +28,8 @@ public void beforeRequest(Channel clientChannel, HttpRequest httpRequest, HttpPr
+       httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
+       //https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Headers/Access-Control-Expose-Headers
+       AsciiString customHeadKey = AsciiString.cached("X-Sniff-Cookie");
+-      httpResponse.headers().set(customHeadKey, pipeline.getHttpRequest().headers().get(HttpHeaderNames.COOKIE));
++      String cookie = pipeline.getHttpRequest().headers().get(HttpHeaderNames.COOKIE);
++      httpResponse.headers().set(customHeadKey, cookie == null ? "" : cookie);
+       httpResponse.headers().set(HttpHeaderNames.ACCESS_CONTROL_EXPOSE_HEADERS, customHeadKey);
+       String origin = httpRequest.headers().get(HttpHeaderNames.ORIGIN);
+       if (StringUtil.isNullOrEmpty(origin)) {
+
+File: main/src/main/java/org/pdown/gui/extension/ExtensionContent.java
+Patch:
+@@ -76,7 +76,7 @@ public synchronized static void saveConfig() throws IOException {
+   }
+ 
+   public synchronized static ExtensionInfo refresh(String path, boolean isLocal) throws IOException {
+-    ExtensionInfo loadExt = parseExtensionDir(new File(path), isLocal);
++    ExtensionInfo loadExt = parseExtensionDir(new File((isLocal ? "" : EXT_DIR) + path), isLocal);
+     if (loadExt != null && EXTENSION_INFO_LIST != null && path != null) {
+       boolean match = false;
+       for (int i = 0; i < EXTENSION_INFO_LIST.size(); i++) {
+@@ -131,7 +131,7 @@ public synchronized static void remove(String path, boolean isLocal) throws IOEx
+     }
+   }
+ 
+-  public synchronized static void refresh() throws IOException {
++  public synchronized static void refresh() {
+     if (PROXY_WILDCARDS == null) {
+       PROXY_WILDCARDS = new HashSet<>();
+     } else {
+
+File: main/src/main/java/org/pdown/gui/http/controller/NativeController.java
+Patch:
+@@ -299,7 +299,7 @@ private FullHttpResponse extensionCommon(FullHttpRequest request, boolean isUpda
+       ExtensionUtil.install(server, path, files);
+     }
+     //刷新扩展content
+-    ExtensionContent.refresh(ExtensionContent.EXT_DIR + path);
++    ExtensionContent.refresh(path);
+     //刷新系统pac代理
+     AppUtil.refreshPAC();
+     return new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+
+File: main/src/main/java/org/pdown/gui/http/controller/NativeController.java
+Patch:
+@@ -221,7 +221,7 @@ public FullHttpResponse getUpdateProgress(Channel channel, FullHttpRequest reque
+ 
+   @RequestMapping("doRestart")
+   public FullHttpResponse doRestart(Channel channel, FullHttpRequest request) throws Exception {
+-    System.out.println("proxyee-down-restart");
++    System.out.println("proxyee-down-exit");
+     return new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+   }
+ 
+
+File: main/src/main/java/org/pdown/gui/extension/mitm/intercept/ScriptIntercept.java
+Patch:
+@@ -86,7 +86,7 @@ public void handelResponse(HttpRequest httpRequest, FullHttpResponse httpRespons
+     }
+     if (scriptsBuilder.length() > 0) {
+       httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, AsciiString.cached("text/html; charset=utf-8"));
+-      int index = ByteUtil.findText(httpResponse.content(), "<head>");
++      int index = ByteUtil.findText(httpResponse.content(), "</head>");
+       String pdownJs = "";
+       try (
+           BufferedReader reader = new BufferedReader(new InputStreamReader(Thread.currentThread().getContextClassLoader().getResourceAsStream("pdown.js")))
+@@ -99,7 +99,7 @@ public void handelResponse(HttpRequest httpRequest, FullHttpResponse httpRespons
+         pdownJs = "<script type=\"text/javascript\">\r\n" + pdownJs + "\r\n</script>";
+       } catch (IOException e) {
+       }
+-      ByteUtil.insertText(httpResponse.content(), index == -1 ? 0 : index, pdownJs, Charset.forName("UTF-8"));
++      ByteUtil.insertText(httpResponse.content(), index == -1 ? 0 : index - 7, pdownJs, Charset.forName("UTF-8"));
+     }
+   }
+ }
+
+File: main/src/main/java/org/pdown/gui/util/AppUtil.java
+Patch:
+@@ -55,7 +55,7 @@ public static void download(String url, String path) throws IOException {
+     URL u = new URL(url);
+     HttpURLConnection connection = (HttpURLConnection) u.openConnection();
+     connection.setConnectTimeout(30000);
+-    connection.setReadTimeout(60000);
++    connection.setReadTimeout(0);
+     File file = new File(path);
+     if (!file.exists() || file.isDirectory()) {
+       FileUtil.createFileSmart(file.getPath());
+
+File: main/src/main/java/org/pdown/gui/extension/mitm/intercept/SniffIntercept.java
+Patch:
+@@ -110,7 +110,6 @@ public void afterResponse(Channel clientChannel, Channel proxyChannel, HttpRespo
+         httpRequestInfo.setRequestProto(new RequestProto(pipeline.getRequestProto().getHost(), pipeline.getRequestProto().getPort(), pipeline.getRequestProto().getSsl()));
+         HttpRequestForm requestForm = HttpRequestForm.parse(httpRequestInfo);
+         HttpResponseInfo responseInfo = HttpDownUtil.getHttpResponseInfo(httpRequestInfo, null, null, (NioEventLoopGroup) clientChannel.eventLoop().parent());
+-        responseInfo.setSupportRange(false);
+         httpResponse.headers().clear();
+         httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/html");
+         httpResponse.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+
+File: main/src/main/java/org/pdown/gui/DownApplication.java
+Patch:
+@@ -91,7 +91,7 @@ public void start(Stage primaryStage) throws Exception {
+     initTray();
+     initWindow();
+     initBrowser();
+-    loadUri("", true);
++    loadUri(null, true);
+   }
+ 
+ 
+@@ -307,7 +307,7 @@ public void loadUri(String uri, boolean isTray) {
+     } else {
+       Platform.runLater(() -> {
+         show(isTray);
+-        if (!browser.isLoad()) {
++        if (uri != null || !browser.isLoad()) {
+           browser.load(url);
+         }
+       });
+
+File: runner/src/main/java/org/pdown/gui/Runner.java
+Patch:
+@@ -36,7 +36,7 @@ private static void fork() {
+       Process process = Runtime.getRuntime().exec(new String[]{
+           JAVA_CMD_PATH,
+           "-jar",
+-          "-Dfile.encoding=GBK",
++          //"-Dfile.encoding=GBK",
+           //"-Dapple.awt.UIElement=true",
+           "-Xms128m",
+           "-Xmx384m",
+
+File: main/src/main/java/org/pdown/gui/extension/mitm/util/ExtensionCertUtil.java
+Patch:
+@@ -3,6 +3,7 @@
+ import com.github.monkeywie.proxyee.crt.CertUtil;
+ import java.io.File;
+ import java.io.IOException;
++import java.net.URLEncoder;
+ import java.nio.file.Files;
+ import java.nio.file.Paths;
+ import java.security.KeyPair;
+@@ -54,8 +55,7 @@ public static void installCert(File file) throws IOException {
+           "root",
+           path);
+     } else if (OsUtil.isMac()) {
+-      ExecUtil.httpGet("http://127.0.0.1:" + DownApplication.macToolPort + "/cert/install"
+-          + "?path=" + path);
++      ExecUtil.httpGet("http://127.0.0.1:" + DownApplication.macToolPort + "/cert/install?path=" + URLEncoder.encode(path, "utf-8"));
+     }
+   }
+ 
+
+File: main/src/main/java/org/pdown/gui/extension/mitm/util/ExtensionProxyUtil.java
+Patch:
+@@ -49,7 +49,7 @@ public static void enabledPACProxy(String url) throws IOException {
+       refreshOptions(list);
+     } else if (OsUtil.isMac()) {
+       String networkService = disabledProxy();
+-      ExecUtil.httpGet("http://127.0.0.1:" + DownApplication.macToolPort + "/proxy/enabledHTTP"
++      ExecUtil.httpGet("http://127.0.0.1:" + DownApplication.macToolPort + "/proxy/enabledPAC"
+           + "?ns=" + networkService
+           + "&url=" + url);
+     }
+
+File: main/src/main/java/org/pdown/gui/http/controller/NativeController.java
+Patch:
+@@ -137,9 +137,9 @@ public FullHttpResponse showFile(Channel channel, FullHttpRequest request) throw
+       if (!file.exists() || OsUtil.isUnix()) {
+         Desktop.getDesktop().open(file.getParentFile());
+       } else if (OsUtil.isWindows()) {
+-        ExecUtil.execSync("explorer.exe", "/select,", file.getPath());
++        ExecUtil.execBlock("explorer.exe", "/select,", file.getPath());
+       } else if (OsUtil.isMac()) {
+-        ExecUtil.execSync("open", "-R", file.getPath());
++        ExecUtil.execBlock("open", "-R", file.getPath());
+       }
+     }
+     return new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+
+File: main/src/main/java/org/pdown/gui/util/ExecUtil.java
+Patch:
+@@ -35,7 +35,7 @@ public static String exec(String... shell) throws IOException {
+   /**
+    * 同步执行shell，阻塞当前线程
+    */
+-  public static void execSync(String... shell) throws IOException {
++  public static void execBlock(String... shell) throws IOException {
+     Process process = Runtime.getRuntime().exec(shell);
+     try (
+         InputStream inputStream = process.getInputStream()
+@@ -52,7 +52,7 @@ public static void execSync(String... shell) throws IOException {
+   /**
+    * 以管理员权限，同步执行shell，阻塞当前线程
+    */
+-  public static void execSyncWithAdmin(String shell) throws IOException {
++  public static void execBlockWithAdmin(String shell) throws IOException {
+     //osascript -e "do shell script \"shell\" with administrator privileges"
+     Process process = Runtime.getRuntime().exec(new String[]{
+         "osascript",
+
+File: runner/src/main/java/org/pdown/gui/Runner.java
+Patch:
+@@ -9,7 +9,7 @@
+ public class Runner {
+ 
+   private static final String JAVA_CMD_PATH = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
+-  private static final String MAIN_JAR_PATH = "../main/proxyee-down-main.jar";
++  private static final String MAIN_JAR_PATH = "main/proxyee-down-main.jar";
+   private static final String MAIN_JAR_BAK_PATH = MAIN_JAR_PATH + ".bak";
+ 
+   public static void main(String[] args) throws IOException {
+
+File: main/src/main/java/org/pdown/gui/com/Components.java
+Patch:
+@@ -14,7 +14,6 @@
+ import javafx.stage.Modality;
+ import javafx.stage.Stage;
+ import javafx.stage.StageStyle;
+-import org.pdown.gui.DownApplication;
+ 
+ public class Components {
+ 
+@@ -65,14 +64,16 @@ public static File dirChooser() {
+     Stage stage = buildBackgroundTopStage();
+     DirectoryChooser chooser = new DirectoryChooser();
+     chooser.setTitle("选择文件夹");
+-    File file = chooser.showDialog(new Stage());
++    File file = chooser.showDialog(stage);
+     stage.close();
+     return file;
+   }
+ 
+   private static Stage buildBackgroundTopStage() {
+     Stage stage = new Stage();
+     stage.setAlwaysOnTop(true);
++    stage.setWidth(1);
++    stage.setHeight(1);
+     stage.initStyle(StageStyle.UNDECORATED);
+     stage.show();
+     return stage;
+
+File: runner/src/main/java/org/pdown/gui/Runner.java
+Patch:
+@@ -17,7 +17,7 @@ public static void main(String[] args) throws IOException {
+           JAVA_CMD_PATH,
+           "-jar",
+           "-Dfile.encoding=GBK",
+-          "-Dapple.awt.UIElement=true",
++          //"-Dapple.awt.UIElement=true",
+           "-Xms128m",
+           "-Xmx256m",
+           MAIN_JAR_PATH
+
+File: core/src/main/java/lee/study/down/util/HttpDownUtil.java
+Patch:
+@@ -180,7 +180,7 @@ protected void initChannel(Channel ch) throws Exception {
+               ch.pipeline().addLast(ProxyHandleFactory.build(proxyConfig));
+             }
+             if (requestProto.getSsl()) {
+-              ch.pipeline().addLast(clientSslCtx.newHandler(ch.alloc()));
++              ch.pipeline().addLast(clientSslCtx.newHandler(ch.alloc(), requestProto.getHost(), requestProto.getPort()));
+             }
+             ch.pipeline().addLast("httpCodec", new HttpClientCodec());
+             ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+
+File: ui/src/main/java/lee/study/down/model/ConfigBaseInfo.java
+Patch:
+@@ -18,4 +18,7 @@ public class ConfigBaseInfo {
+   private double guiHeight = -1;
+   private double guiX = -1;
+   private double guiY = -1;
++  private boolean autoOpen = true; //启动成功时窗口是否显示
++  private boolean autoDown = false; //嗅探到任务时是否自动开始下载
++  private String autoDownPath;  //自动下载保存文件的路径
+ }
+
+File: update/src/main/java/lee/study/down/Bootstrap.java
+Patch:
+@@ -20,7 +20,7 @@ public static void main(String[] args) throws Exception {
+   private static final String MAIN_PATH = PathUtil.ROOT_PATH + "main" + File.separator;
+   private static final String CORE_PATH = MAIN_PATH + "proxyee-down-core.jar";
+   private static final String UPDATE_PATH = MAIN_PATH + "proxyee-down-core.jar.bak";
+-  private static final String SHELL_PARAMS = " -Dfile.encoding=GBK -Xms256m -Xmx512m -jar ";
++  private static final String SHELL_PARAMS = " -Dfile.encoding=GBK -Xms128m -Xmx128m -jar ";
+   private static Process process;
+   private static String SHELL;
+ 
+
+File: sniff/src/main/java/lee/study/down/intercept/BdyIntercept.java
+Patch:
+@@ -13,7 +13,7 @@ public class BdyIntercept extends ResponseTextIntercept {
+ 
+   @Override
+   public boolean match(HttpResponse httpResponse, HttpProxyInterceptPipeline pipeline) {
+-    return HttpUtil.checkUrl(pipeline.getHttpRequest(), "^(pan|yun).baidu.com.*$")
++    return HttpUtil.checkUrl(pipeline.getHttpRequest(), "^(pan|yun).baidu.com/(disk/home|s/|share/link).*$")
+         && isHtml(httpResponse, pipeline);
+   }
+ 
+
+File: common/src/main/java/lee/study/down/io/BdyZip.java
+Patch:
+@@ -344,7 +344,7 @@ public interface BdyUnzipCallback {
+     void onError(Exception e);
+   }
+ 
+-  static class TestUnzipCallback implements BdyUnzipCallback {
++  public static class TestUnzipCallback implements BdyUnzipCallback {
+ 
+     @Override
+     public void onStart() {
+
+File: common/src/main/java/lee/study/down/model/TaskInfo.java
+Patch:
+@@ -70,11 +70,12 @@ public TaskInfo buildChunkInfoList() {
+   }
+ 
+   public void reset() {
+-    startTime = lastTime = pauseTime = 0;
++    startTime = lastTime = pauseTime = downSize = 0;
+     chunkInfoList.forEach((chunkInfo) -> {
+       chunkInfo.setStartTime(0);
+       chunkInfo.setLastTime(0);
+       chunkInfo.setPauseTime(0);
++      chunkInfo.setDownSize(0);
+       chunkInfo.setErrorCount(0);
+     });
+   }
+
+File: ui/src/main/java/lee/study/down/gui/HttpDownApplication.java
+Patch:
+@@ -178,7 +178,7 @@ private void afterTrayInit() {
+     );
+     int sniffProxyPort = ContentManager.CONFIG.get().getProxyPort();
+     if (OsUtil.isBusyPort(sniffProxyPort)) {
+-      showMsg("端口(" + sniffProxyPort + ")被占用，请关闭占用端口的软件或设置新的端口号");
++      showMsg("端口(" + sniffProxyPort + ")被占用，请勿重复启动本软件！若无重复启动，请关闭占用端口的软件或设置新的端口号");
+     } else {
+       new Thread(() -> proxyServer.start(ContentManager.CONFIG.get().getProxyPort())).start();
+     }
+
+File: core/src/main/java/lee/study/down/handle/HttpDownInitializer.java
+Patch:
+@@ -90,7 +90,7 @@ public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
+             }
+             if (isDone(chunkInfo.getDownSize(), httpContent)) {
+               LOGGER.debug("分段下载完成：channelId[" + ctx.channel().id() + "]\t" + chunkInfo);
+-              bootstrap.close(chunkInfo);
++              bootstrap.close(chunkInfo, true);
+               //分段下载完成回调
+               chunkInfo.setStatus(HttpDownStatus.DONE);
+               taskInfo.refresh(chunkInfo);
+@@ -108,7 +108,7 @@ public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
+                   //文件下载完成回调
+                   taskInfo.setStatus(HttpDownStatus.DONE);
+                   LOGGER.debug("下载完成：channelId[" + ctx.channel().id() + "]\t" + chunkInfo);
+-                  bootstrap.close();
++                  bootstrap.close(true);
+                   if (callback != null) {
+                     callback.onDone(bootstrap.getHttpDownInfo());
+                   }
+
+File: ui/src/main/java/lee/study/down/mvc/controller/HttpDownController.java
+Patch:
+@@ -1,6 +1,5 @@
+ package lee.study.down.mvc.controller;
+ 
+-import com.sun.org.apache.bcel.internal.generic.NEW;
+ import java.awt.Desktop;
+ import java.io.File;
+ import java.io.IOException;
+
+File: sniff/src/main/java/lee/study/down/plug/PluginUtil.java
+Patch:
+@@ -78,8 +78,6 @@ public static PluginBean checkAndUpdateLocalPlugin(String key, InputStream input
+             outputStream.write((line + "\r\n").getBytes("UTF-8"));
+           }
+         }
+-      } else {
+-        return null;
+       }
+     }
+     return getPluginBean(new FileInputStream(localFile));
+
+File: ui/src/main/java/lee/study/down/model/ConfigBaseInfo.java
+Patch:
+@@ -9,7 +9,7 @@ public class ConfigBaseInfo {
+   private int sniffModel = 2;  //嗅探模式 1.全网 2.百度云 3.关闭
+   private int uiModel = 1;  //嗅探模式 1.GUI 2.浏览器
+   private int connections = 32;  //默认分段数
+-  private int timeout = 30;  //超时重试时间
++  private int timeout = 10;  //超时重试时间
+   private boolean secProxyEnable; //二级代理开关
+   private String lastPath;  //最后保存文件的路径
+   private int retryCount = 5;  //失败重试次数
+
+File: ui/src/main/java/lee/study/down/task/PluginUpdateCheckTask.java
+Patch:
+@@ -29,7 +29,8 @@ public void run() {
+         URLConnection connection = url.openConnection();
+         PluginBean pluginBean = PluginUtil
+             .checkAndUpdateLocalPlugin(name, connection.getInputStream());
+-        if (pluginBean != null) {
++        PluginBean current = PluginContent.get(name);
++        if (current != null && pluginBean.getVersion() > current.getVersion()) {
+           PluginContent.set(name, pluginBean);
+         }
+       }
+
+File: ui/src/main/java/lee/study/down/task/PluginUpdateCheckTask.java
+Patch:
+@@ -28,7 +28,7 @@ public void run() {
+         URL url = new URL(HOST + name);
+         URLConnection connection = url.openConnection();
+         PluginBean pluginBean = PluginUtil
+-            .getPluginBean(name, connection.getInputStream(), PluginContent.get(name).getVersion());
++            .checkAndUpdateLocalPlugin(name, connection.getInputStream());
+         if (pluginBean != null) {
+           PluginContent.set(name, pluginBean);
+         }
+
+File: core/src/main/java/lee/study/down/util/HttpDownUtil.java
+Patch:
+@@ -56,6 +56,7 @@ public static TaskInfo getTaskInfo(HttpRequest httpRequest, HttpHeaders resHeade
+       httpResponse = getResponse(httpRequest, proxyConfig, clientSslCtx, loopGroup);
+       //处理重定向
+       if ((httpResponse.status().code() + "").indexOf("30") == 0) {
++        //TODO 302重定向乱码 https://link.gimhoy.com/googledrive/aHR0cHM6Ly9kcml2ZS5nb29nbGUuY29tL29wZW4/aWQ9MThlVmNKeEhwaE40RUpGTUowSk10bWNXOVhCcWJhVE1k.jpg
+         String redirectUrl = httpResponse.headers().get(HttpHeaderNames.LOCATION);
+         HttpRequestInfo requestInfo = (HttpRequestInfo) httpRequest;
+         requestInfo.headers().remove("Host");
+
+File: ui/src/main/java/lee/study/down/mvc/controller/HttpDownController.java
+Patch:
+@@ -462,6 +462,8 @@ public static ResultInfo commonBuildTask(BuildTaskForm form) throws Exception {
+       resultInfo.setData(taskInfo.getId());
+     } catch (MalformedURLException e) {
+       resultInfo.setStatus(ResultStatus.BAD.getCode()).setMsg("链接格式不正确");
++    } catch (TimeoutException e) {
++      resultInfo.setStatus(ResultStatus.BAD.getCode()).setMsg("连接超时，请重试");
+     } catch (Exception e) {
+       throw new RuntimeException("buildTask error:" + form.toString(), e);
+     }
+
+File: ui/src/main/java/lee/study/down/task/PluginUpdateCheckTask.java
+Patch:
+@@ -28,13 +28,13 @@ public void run() {
+         URL url = new URL(HOST + name);
+         URLConnection connection = url.openConnection();
+         PluginBean pluginBean = PluginUtil
+-            .getPluginBean(connection.getInputStream(), PluginContent.get(name).getVersion());
++            .getPluginBean(name, connection.getInputStream(), PluginContent.get(name).getVersion());
+         if (pluginBean != null) {
+-          PluginContent.update(name, pluginBean);
++          PluginContent.set(name, pluginBean);
+         }
+       }
+     } catch (IOException e) {
+-      LOGGER.error("plugin update error", e);
++      LOGGER.error("plugin set error", e);
+     }
+   }
+ }
+
+File: ui/src/main/java/lee/study/down/gui/HttpDownApplication.java
+Patch:
+@@ -127,7 +127,7 @@ private void afterTrayInit() {
+                 .getEncoded());
+         if (OsUtil.existsCert(HttpDownConstant.CA_SUBJECT)) {
+           //重新生成卸载之前的证书
+-          if (OsUtil.isWindows() && !OsUtil.isAdmin()) { //admin权限静默卸载
++          if (OsUtil.isWindows() && OsUtil.existsWindowsCert(HttpDownConstant.CA_SUBJECT,false)) { //admin权限静默卸载
+             showMsg("检测到系统存在旧的证书，请按确定再根据引导进行删除");
+           }
+           OsUtil.uninstallCert(HttpDownConstant.CA_SUBJECT);
+
+File: common/src/main/java/lee/study/down/io/BdyZip.java
+Patch:
+@@ -192,10 +192,10 @@ public static void unzip(String path, String toPath, BdyUnzipCallback callback)
+         callback.onStart();
+       }
+       File zipFile = new File(path);
+-      File toDir = new File(toPath);
+       if (!FileUtil.exists(toPath)) {
+         FileUtil.createDirSmart(toPath);
+       }
++      File toDir = new File(toPath);
+       try (
+           FileChannel fileChannel = new RandomAccessFile(zipFile, "rw").getChannel()
+       ) {
+
+File: ui/src/main/java/lee/study/down/mvc/controller/HttpDownController.java
+Patch:
+@@ -194,8 +194,8 @@ public ResultInfo bdyUnzip(@RequestParam String id, @RequestParam boolean ignore
+       if (!unzipForm.getFilePath().equalsIgnoreCase(unzipForm.getToPath())) {
+         if (ignore || BdyZip.isBdyZip(unzipForm.getFilePath())) {
+           UnzipInfo unzipInfo = new UnzipInfo().setId(id);
+-          if(!FileUtil.exists(unzipForm.getToPath())){
+-            FileUtil.createFileSmart(unzipForm.getToPath());
++          if (!FileUtil.exists(unzipForm.getToPath())) {
++            FileUtil.createDirSmart(unzipForm.getToPath());
+           }
+           if (!FileUtil.canWrite(unzipForm.getToPath())) {
+             resultInfo.setStatus(ResultStatus.BAD.getCode()).setMsg("无权访问解压路径，请修改路径或开放目录写入权限");
+
+File: sniff/src/main/java/lee/study/down/HttpDownProxyServer.java
+Patch:
+@@ -39,6 +39,7 @@ public void setProxyConfig(ProxyConfig proxyConfig) {
+   public void start(int port) {
+     LOGGER.debug("HttpDownProxyServer listen " + port + "\tproxyConfig:" + proxyConfig);
+     //监听http下载请求
++    proxyServer.proxyConfig(proxyConfig);
+     proxyServer.proxyInterceptInitializer(new HttpProxyInterceptInitializer() {
+       @Override
+       public void init(HttpProxyInterceptPipeline pipeline) {
+
+File: ui/src/main/java/lee/study/down/gui/HttpDownApplication.java
+Patch:
+@@ -396,7 +396,7 @@ private boolean isSupportBrowser() {
+     try {
+       new WebView();
+       return true;
+-    } catch (Exception e) {
++    } catch (Throwable e) {
+       return false;
+     }
+   }
+
+File: common/src/main/java/lee/study/down/io/BdyZip.java
+Patch:
+@@ -224,7 +224,7 @@ public static void unzip(String path, String toPath)
+   }
+ 
+   public static void main(String[] args) throws IOException {
+-    unzip("f:/down/test2测试.zip", "f:/down/test2测试", new TestUnzipCallback());
++    unzip("f:/down/test2测试", "f:/down/test2测试", new TestUnzipCallback());
+   }
+ 
+   /**
+
+File: common/src/main/java/lee/study/down/util/ByteUtil.java
+Patch:
+@@ -203,7 +203,7 @@ public static String readContent(InputStream inputStream, Charset charset) {
+     ) {
+       String line;
+       while ((line = br.readLine()) != null) {
+-        sb.append(line);
++        sb.append(line+System.lineSeparator());
+       }
+     } catch (IOException e) {
+       e.printStackTrace();
+
+File: core/src/main/java/lee/study/down/boot/AbstractHttpDownBootstrap.java
+Patch:
+@@ -155,6 +155,7 @@ public void retryChunkDown(ChunkInfo chunkInfo, int updateStatus)
+         startChunkDown(chunkInfo, updateStatus);
+       } else {
+         if (taskInfo.getChunkInfoList().stream()
++            .filter((chunk) -> chunk.getStatus() != HttpDownStatus.DONE)
+             .allMatch((chunk) -> chunk.getErrorCount() >= retryCount)) {
+           taskInfo.setStatus(HttpDownStatus.FAIL);
+           if (callback != null) {
+
+File: core/src/main/java/lee/study/down/util/HttpDownUtil.java
+Patch:
+@@ -100,14 +100,14 @@ public static String getDownFileName(HttpRequest httpRequest, HttpHeaders resHea
+         }
+         try {
+           fileName = new String(bts, "UTF-8");
+-          fileName = URLDecoder.decode(fileName.replaceAll("\\+", "%2b"), "UTF-8");
++          fileName = URLDecoder.decode(fileName, "UTF-8");
+         } catch (Exception e) {
+ 
+         }
+       }
+     }
+     if (fileName == null) {
+-      Pattern pattern = Pattern.compile("^.*/([^/?]*\\.[^./]+)(\\?[^?]*)?$");
++      Pattern pattern = Pattern.compile("^.*/([^/?]*\\.[^./?]+)(\\?[^?]*)?$");
+       Matcher matcher = pattern.matcher(httpRequest.uri());
+       if (matcher.find()) {
+         fileName = matcher.group(1);
+
+File: sniff/src/main/java/lee/study/down/HttpDownProxyServer.java
+Patch:
+@@ -42,7 +42,6 @@ public void start(int port) {
+     proxyServer.proxyInterceptInitializer(new HttpProxyInterceptInitializer() {
+       @Override
+       public void init(HttpProxyInterceptPipeline pipeline) {
+-        pipeline.addLast(new CertDownIntercept());
+         pipeline.addLast(new BdyIntercept());
+         pipeline.addLast(new HttpDownSniffIntercept());
+         HttpProxyIntercept downIntercept = interceptFactory.create();
+
+File: ui/src/main/java/lee/study/down/constant/HttpDownConstant.java
+Patch:
+@@ -17,8 +17,9 @@ public class HttpDownConstant {
+   public final static String CONFIG_PATH = HOME_PATH + ".config.inf";
+ 
+   public final static String CA_SUBJECT = "ProxyeeRoot";
+-  public final static String CA_CERT_PATH = HOME_PATH + "ssl" + File.separator + ".ca.crt";
+-  public final static String CA_PRI_PATH = HOME_PATH + "ssl" + File.separator + ".ca_pri.der";
++  public final static String SSL_PATH = HOME_PATH + "ssl" + File.separator;
++  public final static String CA_CERT_PATH = SSL_PATH + "ca.crt";
++  public final static String CA_PRI_PATH = SSL_PATH + ".ca_pri.der";
+ 
+   public static SslContext clientSslContext;
+   public static NioEventLoopGroup clientLoopGroup;
+
+File: ui/src/main/java/lee/study/down/content/ConfigContent.java
+Patch:
+@@ -5,7 +5,6 @@
+ import lee.study.down.model.ConfigInfo;
+ import lee.study.down.util.ByteUtil;
+ import lee.study.down.util.FileUtil;
+-import lee.study.down.util.WindowsUtil;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+
+File: ui/src/main/java/lee/study/down/intercept/HttpDownHandleInterceptFactory.java
+Patch:
+@@ -42,9 +42,8 @@ public void afterResponse(Channel clientChannel, Channel proxyChannel,
+         ContentManager.DOWN.putBoot(httpDownInfo);
+         httpResponse.setStatus(HttpResponseStatus.OK);
+         httpResponse.headers().clear();
+-        httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/html;charset=utf-8");
+-        byte[] content = ("<html></html>")
+-            .getBytes("utf-8");
++        httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/html");
++        byte[] content = "<script>window.history.go(-1);</script>".getBytes();
+         httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, content.length);
+         clientChannel.writeAndFlush(httpResponse);
+         HttpContent httpContent = new DefaultLastHttpContent();
+
+File: ui/src/main/java/lee/study/down/gui/HttpDownApplication.java
+Patch:
+@@ -164,6 +164,7 @@ public void start(Stage stage) throws Exception {
+     });
+     beforeOpen();
+ //    open();
++//    close();
+     afterOpen();
+   }
+ 
+@@ -185,6 +186,8 @@ public void open() {
+     } else {
+       stage.show();
+       stage.toFront();
++      stage.setIconified(true);
++      stage.setIconified(false);
+     }
+   }
+ 
+
+File: ui/src/main/java/lee/study/down/content/ContentManager.java
+Patch:
+@@ -5,12 +5,10 @@ public class ContentManager {
+   public final static DownContent DOWN = new DownContent();
+   public final static WsContent WS = new WsContent();
+   public final static ConfigContent CONFIG = new ConfigContent();
+-  public final static UnzipContent UNZIP = new UnzipContent();
+ 
+   public static void init() {
+     CONFIG.init();
+     DOWN.init();
+     WS.init();
+-    UNZIP.init();
+   }
+ }
+
+File: ui/src/main/java/lee/study/down/model/ConfigBaseInfo.java
+Patch:
+@@ -6,9 +6,8 @@
+ @Data
+ public class ConfigBaseInfo implements Serializable {
+ 
+-  private boolean guideFlag;  //是否需要新手引导教程
+   private int proxyPort;  //代理端口号
+-  private int proxyModel;  //全局代理 0.关闭 1.开启
++  private int sniffModel;  //嗅探模式 1.全局 2.百度云 3.关闭
+   private int connections;  //默认分段数
+   private int timeout;  //超时重试时间
+   private boolean secProxyEnable; //二级代理开关
+
+File: ui/src/main/java/lee/study/down/mvc/controller/HttpDownController.java
+Patch:
+@@ -326,7 +326,7 @@ public void onDone() {
+               @Override
+               public void onError(Exception e) {
+                 unzipInfo.setType(BdyZip.ON_ERROR)
+-                    .setErrorMsg(e.getMessage());
++                    .setErrorMsg(e.toString());
+                 ContentManager.WS.sendMsg(new WsForm(WsDataType.UNZIP_ING, unzipInfo));
+               }
+             });
+
+File: update/src/main/java/lee/study/down/Bootstrap.java
+Patch:
+@@ -31,7 +31,7 @@ public static void main(String[] args) throws Exception {
+     if (files != null && files.length > 0) {
+       javaHome = files[0].getAbsolutePath() + execPath;
+     } else {
+-      javaHome = System.getenv("JAVA_HOME") + execPath;
++      javaHome = System.getProperty("java.home") + execPath;
+     }
+     if (OsUtil.isWindows()) {
+       CMD = "\"" + javaHome + "\" -jar \"" + CORE_PATH + "\"";
+
+File: common/src/main/java/lee/study/down/model/ChunkInfo.java
+Patch:
+@@ -21,4 +21,5 @@ public class ChunkInfo implements Serializable {
+   private long lastTime = 0;
+   private long pauseTime = 0;
+   private int status = 0;
++  private int errorCount = 0;
+ }
+
+File: common/src/main/java/lee/study/down/model/TaskInfo.java
+Patch:
+@@ -81,6 +81,7 @@ public void reset() {
+       chunkInfo.setStartTime(0);
+       chunkInfo.setLastTime(0);
+       chunkInfo.setPauseTime(0);
++      chunkInfo.setErrorCount(0);
+     });
+   }
+ 
+
+File: core/src/main/java/lee/study/down/boot/X32HttpDownBootstrap.java
+Patch:
+@@ -22,10 +22,11 @@
+ public class X32HttpDownBootstrap extends AbstractHttpDownBootstrap {
+ 
+   public X32HttpDownBootstrap(HttpDownInfo httpDownInfo,
++      int retryCount,
+       SslContext clientSslContext,
+       NioEventLoopGroup clientLoopGroup,
+       HttpDownCallback callback) {
+-    super(httpDownInfo, clientSslContext, clientLoopGroup, callback);
++    super(httpDownInfo, retryCount, clientSslContext, clientLoopGroup, callback);
+   }
+ 
+   @Override
+
+File: core/src/main/java/lee/study/down/boot/X64HttpDownBootstrap.java
+Patch:
+@@ -18,10 +18,11 @@
+ public class X64HttpDownBootstrap extends AbstractHttpDownBootstrap {
+ 
+   public X64HttpDownBootstrap(HttpDownInfo httpDownInfo,
++      int retryCount,
+       SslContext clientSslContext,
+       NioEventLoopGroup clientLoopGroup,
+       HttpDownCallback callback) {
+-    super(httpDownInfo, clientSslContext, clientLoopGroup, callback);
++    super(httpDownInfo, retryCount, clientSslContext, clientLoopGroup, callback);
+   }
+ 
+   @Override
+
+File: sniff/src/main/java/lee/study/down/intercept/common/ResponseTextIntercept.java
+Patch:
+@@ -71,6 +71,7 @@ public void afterResponse(Channel clientChannel, Channel proxyChannel, HttpConte
+           } else {
+             hookHttpContent.content().writeBytes(contentBuf);
+           }
++          ReferenceCountUtil.release(contentBuf);
+           pipeline.getDefault()
+               .afterResponse(clientChannel, proxyChannel, hookHttpContent, pipeline);
+         }
+
+File: ui/src/main/java/lee/study/down/content/DownContent.java
+Patch:
+@@ -65,6 +65,7 @@ public void putBoot(AbstractHttpDownBootstrap bootstrap) {
+ 
+   public void putBoot(HttpDownInfo httpDownInfo) {
+     AbstractHttpDownBootstrap bootstrap = HttpDownBootstrapFactory.create(httpDownInfo,
++        ContentManager.CONFIG.get().getRetryCount(),
+         HttpDownConstant.clientSslContext,
+         HttpDownConstant.clientLoopGroup,
+         HttpDownConstant.httpDownCallback);
+@@ -120,6 +121,7 @@ public void init() {
+             .deserialize(HttpDownConstant.TASK_RECORD_PATH);
+         for (HttpDownInfo httpDownInfo : records) {
+           AbstractHttpDownBootstrap bootstrap = HttpDownBootstrapFactory.create(httpDownInfo,
++              ContentManager.CONFIG.get().getRetryCount(),
+               HttpDownConstant.clientSslContext,
+               HttpDownConstant.clientLoopGroup,
+               HttpDownConstant.httpDownCallback);
+@@ -140,7 +142,7 @@ public void init() {
+             if (taskInfo.getStatus() == HttpDownStatus.MERGE) {
+               //设置为合并取消状态
+               taskInfo.setStatus(HttpDownStatus.MERGE_CANCEL);
+-            } else {
++            } else if (taskInfo.getStatus() != HttpDownStatus.FAIL) {
+               //设置为暂停状态
+               taskInfo.setStatus(HttpDownStatus.PAUSE);
+               taskInfo.getChunkInfoList().forEach((chunk) -> chunk.setStatus(HttpDownStatus.PAUSE));
+
+File: ui/src/main/java/lee/study/down/intercept/HttpDownHandleInterceptFactory.java
+Patch:
+@@ -33,12 +33,13 @@ public void afterResponse(Channel clientChannel, Channel proxyChannel,
+           HttpResponse httpResponse,
+           HttpProxyInterceptPipeline pipeline) throws Exception {
+         HttpRequest httpRequest = pipeline.getHttpRequest();
++        ProxyConfig proxyConfig = ContentManager.CONFIG.get().getSecProxyConfig();
+         TaskInfo taskInfo = HttpDownUtil.getTaskInfo(httpRequest,
+             httpResponse.headers(),
++            proxyConfig,
+             HttpDownConstant.clientSslContext,
+             HttpDownConstant.clientLoopGroup);
+-        HttpDownInfo httpDownInfo = new HttpDownInfo(taskInfo, httpRequest,
+-            ContentManager.CONFIG.get().getSecProxyConfig());
++        HttpDownInfo httpDownInfo = new HttpDownInfo(taskInfo, httpRequest, proxyConfig);
+         ContentManager.DOWN.putBoot(httpDownInfo);
+ 
+         HttpHeaders httpHeaders = httpResponse.headers();
+
+File: ui/src/main/java/lee/study/down/model/ConfigBaseInfo.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import java.io.Serializable;
+ import lombok.Data;
++import lombok.EqualsAndHashCode;
+ 
+ @Data
+ public class ConfigBaseInfo implements Serializable {
+@@ -13,4 +14,5 @@ public class ConfigBaseInfo implements Serializable {
+   private int timeout;  //超时重试时间
+   private boolean secProxyEnable; //二级代理开关
+   private String lastPath;  //最后保存文件的路径
++  private int retryCount;  //失败重试次数
+ }
+
+File: ui/src/main/java/lee/study/down/model/ConfigInfo.java
+Patch:
+@@ -3,8 +3,10 @@
+ import java.io.Serializable;
+ import lee.study.proxyee.proxy.ProxyConfig;
+ import lombok.Data;
++import lombok.EqualsAndHashCode;
+ 
+ @Data
++@EqualsAndHashCode(callSuper = false)
+ public class ConfigInfo extends ConfigBaseInfo implements Serializable {
+ 
+   private static final long serialVersionUID = 4780168673614933999L;
+
+File: ui/src/main/java/lee/study/down/mvc/form/ConfigForm.java
+Patch:
+@@ -5,9 +5,11 @@
+ import lee.study.proxyee.proxy.ProxyConfig;
+ import lee.study.proxyee.proxy.ProxyType;
+ import lombok.Data;
++import lombok.EqualsAndHashCode;
+ import org.springframework.beans.BeanUtils;
+ 
+ @Data
++@EqualsAndHashCode(callSuper = false)
+ public class ConfigForm extends ConfigBaseInfo {
+ 
+   private ProxyConfigForm secProxyConfig; //二级代理设置
+
+File: ui/src/main/java/lee/study/down/task/HttpDownProgressEventTask.java
+Patch:
+@@ -20,6 +20,7 @@ public void run() {
+       try {
+         for (TaskInfo taskInfo : ContentManager.DOWN.getStartTasks()) {
+           if (taskInfo.getStatus() != HttpDownStatus.DONE
++              && taskInfo.getStatus() != HttpDownStatus.FAIL
+               && taskInfo.getStatus() != HttpDownStatus.PAUSE
+               && taskInfo.getStatus() != HttpDownStatus.MERGE
+               && taskInfo.getStatus() != HttpDownStatus.MERGE_CANCEL) {
+
+File: ui/src/main/java/lee/study/down/update/GithubUpdateService.java
+Patch:
+@@ -59,13 +59,13 @@ public AbstractHttpDownBootstrap update(UpdateInfo updateInfo)
+         updateInfo.getUrl(), buildHead(), null);
+     requestInfo.setRequestProto(new RequestProto(HOST, 443, true));
+     TaskInfo taskInfo = HttpDownUtil
+-        .getTaskInfo(requestInfo, null, HttpDownConstant.clientSslContext,
++        .getTaskInfo(requestInfo, null, null, HttpDownConstant.clientSslContext,
+             HttpDownConstant.clientLoopGroup)
+         .setConnections(32)
+         .setFileName(UPDATE_CORE_FILE_NAME + ".bak")
+         .setFilePath(HttpDownConstant.MAIN_PATH);
+     HttpDownInfo httpDownInfo = new HttpDownInfo(taskInfo, requestInfo, null);
+-    AbstractHttpDownBootstrap bootstrap = HttpDownBootstrapFactory.create(httpDownInfo,
++    AbstractHttpDownBootstrap bootstrap = HttpDownBootstrapFactory.create(httpDownInfo, 5,
+         HttpDownConstant.clientSslContext, HttpDownConstant.clientLoopGroup, null);
+     bootstrap.startDown();
+     return bootstrap;
+
+File: common/src/main/java/lee/study/down/util/PathUtil.java
+Patch:
+@@ -13,7 +13,7 @@ public class PathUtil {
+   static {
+     URL url = PathUtil.class.getResource("/");
+     String path = url != null ? url.getPath() : PathUtil.class.getResource("").getPath();
+-    Pattern pattern = Pattern.compile("^file:/([^!]*/)[^/]+\\.jar!/.*$");
++    Pattern pattern = Pattern.compile("^file:(/[^!]*/)[^/]+\\.jar!/.*$");
+     Matcher matcher = pattern.matcher(path);
+     boolean needDecode = false;
+     if (matcher.find()) {
+
+File: ui/src/main/java/lee/study/down/task/HttpDownErrorCheckTask.java
+Patch:
+@@ -34,8 +34,7 @@ public void run() {
+                 Long downSize = flagMap.get(key);
+                 //下载失败
+                 if (downSize != null && downSize == chunkInfo.getDownSize()) {
+-                  LOGGER.debug(
+-                      "30秒内无响应重试：" + chunkInfo.getIndex() + "\t" + chunkInfo.getDownSize());
++                  LOGGER.debug("30秒内无响应重试：" + chunkInfo);
+                   //避免同时下载
+                   ContentManager.DOWN.getBoot(taskInfo.getId()).retryChunkDown(chunkInfo);
+                 } else {
+
+File: common/src/main/java/lee/study/down/io/BdyZip.java
+Patch:
+@@ -93,8 +93,8 @@ public static void unzip(String path, String toPath) throws IOException {
+         isEnd = true;
+       } else if (!ByteUtil.matchToken(fileChannel, fileChannel.position() + fileSize,
+           ZIP_ENTRY_FILE_HEARD)) {
+-        //找到真实文件长度
+-        fileSize = ByteUtil.getNextTokenSize(fileChannel, ZIP_ENTRY_FILE_HEARD, ZIP_ENTRY_DIR_HEARD);
++        //找到真实文件长度 大于4G找4G之后的标识
++        fileSize = ByteUtil.getNextTokenSize(fileChannel,fileChannel.position()+Integer.MAX_VALUE, ZIP_ENTRY_FILE_HEARD, ZIP_ENTRY_DIR_HEARD);
+         if (ByteUtil.matchToken(fileChannel, fileChannel.position() + fileSize, ZIP_ENTRY_DIR_HEARD)) {
+           isEnd = true;
+         }
+
+File: common/src/main/java/lee/study/down/util/PathUtil.java
+Patch:
+@@ -26,6 +26,7 @@ public class PathUtil {
+       }
+     }
+     if (needDecode) {
++      ROOT_PATH = ROOT_PATH.replaceAll("\\+", "%2b");
+       try {
+         ROOT_PATH = URLDecoder.decode(ROOT_PATH, "UTF-8");
+       } catch (UnsupportedEncodingException e) {
+
+File: src/main/java/lee/study/down/util/HttpDownUtil.java
+Patch:
+@@ -251,7 +251,7 @@ public static void taskDown(HttpDownInfo httpDownInfo)
+       for (int i = 0; i < taskInfo.getChunkInfoList().size(); i++) {
+         ChunkInfo chunkInfo = taskInfo.getChunkInfoList().get(i);
+         //避免分段下载速度比总的下载速度大太多的问题
+-//        chunkInfo.setStatus(1);
++        chunkInfo.setStatus(1);
+         chunkInfo.setStartTime(taskInfo.getStartTime());
+         chunkDown(httpDownInfo, chunkInfo);
+       }
+
+File: src/main/java/lee/study/down/util/HttpDownUtil.java
+Patch:
+@@ -251,7 +251,7 @@ public static void taskDown(HttpDownInfo httpDownInfo)
+       for (int i = 0; i < taskInfo.getChunkInfoList().size(); i++) {
+         ChunkInfo chunkInfo = taskInfo.getChunkInfoList().get(i);
+         //避免分段下载速度比总的下载速度大太多的问题
+-//        chunkInfo.setStatus(1);
++        chunkInfo.setStatus(1);
+         chunkInfo.setStartTime(taskInfo.getStartTime());
+         chunkDown(httpDownInfo, chunkInfo);
+       }
+
+File: src/main/java/lee/study/down/model/ChunkInfo.java
+Patch:
+@@ -24,9 +24,9 @@ public class ChunkInfo implements Serializable {
+   private int status = 0; //0.待下载 //1.下载中 2.下载完成 3.下载失败 4.下载暂停 5.继续下载
+ 
+   @JsonIgnore
+-  private transient Channel channel;
++  private transient volatile Channel channel;
+   @JsonIgnore
+-  private transient FileChannel fileChannel;
++  private transient volatile FileChannel fileChannel;
+ 
+   public ChunkInfo() {
+   }
+
+File: src/main/java/lee/study/down/dispatch/HttpDownProgressEventTask.java
+Patch:
+@@ -21,7 +21,7 @@ public void run() {
+         if (HttpDownServer.DOWN_CONTENT != null && HttpDownServer.DOWN_CONTENT.size() > 0) {
+           for (Entry<String, HttpDownInfo> entry : HttpDownServer.DOWN_CONTENT.entrySet()) {
+             TaskInfo taskInfo = entry.getValue().getTaskInfo();
+-            if (taskInfo.getStatus() == 1) {
++            if (taskInfo.getStatus() == 1 || taskInfo.getStatus() == 3) {
+               taskInfo.setLastTime(System.currentTimeMillis());
+               for (ChunkInfo chunkInfo : taskInfo.getChunkInfoList()) {
+                 if (chunkInfo.getStatus() == 1) {
+@@ -38,13 +38,13 @@ public void run() {
+                   }
+                 }
+               }
+-              WsUtil.sendMsg();
+             }
+           }
+         }
++        WsUtil.sendMsg();
+         TimeUnit.MILLISECONDS.sleep(500);
+       } catch (Exception e) {
+-        HttpDownServer.LOGGER.error("eventTask:",e);
++        HttpDownServer.LOGGER.error("eventTask:", e);
+       }
+     }
+   }
+
+File: src/main/java/lee/study/down/intercept/BdyIntercept.java
+Patch:
+@@ -46,7 +46,7 @@ public class BdyIntercept extends ResponseTextIntercept {
+ 
+   @Override
+   public boolean match(HttpResponse httpResponse, HttpProxyInterceptPipeline pipeline) {
+-    return HttpDownUtil.checkUrl(pipeline.getHttpRequest(), "^pan.baidu.com.*$")
++    return HttpDownUtil.checkUrl(pipeline.getHttpRequest(), "^(pan|yun).baidu.com.*$")
+         && isHtml(httpResponse, pipeline);
+   }
+ 
+
+File: src/main/java/lee/study/down/model/ChunkInfo.java
+Patch:
+@@ -20,7 +20,8 @@ public class ChunkInfo implements Serializable {
+   private long totalSize;
+   private long startTime = 0;
+   private long lastTime = 0;
+-  private volatile int status = 0; //0.待下载 //1.下载中 2.下载完成 3.下载失败 4.下载暂停 5.继续下载
++  private long pauseTime = 0;
++  private int status = 0; //0.待下载 //1.下载中 2.下载完成 3.下载失败 4.下载暂停 5.继续下载
+ 
+   @JsonIgnore
+   private transient Channel channel;
+
+File: src/main/java/lee/study/down/ws/WebSocketConfig.java
+Patch:
+@@ -13,7 +13,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
+ 
+   @Override
+   public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
+-    registry.addHandler(progressHandle(), "/ws/progress");
++    registry.addHandler(progressHandle(), "/ws/onProgress");
+   }
+ 
+   @Bean
+
+File: src/main/java/lee/study/down/dispatch/HttpDownProgressEventTask.java
+Patch:
+@@ -44,7 +44,7 @@ public void run() {
+         }
+         TimeUnit.MILLISECONDS.sleep(500);
+       } catch (Exception e) {
+-        e.printStackTrace();
++        HttpDownServer.LOGGER.error("eventTask:",e);
+       }
+     }
+   }
+
+File: src/main/java/lee/study/down/form/DownForm.java
+Patch:
+@@ -5,6 +5,7 @@
+ @Data
+ public class DownForm {
+   private String id;
++  private String fileName;
+   private String path;
+   private int connections;
+ }
+
+File: src/main/java/lee/study/down/model/ChunkInfo.java
+Patch:
+@@ -20,7 +20,7 @@ public class ChunkInfo implements Serializable {
+   private long totalSize;
+   private long startTime = 0;
+   private long lastTime = 0;
+-  private volatile int status = 0; //0.待下载 //1.下载中 2.下载完成 3.下载失败 4.下载暂停
++  private volatile int status = 0; //0.待下载 //1.下载中 2.下载完成 3.下载失败 4.下载暂停 5.继续下载
+ 
+   @JsonIgnore
+   private transient Channel channel;
+
+File: src/main/java/lee/study/down/model/TaskInfo.java
+Patch:
+@@ -41,6 +41,7 @@ public String buildChunksPath() {
+   }
+ 
+   public String buildChunkFilePath(int index) {
+-    return buildChunksPath() + File.separator + "ck_" + index+".tmp";
++    int size = chunkInfoList==null?0:(chunkInfoList.size()+"").length();
++    return buildChunksPath() + File.separator + "ck_" + String.format("%0"+size+"d", index)+".tmp";
+   }
+ }
+
+File: src/main/java/lee/study/down/util/FileUtil.java
+Patch:
+@@ -99,7 +99,7 @@ public static long getFileSize(String path) {
+         return size;
+       }
+     }
+-    return -1;
++    return 0;
+   }
+ 
+   public static void main(String[] args) {
+
+File: src/main/java/lee/study/down/util/WsUtil.java
+Patch:
+@@ -36,7 +36,7 @@ public static void sendMsg() {
+         }
+       }
+     } catch (Exception e) {
+-      e.printStackTrace();
++      HttpDownServer.LOGGER.warn("sendMsg",e);
+     }
+   }
+ }
+
+File: src/main/java/lee/study/down/window/DownTray.java
+Patch:
+@@ -50,7 +50,6 @@ public void mouseClicked(MouseEvent e) {
+       popupMenu.add(closeItem);
+       openItem.addActionListener((event)-> openBrowse());
+       closeItem.addActionListener((event)-> {
+-        HttpDownServer.PROXY_SERVER.close();
+         System.exit(0);
+       });
+       // 为托盘图标加弹出菜弹
+@@ -61,7 +60,7 @@ public void mouseClicked(MouseEvent e) {
+         // 为系统托盘加托盘图标
+         systemTray.add(trayIcon);
+       } catch (Exception e) {
+-        e.printStackTrace();
++        HttpDownServer.LOGGER.warn("init",e);
+       }
+     }
+     openBrowse();
+
+File: src/main/java/lee/study/down/dispatch/HttpDownCallback.java
+Patch:
+@@ -15,5 +15,7 @@ public interface HttpDownCallback {
+ 
+   void chunkDone(TaskInfo taskInfo, ChunkInfo chunkInfo);
+ 
++  void merge(TaskInfo taskInfo);
++
+   void done(TaskInfo taskInfo);
+ }
+
+File: src/main/java/lee/study/down/intercept/HttpDownIntercept.java
+Patch:
+@@ -1,7 +1,6 @@
+ package lee.study.down.intercept;
+ 
+ import io.netty.channel.Channel;
+-import io.netty.handler.codec.http.HttpRequest;
+ import io.netty.handler.codec.http.HttpResponse;
+ import lee.study.down.HttpDownServer;
+ import lee.study.down.model.TaskInfo;
+@@ -15,7 +14,8 @@ public class HttpDownIntercept extends HttpProxyIntercept {
+   public void afterResponse(Channel clientChannel, Channel proxyChannel, HttpResponse httpResponse,
+       HttpProxyInterceptPipeline pipeline) throws Exception {
+     TaskInfo taskInfo = HttpDownUtil
+-        .getTaskInfo(pipeline.getHttpRequest(), httpResponse.headers(), HttpDownServer.LOOP_GROUP);
++        .getTaskInfo(pipeline.getHttpRequest(), httpResponse.headers(), HttpDownServer.CLIENT_SSL_CONTEXT,
++            HttpDownServer.LOOP_GROUP);
+     HttpDownUtil.startDownTask(taskInfo, pipeline.getHttpRequest(), httpResponse, clientChannel);
+   }
+ }
+
+File: src/main/java/lee/study/down/model/ChunkInfo.java
+Patch:
+@@ -20,7 +20,7 @@ public class ChunkInfo implements Serializable {
+   private long totalSize;
+   private long startTime = 0;
+   private long lastTime = 0;
+-  private int status = 0; //0.待下载 //1.下载中 2.下载完成 3.下载失败
++  private volatile int status = 0; //0.待下载 //1.下载中 2.下载完成 3.下载失败 4.下载暂停
+ 
+   @JsonIgnore
+   private transient Channel channel;
+
+File: src/main/java/lee/study/down/HttpDownServer.java
+Patch:
+@@ -14,7 +14,7 @@
+ import java.util.concurrent.ConcurrentHashMap;
+ import lee.study.down.dispatch.HttpDownErrorCheckTask;
+ import lee.study.down.dispatch.HttpDownProgressEventTask;
+-import lee.study.down.dispatch.HttpDownStartCallback;
++import lee.study.down.dispatch.DefaultHttpDownCallback;
+ import lee.study.down.intercept.BdyBatchDownIntercept;
+ import lee.study.down.intercept.BdyIntercept;
+ import lee.study.down.intercept.HttpDownIntercept;
+@@ -98,7 +98,7 @@ public static void start(int port) {
+             //下载中的还原之前的状态
+             httpDownInfo = (HttpDownInfo) ByteUtil.deserialize(taskInfoFile.getPath());
+             TaskInfo taskInfo = httpDownInfo.getTaskInfo();
+-            taskInfo.setCallback(new HttpDownStartCallback());
++            taskInfo.setCallback(new DefaultHttpDownCallback());
+             //全部标记为失败,等待重新下载
+             taskInfo.getChunkInfoList().forEach(chunk -> {
+               if (chunk.getStatus() == 1) {
+
+File: src/main/java/lee/study/down/dispatch/DefaultHttpDownCallback.java
+Patch:
+@@ -12,7 +12,7 @@
+ import lee.study.down.util.ByteUtil;
+ import lee.study.down.util.HttpDownUtil;
+ 
+-public class HttpDownStartCallback implements HttpDownCallback {
++public class DefaultHttpDownCallback implements HttpDownCallback {
+ 
+   @Override
+   public void start(TaskInfo taskInfo) {
+
+File: src/main/java/lee/study/down/dispatch/HttpDownErrorCheckTask.java
+Patch:
+@@ -46,8 +46,8 @@ public void run() {
+               }
+             }
+           }
+-          TimeUnit.MILLISECONDS.sleep(60000);
+         }
++        TimeUnit.MILLISECONDS.sleep(60000);
+       }
+     } catch (Exception e) {
+       e.printStackTrace();
+
+File: src/main/java/lee/study/down/dispatch/HttpDownProgressEventTask.java
+Patch:
+@@ -32,8 +32,8 @@ public void run() {
+               HttpDownServer.sendMsg("progress", taskInfo);
+             }
+           }
+-          TimeUnit.MILLISECONDS.sleep(200);
+         }
++        TimeUnit.MILLISECONDS.sleep(200);
+       }
+     } catch (Exception e) {
+       e.printStackTrace();
+
+File: src/main/java/lee/study/down/HttpDownServer.java
+Patch:
+@@ -125,7 +125,7 @@ public void beforeCatch(Channel clientChannel, Throwable cause) {
+             if(cause instanceof ConnectException){
+               System.out.println("连接超时:"+cause.toString());
+             }else if (cause instanceof IOException){
+-              System.out.println("网络异常:"+cause.toString());
++              System.out.println("IO异常:"+cause.toString());
+             }else{
+               cause.printStackTrace();
+             }
+

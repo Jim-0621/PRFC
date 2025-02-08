@@ -1,0 +1,700 @@
+File: src/main/java/kafdrop/controller/MessageController.java
+Patch:
+@@ -217,7 +217,7 @@ public String searchMessageForm(@PathVariable("name") String topicName,
+ 
+       defaultForm.setSearchText("");
+       defaultForm.setFormat(defaultFormat);
+-      defaultForm.setKeyFormat(defaultFormat);
++      defaultForm.setKeyFormat(defaultKeyFormat);
+       defaultForm.setMaximumCount(100);
+       defaultForm.setStartTimestamp(new Date(0));
+       model.addAttribute("searchMessageForm", defaultForm);
+
+File: src/test/java/kafdrop/protos/PersonProto.java
+Patch:
+@@ -20,7 +20,7 @@ public static void registerAllExtensions(
+   static final com.google.protobuf.Descriptors.Descriptor
+     internal_static_kafdrop_Person_descriptor;
+   static final
+-  com.google.protobuf.GeneratedMessageV3.FieldAccessorTable
++  com.google.protobuf.GeneratedMessage.FieldAccessorTable
+     internal_static_kafdrop_Person_fieldAccessorTable;
+ 
+   public static com.google.protobuf.Descriptors.FileDescriptor
+@@ -47,7 +47,7 @@ public static void registerAllExtensions(
+     internal_static_kafdrop_Person_descriptor =
+       getDescriptor().getMessageTypes().get(0);
+     internal_static_kafdrop_Person_fieldAccessorTable = new
+-      com.google.protobuf.GeneratedMessageV3.FieldAccessorTable(
++      com.google.protobuf.GeneratedMessage.FieldAccessorTable(
+       internal_static_kafdrop_Person_descriptor,
+       new java.lang.String[]{"Name", "Id", "Email", "Contact", "Data",});
+   }
+
+File: src/main/java/kafdrop/service/KafkaMonitorImpl.java
+Patch:
+@@ -280,8 +280,8 @@ public SearchResultsVO searchMessages(String topic,
+         case EXCEEDED_MAX_SCAN_COUNT:
+           results.setCompletionDetails(
+             String.format(
+-              "Search timed out after scanning %d messages.  Last scanned message timestamp was %d.  Adjust your time" +
+-                " span for more results.",
++              "Search timed out after scanning %d messages. Last scanned message timestamp was %2$tF %2$tT." +
++                " Adjust your time span for more results.",
+               records.getMessagesScannedCount(),
+               records.getFinalMessageTimestamp()));
+           break;
+
+File: src/main/java/kafdrop/config/KafkaConfiguration.java
+Patch:
+@@ -65,4 +65,4 @@ public void applyCommon(Properties properties) {
+       properties.putAll(propertyOverrides);
+     }
+   }
+-}
+\ No newline at end of file
++}
+
+File: src/main/java/kafdrop/controller/BasicErrorController.java
+Patch:
+@@ -34,4 +34,4 @@ public ModelAndView handleError(HttpServletRequest request) {
+     final var model = Map.of("error", error);
+     return new ModelAndView("error", model);
+   }
+-}
+\ No newline at end of file
++}
+
+File: src/main/java/kafdrop/controller/ConsumerController.java
+Patch:
+@@ -61,4 +61,4 @@ public String consumerDetail(@PathVariable("groupId") String groupId, Model mode
+ 
+     return consumer.orElseThrow(() -> new ConsumerNotFoundException(groupId));
+   }
+-}
+\ No newline at end of file
++}
+
+File: src/main/java/kafdrop/util/KeyFormat.java
+Patch:
+@@ -2,4 +2,4 @@
+ 
+ public enum KeyFormat {
+   DEFAULT, AVRO
+-}
+\ No newline at end of file
++}
+
+File: src/main/java/kafdrop/util/MessageFormat.java
+Patch:
+@@ -2,4 +2,4 @@
+ 
+ public enum MessageFormat {
+   DEFAULT, AVRO, PROTOBUF, MSGPACK
+-}
+\ No newline at end of file
++}
+
+File: src/test/java/kafdrop/model/ConsumerPartitionVOTest.java
+Patch:
+@@ -40,4 +40,4 @@ void testGetLag() {
+     doLagTest(6, 6, 2, 0);
+     doLagTest(5, 10, -1, 5);
+   }
+-}
+\ No newline at end of file
++}
+
+File: src/main/java/kafdrop/controller/MessageController.java
+Patch:
+@@ -149,7 +149,7 @@ public String viewMessageForm(@PathVariable("name") String topicName,
+       defaultForm.setOffset(0l);
+       defaultForm.setPartition(0);
+       defaultForm.setFormat(defaultFormat);
+-      defaultForm.setKeyFormat(defaultFormat);
++      defaultForm.setKeyFormat(defaultKeyFormat);
+       defaultForm.setIsAnyProto(protobufProperties.getParseAnyProto());
+ 
+       model.addAttribute("messageForm", defaultForm);
+
+File: src/main/java/kafdrop/service/KafkaHighLevelAdminClient.java
+Patch:
+@@ -72,7 +72,7 @@ ClusterDescription describeCluster() {
+   Set<String> listConsumerGroups() {
+     final Collection<ConsumerGroupListing> groupListing;
+     try {
+-      groupListing = adminClient.listConsumerGroups().all().get();
++      groupListing = adminClient.listConsumerGroups().valid().get();
+     } catch (InterruptedException | ExecutionException e) {
+       throw new KafkaAdminClientException(e);
+     }
+
+File: src/test/java/kafdrop/AbstractIntegrationTest.java
+Patch:
+@@ -20,7 +20,7 @@ static class Initializer implements ApplicationContextInitializer<ConfigurableAp
+ 
+         public static Map<String, Object> getProperties() {
+             Startables.deepStart(List.of(kafka)).join();
+-            return Map.of("kafka.brokerConnect", kafka.getBootstrapServers());
++			return Map.of("kafka.brokerConnect", kafka.getBootstrapServers(), "protobufdesc.directory","./src/test/resources", "protobufdesc.parseAnyProto", true);
+         }
+ 
+         @Override
+
+File: src/main/java/kafdrop/Kafdrop.java
+Patch:
+@@ -43,7 +43,7 @@
+ 
+ @SpringBootApplication
+ public class Kafdrop {
+-  private final static Logger LOG = LoggerFactory.getLogger(Kafdrop.class);
++  private static final Logger LOG = LoggerFactory.getLogger(Kafdrop.class);
+ 
+   public static void main(String[] args) {
+     createApplicationBuilder()
+@@ -99,8 +99,7 @@ public void onApplicationEvent(ApplicationEnvironmentPreparedEvent event) {
+         try {
+           System.setProperty("logging.dir", new File(loggingFile).getParent());
+         } catch (Exception ex) {
+-          System.err.println("Unable to set up logging.dir from logging.file " + loggingFile + ": " +
+-                                 Throwables.getStackTraceAsString(ex));
++          LOG.error("Unable to set up logging.dir from logging.file {}", loggingFile, ex);
+         }
+       }
+       if (environment.containsProperty("debug") &&
+
+File: src/main/java/kafdrop/config/CorsConfiguration.java
+Patch:
+@@ -69,6 +69,7 @@ public Filter corsFilter() {
+     return new Filter() {
+       @Override
+       public void init(FilterConfig filterConfig) {
++        // nothing to init
+       }
+ 
+       @Override
+@@ -91,6 +92,7 @@ public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
+ 
+       @Override
+       public void destroy() {
++        // nothing to destroy
+       }
+     };
+   }
+
+File: src/main/java/kafdrop/config/HealthCheckConfiguration.java
+Patch:
+@@ -38,15 +38,15 @@ public HealthCheck(HealthEndpoint healthEndpoint) {
+     }
+ 
+     @ManagedAttribute
+-    public Map getHealth() {
++    public Map<String, Object> getHealth() {
+       final var health = (Health) healthEndpoint.health();
+       final var healthMap = new LinkedHashMap<String, Object>();
+       healthMap.put("status", getStatus(health));
+       healthMap.put("detail", getDetails(health.getDetails()));
+       return healthMap;
+     }
+ 
+-    private Map getDetails(Map<String, Object> details) {
++    private Map<String, Object> getDetails(Map<String, Object> details) {
+       return details.entrySet().stream()
+           .collect(Collectors.toMap(Map.Entry::getKey,
+                                     e -> {
+
+File: src/main/java/kafdrop/config/InterceptorConfiguration.java
+Patch:
+@@ -22,7 +22,6 @@
+ import org.springframework.stereotype.*;
+ import org.springframework.web.servlet.*;
+ import org.springframework.web.servlet.config.annotation.*;
+-import org.springframework.web.servlet.handler.*;
+ 
+ import javax.servlet.http.*;
+ 
+@@ -39,7 +38,7 @@ public void addInterceptors(InterceptorRegistry registry) {
+     registry.addInterceptor(new ProfileHandlerInterceptor());
+   }
+ 
+-  public class ProfileHandlerInterceptor extends HandlerInterceptorAdapter {
++  public class ProfileHandlerInterceptor implements AsyncHandlerInterceptor {
+     @Override
+     public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView modelAndView) {
+       final var activeProfiles = environment.getActiveProfiles();
+
+File: src/main/java/kafdrop/config/KafkaConfiguration.java
+Patch:
+@@ -17,7 +17,7 @@ public final class KafkaConfiguration {
+   private static final Logger LOG = LoggerFactory.getLogger(KafkaConfiguration.class);
+ 
+   private String brokerConnect;
+-  private Boolean isSecured = false;
++  private boolean isSecured = false;
+   private String saslMechanism;
+   private String securityProtocol;
+   private String truststoreFile;
+
+File: src/main/java/kafdrop/controller/AclController.java
+Patch:
+@@ -26,8 +26,8 @@
+ import org.springframework.http.MediaType;
+ import org.springframework.stereotype.Controller;
+ import org.springframework.ui.Model;
++import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.RequestMapping;
+-import org.springframework.web.bind.annotation.RequestMethod;
+ import org.springframework.web.bind.annotation.ResponseBody;
+ 
+ import java.util.List;
+@@ -52,7 +52,7 @@ public String acls(Model model) {
+   @ApiResponses(value = {
+       @ApiResponse(code = 200, message = "Success", response = String.class, responseContainer = "List")
+   })
+-  @RequestMapping(path = "/acl", produces = MediaType.APPLICATION_JSON_VALUE, method = RequestMethod.GET)
++  @GetMapping(path = "/acl", produces = MediaType.APPLICATION_JSON_VALUE)
+   public @ResponseBody List<AclVO> getAllTopics() {
+     return kafkaMonitor.getAcls();
+   }
+
+File: src/main/java/kafdrop/controller/BrokerController.java
+Patch:
+@@ -49,7 +49,7 @@ public String brokerDetails(@PathVariable("id") int brokerId, Model model) {
+       @ApiResponse(code = 200, message = "Success", response = BrokerVO.class),
+       @ApiResponse(code = 404, message = "Invalid Broker ID")
+   })
+-  @RequestMapping(path = "/broker/{id}", produces = MediaType.APPLICATION_JSON_VALUE, method = RequestMethod.GET)
++  @GetMapping(path = "/broker/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
+   public @ResponseBody BrokerVO brokerDetailsJson(@PathVariable("id") int brokerId) {
+     return kafkaMonitor.getBroker(brokerId).orElseThrow(() -> new BrokerNotFoundException("No such broker " + brokerId));
+   }
+@@ -58,7 +58,7 @@ public String brokerDetails(@PathVariable("id") int brokerId, Model model) {
+   @ApiResponses(value = {
+       @ApiResponse(code = 200, message = "Success", response = BrokerVO.class)
+   })
+-  @RequestMapping(path = "/broker", produces = MediaType.APPLICATION_JSON_VALUE, method = RequestMethod.GET)
++  @GetMapping(path = "/broker", produces = MediaType.APPLICATION_JSON_VALUE)
+   public @ResponseBody List<BrokerVO> brokerDetailsJson() {
+     return kafkaMonitor.getBrokers();
+   }
+
+File: src/main/java/kafdrop/controller/ClusterController.java
+Patch:
+@@ -30,7 +30,6 @@
+ import org.springframework.ui.*;
+ import org.springframework.web.bind.annotation.*;
+ 
+-import java.time.*;
+ import java.util.*;
+ import java.util.stream.*;
+ 
+@@ -93,7 +92,7 @@ public String clusterInfo(Model model,
+   @ApiResponses(value = {
+       @ApiResponse(code = 200, message = "Success", response = ClusterInfoVO.class)
+   })
+-  @RequestMapping(path = "/", produces = MediaType.APPLICATION_JSON_VALUE, method = RequestMethod.GET)
++  @GetMapping(path = "/", produces = MediaType.APPLICATION_JSON_VALUE)
+   public @ResponseBody ClusterInfoVO getCluster() {
+     final var vo = new ClusterInfoVO();
+     vo.brokers = kafkaMonitor.getBrokers();
+@@ -112,6 +111,7 @@ public String brokerNotFound(Model model) {
+   @ResponseStatus(HttpStatus.OK)
+   @RequestMapping("/health_check")
+   public void healthCheck() {
++    // only http code shall be checked
+   }
+ 
+   /**
+
+File: src/main/java/kafdrop/controller/ConsumerController.java
+Patch:
+@@ -51,7 +51,7 @@ public String consumerDetail(@PathVariable("groupId") String groupId, Model mode
+       @ApiResponse(code = 200, message = "Success", response = ConsumerVO.class),
+       @ApiResponse(code = 404, message = "Invalid consumer group")
+   })
+-  @RequestMapping(path = "/{groupId:.+}", produces = MediaType.APPLICATION_JSON_VALUE, method = RequestMethod.GET)
++  @GetMapping(path = "/{groupId:.+}", produces = MediaType.APPLICATION_JSON_VALUE)
+   public @ResponseBody ConsumerVO getConsumer(@PathVariable("groupId") String groupId) throws ConsumerNotFoundException {
+     final var topicVos = kafkaMonitor.getTopics();
+     final var consumer = kafkaMonitor.getConsumers(topicVos)
+
+File: src/main/java/kafdrop/util/AvroMessageDeserializer.java
+Patch:
+@@ -24,10 +24,10 @@ public String deserializeMessage(ByteBuffer buffer) {
+ 
+   private static KafkaAvroDeserializer getDeserializer(String schemaRegistryUrl, String schemaRegistryAuth) {
+     final var config = new HashMap<String, Object>();
+-    config.put(AbstractKafkaAvroSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl);
++    config.put(AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl);
+     if (schemaRegistryAuth != null) {
+-      config.put(AbstractKafkaAvroSerDeConfig.BASIC_AUTH_CREDENTIALS_SOURCE, "USER_INFO");
+-      config.put(AbstractKafkaAvroSerDeConfig.USER_INFO_CONFIG, schemaRegistryAuth);
++      config.put(AbstractKafkaSchemaSerDeConfig.BASIC_AUTH_CREDENTIALS_SOURCE, "USER_INFO");
++      config.put(AbstractKafkaSchemaSerDeConfig.USER_INFO_CONFIG, schemaRegistryAuth);
+     }
+     final var kafkaAvroDeserializer = new KafkaAvroDeserializer();
+     kafkaAvroDeserializer.configure(config, false);
+
+File: src/main/java/kafdrop/util/ByteUtils.java
+Patch:
+@@ -4,6 +4,9 @@
+ import java.nio.charset.*;
+ 
+ final class ByteUtils {
++  private ByteUtils() {
++    // no instance allowed, static utility class
++  }
+   static String readString(ByteBuffer buffer) {
+     return new String(readBytes(buffer), StandardCharsets.UTF_8);
+   }
+
+File: src/main/java/kafdrop/util/MsgPackMessageDeserializer.java
+Patch:
+@@ -15,8 +15,7 @@ public class MsgPackMessageDeserializer implements MessageDeserializer {
+ 
+   @Override
+   public String deserializeMessage(ByteBuffer buffer) {
+-    MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(buffer);
+-    try {
++    try (MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(buffer)) {
+       return unpacker.unpackValue().toJson();
+     } catch (IOException e) {
+       final String errorMsg = "Unable to unpack msgpack message";
+
+File: src/test/java/kafdrop/AbstractIntegrationTest.java
+Patch:
+@@ -1,19 +1,19 @@
+ package kafdrop;
+ 
+-import org.junit.runner.RunWith;
++import org.junit.jupiter.api.extension.ExtendWith;
+ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.context.ApplicationContextInitializer;
+ import org.springframework.context.ConfigurableApplicationContext;
+ import org.springframework.core.env.MapPropertySource;
+ import org.springframework.test.context.ContextConfiguration;
+-import org.springframework.test.context.junit4.SpringRunner;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
+ import org.testcontainers.containers.KafkaContainer;
+ import org.testcontainers.lifecycle.Startables;
+ 
+ import java.util.List;
+ import java.util.Map;
+ 
+-@RunWith(SpringRunner.class)
++@ExtendWith(SpringExtension.class)
+ @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+ @ContextConfiguration(initializers = AbstractIntegrationTest.Initializer.class)
+ abstract class AbstractIntegrationTest {
+
+File: src/main/java/kafdrop/config/HealthCheckConfiguration.java
+Patch:
+@@ -39,7 +39,7 @@ public HealthCheck(HealthEndpoint healthEndpoint) {
+ 
+     @ManagedAttribute
+     public Map getHealth() {
+-      final var health = healthEndpoint.health();
++      final var health = (Health) healthEndpoint.health();
+       final var healthMap = new LinkedHashMap<String, Object>();
+       healthMap.put("status", getStatus(health));
+       healthMap.put("detail", getDetails(health.getDetails()));
+
+File: src/main/java/kafdrop/config/HealthCheckConfiguration.java
+Patch:
+@@ -39,7 +39,7 @@ public HealthCheck(HealthEndpoint healthEndpoint) {
+ 
+     @ManagedAttribute
+     public Map getHealth() {
+-      final var health = healthEndpoint.health();
++      final var health = (Health) healthEndpoint.health();
+       final var healthMap = new LinkedHashMap<String, Object>();
+       healthMap.put("status", getStatus(health));
+       healthMap.put("detail", getDetails(health.getDetails()));
+
+File: src/main/java/kafdrop/util/MessageFormat.java
+Patch:
+@@ -1,5 +1,5 @@
+ package kafdrop.util;
+ 
+ public enum MessageFormat {
+-  DEFAULT, AVRO, PROTOBUF
++  DEFAULT, AVRO, PROTOBUF, MSGPACK
+ }
+\ No newline at end of file
+
+File: src/main/java/kafdrop/service/KafkaMonitorImpl.java
+Patch:
+@@ -185,7 +185,8 @@ public List<MessageVO> getMessages(TopicPartition topicPartition, long offset, i
+   private static Map<String, String> headersToMap(Headers headers) {
+     final var map = new TreeMap<String, String>();
+     for (var header : headers) {
+-      map.put(header.key(), new String(header.value()));
++      final var value = header.value();
++      map.put(header.key(), (value == null) ? null : new String(value));
+     }
+     return map;
+   }
+
+File: src/main/java/kafdrop/service/KafkaHighLevelConsumer.java
+Patch:
+@@ -86,7 +86,7 @@ synchronized Map<Integer, TopicPartitionVO> getPartitionSize(String topic) {
+    * @param partition Topic partition
+    * @param offset Offset to seek from
+    * @param count Maximum number of records returned
+-   * @param deserializer Message deserialiser
++   * @param deserializers Key and Value deserialiser
+    * @return Latest records
+    */
+   synchronized List<ConsumerRecord<String, String>> getLatestRecords(TopicPartition partition, long offset, int count,
+@@ -138,8 +138,8 @@ synchronized List<ConsumerRecord<String, String>> getLatestRecords(TopicPartitio
+   /**
+    * Gets records from all partitions of a given topic.
+    * @param count The maximum number of records getting back.
+-   * @param deserializer Message deserializer
+-   * @return A list of consumer records for a given topic.
++   * @param deserializers Key and Value deserializers
++   * @return A list of consumer records for a given tosic.
+    */
+   synchronized List<ConsumerRecord<String, String>> getLatestRecords(String topic,
+                                                                      int count,
+
+File: src/main/java/kafdrop/util/ProtobufMessageDeserializer.java
+Patch:
+@@ -74,15 +74,15 @@ public String deserializeMessage(ByteBuffer buffer) {
+ 			
+ 			var msgTypes = fd.getMessageTypes().stream().filter(byMsgTypeName).collect(Collectors.toList());
+ 			if(CollectionUtils.isEmpty(msgTypes)) {
+-				LOG.error("Can't find specific message: " + msgTypeName);
++				LOG.error("Can't find specific message type: " + msgTypeName);
+ 				return null;
+ 			}
+ 			Descriptor messageType = msgTypes.get(0);
+ 							
+ 			DynamicMessage dMsg = DynamicMessage.parseFrom(messageType, CodedInputStream.newInstance(buffer));
+ 			Printer printer = JsonFormat.printer();
+ 			
+-			return printer.print(dMsg);
++			return printer.print(dMsg).replaceAll("\n", ""); // must remove line break so it defaults to collapse mode
+ 		} catch (FileNotFoundException e) {
+ 			LOG.error("Couldn't open descriptor file: " + fullDescFile, e);			
+ 		} catch (IOException e) {
+
+File: src/main/java/kafdrop/util/MessageFormat.java
+Patch:
+@@ -1,5 +1,5 @@
+ package kafdrop.util;
+ 
+ public enum MessageFormat {
+-  DEFAULT, AVRO
++  DEFAULT, AVRO, PROTOBUF
+ }
+
+File: src/main/java/kafdrop/service/KafkaHighLevelConsumer.java
+Patch:
+@@ -102,8 +102,8 @@ synchronized List<ConsumerRecord<String, String>> getLatestRecords(TopicPartitio
+     kafkaConsumer.seek(partition, offset);
+ 
+     final var rawRecords = new ArrayList<ConsumerRecord<String, byte[]>>(count);
+-    final var latestOffset = Math.max(0, kafkaConsumer.endOffsets(partitions).get(partition) - 1);
+-    var currentOffset = offset;
++    final var latestOffset = kafkaConsumer.endOffsets(partitions).get(partition) - 1;
++    var currentOffset = offset - 1;
+ 
+     // stop if get to count or get to the latest offset
+     while (rawRecords.size() < count && currentOffset < latestOffset) {
+
+File: src/main/java/kafdrop/service/KafkaHighLevelConsumer.java
+Patch:
+@@ -41,7 +41,7 @@ private void initializeClient() {
+       properties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+       properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
+       properties.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 100);
+-      properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
++      properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+       properties.put(ConsumerConfig.CLIENT_ID_CONFIG, "kafdrop-client");
+       properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaConfiguration.getBrokerConnect());
+ 
+@@ -157,7 +157,6 @@ synchronized List<ConsumerRecord<String, String>> getLatestRecords(String topic,
+     }
+ 
+     final var totalCount = count * partitions.size();
+-    //final var rawRecords = new ArrayList<ConsumerRecord<String, byte[]>>(totalCount);
+     final Map<TopicPartition, List<ConsumerRecord<String, byte[]>>> rawRecords
+         = partitions.stream().collect(Collectors.toMap(p -> p , p -> new ArrayList<>(count)));
+ 
+
+File: src/main/java/kafdrop/service/CuratorKafkaMonitor.java
+Patch:
+@@ -196,7 +196,7 @@ public ClusterSummaryVO getClusterSummary(Collection<TopicVO> topics) {
+         })
+         .orElseGet(ClusterSummaryVO::new);
+     topicSummary.setTopicCount(topics.size());
+-    topicSummary.setPreferredReplicaPercent(topicSummary.getPreferredReplicaPercent() / topics.size());
++    topicSummary.setPreferredReplicaPercent(topics.isEmpty() ? 0 : topicSummary.getPreferredReplicaPercent() / topics.size());
+     return topicSummary;
+   }
+ 
+
+File: src/main/java/com/homeadvisor/kafdrop/service/KafkaHighLevelConsumer.java
+Patch:
+@@ -112,8 +112,9 @@ public synchronized List<ConsumerRecord<String, String>> getLatestRecords(TopicP
+         ConsumerRecords records = null;
+ 
+         records = kafkaConsumer.poll(10);
+-        if (records.count() > 0) {
+-            return records.records(topicPartition).subList(0, count.intValue());
++        final int numRecords = records.count();
++        if (numRecords > 0) {
++            return records.records(topicPartition).subList(0, Math.min(count.intValue(), numRecords));
+         }
+         return null;
+     }
+
+File: src/main/java/com/homeadvisor/kafdrop/service/MessageInspector.java
+Patch:
+@@ -23,6 +23,7 @@
+ import com.homeadvisor.kafdrop.model.TopicVO;
+ import com.homeadvisor.kafdrop.util.BrokerChannel;
+ import com.homeadvisor.kafdrop.util.ByteUtils;
++import com.homeadvisor.kafdrop.util.MessageDeserializer;
+ 
+ import kafka.api.FetchRequest;
+ import kafka.api.FetchRequestBuilder;
+
+File: src/main/java/com/homeadvisor/kafdrop/util/AvroMessageDeserializer.java
+Patch:
+@@ -1,10 +1,9 @@
+-package com.homeadvisor.kafdrop.service;
++package com.homeadvisor.kafdrop.util;
+ 
+ import com.google.gson.Gson;
+ import com.google.gson.GsonBuilder;
+ import com.google.gson.JsonElement;
+ import com.google.gson.JsonParser;
+-import com.homeadvisor.kafdrop.util.ByteUtils;
+ 
+ import java.nio.ByteBuffer;
+ import java.util.HashMap;
+
+File: src/main/java/com/homeadvisor/kafdrop/util/DefaultMessageDeserializer.java
+Patch:
+@@ -1,10 +1,8 @@
+-package com.homeadvisor.kafdrop.service;
++package com.homeadvisor.kafdrop.util;
+ 
+ import java.io.UnsupportedEncodingException;
+ import java.nio.ByteBuffer;
+ 
+-import com.homeadvisor.kafdrop.util.ByteUtils;
+-
+ public class DefaultMessageDeserializer implements MessageDeserializer {
+ 
+    @Override
+
+File: src/main/java/com/homeadvisor/kafdrop/util/MessageDeserializer.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.homeadvisor.kafdrop.service;
++package com.homeadvisor.kafdrop.util;
+ 
+ import java.nio.ByteBuffer;
+ 
+
+File: src/main/java/com/homeadvisor/kafdrop/config/ServiceDiscoveryConfiguration.java
+Patch:
+@@ -66,7 +66,7 @@ public ServiceDiscovery curatorServiceDiscovery(
+       @Value("${curator.discovery.basePath:/homeadvisor/services}") String basePath) throws Exception
+    {
+       final Class payloadClass = Object.class;
+-      new EnsurePath(basePath).ensure(curatorFramework.getZookeeperClient());
++      curatorFramework.createContainers(basePath);
+       return ServiceDiscoveryBuilder.builder(payloadClass)
+          .client(curatorFramework)
+          .basePath(basePath)
+
+File: src/main/java/com/homeadvisor/kafdrop/model/ConsumerTopicVO.java
+Patch:
+@@ -66,7 +66,7 @@ public Collection<ConsumerPartitionVO> getPartitions()
+ 
+    public double getCoveragePercent()
+    {
+-      return ((double)getAssignedPartitionCount()) / offsets.size();
++      return (offsets.size() > 0) ? ((double)getAssignedPartitionCount()) / offsets.size() : 0.0;
+    }
+ 
+    public int getAssignedPartitionCount()
+
+File: src/main/java/com/homeadvisor/kafdrop/service/KafkaMonitor.java
+Patch:
+@@ -44,7 +44,7 @@ public interface KafkaMonitor
+ 
+    Optional<ConsumerVO> getConsumer(String groupId);
+ 
+-   Optional<ConsumerVO> getConsumerByTopicName(String groupId, Optional<String> topic);
++   Optional<ConsumerVO> getConsumerByTopicName(String groupId, String topic);
+ 
+-   Optional<ConsumerVO> getConsumerByTopic(String groupId, Optional<TopicVO> topic);
++   Optional<ConsumerVO> getConsumerByTopic(String groupId, TopicVO topic);
+ }
+
+File: src/main/java/com/homeadvisor/kafdrop/service/KafkaMonitor.java
+Patch:
+@@ -44,7 +44,7 @@ public interface KafkaMonitor
+ 
+    Optional<ConsumerVO> getConsumer(String groupId);
+ 
+-   Optional<ConsumerVO> getConsumerByTopicName(String groupId, Optional<String> topic);
++   Optional<ConsumerVO> getConsumerByTopicName(String groupId, String topic);
+ 
+-   Optional<ConsumerVO> getConsumerByTopic(String groupId, Optional<TopicVO> topic);
++   Optional<ConsumerVO> getConsumerByTopic(String groupId, TopicVO topic);
+ }
+
+File: src/main/java/com/homeadvisor/kafdrop/model/TopicVO.java
+Patch:
+@@ -69,7 +69,7 @@ public Optional<TopicPartitionVO> getPartition(int partitionId)
+    public Collection<TopicPartitionVO> getLeaderPartitions(int brokerId)
+    {
+       return partitions.values().stream()
+-         .filter(tp -> tp.getLeader().getId() == brokerId)
++         .filter(tp -> tp.getLeader() != null && tp.getLeader().getId() == brokerId)
+          .collect(Collectors.toList());
+    }
+ 
+
+File: src/main/java/com/homeadvisor/kafdrop/service/KafkaMonitor.java
+Patch:
+@@ -21,14 +21,12 @@
+ import com.homeadvisor.kafdrop.model.BrokerVO;
+ import com.homeadvisor.kafdrop.model.ConsumerVO;
+ import com.homeadvisor.kafdrop.model.TopicVO;
+-import kafka.javaapi.consumer.SimpleConsumer;
+ 
+ import java.util.List;
+ import java.util.Optional;
+ 
+ public interface KafkaMonitor
+ {
+-   SimpleConsumer getSimpleConsumer(int brokerId) throws BrokerNotFoundException;
+ 
+    List<BrokerVO> getBrokers();
+ 
+
+File: src/main/java/com/homeadvisor/kafdrop/service/KafkaMonitor.java
+Patch:
+@@ -21,14 +21,12 @@
+ import com.homeadvisor.kafdrop.model.BrokerVO;
+ import com.homeadvisor.kafdrop.model.ConsumerVO;
+ import com.homeadvisor.kafdrop.model.TopicVO;
+-import kafka.javaapi.consumer.SimpleConsumer;
+ 
+ import java.util.List;
+ import java.util.Optional;
+ 
+ public interface KafkaMonitor
+ {
+-   SimpleConsumer getSimpleConsumer(int brokerId) throws BrokerNotFoundException;
+ 
+    List<BrokerVO> getBrokers();
+ 
+

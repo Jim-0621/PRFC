@@ -1,0 +1,1215 @@
+File: sandbox-debug-module/src/main/java/com/alibaba/jvm/sandbox/module/debug/DebugLogExceptionModule.java
+Patch:
+@@ -22,7 +22,7 @@
+  */
+ @MetaInfServices(Module.class)
+ @Information(id = "debug-exception-logger", version = "0.0.2", author = "luanjia@taobao.com")
+-public class LogExceptionModule implements Module, LoadCompleted {
++public class DebugLogExceptionModule implements Module, LoadCompleted {
+ 
+     private final Logger exLogger = LoggerFactory.getLogger("DEBUG-EXCEPTION-LOGGER");
+ 
+
+File: sandbox-debug-module/src/main/java/com/alibaba/jvm/sandbox/module/debug/DebugLogServletAccessModule.java
+Patch:
+@@ -30,7 +30,7 @@
+  */
+ @MetaInfServices(Module.class)
+ @Information(id = "debug-servlet-access", version = "0.0.2", author = "luanjia@taobao.com")
+-public class LogServletAccessModule implements Module, LoadCompleted {
++public class DebugLogServletAccessModule implements Module, LoadCompleted {
+ 
+     private final Logger logger = LoggerFactory.getLogger("DEBUG-SERVLET-ACCESS");
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/EventProcessor.java
+Patch:
+@@ -28,7 +28,7 @@ class Process {
+ 
+         // 调用堆栈
+         private final GaStack<Integer> stack
+-                = new ThreadUnsafeGaStack<Integer>();
++                = new ThreadUnsafeGaStack<>();
+ 
+         // 是否需要忽略整个调用过程
+         private boolean isIgnoreProcess = false;
+@@ -173,7 +173,7 @@ public void onEvent(Event event) throws Throwable {
+     final int listenerId;
+     final EventListener listener;
+     final Event.Type[] eventTypes;
+-    final ThreadLocal<Process> processRef = ThreadLocal.withInitial(() -> new java.lang.Process());
++    final ThreadLocal<Process> processRef = ThreadLocal.withInitial(Process::new);
+ 
+     EventProcessor(final int listenerId,
+                    final EventListener listener,
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultCoreLoadedClassDataSource.java
+Patch:
+@@ -40,7 +40,9 @@ public DefaultCoreLoadedClassDataSource(final Instrumentation inst,
+     @Override
+     public Set<Class<?>> list() {
+         final Set<Class<?>> classes = new LinkedHashSet<>();
+-        Collections.addAll(classes, inst.getAllLoadedClasses());
++        for(final Class<?> clazz : inst.getAllLoadedClasses()) {
++            classes.add(clazz);
++        }
+         return classes;
+     }
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/SingleEventFactory.java
+Patch:
+@@ -196,7 +196,7 @@ public CallThrowsEvent makeCallThrowsEvent(final int processId,
+         return callThrowsEvent;
+     }
+ 
+-    private final static Field throwableFieldInThrowsEvent = unCaughtGetClassDeclaredJavaField(ThrowsEvent.class, "throwalbe");
++    private final static Field throwableFieldInThrowsEvent = unCaughtGetClassDeclaredJavaField(ThrowsEvent.class, "throwable");
+     private final static Field objectFieldInReturnEvent = unCaughtGetClassDeclaredJavaField(ReturnEvent.class, "object");
+ 
+     static {
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/SingleEventFactory.java
+Patch:
+@@ -196,7 +196,7 @@ public CallThrowsEvent makeCallThrowsEvent(final int processId,
+         return callThrowsEvent;
+     }
+ 
+-    private final static Field throwableFieldInThrowsEvent = unCaughtGetClassDeclaredJavaField(ThrowsEvent.class, "throwalbe");
++    private final static Field throwableFieldInThrowsEvent = unCaughtGetClassDeclaredJavaField(ThrowsEvent.class, "throwable");
+     private final static Field objectFieldInReturnEvent = unCaughtGetClassDeclaredJavaField(ReturnEvent.class, "object");
+ 
+     static {
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/ModuleJarLoader.java
+Patch:
+@@ -221,7 +221,7 @@ private Routing toRoutingRule(final RoutingInfo routingInfo) {
+ 
+     private boolean isSelfClassloader(ClassLoader classLoader) {
+         return  classLoader instanceof RoutingURLClassLoader
+-                || (classLoader != null && "SandboxClassLoader".equals(classLoader.getClass().getCanonicalName()));
++                || (classLoader != null && "SandboxClassLoader".equals(classLoader.getClass().getSimpleName()));
+     }
+ 
+ 
+
+File: sandbox-core/src/test/java/com/alibaba/jvm/sandbox/core/classloader/SpecialRoutingHandlerTest.java
+Patch:
+@@ -59,7 +59,7 @@ public void testResolve() throws IOException {
+ 
+         assertEquals(Type.TARGET_CLASS_LOADER_NAME, routingInfos.get(2).getType());
+         assertEquals("org.apache.catalina.loader.WebappClassLoader", routingInfos.get(2).getTargetClassLoaderName());
+-        assertEquals(1, routingInfos.get(1).getPattern().length);
++        assertEquals(1, routingInfos.get(2).getPattern().length);
+         assertEquals("^org.apache.dubbo..*", routingInfos.get(2).getPattern()[0]);
+ 
+     }
+
+File: sandbox-jni/src/test/java/com/alibaba/jvm/sandbox/JniAnchorPointImplTest.java
+Patch:
+@@ -25,5 +25,7 @@ public void testGetInstance() {
+         JniAnchorPoint jniAnchorPointImpl = initJniAnchorPoint();
+         JniAnchorPointImplTest[] instances = jniAnchorPointImpl.getInstances(JniAnchorPointImplTest.class);
+         Assert.assertNotNull(instances);
++        Assert.assertEquals(1, instances.length);
++        Assert.assertEquals(this, instances[0]);
+     }
+ }
+\ No newline at end of file
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/asm/EventWeaver.java
+Patch:
+@@ -337,8 +337,7 @@ private void loadReturn(int opcode) {
+ 
+                 @Override
+                 protected void onMethodExit(final int opcode) {
+-                    //TODO 这里是否应该先判断 codeLockForTracing.isLock()
+-                    if (!isThrow(opcode)) {
++                    if (!isThrow(opcode) && !codeLockForTracing.isLock()) {
+                         codeLockForTracing.lock(new CodeLock.Block() {
+                             @Override
+                             public void code() {
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/asm/ReWriteMethod.java
+Patch:
+@@ -262,8 +262,6 @@ final protected void processControl(String desc,boolean isPopRawRespond) {
+         /**
+          * [spyRespond]
+          */
+-        //TODO 需要这个GOTO吗？似乎是多余的，review确认后再确定
+-        goTo(finishLabel);
+         mark(throwsLabel);
+         /**
+          * [Ret, {rawRespond}]
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/NativeMethodEnhanceAware.java
+Patch:
+@@ -14,5 +14,5 @@ public interface NativeMethodEnhanceAware {
+      */
+     String getNativeMethodPrefix();
+ 
+-    void makrNativeMethodEnhance();
++    void markNativeMethodEnhance();
+ }
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/SandboxClassFileTransformer.java
+Patch:
+@@ -220,12 +220,12 @@ public String getNativeMethodPrefix() {
+     }
+ 
+     @Override
+-    public void makrNativeMethodEnhance() {
++    public void markNativeMethodEnhance() {
+         if(setNativeMethodPrefix.compareAndSet(false,true)){
+             if(inst.isNativeMethodPrefixSupported()){
+                 inst.setNativeMethodPrefix(this,getNativeMethodPrefix());
+             }else{
+-                throw new UnsupportedOperationException("Native Method Prefix Unspported");
++                throw new UnsupportedOperationException("Native Method Prefix Unsupported");
+             }
+         }
+     }
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/util/matcher/UnsupportedMatcher.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.alibaba.jvm.sandbox.core.util.matcher;
+ 
+ import com.alibaba.jvm.sandbox.api.annotation.Stealth;
++import com.alibaba.jvm.sandbox.core.enhance.weaver.asm.EventWeaver;
+ import com.alibaba.jvm.sandbox.core.util.matcher.structure.Access;
+ import com.alibaba.jvm.sandbox.core.util.matcher.structure.BehaviorStructure;
+ import com.alibaba.jvm.sandbox.core.util.matcher.structure.ClassStructure;
+@@ -99,6 +100,7 @@ private boolean isJavaMainBehavior(final BehaviorStructure behaviorStructure) {
+      * 2. native的方法暂时无法支持
+      */
+     private boolean isUnsupportedBehavior(final BehaviorStructure behaviorStructure) {
++        //TODO unSupportMethodName
+         final Access access = behaviorStructure.getAccess();
+         return access.isAbstract();
+     }
+
+File: sandbox-core/src/test/java/com/alibaba/jvm/sandbox/qatest/core/util/JvmHelper.java
+Patch:
+@@ -149,7 +149,7 @@ public String getNativeMethodPrefix() {
+         }
+ 
+         @Override
+-        public void makrNativeMethodEnhance() {
++        public void markNativeMethodEnhance() {
+ 
+         }
+     }
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/classloader/BusinessClassLoaderHolder.java
+Patch:
+@@ -23,7 +23,7 @@ public static void removeBusinessClassLoader(){
+ 
+     public static DelegateBizClassLoader getBusinessClassLoader(){
+ 
+-        return holder.get();
++        return null != holder ? holder.get() : null;
+     }
+ 
+     public static class DelegateBizClassLoader extends ClassLoader{
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/asm/ReWriteMethod.java
+Patch:
+@@ -162,6 +162,7 @@ final protected void processControl(String desc) {
+         goTo(finishLabel);
+         mark(returnLabel);
+         pop();
++        //TODO 此时可能的栈状态 [Ret,object] | [Ret,[Long high],[long low]],需要处理掉栈底原始需要返回的对象
+         visitFieldInsn(GETFIELD, ASM_TYPE_SPY_RET, "respond", ASM_TYPE_OBJECT);
+         checkCastReturn(Type.getReturnType(desc));
+         goTo(finishLabel);
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/SingleEventFactory.java
+Patch:
+@@ -196,7 +196,7 @@ public CallThrowsEvent makeCallThrowsEvent(final int processId,
+         return callThrowsEvent;
+     }
+ 
+-    private final static Field throwableFieldInThrowsEvent = unCaughtGetClassDeclaredJavaField(ThrowsEvent.class, "throwalbe");
++    private final static Field throwableFieldInThrowsEvent = unCaughtGetClassDeclaredJavaField(ThrowsEvent.class, "throwable");
+     private final static Field objectFieldInReturnEvent = unCaughtGetClassDeclaredJavaField(ReturnEvent.class, "object");
+ 
+     static {
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/SandboxClassFileTransformer.java
+Patch:
+@@ -224,6 +224,8 @@ public void makrNativeMethodEnhance() {
+         if(setNativeMethodPrefix.compareAndSet(false,true)){
+             if(inst.isNativeMethodPrefixSupported()){
+                 inst.setNativeMethodPrefix(this,getNativeMethodPrefix());
++            }else{
++                throw new UnsupportedOperationException("Native Method Prefix unspported");
+             }
+         }
+     }
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/util/SandboxClassUtils.java
+Patch:
+@@ -12,8 +12,8 @@ public class SandboxClassUtils {
+      * 是否是SANDBOX家族所管理的类
+      * <p>
+      * SANDBOX家族所管理的类包括：
+-     * <li>{@code com.alibaba.jvm.sandbox.}开头的类名</li>
+-     * <li>被{@code com.alibaba.jvm.sandbox.}开头的ClassLoader所加载的类</li>
++     * 1. {@code com.alibaba.jvm.sandbox.}开头的类名
++     * 2. 被{@code com.alibaba.jvm.sandbox.}开头的ClassLoader所加载的类
+      * </p>
+      *
+      * @param internalClassName 类资源名
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/classloader/RoutingURLClassLoader.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Collection;
+ import java.util.Enumeration;
+ 
+-import com.alibaba.jvm.sandbox.core.classloader.BussinessClassLoaderHolder.DelegateBizClassLoader;
++import com.alibaba.jvm.sandbox.core.classloader.BusinessClassLoaderHolder.DelegateBizClassLoader;
+ 
+ /**
+  * 可路由的URLClassLoader
+@@ -94,7 +94,7 @@ public Class<?> loadClass(String javaClassName) throws ClassNotFoundException {
+                     }
+                     return aClass;
+                 } catch (Exception cause) {
+-                    DelegateBizClassLoader delegateBizClassLoader = BussinessClassLoaderHolder.getBussinessClassLoader();
++                    DelegateBizClassLoader delegateBizClassLoader = BusinessClassLoaderHolder.getBussinessClassLoader();
+                     try {
+                         if(null != delegateBizClassLoader){
+                             return delegateBizClassLoader.loadClass(javaClassName,resolve);
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/asm/AsmCodeLock.java
+Patch:
+@@ -72,7 +72,7 @@ public void code(int code) {
+ 
+     /*
+      * 重置索引
+-     * 一般在代码序列判断失败时，则会对索引进行重置，冲头开始匹配特征序列
++     * 一般在代码序列判断失败时，则会对索引进行重置，从头开始匹配特征序列
+      */
+     private void reset() {
+         index = 0;
+
+File: sandbox-core/src/test/java/com/alibaba/jvm/sandbox/qatest/core/util/AssertUtils.java
+Patch:
+@@ -10,9 +10,9 @@ public class AssertUtils {
+     public static <E> void assertArrayEquals(E[] exceptArray, E[] actualArray) {
+         assertEquals(
+                 String.format(
+-                        "except size not matched!\n\texcept:%s\n\tactual:%s",
+-                        StringUtils.join(exceptArray, ","),
+-                        StringUtils.join(actualArray, ",")
++                        "except size not matched!\n\tEXCEPT:\n\t\t%s\n\n\tACTUAL:\n\t\t%s",
++                        StringUtils.join(exceptArray, ",\n\t\t"),
++                        StringUtils.join(actualArray, ",\n\t\t")
+                 ),
+                 getLength(exceptArray),
+                 getLength(actualArray)
+
+File: sandbox-core/src/test/java/com/alibaba/jvm/sandbox/qatest/core/util/JvmHelper.java
+Patch:
+@@ -16,6 +16,7 @@
+ import org.apache.commons.collections.CollectionUtils;
+ import org.apache.commons.lang3.StringUtils;
+ 
++import java.com.alibaba.jvm.sandbox.spy.Spy;
+ import java.io.ByteArrayInputStream;
+ import java.io.IOException;
+ import java.io.InputStream;
+@@ -219,6 +220,7 @@ public static JvmHelper createJvm(final String namespace) {
+     }
+ 
+     public static JvmHelper createJvm() {
++        Spy.isSpyThrowException = true;
+         return createJvm("default");
+     }
+ 
+
+File: sandbox-debug-module/src/main/java/com/alibaba/jvm/sandbox/module/debug/DebugWatchModule.java
+Patch:
+@@ -59,6 +59,7 @@ public Trigger convert(String string) {
+         final EventWatcher watcher = new EventWatchBuilder(moduleEventWatcher)
+                 .onClass(cnPattern)
+                 .includeSubClasses()
++                .includeBootstrap()
+                 .onBehavior(mnPattern)
+                 .onWatching()
+                 .withProgress(new ProgressPrinter(printer))
+
+File: sandbox-debug-module/src/main/java/com/alibaba/jvm/sandbox/module/debug/DebugWatchModule.java
+Patch:
+@@ -59,6 +59,7 @@ public Trigger convert(String string) {
+         final EventWatcher watcher = new EventWatchBuilder(moduleEventWatcher)
+                 .onClass(cnPattern)
+                 .includeSubClasses()
++                .includeBootstrap()
+                 .onBehavior(mnPattern)
+                 .onWatching()
+                 .withProgress(new ProgressPrinter(printer))
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/asm/AsmCodeLock.java
+Patch:
+@@ -72,7 +72,7 @@ public void code(int code) {
+ 
+     /*
+      * 重置索引
+-     * 一般在代码序列判断失败时，则会对索引进行重置，冲头开始匹配特征序列
++     * 一般在代码序列判断失败时，则会对索引进行重置，从头开始匹配特征序列
+      */
+     private void reset() {
+         index = 0;
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/asm/AsmCodeLock.java
+Patch:
+@@ -72,7 +72,7 @@ public void code(int code) {
+ 
+     /*
+      * 重置索引
+-     * 一般在代码序列判断失败时，则会对索引进行重置，冲头开始匹配特征序列
++     * 一般在代码序列判断失败时，则会对索引进行重置，从头开始匹配特征序列
+      */
+     private void reset() {
+         index = 0;
+
+File: sandbox-agent/src/main/java/com/alibaba/jvm/sandbox/agent/AgentLauncher.java
+Patch:
+@@ -55,8 +55,8 @@ private static String getSandboxProviderPath(String sandboxHome) {
+             .getParent();
+ 
+     private static final String SANDBOX_USER_MODULE_PATH
+-            = System.getProperties().getProperty("user.home")
+-            + File.separator + ".sandbox-module";
++            = DEFAULT_SANDBOX_HOME
++            + File.separator + "sandbox-module";
+ 
+     // 启动模式: agent方式加载
+     private static final String LAUNCH_MODE_AGENT = "agent";
+
+File: sandbox-debug-module/src/main/java/com/alibaba/jvm/sandbox/module/debug/DebugLifeCycleModule.java
+Patch:
+@@ -76,6 +76,8 @@ public void control(final Map<String, String> param, final PrintWriter writer){
+ 
+         final String cnPattern = getParameter(param, "class");
+         final String mnPattern = getParameter(param, "method");
++        lifeCLogger.info("param.class={}", cnPattern);
++        lifeCLogger.info("param.method={}", mnPattern);
+ 
+ 
+         int watcherId = moduleEventWatcher.watch(
+
+File: sandbox-debug-module/src/main/java/com/alibaba/jvm/sandbox/module/debug/LogServletAccessModule.java
+Patch:
+@@ -99,6 +99,7 @@ public void loadCompleted() {
+                     @Override
+                     protected void before(Advice advice) throws Throwable {
+ 
++
+                         // 只关心顶层调用
+                         if (!advice.isProcessTop()) {
+                             return;
+
+File: sandbox-agent/src/main/java/com/alibaba/jvm/sandbox/agent/AgentLauncher.java
+Patch:
+@@ -55,8 +55,8 @@ private static String getSandboxProviderPath(String sandboxHome) {
+             .getParent();
+ 
+     private static final String SANDBOX_USER_MODULE_PATH
+-            = System.getProperties().getProperty("user.home")
+-            + File.separator + ".sandbox-module";
++            = DEFAULT_SANDBOX_HOME
++            + File.separator + "sandbox-module";
+ 
+     // 启动模式: agent方式加载
+     private static final String LAUNCH_MODE_AGENT = "agent";
+
+File: sandbox-debug-module/src/main/java/com/alibaba/jvm/sandbox/module/debug/DebugLifeCycleModule.java
+Patch:
+@@ -76,6 +76,8 @@ public void control(final Map<String, String> param, final PrintWriter writer){
+ 
+         final String cnPattern = getParameter(param, "class");
+         final String mnPattern = getParameter(param, "method");
++        lifeCLogger.info("param.class={}", cnPattern);
++        lifeCLogger.info("param.method={}", mnPattern);
+ 
+ 
+         int watcherId = moduleEventWatcher.watch(
+
+File: sandbox-debug-module/src/main/java/com/alibaba/jvm/sandbox/module/debug/LogServletAccessModule.java
+Patch:
+@@ -99,6 +99,7 @@ public void loadCompleted() {
+                     @Override
+                     protected void before(Advice advice) throws Throwable {
+ 
++
+                         // 只关心顶层调用
+                         if (!advice.isProcessTop()) {
+                             return;
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/EventListenerHandlers.java
+Patch:
+@@ -64,7 +64,7 @@ public void active(final int listenerId,
+     public void frozen(int listenerId) {
+         final EventProcessor processor = mappingOfEventProcessor.remove(listenerId);
+         if (null == processor) {
+-            logger.debug("ignore frozen listener[id={};], because not found.");
++            logger.debug("ignore frozen listener={}, because not found.", listenerId);
+             return;
+         }
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultLoadedClassDataSource.java
+Patch:
+@@ -86,7 +86,7 @@ private List<Class<?>> find(final Matcher matcher,
+             // 过滤掉对于JVM认为不可修改的类
+             if (isRemoveUnsupported
+                     && !inst.isModifiableClass(clazz)) {
+-                logger.debug("remove from findForReTransform, because class:{} is unModifiable", clazz.getName());
++                // logger.debug("remove from findForReTransform, because class:{} is unModifiable", clazz.getName());
+                 continue;
+             }
+             try {
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/server/jetty/servlet/ModuleHttpServlet.java
+Patch:
+@@ -137,7 +137,7 @@ public void release() {
+         } finally {
+             Thread.currentThread().setContextClassLoader(oriThreadContextClassLoader);
+             method.setAccessible(isAccessible);
+-            coreModule.remove(writer);
++            coreModule.release(writer);
+         }
+ 
+     }
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/server/jetty/servlet/WebSocketAcceptorServlet.java
+Patch:
+@@ -143,7 +143,7 @@ public void onClose(int closeCode, String message) {
+             try {
+                 listener.onClose(closeCode, message);
+             } finally {
+-                coreModule.remove(conn);
++                coreModule.release(conn);
+             }
+         }
+ 
+
+File: sandbox-debug-module/src/main/java/com/alibaba/jvm/sandbox/module/debug/HttpAccessLoggerModule.java
+Patch:
+@@ -32,7 +32,7 @@
+  */
+ @MetaInfServices(Module.class)
+ @Information(id = "debug-http-logger", version = "0.0.2", author = "luanjia@taobao.com")
+-public class HttpHttpAccessLoggerModule implements Module, LoadCompleted {
++public class HttpAccessLoggerModule implements Module, LoadCompleted {
+ 
+     private final Logger stLogger = LoggerFactory.getLogger("DEBUG-SERVLET-LOGGER");
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/EventListenerHandlers.java
+Patch:
+@@ -279,7 +279,7 @@ private Spy.Ret handleEvent(final int listenerId,
+ 
+             // 普通事件处理器则可以打个日志后,直接放行
+             else {
+-                logger.debug("on-event: event|{}|{}|{};listener|{} occur an error.",
++                logger.warn("on-event: event|{}|{}|{};listener|{} occur an error.",
+                         event.type,
+                         processId,
+                         invokeId,
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/weaver/asm/EventWeaver.java
+Patch:
+@@ -193,7 +193,6 @@ private void loadClassLoader() {
+ 
+             @Override
+             protected void onMethodEnter() {
+-
+                 codeLockForTracing.lock(new CodeLock.Block() {
+                     @Override
+                     public void code() {
+
+File: sandbox-core/src/test/java/com/alibaba/jvm/sandbox/qatest/core/enhance/ICalculatorTestCase.java
+Patch:
+@@ -1,5 +1,7 @@
+ package com.alibaba.jvm.sandbox.qatest.core.enhance;
+ 
++import java.com.alibaba.jvm.sandbox.spy.Spy;
++
+ /**
+  * Calculator类测试用例接口
+  * <p>
+
+File: sandbox-core/src/test/java/com/alibaba/jvm/sandbox/qatest/core/enhance/listener/TracingAdviceListener.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.alibaba.jvm.sandbox.qatest.core.enhance.listener;
+ 
+ import com.alibaba.jvm.sandbox.api.event.Event;
++import com.alibaba.jvm.sandbox.api.listener.EventListener;
+ import com.alibaba.jvm.sandbox.api.listener.ext.Advice;
+ import com.alibaba.jvm.sandbox.api.listener.ext.AdviceListener;
+ import com.alibaba.jvm.sandbox.core.enhance.weaver.EventListenerHandlers;
+
+File: sandbox-mgr-module/src/main/java/com/alibaba/jvm/sandbox/module/mgr/ControlModule.java
+Patch:
+@@ -18,7 +18,7 @@
+ import java.lang.reflect.Method;
+ 
+ @MetaInfServices(Module.class)
+-@Information(id = "control", version = "0.0.2", author = "luanjia@taobao.com")
++@Information(id = "sandbox-control", version = "0.0.2", author = "luanjia@taobao.com")
+ public class ControlModule implements Module {
+ 
+     private final Logger logger = LoggerFactory.getLogger(getClass());
+
+File: sandbox-mgr-module/src/main/java/com/alibaba/jvm/sandbox/module/mgr/InfoModule.java
+Patch:
+@@ -17,7 +17,7 @@
+  * @author luanjia@taobao.com
+  */
+ @MetaInfServices(Module.class)
+-@Information(id = "info", version = "0.0.4", author = "luanjia@taobao.com")
++@Information(id = "sandbox-info", version = "0.0.4", author = "luanjia@taobao.com")
+ public class InfoModule implements Module {
+ 
+     @Resource
+
+File: sandbox-mgr-module/src/main/java/com/alibaba/jvm/sandbox/module/mgr/ModuleMgrModule.java
+Patch:
+@@ -29,7 +29,7 @@
+  * @author luanjia@taobao.com
+  */
+ @MetaInfServices(Module.class)
+-@Information(id = "module-mgr", author = "luanjia@taobao.com", version = "0.0.2")
++@Information(id = "sandbox-module-mgr", author = "luanjia@taobao.com", version = "0.0.2")
+ public class ModuleMgrModule implements Module {
+ 
+     private final Logger logger = LoggerFactory.getLogger(getClass());
+
+File: sandbox-api/src/main/java/com/alibaba/jvm/sandbox/api/ModuleLifecycle.java
+Patch:
+@@ -18,6 +18,7 @@ public interface ModuleLifecycle extends LoadCompleted {
+      */
+     void onLoad() throws Throwable;
+ 
++
+     /**
+      * 模块卸载，模块开始卸载之前调用！
+      * <p>
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/EventEnhancer.java
+Patch:
+@@ -6,7 +6,6 @@
+ import com.alibaba.jvm.sandbox.core.util.SpyUtils;
+ import org.objectweb.asm.ClassReader;
+ import org.objectweb.asm.ClassWriter;
+-import org.objectweb.asm.Opcodes;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/server/jetty/servlet/WebSocketAcceptorServlet.java
+Patch:
+@@ -64,14 +64,14 @@ public WebSocket doWebSocketConnect(final HttpServletRequest req,
+ 
+         if (!(coreModule.getModule() instanceof WebSocketAcceptor)) {
+             logger.warn("module[id={};class={};] is not implements WebSocketAcceptor.",
+-                    uniqueId, coreModule.getModule().getClass());
++                    uniqueId, coreModule.getModule().getClass().getName());
+             return null;
+         }
+ 
+         final WebSocketConnectionListener listener =
+                 ((WebSocketAcceptor) coreModule.getModule()).onAccept(req, protocol);
+         logger.info("accept websocket connection, module[id={};class={};], value={};",
+-                uniqueId, coreModule.getModule().getClass(), req.getPathInfo());
++                uniqueId, coreModule.getModule().getClass().getName(), req.getPathInfo());
+ 
+         if (listener instanceof TextMessageListener) {
+             return new InnerOnTextMessage(uniqueId, (TextMessageListener) listener);
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/util/collection/GaStack.java
+Patch:
+@@ -20,4 +20,6 @@ public interface GaStack<E> {
+ 
+     E peekLast();
+ 
++    int deep();
++
+ }
+
+File: sandbox-core/src/test/java/com/alibaba/jvm/sandbox/qatest/core/enhance/CoreEnhanceBaseTestCase.java
+Patch:
+@@ -20,8 +20,8 @@
+ import java.util.Map;
+ import java.util.concurrent.atomic.AtomicInteger;
+ 
+-import static com.alibaba.jvm.sandbox.qatest.util.QaClassUtils.toByteArray;
+-import static com.alibaba.jvm.sandbox.qatest.util.QaClassUtils.toResourceName;
++import static com.alibaba.jvm.sandbox.qatest.core.util.QaClassUtils.toByteArray;
++import static com.alibaba.jvm.sandbox.qatest.core.util.QaClassUtils.toResourceName;
+ 
+ public class CoreEnhanceBaseTestCase {
+ 
+
+File: sandbox-core/src/test/java/com/alibaba/jvm/sandbox/qatest/core/util/QaClassUtils.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.alibaba.jvm.sandbox.qatest.util;
++package com.alibaba.jvm.sandbox.qatest.core.util;
+ 
+ import org.apache.commons.io.IOUtils;
+ import org.apache.commons.lang3.ArrayUtils;
+
+File: sandbox-core/src/test/java/com/alibaba/jvm/sandbox/qatest/core/util/matcher/ClassStructureTestCaseByChildClass.java
+Patch:
+@@ -14,12 +14,12 @@
+ import java.io.IOException;
+ import java.util.Collection;
+ 
++import static com.alibaba.jvm.sandbox.qatest.core.util.QaClassUtils.toByteArray;
+ import static com.alibaba.jvm.sandbox.qatest.core.util.matcher.asserts.AccessAsserter.AccessIsEnum.*;
+ import static com.alibaba.jvm.sandbox.qatest.core.util.matcher.asserts.BehaviorStructureCollectionAsserter.buildBehaviorSignCodeArrayAsserter;
+ import static com.alibaba.jvm.sandbox.qatest.core.util.matcher.asserts.ClassStructureCollectionAsserter.buildEmptyJavaClassNameArrayAsserter;
+ import static com.alibaba.jvm.sandbox.qatest.core.util.matcher.asserts.ClassStructureCollectionAsserter.buildJavaClassNameArrayAsserter;
+ import static com.alibaba.jvm.sandbox.qatest.core.util.matcher.asserts.MappingAsserter.Mode.ALL;
+-import static com.alibaba.jvm.sandbox.qatest.util.QaClassUtils.toByteArray;
+ import static java.util.Arrays.asList;
+ 
+ @RunWith(Parameterized.class)
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/enhance/Enhancer.java
+Patch:
+@@ -16,13 +16,15 @@ public interface Enhancer {
+      * @param loader           目标类加载器
+      * @param srcByteCodeArray 源字节码数组
+      * @param signCodes        需要被增强的行为签名
++     * @param namespace        命名空间
+      * @param listenerId       需要埋入的监听器ID
+      * @param eventTypeArray   需要配埋入的事件类型
+      * @return 增强后的字节码数组
+      */
+     byte[] toByteCodeArray(ClassLoader loader,
+                            byte[] srcByteCodeArray,
+                            Set<String> signCodes,
++                           String namespace,
+                            int listenerId,
+                            Event.Type[] eventTypeArray);
+ 
+
+File: sandbox-agent/src/main/java/com/alibaba/jvm/sandbox/agent/AgentLauncher.java
+Patch:
+@@ -310,10 +310,10 @@ private static synchronized InetSocketAddress main(final Map<String, String> fea
+     private static final String KEY_NAMESPACE = "namespace";
+     private static final String DEFAULT_NAMESPACE = "default";
+ 
+-    private static final String KEY_SERVER_IP = "ip";
++    private static final String KEY_SERVER_IP = "server.ip";
+     private static final String DEFAULT_IP = "0.0.0.0";
+ 
+-    private static final String KEY_SERVER_PORT = "port";
++    private static final String KEY_SERVER_PORT = "server.port";
+     private static final String DEFAULT_PORT = "0";
+ 
+     private static final String KEY_TOKEN = "token";
+
+File: sandbox-api/src/main/java/com/alibaba/jvm/sandbox/api/util/GaStringUtils.java
+Patch:
+@@ -50,7 +50,7 @@ public static String[] getJavaClassNameArray(final Class<?>[] classArray) {
+      * null和""均为空
+      * </p>
+      *
+-     * @param string
++     * @param string 目标字符串
+      * @return TRUE:空字符串;FALSE:非空字符串
+      */
+     public static boolean isEmpty(String string) {
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/CoreLauncher.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.sun.tools.attach.VirtualMachine;
+ import org.apache.commons.lang3.StringUtils;
+ 
+-
+ import static com.alibaba.jvm.sandbox.core.util.SandboxStringUtils.getCauseMessage;
+ 
+ /**
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/CoreLoadedClassDataSource.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.alibaba.jvm.sandbox.api.resource.LoadedClassDataSource;
+ import com.alibaba.jvm.sandbox.core.util.matcher.Matcher;
+ 
+-import java.util.Iterator;
+ import java.util.List;
+ 
+ /**
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultConfigInfo.java
+Patch:
+@@ -4,7 +4,6 @@
+ import com.alibaba.jvm.sandbox.api.resource.ConfigInfo;
+ import com.alibaba.jvm.sandbox.core.CoreConfigure;
+ import com.alibaba.jvm.sandbox.core.server.ProxyCoreServer;
+-import com.alibaba.jvm.sandbox.core.server.jetty.JettyCoreServer;
+ import org.apache.commons.io.IOUtils;
+ 
+ import java.io.IOException;
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultCoreModuleManager.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.alibaba.jvm.sandbox.core.manager.impl;
+ 
+ import com.alibaba.jvm.sandbox.api.*;
+-import com.alibaba.jvm.sandbox.api.Module;
+ import com.alibaba.jvm.sandbox.api.resource.*;
+ import com.alibaba.jvm.sandbox.core.CoreConfigure;
+ import com.alibaba.jvm.sandbox.core.classloader.ModuleClassLoader;
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultModuleEventWatcher.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.alibaba.jvm.sandbox.core.manager.impl;
+ 
+ import com.alibaba.jvm.sandbox.api.event.Event;
+-import com.alibaba.jvm.sandbox.api.filter.ExtFilter;
+ import com.alibaba.jvm.sandbox.api.filter.Filter;
+ import com.alibaba.jvm.sandbox.api.listener.EventListener;
+ import com.alibaba.jvm.sandbox.api.listener.ext.EventWatchCondition;
+@@ -15,7 +14,6 @@
+ import com.alibaba.jvm.sandbox.core.util.matcher.GroupMatcher;
+ import com.alibaba.jvm.sandbox.core.util.matcher.Matcher;
+ import org.apache.commons.collections.CollectionUtils;
+-import org.apache.commons.lang3.ArrayUtils;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/server/jetty/JettyCoreServer.java
+Patch:
+@@ -217,8 +217,8 @@ public synchronized void bind(final CoreConfigure cfg, final Instrumentation ins
+                 @Override
+                 public void process() throws Throwable {
+                     JettyCoreServer.this.cfg = cfg;
+-                    logger.info("cfg={}", cfg);
+                     initLogback(cfg);
++                    logger.info("prepare to init jvm-sandbox[{}] server. cfg={}", cfg.getNamespace(), cfg);
+                     initManager(inst, cfg);
+                     initHttpServer(cfg);
+                     initJettyContextHandler(cfg);
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/util/matcher/ExtFilterMatcher.java
+Patch:
+@@ -10,7 +10,9 @@
+ import com.alibaba.jvm.sandbox.core.util.matcher.structure.ClassStructure;
+ import org.apache.commons.lang3.ArrayUtils;
+ 
+-import java.util.*;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.List;
+ 
+ import static com.alibaba.jvm.sandbox.api.filter.AccessFlags.*;
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/util/matcher/structure/ClassStructureImplByJDK.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.alibaba.jvm.sandbox.core.util.matcher.structure;
+ 
+ import com.alibaba.jvm.sandbox.core.util.LazyGet;
+-import org.apache.commons.lang3.StringUtils;
+ 
+ import java.lang.annotation.Annotation;
+ import java.lang.reflect.Constructor;
+
+File: sandbox-mgr-module/src/main/java/com/albaba/jvm/sandbox/module/mgr/ModuleMgrModule.java
+Patch:
+@@ -95,8 +95,8 @@ public void list(final HttpServletResponse resp) throws IOException {
+                 );
+ 
+             } catch (ModuleException me) {
+-                logger.warn("module[id={};class={};] was occur error. ERROR_CODE={}, ignore this module.",
+-                        me.getUniqueId(), me.getErrorCode(), me);
++                logger.warn("get module info occur error when list modules, module[id={};class={};], error={}, ignore this module.",
++                        me.getUniqueId(), module.getClass(), me.getErrorCode(), me);
+             }
+ 
+         }
+
+File: sandbox-api/src/main/java/com/alibaba/jvm/sandbox/api/util/GaStringUtils.java
+Patch:
+@@ -50,7 +50,7 @@ public static String[] getJavaClassNameArray(final Class<?>[] classArray) {
+      * null和""均为空
+      * </p>
+      *
+-     * @param string
++     * @param string 目标字符串
+      * @return TRUE:空字符串;FALSE:非空字符串
+      */
+     public static boolean isEmpty(String string) {
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/CoreLauncher.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.sun.tools.attach.VirtualMachine;
+ import org.apache.commons.lang3.StringUtils;
+ 
+-
+ import static com.alibaba.jvm.sandbox.core.util.SandboxStringUtils.getCauseMessage;
+ 
+ /**
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/CoreLoadedClassDataSource.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.alibaba.jvm.sandbox.api.resource.LoadedClassDataSource;
+ import com.alibaba.jvm.sandbox.core.util.matcher.Matcher;
+ 
+-import java.util.Iterator;
+ import java.util.List;
+ 
+ /**
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultConfigInfo.java
+Patch:
+@@ -4,7 +4,6 @@
+ import com.alibaba.jvm.sandbox.api.resource.ConfigInfo;
+ import com.alibaba.jvm.sandbox.core.CoreConfigure;
+ import com.alibaba.jvm.sandbox.core.server.ProxyCoreServer;
+-import com.alibaba.jvm.sandbox.core.server.jetty.JettyCoreServer;
+ import org.apache.commons.io.IOUtils;
+ 
+ import java.io.IOException;
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultModuleEventWatcher.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.alibaba.jvm.sandbox.core.manager.impl;
+ 
+ import com.alibaba.jvm.sandbox.api.event.Event;
+-import com.alibaba.jvm.sandbox.api.filter.ExtFilter;
+ import com.alibaba.jvm.sandbox.api.filter.Filter;
+ import com.alibaba.jvm.sandbox.api.listener.EventListener;
+ import com.alibaba.jvm.sandbox.api.listener.ext.EventWatchCondition;
+@@ -15,7 +14,6 @@
+ import com.alibaba.jvm.sandbox.core.util.matcher.GroupMatcher;
+ import com.alibaba.jvm.sandbox.core.util.matcher.Matcher;
+ import org.apache.commons.collections.CollectionUtils;
+-import org.apache.commons.lang3.ArrayUtils;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/server/jetty/JettyCoreServer.java
+Patch:
+@@ -217,8 +217,8 @@ public synchronized void bind(final CoreConfigure cfg, final Instrumentation ins
+                 @Override
+                 public void process() throws Throwable {
+                     JettyCoreServer.this.cfg = cfg;
+-                    logger.info("cfg={}", cfg);
+                     initLogback(cfg);
++                    logger.info("prepare to init jvm-sandbox[{}] server. cfg={}", cfg.getNamespace(), cfg);
+                     initManager(inst, cfg);
+                     initHttpServer(cfg);
+                     initJettyContextHandler(cfg);
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/util/collection/Pair.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import java.util.ArrayList;
+ import java.util.Arrays;
+-import java.util.LinkedList;
+ 
+ public class Pair extends ArrayList<Object> {
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/util/matcher/ExtFilterMatcher.java
+Patch:
+@@ -10,7 +10,9 @@
+ import com.alibaba.jvm.sandbox.core.util.matcher.structure.ClassStructure;
+ import org.apache.commons.lang3.ArrayUtils;
+ 
+-import java.util.*;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.List;
+ 
+ import static com.alibaba.jvm.sandbox.api.filter.AccessFlags.*;
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/util/matcher/structure/ClassStructureImplByAsm.java
+Patch:
+@@ -1,6 +1,5 @@
+ package com.alibaba.jvm.sandbox.core.util.matcher.structure;
+ 
+-import com.alibaba.jvm.sandbox.api.util.CacheGet;
+ import com.alibaba.jvm.sandbox.core.util.BitUtils;
+ import com.alibaba.jvm.sandbox.core.util.LazyGet;
+ import com.alibaba.jvm.sandbox.core.util.collection.GaLRUCache;
+@@ -13,7 +12,6 @@
+ 
+ import java.io.IOException;
+ import java.io.InputStream;
+-import java.lang.instrument.Instrumentation;
+ import java.util.*;
+ 
+ import static com.alibaba.jvm.sandbox.core.util.SandboxStringUtils.toInternalClassName;
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/util/matcher/structure/ClassStructureImplByJDK.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.alibaba.jvm.sandbox.core.util.matcher.structure;
+ 
+ import com.alibaba.jvm.sandbox.core.util.LazyGet;
+-import org.apache.commons.lang3.StringUtils;
+ 
+ import java.lang.annotation.Annotation;
+ import java.lang.reflect.Constructor;
+
+File: sandbox-mgr-module/src/main/java/com/albaba/jvm/sandbox/module/mgr/ModuleMgrModule.java
+Patch:
+@@ -95,8 +95,8 @@ public void list(final HttpServletResponse resp) throws IOException {
+                 );
+ 
+             } catch (ModuleException me) {
+-                logger.warn("module[id={};class={};] was occur error. ERROR_CODE={}, ignore this module.",
+-                        me.getUniqueId(), me.getErrorCode(), me);
++                logger.warn("get module info occur error when list modules, module[id={};class={};], error={}, ignore this module.",
++                        me.getUniqueId(), module.getClass(), me.getErrorCode(), me);
+             }
+ 
+         }
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/util/matcher/structure/FamilyClassStructure.java
+Patch:
+@@ -72,7 +72,7 @@ private static boolean isInheritedAnnotationType(ClassStructure classStructure)
+ 
+     // 过滤掉没有@Inherited标注的Annotation，因为他们不能继承
+     private Set<ClassStructure> filterInheritedAnnotationTypeClassStructure(final Set<ClassStructure> classStructures) {
+-        final Iterator<ClassStructure> itCs = classStructures.iterator();
++        final Iterator<ClassStructure> itCs = new HashSet<ClassStructure>(classStructures).iterator();
+         while (itCs.hasNext()) {
+             final ClassStructure annotationTypeClassStructure = itCs.next();
+             if (!isInheritedAnnotationType(annotationTypeClassStructure)) {
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/CoreConfigure.java
+Patch:
+@@ -28,8 +28,8 @@ public class CoreConfigure {
+ 
+     private static final String KEY_SANDBOX_HOME = "sandbox_home";
+     private static final String KEY_LAUNCH_MODE = "mode";
+-    private static final String KEY_SERVER_IP = "server.ip";
+-    private static final String KEY_SERVER_PORT = "server.port";
++    private static final String KEY_SERVER_IP = "ip";
++    private static final String KEY_SERVER_PORT = "port";
+ 
+     private static final String KEY_SYSTEM_MODULE_LIB_PATH = "system_module";
+     private static final String KEY_USER_MODULE_LIB_PATH = "user_module";
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultConfigInfo.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.alibaba.jvm.sandbox.api.resource.ConfigInfo;
+ import com.alibaba.jvm.sandbox.core.CoreConfigure;
+ import com.alibaba.jvm.sandbox.core.server.ProxyCoreServer;
++import com.alibaba.jvm.sandbox.core.server.jetty.JettyCoreServer;
+ import org.apache.commons.io.IOUtils;
+ 
+ import java.io.IOException;
+@@ -115,7 +116,7 @@ public InetSocketAddress getServerAddress() {
+         try {
+             return ProxyCoreServer.getInstance().getLocal();
+         } catch (Throwable cause) {
+-            return new InetSocketAddress(cfg.getServerIp(), cfg.getServerPort());
++            return new InetSocketAddress("0.0.0.0", 0);
+         }
+     }
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultCoreModuleManager.java
+Patch:
+@@ -505,7 +505,7 @@ public synchronized void reset() throws ModuleException {
+             // 对模块访问权限进行校验
+             if (moduleLibDir.exists()
+                     && moduleLibDir.canRead()) {
+-                new ModuleJarLoader(moduleLibDir, cfg.getLaunchMode(), sandboxClassLoader, classDataSource)
++                new ModuleJarLoader(moduleLibDir, cfg.getLaunchMode(), sandboxClassLoader)
+                         .load(new InnerModuleJarLoadCallback(), new InnerModuleLoadCallback());
+             } else {
+                 logger.warn("MODULE-LIB[{}] can not access, ignore flush load this lib.", moduleLibDir);
+@@ -614,7 +614,7 @@ private void softFlush() throws ModuleException {
+ 
+                 // 4. 加载add
+                 for (final File jarFile : appendJarFiles) {
+-                    new ModuleJarLoader(jarFile, cfg.getLaunchMode(), sandboxClassLoader, classDataSource)
++                    new ModuleJarLoader(jarFile, cfg.getLaunchMode(), sandboxClassLoader)
+                             .load(new InnerModuleJarLoadCallback(), new InnerModuleLoadCallback());
+                 }
+             } catch (Throwable cause) {
+@@ -659,7 +659,7 @@ private void forceFlush() throws ModuleException {
+         for (final File userModuleLibDir : userModuleLibFileArray) {
+             if (userModuleLibDir.exists()
+                     && userModuleLibDir.canRead()) {
+-                new ModuleJarLoader(userModuleLibDir, cfg.getLaunchMode(), sandboxClassLoader, classDataSource)
++                new ModuleJarLoader(userModuleLibDir, cfg.getLaunchMode(), sandboxClassLoader)
+                         .load(new InnerModuleJarLoadCallback(), new InnerModuleLoadCallback());
+             } else {
+                 logger.warn("MODULE-LIB[{}] can not access, ignore flush load this lib.", userModuleLibDir);
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultConfigInfo.java
+Patch:
+@@ -4,7 +4,6 @@
+ import com.alibaba.jvm.sandbox.api.resource.ConfigInfo;
+ import com.alibaba.jvm.sandbox.core.CoreConfigure;
+ import com.alibaba.jvm.sandbox.core.server.ProxyCoreServer;
+-import com.alibaba.jvm.sandbox.core.server.jetty.JettyCoreServer;
+ import org.apache.commons.io.IOUtils;
+ 
+ import java.io.IOException;
+@@ -116,7 +115,7 @@ public InetSocketAddress getServerAddress() {
+         try {
+             return ProxyCoreServer.getInstance().getLocal();
+         } catch (Throwable cause) {
+-            return new InetSocketAddress("0.0.0.0", 0);
++            return new InetSocketAddress(cfg.getServerIp(), cfg.getServerPort());
+         }
+     }
+ 
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/manager/impl/DefaultCoreModuleManager.java
+Patch:
+@@ -505,7 +505,7 @@ public synchronized void reset() throws ModuleException {
+             // 对模块访问权限进行校验
+             if (moduleLibDir.exists()
+                     && moduleLibDir.canRead()) {
+-                new ModuleJarLoader(moduleLibDir, cfg.getLaunchMode(), sandboxClassLoader)
++                new ModuleJarLoader(moduleLibDir, cfg.getLaunchMode(), sandboxClassLoader, classDataSource)
+                         .load(new InnerModuleJarLoadCallback(), new InnerModuleLoadCallback());
+             } else {
+                 logger.warn("MODULE-LIB[{}] can not access, ignore flush load this lib.", moduleLibDir);
+@@ -614,7 +614,7 @@ private void softFlush() throws ModuleException {
+ 
+                 // 4. 加载add
+                 for (final File jarFile : appendJarFiles) {
+-                    new ModuleJarLoader(jarFile, cfg.getLaunchMode(), sandboxClassLoader)
++                    new ModuleJarLoader(jarFile, cfg.getLaunchMode(), sandboxClassLoader, classDataSource)
+                             .load(new InnerModuleJarLoadCallback(), new InnerModuleLoadCallback());
+                 }
+             } catch (Throwable cause) {
+@@ -659,7 +659,7 @@ private void forceFlush() throws ModuleException {
+         for (final File userModuleLibDir : userModuleLibFileArray) {
+             if (userModuleLibDir.exists()
+                     && userModuleLibDir.canRead()) {
+-                new ModuleJarLoader(userModuleLibDir, cfg.getLaunchMode(), sandboxClassLoader)
++                new ModuleJarLoader(userModuleLibDir, cfg.getLaunchMode(), sandboxClassLoader, classDataSource)
+                         .load(new InnerModuleJarLoadCallback(), new InnerModuleLoadCallback());
+             } else {
+                 logger.warn("MODULE-LIB[{}] can not access, ignore flush load this lib.", userModuleLibDir);
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/CoreConfigure.java
+Patch:
+@@ -28,8 +28,8 @@ public class CoreConfigure {
+ 
+     private static final String KEY_SANDBOX_HOME = "sandbox_home";
+     private static final String KEY_LAUNCH_MODE = "mode";
+-    private static final String KEY_SERVER_IP = "server.ip";
+-    private static final String KEY_SERVER_PORT = "server.port";
++    private static final String KEY_SERVER_IP = "ip";
++    private static final String KEY_SERVER_PORT = "port";
+ 
+     private static final String KEY_SYSTEM_MODULE_LIB_PATH = "system_module";
+     private static final String KEY_USER_MODULE_LIB_PATH = "user_module";
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/CoreConfigure.java
+Patch:
+@@ -28,8 +28,8 @@ public class CoreConfigure {
+ 
+     private static final String KEY_SANDBOX_HOME = "sandbox_home";
+     private static final String KEY_LAUNCH_MODE = "mode";
+-    private static final String KEY_SERVER_IP = "server.ip";
+-    private static final String KEY_SERVER_PORT = "server.port";
++    private static final String KEY_SERVER_IP = "ip";
++    private static final String KEY_SERVER_PORT = "port";
+ 
+     private static final String KEY_SYSTEM_MODULE_LIB_PATH = "system_module";
+     private static final String KEY_USER_MODULE_LIB_PATH = "user_module";
+
+File: sandbox-agent/src/main/java/com/alibaba/jvm/sandbox/agent/AgentLauncher.java
+Patch:
+@@ -18,7 +18,7 @@ public class AgentLauncher {
+ 
+     // sandbox主目录
+     private static final String SANDBOX_HOME
+-            = new File(Module.class.getProtectionDomain().getCodeSource().getLocation().getFile())
++            = new File(AgentLauncher.class.getProtectionDomain().getCodeSource().getLocation().getFile())
+             .getParentFile().getParent();
+ 
+     // sandbox配置文件目录
+
+File: sandbox-agent/src/main/java/com/alibaba/jvm/sandbox/agent/AgentLauncher.java
+Patch:
+@@ -18,7 +18,7 @@ public class AgentLauncher {
+ 
+     // sandbox主目录
+     private static final String SANDBOX_HOME
+-            = new File(Module.class.getProtectionDomain().getCodeSource().getLocation().getFile())
++            = new File(AgentLauncher.class.getProtectionDomain().getCodeSource().getLocation().getFile())
+             .getParentFile().getParent();
+ 
+     // sandbox配置文件目录
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/classloader/ModuleClassLoader.java
+Patch:
+@@ -53,7 +53,7 @@ private ModuleClassLoader(final File moduleJarFile,
+                         sandboxClassLoader,
+                         "^com\\.alibaba\\.jvm\\.sandbox\\.api\\..*",
+                         "^javax\\.servlet\\..*",
+-                        "^javax\\.annotation\\.Resource*$"
++                        "^javax\\.annotation\\.Resource.*$"
+                 )
+         );
+         this.checksumCRC32 = FileUtils.checksumCRC32(moduleJarFile);
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/classloader/ProviderClassLoader.java
+Patch:
+@@ -18,7 +18,8 @@ public ProviderClassLoader(final File providerJarFile,
+                 new Routing(
+                         sandboxClassLoader,
+                         "^com\\.alibaba\\.jvm\\.sandbox\\.api\\..*",
+-                        "^com\\.alibaba\\.jvm\\.sandbox\\.provider\\..*"
++                        "^com\\.alibaba\\.jvm\\.sandbox\\.provider\\..*",
++                        "^javax\\.annotation\\.Resource.*$"
+                 )
+         );
+     }
+
+File: sandbox-core/src/main/java/com/alibaba/jvm/sandbox/core/server/jetty/JettyCoreServer.java
+Patch:
+@@ -32,6 +32,7 @@
+ import java.lang.instrument.Instrumentation;
+ import java.net.InetSocketAddress;
+ 
++import static org.eclipse.jetty.servlet.ServletContextHandler.NO_SESSIONS;
+ import static org.eclipse.jetty.servlet.ServletContextHandler.SESSIONS;
+ 
+ /**
+@@ -134,7 +135,7 @@ public InetSocketAddress getLocal() throws IOException {
+      * 初始化Jetty's ContextHandler
+      */
+     private void initJettyContextHandler(final CoreConfigure cfg) {
+-        final ServletContextHandler context = new ServletContextHandler(SESSIONS);
++        final ServletContextHandler context = new ServletContextHandler(NO_SESSIONS);
+ 
+         // websocket-servlet
+         context.addServlet(new ServletHolder(new WebSocketAcceptorServlet(coreModuleManager, moduleResourceManager)), "/module/websocket/*");
+

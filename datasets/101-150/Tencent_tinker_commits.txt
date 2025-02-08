@@ -1,0 +1,2850 @@
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerLoader.java
+Patch:
+@@ -335,11 +335,11 @@ private void tryLoadPatchFilesInternal(TinkerApplication app, Intent resultInten
+                 resultIntent.putExtra(ShareIntentUtil.INTENT_PATCH_EXCEPTION, new TinkerRuntimeException("checkSafeModeCount fail"));
+                 ShareIntentUtil.setIntentReturnCode(resultIntent, ShareConstants.ERROR_LOAD_PATCH_UNCAUGHT_EXCEPTION);
+                 ShareTinkerLog.w(TAG, "tryLoadPatchFiles:checkSafeModeCount fail, patch was deleted.");
++                return;
+             } else {
+                 ShareTinkerLog.w(TAG, "tryLoadPatchFiles:checkSafeModeCount fail, but we are not in main process, mark the patch to be deleted and continue load patch.");
+                 ShareTinkerInternals.cleanPatch(app);
+             }
+-            return;
+         }
+ 
+         //now we can load patch resource
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/patch/Configuration.java
+Patch:
+@@ -268,6 +268,7 @@ public Configuration(InputParam param) throws IOException, TinkerPatchException
+ 
+         mUseSignAPk = param.useSign;
+         mCustomDiffPath = param.customDiffPath;
++        mCustomDiffPathArgs = param.customDiffPathArgs;
+         setSignData(param.signFile, param.keypass, param.storealias, param.storepass);
+ 
+         FileOperation.cleanDir(new File(mOutFolder));
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/CustomDiff.java
+Patch:
+@@ -15,7 +15,7 @@
+ public class CustomDiff {
+ 
+     public static boolean checkHasCustomDiff(Configuration config) {
+-        return config.mCustomDiffPath != null && !config.mCustomDiffPath.trim().isEmpty();
++        return config.mCustomDiffPath != null && !config.mCustomDiffPath.trim().isEmpty() && config.mCustomDiffPathArgs != null && !config.mCustomDiffPathArgs.isEmpty();
+     }
+ 
+     public static void diffFile(String mCustomDiffPath,String mCustomDiffPathArgs, File oldFile, File newFile, File diffFile) throws IOException {
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/patch/Configuration.java
+Patch:
+@@ -268,6 +268,7 @@ public Configuration(InputParam param) throws IOException, TinkerPatchException
+ 
+         mUseSignAPk = param.useSign;
+         mCustomDiffPath = param.customDiffPath;
++        mCustomDiffPathArgs = param.customDiffPathArgs;
+         setSignData(param.signFile, param.keypass, param.storealias, param.storepass);
+ 
+         FileOperation.cleanDir(new File(mOutFolder));
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/CustomDiff.java
+Patch:
+@@ -15,7 +15,7 @@
+ public class CustomDiff {
+ 
+     public static boolean checkHasCustomDiff(Configuration config) {
+-        return config.mCustomDiffPath != null && !config.mCustomDiffPath.trim().isEmpty();
++        return config.mCustomDiffPath != null && !config.mCustomDiffPath.trim().isEmpty() && config.mCustomDiffPathArgs != null && !config.mCustomDiffPathArgs.isEmpty();
+     }
+ 
+     public static void diffFile(String mCustomDiffPath,String mCustomDiffPathArgs, File oldFile, File newFile, File diffFile) throws IOException {
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerInternals.java
+Patch:
+@@ -125,10 +125,10 @@ public static String getCurrentInstructionSet() {
+         } catch (Throwable ignored) {
+             switch (Build.CPU_ABI) {
+                 case "armeabi":
+-                case "armeabi_v7a":
++                case "armeabi-v7a":
+                     currentInstructionSet = "arm";
+                     break;
+-                case "arm64_v8a":
++                case "arm64-v8a":
+                     currentInstructionSet = "arm64";
+                     break;
+                 case "x86":
+
+File: third-party/tinker-ziputils/src/main/java/com/tencent/tinker/ziputils/ziputil/TinkerZipUtil.java
+Patch:
+@@ -26,7 +26,7 @@
+  * Created by zhangshaowen on 16/8/10.
+  */
+ public class TinkerZipUtil {
+-    private static final int BUFFER_SIZE = 16384;
++    private static final int BUFFER_SIZE = 4096;
+ 
+     public static void extractTinkerEntry(TinkerZipFile apk, TinkerZipEntry zipEntry, TinkerZipOutputStream outputStream) throws IOException {
+         InputStream in = null;
+@@ -76,7 +76,7 @@ public static boolean validateZipEntryName(File destDir, String entryName) {
+         }
+         try {
+             final String canonicalDestinationDir = destDir.getCanonicalPath();
+-            final File destEntryFile = destDir.toPath().resolve(entryName).toFile();
++            final File destEntryFile = new File(destDir, entryName);
+             return destEntryFile.getCanonicalPath().startsWith(canonicalDestinationDir + File.separator);
+         } catch (Throwable ignored) {
+             return false;
+
+File: third-party/aosp-dexutils/src/main/java/com/tencent/tinker/android/dx/instruction/InstructionComparator.java
+Patch:
+@@ -261,8 +261,8 @@ private int getPromotedOpCodeOnDemand(InstructionHolder insn) {
+     }
+ 
+     public boolean isSameInstruction(int insnAddress1, int insnAddress2) {
+-        InstructionHolder insnHolder1 = this.insnHolders1[insnAddress1];
+-        InstructionHolder insnHolder2 = this.insnHolders2[insnAddress2];
++        InstructionHolder insnHolder1 = insnAddress1 < this.insnHolders1.length ? this.insnHolders1[insnAddress1] : null;
++        InstructionHolder insnHolder2 = insnAddress2 < this.insnHolders2.length ? this.insnHolders2[insnAddress2] : null;
+         return isSameInstruction(insnHolder1, insnHolder2);
+     }
+ 
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/listener/DefaultPatchListener.java
+Patch:
+@@ -147,7 +147,7 @@ protected int patchCheck(String path, String patchMd5) {
+             File patchInfoFile = SharePatchFileUtil.getPatchInfoFile(patchDirectory);
+             try {
+                 final SharePatchInfo currInfo = SharePatchInfo.readAndCheckPropertyWithLock(patchInfoFile, patchInfoLockFile);
+-                if (currInfo != null && !ShareTinkerInternals.isNullOrNil(currInfo.newVersion) && !currInfo.isRemoveNewVersion) {
++                if (currInfo != null && !ShareTinkerInternals.isNullOrNil(currInfo.newVersion) && !currInfo.newVersion.equals(currInfo.versionToRemove)) {
+                     if (patchMd5.equals(currInfo.newVersion)) {
+                         return ShareConstants.ERROR_PATCH_ALREADY_APPLY;
+                     }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/tinker/Tinker.java
+Patch:
+@@ -267,7 +267,7 @@ public void cleanPatch() {
+         final File patchInfoLockFile = SharePatchFileUtil.getPatchInfoLockFile(patchDirectory.getAbsolutePath());
+         final SharePatchInfo patchInfo = SharePatchInfo.readAndCheckPropertyWithLock(patchInfoFile, patchInfoLockFile);
+         if (patchInfo != null) {
+-            patchInfo.isRemoveNewVersion = true;
++            patchInfo.versionToRemove = patchInfo.newVersion;
+             SharePatchInfo.rewritePatchInfoFileWithLock(patchInfoFile, patchInfo, patchInfoLockFile);
+         }
+     }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/tinker/TinkerLoadResult.java
+Patch:
+@@ -114,7 +114,7 @@ public boolean parseTinkerResult(Context context, Intent intentResult) {
+                 resourceFile = new File(resourceDirectory, ShareConstants.RES_NAME);
+             }
+             final boolean isProtectedApp = ShareIntentUtil.getBooleanExtra(intentResult, ShareIntentUtil.INTENT_IS_PROTECTED_APP, false);
+-            patchInfo = new SharePatchInfo(oldVersion, newVersion, isProtectedApp, false, Build.FINGERPRINT, oatDir, false);
++            patchInfo = new SharePatchInfo(oldVersion, newVersion, isProtectedApp, "", Build.FINGERPRINT, oatDir, false);
+             versionChanged = !(oldVersion.equals(newVersion));
+         }
+ 
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerInternals.java
+Patch:
+@@ -21,7 +21,6 @@
+ import android.content.Context;
+ import android.content.SharedPreferences;
+ import android.content.pm.ApplicationInfo;
+-import android.content.pm.PackageInfo;
+ import android.content.pm.PackageManager;
+ import android.os.Build;
+ 
+@@ -722,7 +721,7 @@ public static void cleanPatch(Application app) {
+         final File patchInfoLockFile = SharePatchFileUtil.getPatchInfoLockFile(tinkerDir.getAbsolutePath());
+         final SharePatchInfo patchInfo = SharePatchInfo.readAndCheckPropertyWithLock(patchInfoFile, patchInfoLockFile);
+         if (patchInfo != null) {
+-            patchInfo.isRemoveNewVersion = true;
++            patchInfo.versionToRemove = patchInfo.newVersion;
+             SharePatchInfo.rewritePatchInfoFileWithLock(patchInfoFile, patchInfo, patchInfoLockFile);
+         }
+     }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/Logger.java
+Patch:
+@@ -56,7 +56,7 @@ public static void d(final String format, final Object... obj) {
+     }
+ 
+     public static void e(final String msg) {
+-        Logger.e("%", msg);
++        Logger.e("%s", msg);
+     }
+ 
+     public static void e(final String format, final Object... obj) {
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/decoder/ApkDecoder.java
+Patch:
+@@ -33,6 +33,7 @@
+ import java.nio.file.SimpleFileVisitor;
+ import java.nio.file.attribute.BasicFileAttributes;
+ import java.util.ArrayList;
++import java.util.regex.Matcher;
+ 
+ /**
+  * Created by zhangshaowen on 16/3/15.
+@@ -222,7 +223,7 @@ public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IO
+         }
+ 
+         private String getAbiFromPath(String path) {
+-            path = path.replaceAll(File.separator, "/");
++            path = path.replaceAll(Matcher.quoteReplacement(File.separator), "/");
+             final int prefixPos = path.indexOf("/lib/");
+             if (prefixPos < 0) {
+                 return null;
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/decoder/ApkDecoder.java
+Patch:
+@@ -33,6 +33,7 @@
+ import java.nio.file.SimpleFileVisitor;
+ import java.nio.file.attribute.BasicFileAttributes;
+ import java.util.ArrayList;
++import java.util.regex.Matcher;
+ 
+ /**
+  * Created by zhangshaowen on 16/3/15.
+@@ -222,7 +223,7 @@ public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IO
+         }
+ 
+         private String getAbiFromPath(String path) {
+-            path = path.replaceAll(File.separator, "/");
++            path = path.replaceAll(Matcher.quoteReplacement(File.separator), "/");
+             final int prefixPos = path.indexOf("/lib/");
+             if (prefixPos < 0) {
+                 return null;
+
+File: tinker-android/tinker-android-loader-no-op/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerLog.java
+Patch:
+@@ -82,7 +82,7 @@ public void printErrStackTrace(String tag, Throwable tr, String format, Object..
+     static {
+         synchronized (tinkerLogInlineFenceRef) {
+             try {
+-                final Class<?> clazz = Class.forName("com.tencent.tinker.lib.util.TinkerLogInlineFence");
++                final Class<?> clazz = Class.forName("com.tencent.tinker.loader.shareutil.TinkerLogInlineFence");
+                 final Constructor<?> ctor = clazz.getDeclaredConstructor();
+                 ctor.setAccessible(true);
+                 tinkerLogInlineFenceRef[0] = (Handler) ctor.newInstance();
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerLog.java
+Patch:
+@@ -82,7 +82,7 @@ public void printErrStackTrace(String tag, Throwable tr, String format, Object..
+     static {
+         synchronized (tinkerLogInlineFenceRef) {
+             try {
+-                final Class<?> clazz = Class.forName("com.tencent.tinker.lib.util.TinkerLogInlineFence");
++                final Class<?> clazz = Class.forName("com.tencent.tinker.loader.shareutil.TinkerLogInlineFence");
+                 final Constructor<?> ctor = clazz.getDeclaredConstructor();
+                 ctor.setAccessible(true);
+                 tinkerLogInlineFenceRef[0] = (Handler) ctor.newInstance();
+
+File: tinker-android/tinker-android-lib-no-op/src/main/java/com/tencent/tinker/lib/tinker/TinkerLoadResult.java
+Patch:
+@@ -114,7 +114,7 @@ public boolean parseTinkerResult(Context context, Intent intentResult) {
+                 resourceFile = new File(resourceDirectory, ShareConstants.RES_NAME);
+             }
+             final boolean isProtectedApp = ShareIntentUtil.getBooleanExtra(intentResult, ShareIntentUtil.INTENT_IS_PROTECTED_APP, false);
+-            patchInfo = new SharePatchInfo(oldVersion, newVersion, isProtectedApp, false, Build.FINGERPRINT, oatDir);
++            patchInfo = new SharePatchInfo(oldVersion, newVersion, isProtectedApp, false, Build.FINGERPRINT, oatDir, false);
+             versionChanged = !(oldVersion.equals(newVersion));
+         }
+ 
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/SharePatchInfo.java
+Patch:
+@@ -144,7 +144,7 @@ private static SharePatchInfo readAndCheckProperty(File pathInfoFile) {
+                 lastFingerPrint = properties.getProperty(FINGER_PRINT);
+                 oatDir = properties.getProperty(OAT_DIR);
+                 final String isRemoveInterpretOATDirStr = properties.getProperty(IS_REMOVE_INTERPRET_OAT_DIR);
+-                isRemoveInterpretOATDir = (isRemoveNewVersionStr != null && !isRemoveInterpretOATDirStr.isEmpty() && !"0".equals(isRemoveInterpretOATDirStr));
++                isRemoveInterpretOATDir = (isRemoveInterpretOATDirStr != null && !isRemoveInterpretOATDirStr.isEmpty() && !"0".equals(isRemoveInterpretOATDirStr));
+             } catch (IOException e) {
+                 Log.w(TAG, "read property failed, e:" + e);
+             } finally {
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerResourcePatcher.java
+Patch:
+@@ -24,8 +24,6 @@
+ import android.util.ArrayMap;
+ import android.util.Log;
+ 
+-import androidx.annotation.NonNull;
+-
+ import com.tencent.tinker.loader.shareutil.ShareConstants;
+ import com.tencent.tinker.loader.shareutil.SharePatchFileUtil;
+ import com.tencent.tinker.loader.shareutil.ShareReflectUtil;
+@@ -309,7 +307,7 @@ private static boolean checkResUpdate(Context context) {
+         return true;
+     }
+ 
+-    private static boolean shouldAddSharedLibraryAssets(@NonNull ApplicationInfo applicationInfo) {
++    private static boolean shouldAddSharedLibraryAssets(ApplicationInfo applicationInfo) {
+         return SDK_INT >= Build.VERSION_CODES.N && applicationInfo != null &&
+                 applicationInfo.sharedLibraryFiles != null;
+     }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/UpgradePatch.java
+Patch:
+@@ -123,9 +123,9 @@ public boolean tryPatch(Context context, String tempPatchPath, PatchResult patch
+             }
+             // if it is interpret now, use changing flag to wait main process
+             final String finalOatDir = usingInterpret ? ShareConstants.CHANING_DEX_OPTIMIZE_PATH : oldInfo.oatDir;
+-            newInfo = new SharePatchInfo(oldInfo.oldVersion, patchMd5, isProtectedApp, false, Build.FINGERPRINT, finalOatDir);
++            newInfo = new SharePatchInfo(oldInfo.oldVersion, patchMd5, isProtectedApp, false, Build.FINGERPRINT, finalOatDir, false);
+         } else {
+-            newInfo = new SharePatchInfo("", patchMd5, isProtectedApp, false, Build.FINGERPRINT, ShareConstants.DEFAULT_DEX_OPTIMIZE_PATH);
++            newInfo = new SharePatchInfo("", patchMd5, isProtectedApp, false, Build.FINGERPRINT, ShareConstants.DEFAULT_DEX_OPTIMIZE_PATH, false);
+         }
+ 
+         // it is a new patch, we first delete if there is any files
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/tinker/TinkerLoadResult.java
+Patch:
+@@ -114,7 +114,7 @@ public boolean parseTinkerResult(Context context, Intent intentResult) {
+                 resourceFile = new File(resourceDirectory, ShareConstants.RES_NAME);
+             }
+             final boolean isProtectedApp = ShareIntentUtil.getBooleanExtra(intentResult, ShareIntentUtil.INTENT_IS_PROTECTED_APP, false);
+-            patchInfo = new SharePatchInfo(oldVersion, newVersion, isProtectedApp, false, Build.FINGERPRINT, oatDir);
++            patchInfo = new SharePatchInfo(oldVersion, newVersion, isProtectedApp, false, Build.FINGERPRINT, oatDir, false);
+             versionChanged = !(oldVersion.equals(newVersion));
+         }
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/decoder/DexDiffDecoder.java
+Patch:
+@@ -433,7 +433,7 @@ private void generateChangedClassesDexFile() throws IOException {
+             if (!isCurrentDexHasChangedClass) {
+                 continue;
+             }
+-            DexBuilder dexBuilder = new DexBuilder(Opcodes.forApi(29));
++            DexBuilder dexBuilder = new DexBuilder(Opcodes.forApi(23));
+             for (org.jf.dexlib2.iface.ClassDef classDef : dexFile.getClasses()) {
+                 if (!descOfChangedClassesInCurrDex.contains(classDef.getType())) {
+                     continue;
+
+File: tinker-android/tinker-android-loader-no-op/src/main/java/com/tencent/tinker/entry/ApplicationLike.java
+Patch:
+@@ -22,7 +22,8 @@
+ import android.content.res.AssetManager;
+ import android.content.res.Configuration;
+ import android.content.res.Resources;
+-import android.support.annotation.Keep;
++
++import androidx.annotation.Keep;
+ 
+ /**
+  * Created by zhangshaowen on 16/7/28.
+
+File: tinker-android/tinker-android-loader-no-op/src/main/java/com/tencent/tinker/entry/DefaultApplicationLike.java
+Patch:
+@@ -24,9 +24,10 @@
+ import android.content.Context;
+ import android.content.Intent;
+ import android.content.res.Configuration;
+-import android.support.annotation.Keep;
+ import android.util.Log;
+ 
++import androidx.annotation.Keep;
++
+ /**
+  * Empty implementation of {@link ApplicationLike}.
+  */
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerClassLoader.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.tencent.tinker.loader;
+ 
++import android.annotation.SuppressLint;
++
+ import androidx.annotation.Keep;
+-import androidx.annotation.SuppressLint;
+-import android.os.Build;
+ 
+ import java.io.File;
+ import java.io.IOException;
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/NewClassLoaderInjector.java
+Patch:
+@@ -96,8 +96,7 @@ private static ClassLoader createNewClassLoader(Context context, ClassLoader old
+ 
+         final String combinedLibraryPath = libraryPathBuilder.toString();
+ 
+-        ClassLoader result = new TinkerClassLoader(combinedDexPath, combinedLibraryPath, oldClassLoader);
+-
++        final ClassLoader result = new TinkerClassLoader(combinedDexPath, dexOptDir, combinedLibraryPath, oldClassLoader);
+         findField(oldPathList.getClass(), "definingContext").set(oldPathList, result);
+ 
+         return result;
+
+File: third-party/aosp-dexutils/src/main/java/com/tencent/tinker/android/dex/Mutf8.java
+Patch:
+@@ -107,7 +107,7 @@ public static void encode(byte[] dst, int offset, String s) {
+      * Returns an array containing the <i>modified UTF-8</i> form of {@code s}.
+      */
+     public static byte[] encode(String s) throws UTFDataFormatException {
+-        int utfCount = (int) countBytes(s, true);
++        int utfCount = (int) countBytes(s, false);
+         byte[] result = new byte[utfCount];
+         encode(result, 0, s);
+         return result;
+
+File: third-party/aosp-dexutils/src/main/java/com/tencent/tinker/android/dex/StringData.java
+Patch:
+@@ -54,7 +54,7 @@ public boolean equals(Object obj) {
+     @Override
+     public int byteCountInDex() {
+         try {
+-            return Leb128.unsignedLeb128Size(value.length()) + (int) Mutf8.countBytes(value, true) + SizeOf.UBYTE;
++            return Leb128.unsignedLeb128Size(value.length()) + (int) Mutf8.countBytes(value, false) + SizeOf.UBYTE;
+         } catch (UTFDataFormatException e) {
+             throw new DexException(e);
+         }
+
+File: third-party/aosp-dexutils/src/main/java/com/tencent/tinker/android/dex/Mutf8.java
+Patch:
+@@ -107,7 +107,7 @@ public static void encode(byte[] dst, int offset, String s) {
+      * Returns an array containing the <i>modified UTF-8</i> form of {@code s}.
+      */
+     public static byte[] encode(String s) throws UTFDataFormatException {
+-        int utfCount = (int) countBytes(s, true);
++        int utfCount = (int) countBytes(s, false);
+         byte[] result = new byte[utfCount];
+         encode(result, 0, s);
+         return result;
+
+File: third-party/aosp-dexutils/src/main/java/com/tencent/tinker/android/dex/StringData.java
+Patch:
+@@ -54,7 +54,7 @@ public boolean equals(Object obj) {
+     @Override
+     public int byteCountInDex() {
+         try {
+-            return Leb128.unsignedLeb128Size(value.length()) + (int) Mutf8.countBytes(value, true) + SizeOf.UBYTE;
++            return Leb128.unsignedLeb128Size(value.length()) + (int) Mutf8.countBytes(value, false) + SizeOf.UBYTE;
+         } catch (UTFDataFormatException e) {
+             throw new DexException(e);
+         }
+
+File: tinker-android/tinker-android-lib-no-op/src/main/java/com/tencent/tinker/lib/reporter/DefaultLoadReporter.java
+Patch:
+@@ -28,7 +28,10 @@
+  * all is running in the process which loading the patch
+  */
+ public class DefaultLoadReporter implements LoadReporter {
++    protected final Context context;
++
+     public DefaultLoadReporter(Context context) {
++        this.context = context;
+         // Ignored.
+     }
+ 
+
+File: tinker-android/tinker-android-lib-no-op/src/main/java/com/tencent/tinker/lib/reporter/DefaultPatchReporter.java
+Patch:
+@@ -29,7 +29,10 @@
+  * Created by zhangshaowen on 16/3/14.
+  */
+ public class DefaultPatchReporter implements PatchReporter {
++    protected final Context context;
++
+     public DefaultPatchReporter(Context context) {
++        this.context = context;
+         // Ignored.
+     }
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/decoder/DexDiffDecoder.java
+Patch:
+@@ -38,8 +38,8 @@
+ import com.tencent.tinker.commons.dexpatcher.DexPatchApplier;
+ import com.tencent.tinker.commons.dexpatcher.DexPatcherLogger.IDexPatcherLogger;
+ 
+-import org.jf.dexlib2.Opcodes;
+ import org.jf.dexlib2.DexFileFactory;
++import org.jf.dexlib2.Opcodes;
+ import org.jf.dexlib2.ReferenceType;
+ import org.jf.dexlib2.builder.BuilderMutableMethodImplementation;
+ import org.jf.dexlib2.dexbacked.DexBackedDexFile;
+@@ -159,7 +159,7 @@ protected String getRelativeDexName(File oldDexFile, File newDexFile) {
+ 
+     private void collectClassesInDex(File dexFile) throws IOException {
+         Logger.d("Collect class descriptors in " + dexFile.getName());
+-        final DexFile dex = DexFileFactory.loadDexFile(dexFile, 29);
++        final DexFile dex = DexFileFactory.loadDexFile(dexFile, Opcodes.forApi(29));
+         for (org.jf.dexlib2.iface.ClassDef classDef : dex.getClasses()) {
+             descOfClassesInApk.add(classDef.getType());
+         }
+@@ -267,7 +267,7 @@ private void checkIfLoaderClassesReferToNonLoaderClasses()
+         for (File dexFile : oldDexFiles) {
+             Logger.d("Check if loader classes in " + dexFile.getName()
+                     + " refer to any classes that is not in loader class patterns.");
+-            final DexFile dex = DexFileFactory.loadDexFile(dexFile, 29);
++            final DexFile dex = DexFileFactory.loadDexFile(dexFile, Opcodes.forApi(29));
+             for (org.jf.dexlib2.iface.ClassDef classDef : dex.getClasses()) {
+                 final String currClassDesc = classDef.getType();
+                 if (!Utils.isStringMatchesPatterns(currClassDesc, loaderClassPatterns)) {
+
+File: third-party/tinker-ziputils/src/main/java/com/tencent/tinker/ziputils/ziputil/AlignedZipOutputStream.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.zip.ZipException;
+ 
+ /**
+- * Created by tomystang on 2018/11/20.
++ * Created by tangyinsheng on 2018/11/20.
+  */
+ public class AlignedZipOutputStream extends DeflaterOutputStream {
+     /**
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/SystemClassLoaderAdder.java
+Patch:
+@@ -62,7 +62,7 @@ public static void installDexes(Application application, BaseDexClassLoader load
+             files = createSortedAdditionalPathEntries(files);
+             ClassLoader classLoader = loader;
+             if (Build.VERSION.SDK_INT >= 24 && !isProtectedApp) {
+-                classLoader = AndroidNClassLoader.inject(loader, application);
++                classLoader = NewClassLoaderInjector.inject(application, loader);
+             }
+             //because in dalvik, if inner class is not the same classloader with it wrapper class.
+             //it won't fail at dex2opt
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerDexOptimizer.java
+Patch:
+@@ -129,7 +129,7 @@ boolean run() {
+                         interpretDex2Oat(dexFile.getAbsolutePath(), optimizedPath);
+                     } else if (Build.VERSION.SDK_INT >= 28
+                             || (Build.VERSION.SDK_INT >= 27 && Build.VERSION.PREVIEW_SDK_INT != 0)) {
+-                        AndroidNClassLoader.triggerDex2Oat(context, dexFile.getAbsolutePath());
++                        NewClassLoaderInjector.triggerDex2Oat(context, dexFile.getAbsolutePath());
+                     } else {
+                         DexFile.loadDex(dexFile.getAbsolutePath(), optimizedPath, 0);
+                     }
+
+File: tinker-commons/src/main/java/com/tencent/tinker/commons/util/DigestUtil.java
+Patch:
+@@ -8,7 +8,7 @@
+ import java.util.zip.CRC32;
+ 
+ /**
+- * Created by tomystang on 2019-09-18.
++ * Created by tangyinsheng on 2019-09-18.
+  */
+ public final class DigestUtil {
+     public static long getCRC32(File file) throws IOException {
+
+File: tinker-commons/src/main/java/com/tencent/tinker/commons/util/IOHelper.java
+Patch:
+@@ -7,7 +7,7 @@
+ import java.util.zip.ZipFile;
+ 
+ /**
+- * Created by tomystang on 2017/11/16.
++ * Created by tangyinsheng on 2017/11/16.
+  */
+ 
+ public final class IOHelper {
+
+File: third-party/tinker-ziputils/src/main/java/com/tencent/tinker/ziputils/ziputil/AlignedZipOutputStream.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.zip.ZipException;
+ 
+ /**
+- * Created by tomystang on 2018/11/20.
++ * Created by tangyinsheng on 2018/11/20.
+  */
+ public class AlignedZipOutputStream extends DeflaterOutputStream {
+     /**
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/SystemClassLoaderAdder.java
+Patch:
+@@ -62,7 +62,7 @@ public static void installDexes(Application application, BaseDexClassLoader load
+             files = createSortedAdditionalPathEntries(files);
+             ClassLoader classLoader = loader;
+             if (Build.VERSION.SDK_INT >= 24 && !isProtectedApp) {
+-                classLoader = AndroidNClassLoader.inject(loader, application);
++                classLoader = NewClassLoaderInjector.inject(application, loader);
+             }
+             //because in dalvik, if inner class is not the same classloader with it wrapper class.
+             //it won't fail at dex2opt
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerDexOptimizer.java
+Patch:
+@@ -129,7 +129,7 @@ boolean run() {
+                         interpretDex2Oat(dexFile.getAbsolutePath(), optimizedPath);
+                     } else if (Build.VERSION.SDK_INT >= 28
+                             || (Build.VERSION.SDK_INT >= 27 && Build.VERSION.PREVIEW_SDK_INT != 0)) {
+-                        AndroidNClassLoader.triggerDex2Oat(context, dexFile.getAbsolutePath());
++                        NewClassLoaderInjector.triggerDex2Oat(context, dexFile.getAbsolutePath());
+                     } else {
+                         DexFile.loadDex(dexFile.getAbsolutePath(), optimizedPath, 0);
+                     }
+
+File: tinker-commons/src/main/java/com/tencent/tinker/commons/util/DigestUtil.java
+Patch:
+@@ -8,7 +8,7 @@
+ import java.util.zip.CRC32;
+ 
+ /**
+- * Created by tomystang on 2019-09-18.
++ * Created by tangyinsheng on 2019-09-18.
+  */
+ public final class DigestUtil {
+     public static long getCRC32(File file) throws IOException {
+
+File: tinker-commons/src/main/java/com/tencent/tinker/commons/util/IOHelper.java
+Patch:
+@@ -7,7 +7,7 @@
+ import java.util.zip.ZipFile;
+ 
+ /**
+- * Created by tomystang on 2017/11/16.
++ * Created by tangyinsheng on 2017/11/16.
+  */
+ 
+ public final class IOHelper {
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/BasePatchInternal.java
+Patch:
+@@ -16,7 +16,7 @@
+ 
+ package com.tencent.tinker.lib.patch;
+ 
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ import com.tencent.tinker.lib.util.TinkerLog;
+ import com.tencent.tinker.loader.shareutil.ShareConstants;
+ import com.tencent.tinker.loader.shareutil.SharePatchFileUtil;
+@@ -72,8 +72,8 @@ public static boolean extract(ZipFile zipFile, ZipEntry entryFile, File extractT
+                     os.write(buffer, 0, length);
+                 }
+             } finally {
+-                StreamUtil.closeQuietly(os);
+-                StreamUtil.closeQuietly(is);
++                IOHelper.closeQuietly(os);
++                IOHelper.closeQuietly(is);
+             }
+             if (targetMd5 != null) {
+                 if (isDex) {
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/BsDiffPatchInternal.java
+Patch:
+@@ -21,7 +21,7 @@
+ import android.os.SystemClock;
+ 
+ import com.tencent.tinker.bsdiff.BSPatch;
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ import com.tencent.tinker.lib.tinker.Tinker;
+ import com.tencent.tinker.lib.util.TinkerLog;
+ import com.tencent.tinker.loader.TinkerRuntimeException;
+@@ -183,8 +183,8 @@ private static boolean extractBsDiffInternals(Context context, String dir, Strin
+                         newStream = patch.getInputStream(patchFileEntry);
+                         BSPatch.patchFast(oldStream, newStream, extractedFile);
+                     } finally {
+-                        StreamUtil.closeQuietly(oldStream);
+-                        StreamUtil.closeQuietly(newStream);
++                        IOHelper.closeQuietly(oldStream);
++                        IOHelper.closeQuietly(newStream);
+                     }
+ 
+                     //go go go bsdiff get the
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/util/UpgradePatchRetry.java
+Patch:
+@@ -19,7 +19,7 @@
+ import android.content.Context;
+ import android.content.Intent;
+ 
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ import com.tencent.tinker.lib.service.TinkerPatchService;
+ import com.tencent.tinker.lib.tinker.Tinker;
+ import com.tencent.tinker.lib.tinker.TinkerInstaller;
+@@ -267,7 +267,7 @@ static RetryInfo readRetryProperty(File infoFile) {
+             } catch (IOException e) {
+                 TinkerLog.e(TAG, "fail to readRetryProperty:" + e);
+             } finally {
+-                StreamUtil.closeQuietly(inputStream);
++                IOHelper.closeQuietly(inputStream);
+             }
+ 
+             return new RetryInfo(md5, times);
+@@ -293,7 +293,7 @@ static void writeRetryProperty(File infoFile, RetryInfo info) {
+             } catch (Exception e) {
+                 TinkerLog.printErrStackTrace(TAG, e, "retry write property fail");
+             } finally {
+-                StreamUtil.closeQuietly(outputStream);
++                IOHelper.closeQuietly(outputStream);
+             }
+ 
+         }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/AaptUtil.java
+Patch:
+@@ -18,7 +18,7 @@
+ 
+ import com.tencent.tinker.build.aapt.RDotTxtEntry.IdType;
+ import com.tencent.tinker.build.aapt.RDotTxtEntry.RType;
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ 
+ import org.w3c.dom.Document;
+ import org.w3c.dom.Element;
+@@ -405,7 +405,7 @@ public static void writeRJava(String outputDirectory, String packageName, Map<RT
+         } catch (Exception e) {
+             throw new AaptUtilException(e);
+         } finally {
+-            StreamUtil.closeQuietly(writer);
++            IOHelper.closeQuietly(writer);
+         }
+     }
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/Generator.java
+Patch:
+@@ -16,7 +16,7 @@
+ 
+ package com.tencent.tinker.build.aapt;
+ 
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ 
+ import java.io.BufferedInputStream;
+ import java.io.FileInputStream;
+@@ -44,7 +44,7 @@ public static String md5File(String fullFilename) {
+             } catch (Exception e) {
+                 throw new RuntimeException(e);
+             } finally {
+-                StreamUtil.closeQuietly(is);
++                IOHelper.closeQuietly(is);
+             }
+         }
+         return result;
+@@ -70,7 +70,7 @@ public static String md5File(final InputStream inputStream) {
+             } catch (Exception e) {
+                 e.printStackTrace();
+             } finally {
+-                StreamUtil.closeQuietly(inputStream);
++                IOHelper.closeQuietly(inputStream);
+             }
+         }
+         return result;
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/JavaXmlUtil.java
+Patch:
+@@ -16,7 +16,7 @@
+ 
+ package com.tencent.tinker.build.aapt;
+ 
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ 
+ import org.w3c.dom.Document;
+ import org.xml.sax.EntityResolver;
+@@ -130,7 +130,7 @@ public static void saveDocument(final Document document, final String outputFull
+         } catch (Exception e) {
+             throw new JavaXmlUtilException(e);
+         } finally {
+-            StreamUtil.closeQuietly(outputStream);
++            IOHelper.closeQuietly(outputStream);
+         }
+     }
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/PatchUtil.java
+Patch:
+@@ -18,7 +18,7 @@
+ 
+ import com.tencent.tinker.build.aapt.RDotTxtEntry.IdType;
+ import com.tencent.tinker.build.aapt.RDotTxtEntry.RType;
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ 
+ import java.io.BufferedReader;
+ import java.io.File;
+@@ -73,7 +73,7 @@ public static Map<RType, Set<RDotTxtEntry>> readRTxt(String rTxtFullFilename) {
+             } catch (Exception e) {
+                 e.printStackTrace();
+             } finally {
+-                StreamUtil.closeQuietly(bufferedReader);
++                IOHelper.closeQuietly(bufferedReader);
+             }
+         }
+         return rTypeResourceMap;
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/apkparser/AndroidParser.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.tencent.tinker.build.apkparser;
+ 
+ import com.tencent.tinker.build.patch.Configuration;
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ 
+ import org.w3c.dom.Document;
+ import org.w3c.dom.NamedNodeMap;
+@@ -146,7 +146,7 @@ public static void editResourceTableString(String from, String to, File originFi
+             fileOutputStream = new FileOutputStream(destFile);
+             fileOutputStream.write(array);
+         } finally {
+-            StreamUtil.closeQuietly(fileOutputStream);
++            IOHelper.closeQuietly(fileOutputStream);
+         }
+     }
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/builder/PatchBuilder.java
+Patch:
+@@ -21,7 +21,7 @@
+ import com.tencent.tinker.build.util.FileOperation;
+ import com.tencent.tinker.build.util.Logger;
+ import com.tencent.tinker.build.util.TypedValue;
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ 
+ import java.io.BufferedInputStream;
+ import java.io.File;
+@@ -107,7 +107,7 @@ private String getSignatureAlgorithm() throws Exception {
+             }
+             return signatureAlgorithm;
+         } finally {
+-            StreamUtil.closeQuietly(is);
++            IOHelper.closeQuietly(is);
+         }
+     }
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/dexpatcher/DexPatchGenerator.java
+Patch:
+@@ -54,7 +54,7 @@
+ import com.tencent.tinker.commons.dexpatcher.struct.DexPatchFile;
+ import com.tencent.tinker.commons.dexpatcher.struct.PatchOperation;
+ import com.tencent.tinker.commons.dexpatcher.util.SparseIndexMap;
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ 
+ import java.io.BufferedOutputStream;
+ import java.io.File;
+@@ -279,7 +279,7 @@ public void executeAndSaveTo(File file) throws IOException {
+             os = new BufferedOutputStream(new FileOutputStream(file));
+             executeAndSaveTo(os);
+         } finally {
+-            StreamUtil.closeQuietly(os);
++            IOHelper.closeQuietly(os);
+         }
+     }
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/info/PatchInfoGen.java
+Patch:
+@@ -20,7 +20,7 @@
+ import com.tencent.tinker.build.patch.Configuration;
+ import com.tencent.tinker.build.util.TinkerPatchException;
+ import com.tencent.tinker.build.util.TypedValue;
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ 
+ import java.io.BufferedOutputStream;
+ import java.io.File;
+@@ -84,7 +84,7 @@ public void gen() throws Exception {
+             os = new BufferedOutputStream(new FileOutputStream(packageInfoFile, false));
+             newProperties.store(os, comment);
+         } finally {
+-            StreamUtil.closeQuietly(os);
++            IOHelper.closeQuietly(os);
+         }
+     }
+ }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/patch/Configuration.java
+Patch:
+@@ -20,7 +20,7 @@
+ import com.tencent.tinker.build.util.TinkerPatchException;
+ import com.tencent.tinker.build.util.TypedValue;
+ import com.tencent.tinker.build.util.Utils;
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ 
+ import org.w3c.dom.Document;
+ import org.w3c.dom.Element;
+@@ -443,7 +443,7 @@ public InputSource resolveEntity(String publicId, String systemId) throws SAXExc
+                 }
+             }
+         } finally {
+-            StreamUtil.closeQuietly(input);
++            IOHelper.closeQuietly(input);
+         }
+     }
+ 
+
+File: tinker-commons/src/main/java/com/tencent/tinker/commons/dexpatcher/DexPatchApplier.java
+Patch:
+@@ -51,7 +51,7 @@
+ import com.tencent.tinker.commons.dexpatcher.algorithms.patch.TypeListSectionPatchAlgorithm;
+ import com.tencent.tinker.commons.dexpatcher.struct.DexPatchFile;
+ import com.tencent.tinker.commons.dexpatcher.util.SparseIndexMap;
+-import com.tencent.tinker.commons.util.StreamUtil;
++import com.tencent.tinker.commons.util.IOHelper;
+ 
+ import java.io.BufferedOutputStream;
+ import java.io.File;
+@@ -258,7 +258,7 @@ public void executeAndSaveTo(File file) throws IOException {
+             os = new BufferedOutputStream(new FileOutputStream(file));
+             executeAndSaveTo(os);
+         } finally {
+-            StreamUtil.closeQuietly(os);
++            IOHelper.closeQuietly(os);
+         }
+     }
+ }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/SharePatchFileUtil.java
+Patch:
+@@ -451,6 +451,7 @@ public static String getMD5(final File file) {
+             String md5 = getMD5(fin);
+             return md5;
+         } catch (Exception e) {
++            Log.e(TAG, e.getMessage());
+             return null;
+         } finally {
+             closeQuietly(fin);
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerInternals.java
+Patch:
+@@ -50,7 +50,7 @@ public class ShareTinkerInternals {
+     private static final String  PATCH_PROCESS_NAME    = ":patch";
+ 
+     private static       Boolean isPatchProcess        = null;
+-    private static       Boolean isARKHotRunning       = false;
++    private static       Boolean isARKHotRunning       = null;
+     /**
+      * or you may just hardcode them in your app
+      */
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/app/MainActivity.java
+Patch:
+@@ -53,6 +53,8 @@ public class MainActivity extends AppCompatActivity {
+     protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+         setContentView(R.layout.activity_main);
++        boolean isARKHotRunning = ShareTinkerInternals.isArkHotRuning();
++        Log.e(TAG, "ARK HOT Running status = " + isARKHotRunning);
+         Log.e(TAG, "i am on onCreate classloader:" + MainActivity.class.getClassLoader().toString());
+         //test resource change
+         Log.e(TAG, "i am on onCreate string:" + getResources().getString(R.string.test_resource));
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/SharePatchFileUtil.java
+Patch:
+@@ -451,6 +451,7 @@ public static String getMD5(final File file) {
+             String md5 = getMD5(fin);
+             return md5;
+         } catch (Exception e) {
++            Log.e(TAG, e.getMessage());
+             return null;
+         } finally {
+             closeQuietly(fin);
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerInternals.java
+Patch:
+@@ -50,7 +50,7 @@ public class ShareTinkerInternals {
+     private static final String  PATCH_PROCESS_NAME    = ":patch";
+ 
+     private static       Boolean isPatchProcess        = null;
+-    private static       Boolean isARKHotRunning       = false;
++    private static       Boolean isARKHotRunning       = null;
+     /**
+      * or you may just hardcode them in your app
+      */
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/app/MainActivity.java
+Patch:
+@@ -53,6 +53,8 @@ public class MainActivity extends AppCompatActivity {
+     protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+         setContentView(R.layout.activity_main);
++        boolean isARKHotRunning = ShareTinkerInternals.isArkHotRuning();
++        Log.e(TAG, "ARK HOT Running status = " + isARKHotRunning);
+         Log.e(TAG, "i am on onCreate classloader:" + MainActivity.class.getClassLoader().toString());
+         //test resource change
+         Log.e(TAG, "i am on onCreate string:" + getResources().getString(R.string.test_resource));
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/BasePatchInternal.java
+Patch:
+@@ -44,11 +44,13 @@ public class BasePatchInternal {
+     protected static final String DEX_META_FILE        = ShareConstants.DEX_META_FILE;
+     protected static final String SO_META_FILE         = ShareConstants.SO_META_FILE;
+     protected static final String RES_META_FILE        = ShareConstants.RES_META_FILE;
++    protected static final String ARKHOT_META_FILE = ShareConstants.ARKHOT_META_FILE;
+ 
+     protected static final int TYPE_DEX         = ShareConstants.TYPE_DEX;
+     protected static final int TYPE_LIBRARY     = ShareConstants.TYPE_LIBRARY;
+     protected static final int TYPE_RESOURCE    = ShareConstants.TYPE_RESOURCE;
+     protected static final int TYPE_CLASS_N_DEX = ShareConstants.TYPE_CLASS_N_DEX;
++    protected static final int TYPE_ARKHOT_SO = ShareConstants.TYPE_ARKHOT_SO;
+ 
+ 
+     public static boolean extract(ZipFile zipFile, ZipEntry entryFile, File extractTo, String targetMd5, boolean isDex) throws IOException {
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/SharePatchFileUtil.java
+Patch:
+@@ -183,7 +183,8 @@ public static final boolean shouldAcceptEvenIfIllegal(File file) {
+ 
+         final boolean isSpecialOSVer =
+                 (Build.VERSION.SDK_INT >= 29)
+-             || (Build.VERSION.SDK_INT >= 28 && Build.VERSION.PREVIEW_SDK_INT != 0);
++             || (Build.VERSION.SDK_INT >= 28 && Build.VERSION.PREVIEW_SDK_INT != 0)
++             || (ShareTinkerInternals.isArkHotRuning());
+ 
+         final boolean isFileIllegal = !file.exists() || file.length() == 0;
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/TypedValue.java
+Patch:
+@@ -36,6 +36,7 @@ public class TypedValue {
+     public static final String DEX_TEMP_PATCH_DIR = "tempPatchedDexes";
+     public static final String RES_LOG_FILE       = "res_log.txt";
+     public static final String RES_META_TXT       = "res_meta.txt";
++    public static final String ARKHOT_META_TXT = "arkHot_meta.txt";
+ 
+     public static final String FILE_ASSETS = "assets";
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/ExcludedClassModifiedChecker.java
+Patch:
+@@ -193,7 +193,7 @@ public void checkIfExcludedClassWasModifiedInNewDex(File oldFile, File newFile)
+                     final String msg = "loader classes are found in old secondary dex. Found classes: " + Utils.collectionToString(oldClassesDescToCheck);
+                     if (config.mAllowLoaderInAnyDex) {
+                         Logger.d(msg);
+-                        break;
++                        return;
+                     } else {
+                         throw new TinkerPatchException(msg);
+                     }
+@@ -202,7 +202,7 @@ public void checkIfExcludedClassWasModifiedInNewDex(File oldFile, File newFile)
+                     final String msg = "loader classes are found in new secondary dex. Found classes: " + Utils.collectionToString(newClassesDescToCheck);
+                     if (config.mAllowLoaderInAnyDex) {
+                         Logger.d(msg);
+-                        break;
++                        return;
+                     } else {
+                         throw new TinkerPatchException(msg);
+                     }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/ExcludedClassModifiedChecker.java
+Patch:
+@@ -193,7 +193,7 @@ public void checkIfExcludedClassWasModifiedInNewDex(File oldFile, File newFile)
+                     final String msg = "loader classes are found in old secondary dex. Found classes: " + Utils.collectionToString(oldClassesDescToCheck);
+                     if (config.mAllowLoaderInAnyDex) {
+                         Logger.d(msg);
+-                        break;
++                        return;
+                     } else {
+                         throw new TinkerPatchException(msg);
+                     }
+@@ -202,7 +202,7 @@ public void checkIfExcludedClassWasModifiedInNewDex(File oldFile, File newFile)
+                     final String msg = "loader classes are found in new secondary dex. Found classes: " + Utils.collectionToString(newClassesDescToCheck);
+                     if (config.mAllowLoaderInAnyDex) {
+                         Logger.d(msg);
+-                        break;
++                        return;
+                     } else {
+                         throw new TinkerPatchException(msg);
+                     }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/ExcludedClassModifiedChecker.java
+Patch:
+@@ -193,6 +193,7 @@ public void checkIfExcludedClassWasModifiedInNewDex(File oldFile, File newFile)
+                     final String msg = "loader classes are found in old secondary dex. Found classes: " + Utils.collectionToString(oldClassesDescToCheck);
+                     if (config.mAllowLoaderInAnyDex) {
+                         Logger.d(msg);
++                        break;
+                     } else {
+                         throw new TinkerPatchException(msg);
+                     }
+@@ -201,6 +202,7 @@ public void checkIfExcludedClassWasModifiedInNewDex(File oldFile, File newFile)
+                     final String msg = "loader classes are found in new secondary dex. Found classes: " + Utils.collectionToString(newClassesDescToCheck);
+                     if (config.mAllowLoaderInAnyDex) {
+                         Logger.d(msg);
++                        break;
+                     } else {
+                         throw new TinkerPatchException(msg);
+                     }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/ExcludedClassModifiedChecker.java
+Patch:
+@@ -193,6 +193,7 @@ public void checkIfExcludedClassWasModifiedInNewDex(File oldFile, File newFile)
+                     final String msg = "loader classes are found in old secondary dex. Found classes: " + Utils.collectionToString(oldClassesDescToCheck);
+                     if (config.mAllowLoaderInAnyDex) {
+                         Logger.d(msg);
++                        break;
+                     } else {
+                         throw new TinkerPatchException(msg);
+                     }
+@@ -201,6 +202,7 @@ public void checkIfExcludedClassWasModifiedInNewDex(File oldFile, File newFile)
+                     final String msg = "loader classes are found in new secondary dex. Found classes: " + Utils.collectionToString(newClassesDescToCheck);
+                     if (config.mAllowLoaderInAnyDex) {
+                         Logger.d(msg);
++                        break;
+                     } else {
+                         throw new TinkerPatchException(msg);
+                     }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/SystemClassLoaderAdder.java
+Patch:
+@@ -40,6 +40,7 @@
+ import java.util.Map;
+ import java.util.zip.ZipFile;
+ 
++import dalvik.system.BaseDexClassLoader;
+ import dalvik.system.DexFile;
+ import dalvik.system.PathClassLoader;
+ 
+@@ -53,7 +54,7 @@ public class SystemClassLoaderAdder {
+     private static int sPatchDexCount = 0;
+ 
+     @SuppressLint("NewApi")
+-    public static void installDexes(Application application, PathClassLoader loader, File dexOptDir, List<File> files, boolean isProtectedApp)
++    public static void installDexes(Application application, BaseDexClassLoader loader, File dexOptDir, List<File> files, boolean isProtectedApp)
+         throws Throwable {
+         Log.i(TAG, "installDexes dexOptDir: " + dexOptDir.getAbsolutePath() + ", dex size:" + files.size());
+ 
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerDexLoader.java
+Patch:
+@@ -34,7 +34,7 @@
+ import java.util.HashMap;
+ import java.util.HashSet;
+ 
+-import dalvik.system.PathClassLoader;
++import dalvik.system.BaseDexClassLoader;
+ 
+ /**
+  * Created by zhangshaowen on 16/3/8.
+@@ -74,7 +74,7 @@ public static boolean loadTinkerJars(final TinkerApplication application, String
+             return true;
+         }
+ 
+-        PathClassLoader classLoader = (PathClassLoader) TinkerDexLoader.class.getClassLoader();
++        BaseDexClassLoader classLoader = (BaseDexClassLoader) TinkerDexLoader.class.getClassLoader();
+         if (classLoader != null) {
+             Log.i(TAG, "classloader: " + classLoader.toString());
+         } else {
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/AndroidNClassLoader.java
+Patch:
+@@ -165,7 +165,7 @@ public Class<?> findClass(String name) throws ClassNotFoundException {
+         } else if (name != null && name.startsWith("com.tencent.tinker.loader.")
+                 && !name.equals(SystemClassLoaderAdder.CHECK_DEX_CLASS)) {
+             return originClassLoader.loadClass(name);
+-        } else if (name != null &&  (name.startsWith("org.apache.commons.codec.") 
++        } else if (name != null &&  (name.startsWith("org.apache.commons.codec.")
+                                      || name.startsWith("org.apache.commons.logging.")
+                                      || name.startsWith("org.apache.http."))) {
+             // Here's the whole story:
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareConstants.java
+Patch:
+@@ -54,9 +54,6 @@ public class ShareConstants {
+     public static final String INTERPRET_DEX_OPTIMIZE_PATH = "interpet";
+     public static final String CHANING_DEX_OPTIMIZE_PATH   = "changing";
+ 
+-    public static final Pattern CLASS_N_PATTERN = Pattern.compile("classes(?:[2-9]{0,1}|[1-9][0-9]+)\\.dex(\\.jar)?");
+-
+-
+     public static final String DEX_SUFFIX  = ".dex";
+     public static final String JAR_SUFFIX  = ".jar";
+     public static final String APK_SUFFIX  = ".apk";
+@@ -66,6 +63,9 @@ public class ShareConstants {
+     public static final String CHANGED_CLASSES_DEX_PREFIX = "changed_classes";
+     public static final String CLASS_N_APK_NAME         = "tinker_classN.apk";
+ 
++    public static final Pattern CLASS_N_PATTERN = Pattern.compile(
++            String.format("(%s|classes)(?:[2-9]{0,1}|[1-9][0-9]+)\\.dex(\\.jar)?", CHANGED_CLASSES_DEX_PREFIX));
++
+     public static final String CHECK_DEX_INSTALL_FAIL = "checkDexInstall failed";
+     public static final String CHECK_RES_INSTALL_FAIL = "checkResInstall failed";
+ 
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/AndroidNClassLoader.java
+Patch:
+@@ -165,7 +165,9 @@ public Class<?> findClass(String name) throws ClassNotFoundException {
+         } else if (name != null && name.startsWith("com.tencent.tinker.loader.")
+                 && !name.equals(SystemClassLoaderAdder.CHECK_DEX_CLASS)) {
+             return originClassLoader.loadClass(name);
+-        } else if (name != null && name.startsWith("org.apache.http.")) {
++        } else if (name != null &&  (name.startsWith("org.apache.commons.codec.") 
++                                     || name.startsWith("org.apache.commons.logging.")
++                                     || name.startsWith("org.apache.http."))) {
+             // Here's the whole story:
+             //   Some app use apache wrapper library to access Apache utilities. Classes in apache wrapper
+             //   library may be conflict with those preloaded in BootClassLoader.
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/AndroidNClassLoader.java
+Patch:
+@@ -165,7 +165,9 @@ public Class<?> findClass(String name) throws ClassNotFoundException {
+         } else if (name != null && name.startsWith("com.tencent.tinker.loader.")
+                 && !name.equals(SystemClassLoaderAdder.CHECK_DEX_CLASS)) {
+             return originClassLoader.loadClass(name);
+-        } else if (name != null && name.startsWith("org.apache.http.")) {
++        } else if (name != null &&  (name.startsWith("org.apache.commons.codec.") 
++                                     || name.startsWith("org.apache.commons.logging.")
++                                     || name.startsWith("org.apache.http."))) {
+             // Here's the whole story:
+             //   Some app use apache wrapper library to access Apache utilities. Classes in apache wrapper
+             //   library may be conflict with those preloaded in BootClassLoader.
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/Utils.java
+Patch:
+@@ -19,10 +19,10 @@
+ import com.tencent.tinker.build.decoder.ResDiffDecoder;
+ import com.tencent.tinker.build.patch.Configuration;
+ import com.tencent.tinker.commons.util.StreamUtil;
+-import com.tencent.tinker.ziputils.ziputil.TinkerZipUtil;
+ import com.tencent.tinker.ziputils.ziputil.TinkerZipEntry;
+ import com.tencent.tinker.ziputils.ziputil.TinkerZipFile;
+ import com.tencent.tinker.ziputils.ziputil.TinkerZipOutputStream;
++import com.tencent.tinker.ziputils.ziputil.TinkerZipUtil;
+ 
+ import java.io.BufferedOutputStream;
+ import java.io.BufferedReader;
+@@ -141,8 +141,8 @@ public static String genResOutputFile(File output, File newZipFile, Configuratio
+                     );
+                 }
+                 String name = zipEntry.getName();
+-                if (name.contains("../")) {
+-                    continue;
++                if (!TinkerZipUtil.validateZipEntryName(output.getParentFile(), name)) {
++                    throw new IOException("Bad ZipEntry name: " + name);
+                 }
+                 if (Utils.checkFileInPattern(config.mResFilePattern, name)) {
+                     //won't contain in add set.
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareConstants.java
+Patch:
+@@ -59,6 +59,7 @@ public class ShareConstants {
+ 
+     public static final String DEX_SUFFIX  = ".dex";
+     public static final String JAR_SUFFIX  = ".jar";
++    public static final String APK_SUFFIX  = ".apk";
+     public static final String ODEX_SUFFIX = ".odex";
+ 
+     public static final String TEST_DEX_NAME            = "test.dex";
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/util/TinkerServiceInternals.java
+Patch:
+@@ -98,7 +98,7 @@ public static String getTinkerPatchServiceName(final Context context) {
+             return patchServiceProcessName;
+         }
+         //may be null, and you may like to hardcode instead
+-        String serviceName = TinkerServiceInternals.getServiceProcessName(context, TinkerPatchService.getExpectedRealRunnerClass());
++        String serviceName = TinkerServiceInternals.getServiceProcessName(context, TinkerPatchService.class);
+         if (serviceName == null) {
+             return null;
+         }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerLoader.java
+Patch:
+@@ -16,9 +16,7 @@
+ 
+ package com.tencent.tinker.loader;
+ 
+-import android.content.Context;
+ import android.content.Intent;
+-import android.content.SharedPreferences;
+ import android.os.Build;
+ import android.os.SystemClock;
+ import android.util.Log;
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/app/TinkerApplication.java
+Patch:
+@@ -20,7 +20,6 @@
+ import android.app.Application;
+ import android.content.Context;
+ import android.content.Intent;
+-import android.content.SharedPreferences;
+ import android.content.res.AssetManager;
+ import android.content.res.Configuration;
+ import android.content.res.Resources;
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/RDotTxtEntry.java
+Patch:
+@@ -116,7 +116,7 @@ public String toString() {
+     // Taken from http://developer.android.com/reference/android/R.html
+     // TRANSITION for api level 19
+     public enum RType {
+-        ANIM, ANIMATOR, ARRAY, ATTR, BOOL, COLOR, DIMEN, DRAWABLE, FONT, FRACTION, ID, INTEGER, INTERPOLATOR, LAYOUT, MENU, MIPMAP, PLURALS, RAW, STRING, STYLE, STYLEABLE, TRANSITION, XML;
++        ANIM, ANIMATOR, ARRAY, ATTR, BOOL, COLOR, DIMEN, DRAWABLE, FONT, FRACTION, ID, INTEGER, INTERPOLATOR, LAYOUT, MENU, MIPMAP, PLURALS, RAW, STRING, STYLE, STYLEABLE, TRANSITION, XML, NAVIGATION;
+ 
+         @Override
+         public String toString() {
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/RDotTxtEntry.java
+Patch:
+@@ -116,7 +116,7 @@ public String toString() {
+     // Taken from http://developer.android.com/reference/android/R.html
+     // TRANSITION for api level 19
+     public enum RType {
+-        ANIM, ANIMATOR, ARRAY, ATTR, BOOL, COLOR, DIMEN, DRAWABLE, FONT, FRACTION, ID, INTEGER, INTERPOLATOR, LAYOUT, MENU, MIPMAP, PLURALS, RAW, STRING, STYLE, STYLEABLE, TRANSITION, XML;
++        ANIM, ANIMATOR, ARRAY, ATTR, BOOL, COLOR, DIMEN, DRAWABLE, FONT, FRACTION, ID, INTEGER, INTERPOLATOR, LAYOUT, MENU, MIPMAP, PLURALS, RAW, STRING, STYLE, STYLEABLE, TRANSITION, XML, NAVIGATION;
+ 
+         @Override
+         public String toString() {
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/SharePatchFileUtil.java
+Patch:
+@@ -168,7 +168,7 @@ public static final boolean isLegalFile(File file) {
+     }
+ 
+     /**
+-     * For some special device whose dex2oat procedure is optimized for tinker. (e.g. vivo)
++     * For some special device whose dex2oat procedure is optimized for tinker. (e.g. vivo, oppo)
+      *
+      * Because these devices by-pass our dex2oat request, which cause vm to load tinker's dex with interpret-mode
+      * and generate nothing instead of a valid oat file. It's fine to skip the check so far.
+@@ -177,7 +177,8 @@ public static final boolean isLegalFile(File file) {
+      * @return
+      */
+     public static final boolean shouldAcceptEvenIfIllegal(File file) {
+-        return "vivo".equalsIgnoreCase(Build.MANUFACTURER) && (!file.exists() || file.length() == 0);
++        return ("vivo".equalsIgnoreCase(Build.MANUFACTURER) || "oppo".equalsIgnoreCase(Build.MANUFACTURER))
++                && (!file.exists() || file.length() == 0);
+     }
+ 
+     /**
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/util/TinkerServiceInternals.java
+Patch:
+@@ -98,7 +98,7 @@ public static String getTinkerPatchServiceName(final Context context) {
+             return patchServiceProcessName;
+         }
+         //may be null, and you may like to hardcode instead
+-        String serviceName = TinkerServiceInternals.getServiceProcessName(context, TinkerPatchService.getRealRunnerClass());
++        String serviceName = TinkerServiceInternals.getServiceProcessName(context, TinkerPatchService.getExpectedRealRunnerClass());
+         if (serviceName == null) {
+             return null;
+         }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerDexLoader.java
+Patch:
+@@ -280,6 +280,9 @@ public static boolean checkComplete(String directory, ShareSecurityCheck securit
+             //check dex opt whether complete also
+             File dexOptFile = new File(SharePatchFileUtil.optimizedPathFor(dexFile, optimizeDexDirectoryFile));
+             if (!SharePatchFileUtil.isLegalFile(dexOptFile)) {
++                if (SharePatchFileUtil.shouldAcceptEvenIfIllegal(dexOptFile)) {
++                    continue;
++                }
+                 intentResult.putExtra(ShareIntentUtil.INTENT_PATCH_MISSING_DEX_PATH, dexOptFile.getAbsolutePath());
+                 ShareIntentUtil.setIntentReturnCode(intentResult, ShareConstants.ERROR_LOAD_PATCH_VERSION_DEX_OPT_FILE_NOT_EXIST);
+                 return false;
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/RDotTxtEntry.java
+Patch:
+@@ -116,7 +116,7 @@ public String toString() {
+     // Taken from http://developer.android.com/reference/android/R.html
+     // TRANSITION for api level 19
+     public enum RType {
+-        ANIM, ANIMATOR, ARRAY, ATTR, BOOL, COLOR, DIMEN, DRAWABLE, FRACTION, ID, INTEGER, INTERPOLATOR, LAYOUT, MENU, MIPMAP, PLURALS, RAW, STRING, STYLE, STYLEABLE, TRANSITION, XML;
++        ANIM, ANIMATOR, ARRAY, ATTR, BOOL, COLOR, DIMEN, DRAWABLE, FONT, FRACTION, ID, INTEGER, INTERPOLATOR, LAYOUT, MENU, MIPMAP, PLURALS, RAW, STRING, STYLE, STYLEABLE, TRANSITION, XML;
+ 
+         @Override
+         public String toString() {
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/hotplug/ComponentHotplug.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.tencent.tinker.loader.hotplug;
+ 
+ import android.content.Context;
+-import android.content.pm.PackageManager;
+ import android.os.Build;
+ import android.os.Handler;
+ import android.util.Log;
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/DexDiffPatchInternal.java
+Patch:
+@@ -272,7 +272,7 @@ private static boolean mergeClassNDexFiles(final Context context, final File pat
+                     }
+                 } else {
+                     TinkerZipEntry dexZipEntry = new TinkerZipEntry(info.rawName);
+-                    TinkerZipUtil.extractLargeModifyFile(dexZipEntry, dexFile, Long.parseLong(info.newDexCrC), out);
++                    TinkerZipUtil.extractLargeModifyFile(dexZipEntry, dexFile, Long.parseLong(info.newOrPatchedDexCrC), out);
+                 }
+ 
+             }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerInternals.java
+Patch:
+@@ -108,7 +108,7 @@ public static ShareDexDiffPatchInfo changeTestDexToClassN(ShareDexDiffPatchInfo
+                 newName = "classes.dex";
+             }
+             return new ShareDexDiffPatchInfo(newName, rawDexInfo.path, rawDexInfo.destMd5InDvm, rawDexInfo.destMd5InArt,
+-                rawDexInfo.dexDiffMd5, rawDexInfo.oldDexCrC, rawDexInfo.newDexCrC, rawDexInfo.dexMode);
++                rawDexInfo.dexDiffMd5, rawDexInfo.oldDexCrC, rawDexInfo.newOrPatchedDexCrC, rawDexInfo.dexMode);
+         }
+ 
+         return null;
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerDexOptimizer.java
+Patch:
+@@ -34,7 +34,6 @@
+ import java.util.concurrent.Executors;
+ 
+ import dalvik.system.DexClassLoader;
+-import dalvik.system.DexFile;
+ 
+ /**
+  * Created by tangyinsheng on 2016/11/15.
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/AaptUtil.java
+Patch:
+@@ -51,7 +51,7 @@ public final class AaptUtil {
+ 
+     private static final XPathExpression ANDROID_ID_USAGE = createExpression("//@*[starts-with(., '@') and " + "not(starts-with(., '@+')) and " + "not(starts-with(., '@android:')) and " + "not(starts-with(., '@null'))]");
+ 
+-    private static final XPathExpression ANDROID_ID_DEFINITION = createExpression("//@*[starts-with(., '@+') and " + "not(starts-with(., '@+android:id'))]");
++    private static final XPathExpression ANDROID_ID_DEFINITION = createExpression("//@*[starts-with(., '@+') and " + "not(starts-with(., '@+android:id')) and " + "not(starts-with(., '@+id/android:'))]");
+ 
+     private static final Map<String, RType> RESOURCE_TYPES = getResourceTypes();
+     private static final List<String>       IGNORED_TAGS   = Arrays.asList("eat-comment", "skip");
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/BasePatchInternal.java
+Patch:
+@@ -86,8 +86,8 @@ public static boolean extract(ZipFile zipFile, ZipEntry entryFile, File extractT
+             TinkerLog.i(TAG, "isExtractionSuccessful: %b", isExtractionSuccessful);
+ 
+             if (!isExtractionSuccessful) {
+-                extractTo.delete();
+-                if (extractTo.exists()) {
++                final boolean succ = extractTo.delete();
++                if (!succ || extractTo.exists()) {
+                     TinkerLog.e(TAG, "Failed to delete corrupted dex " + extractTo.getPath());
+                 }
+             }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/tinker/TinkerApplicationHelper.java
+Patch:
+@@ -28,6 +28,7 @@
+ 
+ import java.io.File;
+ import java.util.HashMap;
++import java.util.Map;
+ 
+ /**
+  * sometimes, you may want to install tinker later, or never install tinker in some process.
+@@ -317,7 +318,8 @@ public static boolean loadLibraryFromTinker(ApplicationLike applicationLike, Str
+                 File patchVersionDirectory = new File(patchDirectory.getAbsolutePath() + "/" + SharePatchFileUtil.getPatchVersionDirectory(currentVersion));
+                 String libPrePath = patchVersionDirectory.getAbsolutePath() + "/" + ShareConstants.SO_PATH;
+ 
+-                for (String name : loadLibraries.keySet()) {
++                for (Map.Entry<String, String> libEntry : loadLibraries.entrySet()) {
++                    final String name = libEntry.getKey();
+                     if (name.equals(relativeLibPath)) {
+                         String patchLibraryPath = libPrePath + "/" + name;
+                         File library = new File(patchLibraryPath);
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerLoader.java
+Patch:
+@@ -163,7 +163,8 @@ private void tryLoadPatchFilesInternal(TinkerApplication app, Intent resultInten
+         }
+ 
+         //tinker/patch.info/patch-641e634c/patch-641e634c.apk
+-        File patchVersionFile = new File(patchVersionDirectoryFile.getAbsolutePath(), SharePatchFileUtil.getPatchVersionFile(version));
++        final String patchVersionFileRelPath = SharePatchFileUtil.getPatchVersionFile(version);
++        File patchVersionFile = (patchVersionFileRelPath != null ? new File(patchVersionDirectoryFile.getAbsolutePath(), patchVersionFileRelPath) : null);
+ 
+         if (!SharePatchFileUtil.isLegalFile(patchVersionFile)) {
+             Log.w(TAG, "tryLoadPatchFiles:onPatchVersionFileNotFound");
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/BasePatchInternal.java
+Patch:
+@@ -86,8 +86,8 @@ public static boolean extract(ZipFile zipFile, ZipEntry entryFile, File extractT
+             TinkerLog.i(TAG, "isExtractionSuccessful: %b", isExtractionSuccessful);
+ 
+             if (!isExtractionSuccessful) {
+-                extractTo.delete();
+-                if (extractTo.exists()) {
++                final boolean succ = extractTo.delete();
++                if (!succ || extractTo.exists()) {
+                     TinkerLog.e(TAG, "Failed to delete corrupted dex " + extractTo.getPath());
+                 }
+             }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/tinker/TinkerApplicationHelper.java
+Patch:
+@@ -28,6 +28,7 @@
+ 
+ import java.io.File;
+ import java.util.HashMap;
++import java.util.Map;
+ 
+ /**
+  * sometimes, you may want to install tinker later, or never install tinker in some process.
+@@ -317,7 +318,8 @@ public static boolean loadLibraryFromTinker(ApplicationLike applicationLike, Str
+                 File patchVersionDirectory = new File(patchDirectory.getAbsolutePath() + "/" + SharePatchFileUtil.getPatchVersionDirectory(currentVersion));
+                 String libPrePath = patchVersionDirectory.getAbsolutePath() + "/" + ShareConstants.SO_PATH;
+ 
+-                for (String name : loadLibraries.keySet()) {
++                for (Map.Entry<String, String> libEntry : loadLibraries.entrySet()) {
++                    final String name = libEntry.getKey();
+                     if (name.equals(relativeLibPath)) {
+                         String patchLibraryPath = libPrePath + "/" + name;
+                         File library = new File(patchLibraryPath);
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerLoader.java
+Patch:
+@@ -163,7 +163,8 @@ private void tryLoadPatchFilesInternal(TinkerApplication app, Intent resultInten
+         }
+ 
+         //tinker/patch.info/patch-641e634c/patch-641e634c.apk
+-        File patchVersionFile = new File(patchVersionDirectoryFile.getAbsolutePath(), SharePatchFileUtil.getPatchVersionFile(version));
++        final String patchVersionFileRelPath = SharePatchFileUtil.getPatchVersionFile(version);
++        File patchVersionFile = (patchVersionFileRelPath != null ? new File(patchVersionDirectoryFile.getAbsolutePath(), patchVersionFileRelPath) : null);
+ 
+         if (!SharePatchFileUtil.isLegalFile(patchVersionFile)) {
+             Log.w(TAG, "tryLoadPatchFiles:onPatchVersionFileNotFound");
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/BsDiffPatchInternal.java
+Patch:
+@@ -21,6 +21,7 @@
+ import android.os.SystemClock;
+ 
+ import com.tencent.tinker.bsdiff.BSPatch;
++import com.tencent.tinker.commons.util.StreamUtil;
+ import com.tencent.tinker.lib.tinker.Tinker;
+ import com.tencent.tinker.lib.util.TinkerLog;
+ import com.tencent.tinker.loader.TinkerRuntimeException;
+@@ -182,8 +183,8 @@ private static boolean extractBsDiffInternals(Context context, String dir, Strin
+                         newStream = patch.getInputStream(patchFileEntry);
+                         BSPatch.patchFast(oldStream, newStream, extractedFile);
+                     } finally {
+-                        SharePatchFileUtil.closeQuietly(oldStream);
+-                        SharePatchFileUtil.closeQuietly(newStream);
++                        StreamUtil.closeQuietly(oldStream);
++                        StreamUtil.closeQuietly(newStream);
+                     }
+ 
+                     //go go go bsdiff get the
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/util/UpgradePatchRetry.java
+Patch:
+@@ -19,6 +19,7 @@
+ import android.content.Context;
+ import android.content.Intent;
+ 
++import com.tencent.tinker.commons.util.StreamUtil;
+ import com.tencent.tinker.lib.service.TinkerPatchService;
+ import com.tencent.tinker.lib.tinker.Tinker;
+ import com.tencent.tinker.lib.tinker.TinkerInstaller;
+@@ -266,7 +267,7 @@ static RetryInfo readRetryProperty(File infoFile) {
+             } catch (IOException e) {
+                 TinkerLog.e(TAG, "fail to readRetryProperty:" + e);
+             } finally {
+-                SharePatchFileUtil.closeQuietly(inputStream);
++                StreamUtil.closeQuietly(inputStream);
+             }
+ 
+             return new RetryInfo(md5, times);
+@@ -293,7 +294,7 @@ static void writeRetryProperty(File infoFile, RetryInfo info) {
+ //                e.printStackTrace();
+                 TinkerLog.printErrStackTrace(TAG, e, "retry write property fail");
+             } finally {
+-                SharePatchFileUtil.closeQuietly(outputStream);
++                StreamUtil.closeQuietly(outputStream);
+             }
+ 
+         }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerInternals.java
+Patch:
+@@ -326,13 +326,14 @@ public static boolean isTinkerEnabledAll(int flag) {
+     }
+ 
+     public static boolean isInMainProcess(Context context) {
+-        String pkgName = context.getPackageName();
++        ApplicationInfo applicationInfo = context.getApplicationInfo();
++        String mainProcessName = applicationInfo.processName;
+         String processName = getProcessName(context);
+         if (processName == null || processName.length() == 0) {
+             processName = "";
+         }
+ 
+-        return pkgName.equals(processName);
++        return mainProcessName.equals(processName);
+     }
+ 
+     public static boolean isInPatchProcess(Context context) {
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareConstants.java
+Patch:
+@@ -85,6 +85,8 @@ public class ShareConstants {
+     public static final String RES_LARGE_MOD_TITLE = "large modify:";
+     public static final String RES_DEL_TITLE       = "delete:";
+     public static final String RES_PATTERN_TITLE   = "pattern:";
++    public static final String RES_STORE_TITLE     = "store:";
++
+ 
+     public static final String DEXMODE_RAW = "raw";
+     public static final String DEXMODE_JAR = "jar";
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerLoader.java
+Patch:
+@@ -240,6 +240,7 @@ private void tryLoadPatchFilesInternal(TinkerApplication app, Intent resultInten
+             }
+             if (oatModeChanged) {
+                 // delete interpret odex
++                // for android o, directory change. Fortunately, we don't need to support android o interpret mode any more
+                 Log.i(TAG, "tryLoadPatchFiles:oatModeChanged, try to delete interpret optimize files");
+                 SharePatchFileUtil.deleteDir(patchVersionDirectory + "/" + ShareConstants.INTERPRET_DEX_OPTIMIZE_PATH);
+             }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/SharePatchFileUtil.java
+Patch:
+@@ -168,9 +168,9 @@ public static final boolean safeDeleteFile(File file) {
+             return true;
+         }
+ 
+-        Log.i(TAG, "safeDeleteFile, try to delete path: " + file.getPath());
+-
+         if (file.exists()) {
++            Log.i(TAG, "safeDeleteFile, try to delete path: " + file.getPath());
++
+             boolean deleted = file.delete();
+             if (!deleted) {
+                 Log.e(TAG, "Failed to delete file, try to delete when exit. path: " + file.getPath());
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerDexLoader.java
+Patch:
+@@ -249,7 +249,8 @@ public static boolean checkComplete(String directory, ShareSecurityCheck securit
+             }
+         }
+ 
+-        if (isVmArt && !classNDexInfo.isEmpty()) {
++        if (isVmArt
++            && (testInfo != null || !classNDexInfo.isEmpty())) {
+             if (testInfo != null) {
+                 classNDexInfo.add(ShareTinkerInternals.changeTestDexToClassN(testInfo, classNDexInfo.size() + 1));
+             }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareSecurityCheck.java
+Patch:
+@@ -116,7 +116,7 @@ public boolean verifyPatchMetaSignature(File path) {
+                     continue;
+                 }
+                 //for faster, only check the meta.txt files
+-                //we will check other files's ma5 written in meta files
++                //we will check other files's md5 written in meta files
+                 if (!name.endsWith(ShareConstants.META_SUFFIX)) {
+                     continue;
+                 }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/tinker/TinkerLoadResult.java
+Patch:
+@@ -83,8 +83,8 @@ public boolean parseTinkerResult(Context context, Intent intentResult) {
+ 
+         final boolean isMainProcess = tinker.isMainProcess();
+ 
+-        TinkerLog.i(TAG, "parseTinkerResult loadCode:%d, process name:%s, main process:%b, systemOTA:%b, oatDir:%s, useInterpretMode:%b",
+-            loadCode, ShareTinkerInternals.getProcessName(context), isMainProcess, systemOTA, oatDir, useInterpretMode);
++        TinkerLog.i(TAG, "parseTinkerResult loadCode:%d, process name:%s, main process:%b, systemOTA:%b, fingerPrint:%s, oatDir:%s, useInterpretMode:%b",
++            loadCode, ShareTinkerInternals.getProcessName(context), isMainProcess, systemOTA, Build.FINGERPRINT, oatDir, useInterpretMode);
+ 
+         //@Nullable
+         final String oldVersion = ShareIntentUtil.getStringExtra(intentResult, ShareIntentUtil.INTENT_PATCH_OLD_VERSION);
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerDexLoader.java
+Patch:
+@@ -165,7 +165,7 @@ public void onFailed(File dexFile, File optimizedDir, Throwable thr) {
+ 
+             if (!parallelOTAResult[0]) {
+                 Log.e(TAG, "parallel oat dexes failed");
+-                intentResult.putExtra(ShareIntentUtil.INTENT_PATCH_INTERPRET_EXCEPTION, parallelOTAThrowable);
++                intentResult.putExtra(ShareIntentUtil.INTENT_PATCH_INTERPRET_EXCEPTION, parallelOTAThrowable[0]);
+                 ShareIntentUtil.setIntentReturnCode(intentResult, ShareConstants.ERROR_LOAD_PATCH_OTA_INTERPRET_ONLY_EXCEPTION);
+                 return false;
+             }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerParallelDexOptimizer.java
+Patch:
+@@ -175,6 +175,7 @@ private void interpretDex2Oat(String dexFilePath, String oatFilePath) throws IOE
+ 
+             final List<String> commandAndParams = new ArrayList<>();
+             commandAndParams.add("dex2oat");
++            // for 7.1.1, duplicate class fix
+             if (Build.VERSION.SDK_INT >= 24) {
+                 commandAndParams.add("--runtime-arg");
+                 commandAndParams.add("-classpath");
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/reporter/SampleTinkerReport.java
+Patch:
+@@ -191,7 +191,7 @@ public static void onTryApplyFail(int errorCode) {
+             case Utils.ERROR_PATCH_GOOGLEPLAY_CHANNEL:
+                 reporter.onReport(KEY_TRY_APPLY_GOOGLEPLAY);
+                 break;
+-            case Utils.ERROR_PATCH_ALREADY_APPLY:
++            case ShareConstants.ERROR_PATCH_ALREADY_APPLY:
+                 reporter.onReport(KEY_TRY_APPLY_ALREADY_APPLY);
+                 break;
+             case Utils.ERROR_PATCH_CRASH_LIMIT:
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/UpgradePatch.java
+Patch:
+@@ -69,6 +69,9 @@ public boolean tryPatch(Context context, String tempPatchPath, PatchResult patch
+             TinkerLog.e(TAG, "UpgradePatch tryPatch:patch md5 is null, just return");
+             return false;
+         }
++        //use md5 as version
++        patchResult.patchVersion = patchMd5;
++
+         TinkerLog.i(TAG, "UpgradePatch tryPatch:patchMd5:%s", patchMd5);
+ 
+         //check ok, we can real recover a new patch
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/dexpatcher/util/ChangedClassesDexClassInfoCollector.java
+Patch:
+@@ -61,7 +61,7 @@ public ChangedClassesDexClassInfoCollector clearExcludedClassPatterns() {
+     }
+ 
+     public ChangedClassesDexClassInfoCollector setLogger(DexPatcherLogger.IDexPatcherLogger loggerImpl) {
+-        this.logger.setLoggerImpl(loggerImpl);
++        logger.setLoggerImpl(loggerImpl);
+         return this;
+     }
+ 
+@@ -76,6 +76,7 @@ public Set<DexClassInfo> doCollect(DexGroup oldDexGroup, DexGroup newDexGroup) {
+         DexClassesComparator dexClassCmptor = new DexClassesComparator("*");
+         dexClassCmptor.setCompareMode(DexClassesComparator.COMPARE_MODE_NORMAL);
+         dexClassCmptor.setIgnoredRemovedClassDescPattern(excludedClassPatterns);
++        dexClassCmptor.setLogger(logger.getLoggerImpl());
+         dexClassCmptor.startCheck(oldDexGroup, newDexGroup);
+ 
+         // So far we collected infos of all added, changed, and deleted classes.
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/AaptUtil.java
+Patch:
+@@ -304,7 +304,7 @@ private static void addToResourceCollector(AaptResourceCollector resourceCollect
+                 resourceCollector.addResource(RType.STYLEABLE, IdType.INT, String.format("%s_%s", resourceName, attrName), Integer.toString(count++));
+ 
+                 if (!rawAttrName.startsWith("android:")) {
+-                    resourceCollector.addIntResourceIfNotPresent(RType.ATTR, attrName);
++                    resourceCollector.addIntResourceIfNotPresent(RType.ATTR, rawAttrName);
+                     resourceCollector.addRTypeResourceName(RType.ATTR, rawAttrName, nodeToString(attrNode, true), resourceDirectory);
+                 }
+             }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareIntentUtil.java
+Patch:
+@@ -61,10 +61,10 @@ public static long getIntentPatchCostTime(Intent intent) {
+         return intent.getLongExtra(INTENT_PATCH_COST_TIME, 0);
+     }
+ 
+-    public static Exception getIntentPatchException(Intent intent) {
++    public static Throwable getIntentPatchException(Intent intent) {
+         Serializable serializable = getSerializableExtra(intent, INTENT_PATCH_EXCEPTION);
+         if (serializable != null) {
+-            return (Exception) serializable;
++            return (Throwable) serializable;
+         }
+         return null;
+     }
+
+File: tinker-android/tinker-android-anno/src/main/java/com/tencent/tinker/anno/AnnotationProcessor.java
+Patch:
+@@ -93,7 +93,8 @@ private void processDefaultLifeCycle(Set<? extends Element> elements) {
+                 .replaceAll("%APPLICATION_LIFE_CYCLE%", lifeCyclePackageName + "." + lifeCycleClassName)
+                 .replaceAll("%TINKER_FLAGS%", "" + ca.flags())
+                 .replaceAll("%TINKER_LOADER_CLASS%", "" + loaderClassName)
+-                .replaceAll("%TINKER_LOAD_VERIFY_FLAG%", "" + ca.loadVerifyFlag());
++                .replaceAll("%TINKER_LOAD_VERIFY_FLAG%", "" + ca.loadVerifyFlag())
++                .replaceAll("%OTA_SPLASH_ACTIVITY%", "" + ca.otaSplashActivity());
+ 
+             try {
+                 JavaFileObject fileObject = processingEnv.getFiler().createSourceFile(applicationPackageName + "." + applicationClassName);
+
+File: tinker-android/tinker-android-anno/src/main/java/com/tencent/tinker/anno/DefaultLifeCycle.java
+Patch:
+@@ -40,5 +40,5 @@
+ 
+     boolean loadVerifyFlag() default false;
+ 
+-
++    boolean otaSplashActivity() default false;
+ }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/ResDiffPatchInternal.java
+Patch:
+@@ -195,6 +195,8 @@ private static boolean extractResourceDiffInternals(Context context, String dir,
+                     ResUtil.extractTinkerEntry(newApk, modZipEntry, out);
+                     totalEntryCount++;
+                 }
++                // set comment back
++                out.setComment(oldApk.getComment());
+             } finally {
+                 if (out != null) {
+                     out.close();
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/AbstractTinkerLoader.java
+Patch:
+@@ -25,5 +25,5 @@
+  * Created by zhangshaowen on 16/4/30.
+  */
+ public abstract class AbstractTinkerLoader {
+-    abstract public Intent tryLoad(TinkerApplication app, int tinkerFlag, boolean tinkerLoadVerifyFlag);
++    abstract public Intent tryLoad(TinkerApplication app);
+ }
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/app/SampleApplicationLike.java
+Patch:
+@@ -58,7 +58,8 @@
+ @SuppressWarnings("unused")
+ @DefaultLifeCycle(application = "tinker.sample.android.app.SampleApplication",
+                   flags = ShareConstants.TINKER_ENABLE_ALL,
+-                  loadVerifyFlag = false)
++                  loadVerifyFlag = false,
++                  otaSplashActivity = true)
+ public class SampleApplicationLike extends DefaultApplicationLike {
+     private static final String TAG = "Tinker.SampleApplicationLike";
+ 
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/service/SampleResultService.java
+Patch:
+@@ -28,7 +28,6 @@
+ import com.tencent.tinker.lib.service.PatchResult;
+ import com.tencent.tinker.lib.util.TinkerLog;
+ import com.tencent.tinker.lib.util.TinkerServiceInternals;
+-import com.tencent.tinker.loader.shareutil.SharePatchFileUtil;
+ 
+ import java.io.File;
+ 
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/util/Utils.java
+Patch:
+@@ -42,6 +42,8 @@ public class Utils {
+     public static final int ERROR_PATCH_CRASH_LIMIT             = -9;
+     public static final int ERROR_PATCH_RETRY_COUNT_LIMIT       = -10;
+     public static final int ERROR_PATCH_CONDITION_NOT_SATISFIED = -11;
++    public static final int ERROR_PATCH_JIT                     = -12;
++
+ 
+     public static final String PLATFORM = "platform";
+ 
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/DexDiffPatchInternal.java
+Patch:
+@@ -53,7 +53,7 @@
+ public class DexDiffPatchInternal extends BasePatchInternal {
+     protected static final String TAG = "Tinker.DexDiffPatchInternal";
+ 
+-    protected static final int WAIT_ASYN_OAT_TIME = 6 * 1000;
++    protected static final int WAIT_ASYN_OAT_TIME = 8 * 1000;
+     protected static final int MAX_WAIT_COUNT     = 30;
+ 
+     private static ArrayList<File> optFiles = new ArrayList<>();
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerResourcesKey.java
+Patch:
+@@ -18,10 +18,11 @@
+ 
+ /**
+  * Created by zhangshaowen on 17/1/12.
++ *
++ * TODO:
+  * Thanks for Android Fragmentation
+  * hold the issue https://github.com/Tencent/tinker/issues/302
+  */
+-
+ public class TinkerResourcesKey {
+ 
+     private static final class V24 {
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/app/MainActivity.java
+Patch:
+@@ -33,7 +33,6 @@
+ import com.tencent.tinker.lib.library.TinkerLoadLibrary;
+ import com.tencent.tinker.lib.tinker.Tinker;
+ import com.tencent.tinker.lib.tinker.TinkerInstaller;
+-import com.tencent.tinker.lib.util.TinkerLog;
+ import com.tencent.tinker.loader.shareutil.ShareConstants;
+ import com.tencent.tinker.loader.shareutil.ShareTinkerInternals;
+ 
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/library/TinkerLoadLibrary.java
+Patch:
+@@ -36,6 +36,7 @@
+ 
+ /**
+  * Created by zhangshaowen on 17/1/5.
++ * Thanks for Android Fragmentation
+  */
+ 
+ public class TinkerLoadLibrary {
+
+File: tinker-commons/src/main/java/com/tencent/tinker/commons/ziputil/TinkerZipEntry.java
+Patch:
+@@ -418,7 +418,7 @@ public String toString() {
+         sb.append("\ncrc:" + crc);
+         sb.append("\ncompressionMethod:" + compressionMethod);
+         sb.append("\nmodDate:" + modDate);
+-        sb.append("\nextra:" + extra);
++        sb.append("\nextra length:" + extra.length);
+         sb.append("\nlocalHeaderRelOffset:" + localHeaderRelOffset);
+         sb.append("\ndataOffset:" + dataOffset);
+         return sb.toString();
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/SystemClassLoaderAdder.java
+Patch:
+@@ -110,7 +110,7 @@ private static boolean checkDexInstall(ClassLoader classLoader) throws ClassNotF
+     }
+ 
+     /**
+-     * Installer for platform versions 19.
++     * Installer for platform versions 23.
+      */
+     private static final class V23 {
+ 
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerLoader.java
+Patch:
+@@ -204,6 +204,7 @@ private void tryLoadPatchFilesInternal(TinkerApplication app, int tinkerFlag, bo
+         }
+         //only work for art platform oat
+         boolean isSystemOTA = ShareTinkerInternals.isVmArt() && ShareTinkerInternals.isSystemOTA(patchInfo.fingerPrint);
++        resultIntent.putExtra(ShareIntentUtil.INTENT_PATCH_SYSTEM_OTA, isSystemOTA);
+ 
+         //we should first try rewrite patch info file, if there is a error, we can't load jar
+         if (isSystemOTA
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareIntentUtil.java
+Patch:
+@@ -41,6 +41,8 @@ public class ShareIntentUtil {
+     public static final  String INTENT_PATCH_EXCEPTION           = "intent_patch_exception";
+     public static final  String INTENT_PATCH_PACKAGE_PATCH_CHECK = "intent_patch_package_patch_check";
+     public static final  String INTENT_PATCH_PACKAGE_CONFIG      = "intent_patch_package_config";
++    public static final  String INTENT_PATCH_SYSTEM_OTA          = "intent_patch_system_ota";
++
+     private static final String TAG                              = "ShareIntentUtil";
+ 
+     public static void setIntentReturnCode(Intent intent, int code) {
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/decoder/DexDiffDecoder.java
+Patch:
+@@ -279,7 +279,7 @@ private void generatePatchedDexInfoFile() {
+     }
+ 
+     private void diffDexPairAndFillRelatedInfo(File oldDexFile, File newDexFile, RelatedInfo relatedInfo) {
+-        File tempFullPatchDexPath = new File(config.mOutFolder + File.separator + TypedValue.DEX_TEMP_PATCH_DIR + File.separator + "full");
++        File tempFullPatchDexPath = new File(config.mOutFolder + File.separator + TypedValue.DEX_TEMP_PATCH_DIR);
+         final String dexName = getRelativeDexName(oldDexFile, newDexFile);
+ 
+         File dexDiffOut = getOutputPath(newDexFile).toFile();
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/info/PatchInfo.java
+Patch:
+@@ -23,13 +23,10 @@
+  */
+ public class PatchInfo {
+ 
+-    private final Configuration config;
+-
+     private final PatchInfoGen infoGen;
+ 
+ 
+     public PatchInfo(Configuration config) {
+-        this.config = config;
+         infoGen = new PatchInfoGen(config);
+     }
+ 
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/app/MainActivity.java
+Patch:
+@@ -30,6 +30,7 @@
+ import android.widget.Button;
+ import android.widget.TextView;
+ 
++import com.tencent.tinker.lib.library.TinkerLoadLibrary;
+ import com.tencent.tinker.lib.tinker.Tinker;
+ import com.tencent.tinker.lib.tinker.TinkerInstaller;
+ import com.tencent.tinker.loader.shareutil.ShareConstants;
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/AaptResourceCollector.java
+Patch:
+@@ -70,7 +70,7 @@ public AaptResourceCollector(Map<RType, Set<RDotTxtEntry>> rTypeResourceMap) {
+                     originalResourceMap.put(rDotTxtEntry, rDotTxtEntry);
+                     ResourceIdEnumerator resourceIdEnumerator = null;
+                     if (!rDotTxtEntry.idType.equals(IdType.INT_ARRAY)) {
+-                        int resourceId = Integer.decode(rDotTxtEntry.idValue).intValue();
++                        int resourceId = Integer.decode(rDotTxtEntry.idValue.trim()).intValue();
+                         int typeId = ((resourceId & 0x00FF0000) / 0x00010000);
+                         if (typeId >= currentTypeId) {
+                             currentTypeId = typeId + 1;
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/AaptUtil.java
+Patch:
+@@ -353,7 +353,7 @@ public static Map<String, Map<RType, Set<com.tencent.tinker.build.aapt.RDotTxtEn
+                     if (rDotTxtEntry.idType.equals(IdType.INT)) {
+                         aaptResourceCollector.addIntResourceIfNotPresent(rType, rDotTxtEntry.name);
+                     } else if (rDotTxtEntry.idType.equals(IdType.INT_ARRAY)) {
+-                        aaptResourceCollector.addResource(rType, rDotTxtEntry.idType, rDotTxtEntry.name, rDotTxtEntry.idValue);
++                        aaptResourceCollector.addResource(rType, rDotTxtEntry.idType, rDotTxtEntry.name, rDotTxtEntry.idValue.trim());
+                     }
+                 }
+             }
+@@ -388,7 +388,7 @@ public static void writeRJava(String outputDirectory, String packageName, Map<RT
+                 for (com.tencent.tinker.build.aapt.RDotTxtEntry rDotTxtEntry : rTypeResourceMap.get(rType)) {
+                     // Write out the resource.
+                     // Write as an int.
+-                    writer.format("    public static%s%s %s=%s;\n", isFinal ? " final " : " ", rDotTxtEntry.idType, rDotTxtEntry.name, rDotTxtEntry.idValue);
++                    writer.format("    public static%s%s %s=%s;\n", isFinal ? " final " : " ", rDotTxtEntry.idType, rDotTxtEntry.name, rDotTxtEntry.idValue.trim());
+                 }
+                 writer.println("  }\n");
+             }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/PatchUtil.java
+Patch:
+@@ -122,7 +122,7 @@ public static void generatePublicResourceXml(AaptResourceCollector aaptResourceC
+ //                                System.err.println("Blank?" + rDotTxtEntry.name);
+                                 rawName = rDotTxtEntry.name;
+                             }
+-                            publicWriter.println("<public type=\"" + rType + "\" name=\"" + rawName + "\" id=\"" + rDotTxtEntry.idValue + "\" />");
++                            publicWriter.println("<public type=\"" + rType + "\" name=\"" + rawName + "\" id=\"" + rDotTxtEntry.idValue.trim() + "\" />");
+ //                        } else {
+ //                            publicWriter.println("<public type=\"" + rType + "\" name=\"" + rDotTxtEntry.name + "\" id=\"" + rDotTxtEntry.idValue + "\" />");
+ //                        }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/RDotTxtEntry.java
+Patch:
+@@ -110,7 +110,7 @@ public int hashCode() {
+ 
+     @Override
+     public String toString() {
+-        return Objects.toStringHelper(RDotTxtEntry.class).add("idType", idType).add("type", type).add("name", name).add("idValue", idValue).toString();
++        return Objects.toStringHelper(RDotTxtEntry.class).add("idType", idType).add("type", type).add("name", name).add("idValue", idValue.trim()).toString();
+     }
+ 
+     // Taken from http://developer.android.com/reference/android/R.html
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/ResDiffPatchInternal.java
+Patch:
+@@ -137,6 +137,9 @@ private static boolean extractResourceDiffInternals(Context context, String dir,
+                         throw new TinkerRuntimeException("zipEntry is null when get from oldApk");
+                     }
+                     String name = zipEntry.getName();
++                    if (name.contains("../")) {
++                        continue;
++                    }
+                     if (ShareResPatchInfo.checkFileInPattern(resPatchInfo.patterns, name)) {
+                         //won't contain in add set.
+                         if (!resPatchInfo.deleteRes.contains(name)
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/tinker/TinkerLoadResult.java
+Patch:
+@@ -313,9 +313,7 @@ public boolean parseTinkerResult(Context context, Intent intentResult) {
+ 
+                 if (isMainProcess && versionChanged) {
+                     //change the old version to new
+-                    patchInfo.oldVersion = currentVersion;
+                     tinker.getLoadReporter().onLoadPatchVersionChanged(oldVersion, newVersion, patchDirectory, patchVersionDirectory.getName());
+-
+                 }
+                 return true;
+         }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerInternals.java
+Patch:
+@@ -259,6 +259,9 @@ public static void setTinkerDisableWithSharedPreferences(Context context) {
+      * @return
+      */
+     public static boolean isTinkerEnableWithSharedPreferences(Context context) {
++        if (context == null) {
++            return false;
++        }
+         SharedPreferences sp = context.getSharedPreferences(ShareConstants.TINKER_SHARE_PREFERENCE_CONFIG, Context.MODE_MULTI_PROCESS);
+         return sp.getBoolean(ShareConstants.TINKER_ENABLE_CONFIG, true);
+     }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/Utils.java
+Patch:
+@@ -128,6 +128,9 @@ public static String genResOutputFile(File output, File newZipFile, Configuratio
+                     );
+                 }
+                 String name = zipEntry.getName();
++                if (name.contains("../")) {
++                    continue;
++                }
+                 if (Utils.checkFileInPattern(config.mResFilePattern, name)) {
+                     //won't contain in add set.
+                     if (!deletedSet.contains(name)
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/util/UpgradePatchRetry.java
+Patch:
+@@ -214,6 +214,7 @@ private void copyToTempFile(File patchFile) {
+         try {
+             SharePatchFileUtil.copyFileUsingStream(patchFile, tempPatchFile);
+         } catch (IOException e) {
++            TinkerLog.e(TAG, "fail to copy file: %s to %s", patchFile.getAbsolutePath(), tempPatchFile.getAbsolutePath());
+         }
+     }
+ 
+@@ -238,7 +239,7 @@ static RetryInfo readRetryProperty(File infoFile) {
+                 md5 = properties.getProperty(RETRY_FILE_MD5_PROPERTY);
+                 times = properties.getProperty(RETRY_COUNT_PROPERTY);
+             } catch (IOException e) {
+-                e.printStackTrace();
++                TinkerLog.e(TAG, "fail to readRetryProperty:" + e);
+             } finally {
+                 SharePatchFileUtil.closeQuietly(inputStream);
+             }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerLoader.java
+Patch:
+@@ -250,16 +250,14 @@ private boolean checkSafeModeCount(TinkerApplication application) {
+         String preferName = ShareConstants.TINKER_OWN_PREFERENCE_CONFIG + processName;
+         //each process have its own SharedPreferences file
+         SharedPreferences sp = application.getSharedPreferences(preferName, Context.MODE_PRIVATE);
+-        int count = sp.getInt(ShareConstants.TINKER_SAFE_MODE_COUNT, 0);
++        int count = sp.getInt(ShareConstants.TINKER_SAFE_MODE_COUNT, 0) + 1;
+         Log.w(TAG, "tinker safe mode preferName:" + preferName + " count:" + count);
+         if (count >= ShareConstants.TINKER_SAFE_MODE_MAX_COUNT) {
+             sp.edit().putInt(ShareConstants.TINKER_SAFE_MODE_COUNT, 0).commit();
+             return false;
+         }
+         application.setUseSafeMode(true);
+-        count++;
+         sp.edit().putInt(ShareConstants.TINKER_SAFE_MODE_COUNT, count).commit();
+-        Log.w(TAG, "after tinker safe mode count:" + count);
+         return true;
+     }
+ 
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/crash/SampleUncaughtExceptionHandler.java
+Patch:
+@@ -123,14 +123,14 @@ private boolean tinkerFastCrashProtect() {
+             }
+ 
+             SharedPreferences sp = applicationLike.getApplication().getSharedPreferences(ShareConstants.TINKER_SHARE_PREFERENCE_CONFIG, Context.MODE_MULTI_PROCESS);
+-            int fastCrashCount = sp.getInt(currentVersion, 0);
++            int fastCrashCount = sp.getInt(currentVersion, 0) + 1;
+             if (fastCrashCount >= MAX_CRASH_COUNT) {
+                 SampleTinkerReport.onFastCrashProtect();
+                 TinkerApplicationHelper.cleanPatch(applicationLike);
+                 TinkerLog.e(TAG, "tinker has fast crash more than %d, we just clean patch!", fastCrashCount);
+                 return true;
+             } else {
+-                sp.edit().putInt(currentVersion, ++fastCrashCount).commit();
++                sp.edit().putInt(currentVersion, fastCrashCount).commit();
+                 TinkerLog.e(TAG, "tinker has fast crash %d times", fastCrashCount);
+             }
+         }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/decoder/ResDiffDecoder.java
+Patch:
+@@ -235,8 +235,6 @@ public void onAllPatchesEnd() throws IOException, TinkerPatchException {
+             throw new TinkerPatchException("resource must contain AndroidManifest.xml pattern");
+         }
+ 
+-        addAssetsFileForTestResource();
+-
+         //check gradle build
+         if (config.mUsingGradle) {
+             final boolean ignoreWarning = config.mIgnoreWarning;
+@@ -274,6 +272,9 @@ public void onAllPatchesEnd() throws IOException, TinkerPatchException {
+         removeIgnoreChangeFile(addedSet);
+         removeIgnoreChangeFile(largeModifiedSet);
+ 
++        // last add test res in assets for user cannot ignore it;
++        addAssetsFileForTestResource();
++
+         File tempResZip = new File(config.mOutFolder + File.separator + TEMP_RES_ZIP);
+         final File tempResFiles = config.mTempResultDir;
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/patch/Configuration.java
+Patch:
+@@ -83,7 +83,7 @@ public class Configuration {
+     public File             mOldApkFile;
+     public File             mNewApkFile;
+     public boolean          mIgnoreWarning;
+-    public boolean          mUsePreGeneratedPatchDex;
++
+     /**
+      * lib config
+      */
+@@ -214,7 +214,6 @@ public Configuration(InputParam param) throws IOException, TinkerPatchException
+         mOutFolder = param.outFolder;
+ 
+         mIgnoreWarning = param.ignoreWarning;
+-        mUsePreGeneratedPatchDex = param.usePreGeneratedPatchDex;
+ 
+         mSevenZipPath = param.sevenZipPath;
+         mPackageFields = param.configFields;
+@@ -237,7 +236,6 @@ public String toString() {
+         sb.append("newApk:" + mNewApkPath + "\n");
+         sb.append("outputFolder:" + mOutFolder + "\n");
+         sb.append("isIgnoreWarning:" + mIgnoreWarning + "\n");
+-        sb.append("isInsertStubMode:" + mUsePreGeneratedPatchDex + "\n");
+         sb.append("7-ZipPath:" + mSevenZipPath + "\n");
+         sb.append("useSignAPk:" + mUseSignAPk + "\n");
+ 
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/reporter/SampleTinkerReport.java
+Patch:
+@@ -103,7 +103,7 @@ public class SampleTinkerReport {
+     public static final int KEY_LOADED_EXCEPTION_DEX            = 252;
+     public static final int KEY_LOADED_EXCEPTION_DEX_CHECK      = 253;
+     public static final int KEY_LOADED_EXCEPTION_RESOURCE       = 254;
+-    public static final int KEY_LOADED_EXCEPTION_RESOURCE_CEHCK = 255;
++    public static final int KEY_LOADED_EXCEPTION_RESOURCE_CHECK = 255;
+ 
+ 
+     public static final int KEY_LOADED_MISMATCH_DEX       = 300;
+@@ -328,7 +328,7 @@ public static void onLoadException(Throwable throwable, int errorCode) {
+                 break;
+             case ShareConstants.ERROR_LOAD_EXCEPTION_RESOURCE:
+                 if (throwable.getMessage().contains(ShareConstants.CHECK_RES_INSTALL_FAIL)) {
+-                    reporter.onReport(KEY_LOADED_EXCEPTION_RESOURCE_CEHCK);
++                    reporter.onReport(KEY_LOADED_EXCEPTION_RESOURCE_CHECK);
+                     isCheckFail = true;
+                     TinkerLog.e(TAG, "tinker res check fail:" + throwable.getMessage());
+                 } else {
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/patch/Configuration.java
+Patch:
+@@ -303,7 +303,8 @@ private void createTempDirectory() throws TinkerPatchException {
+ 
+         String tempNewName = newApkName.substring(0, newApkName.indexOf(TypedValue.FILE_APK));
+ 
+-        if (tempNewName.equals(tempOldName)) {
++        // Bugfix: For windows user, filename is case-insensitive.
++        if (tempNewName.equalsIgnoreCase(tempOldName)) {
+             tempOldName += "-old";
+             tempNewName += "-new";
+         }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/decoder/ResDiffDecoder.java
+Patch:
+@@ -421,7 +421,7 @@ public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IO
+             if (Utils.checkFileInPattern(config.mResFilePattern, patternKey)) {
+                 //not contain in new path, is deleted
+                 if (!newPath.toFile().exists()) {
+-                    deletedFiles.add(relativePath.toString());
++                    deletedFiles.add(patternKey);
+                     writeResLog(newPath.toFile(), file.toFile(), TypedValue.DEL);
+                 }
+                 return FileVisitResult.CONTINUE;
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/AaptUtil.java
+Patch:
+@@ -105,8 +105,8 @@ public static void processXmlFilesForIds(String resourceDirectory, List<RDotTxtE
+                 File xmlFile = new File(xmlFullFilename);
+                 String parentFullFilename = xmlFile.getParent();
+                 File parentFile = new File(parentFullFilename);
+-                if (isAValuesDirectory(parentFile.getName())) {
+-                    // Ignore files under values* directories.
++                if (isAValuesDirectory(parentFile.getName()) || parentFile.getName().startsWith("raw")) {
++                    // Ignore files under values* directories and raw*.
+                     continue;
+                 }
+                 processXmlFile(xmlFullFilename, references, resourceCollector);
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/BasePatchInternal.java
+Patch:
+@@ -43,7 +43,6 @@ public class BasePatchInternal {
+     protected static final String RES_META_FILE        = ShareConstants.RES_META_FILE;
+ 
+     protected static final int TYPE_DEX         = ShareConstants.TYPE_DEX;
+-    protected static final int TYPE_DEX_FOR_ART = ShareConstants.TYPE_DEX_FOR_ART;
+     protected static final int TYPE_Library     = ShareConstants.TYPE_LIBRARY;
+     protected static final int TYPE_RESOURCE    = ShareConstants.TYPE_RESOURCE;
+ 
+@@ -89,7 +88,7 @@ public static boolean extract(ZipFile zipFile, ZipEntry entryFile, File extractT
+     }
+ 
+     public static int getMetaCorruptedCode(int type) {
+-        if (type == TYPE_DEX || type == TYPE_DEX_FOR_ART) {
++        if (type == TYPE_DEX) {
+             return ShareConstants.ERROR_PACKAGE_CHECK_DEX_META_CORRUPTED;
+         } else if (type == TYPE_Library) {
+             return ShareConstants.ERROR_PACKAGE_CHECK_LIB_META_CORRUPTED;
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/DexDiffPatchInternal.java
+Patch:
+@@ -72,8 +72,7 @@ protected static boolean tryRecoverDexFiles(Tinker manager, ShareSecurityCheck c
+     private static boolean patchDexExtractViaDexDiff(Context context, String patchVersionDirectory, String meta, final File patchFile, final boolean isUpgradePatch) {
+         String dir = patchVersionDirectory + "/" + DEX_PATH + "/";
+ 
+-        int dexType = ShareTinkerInternals.isVmArt() ? TYPE_DEX_FOR_ART : TYPE_DEX;
+-        if (!extractDexDiffInternals(context, dir, meta, patchFile, dexType, isUpgradePatch)) {
++        if (!extractDexDiffInternals(context, dir, meta, patchFile, TYPE_DEX, isUpgradePatch)) {
+             TinkerLog.w(TAG, "patch recover, extractDiffInternals fail");
+             return false;
+         }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/util/TinkerServiceInternals.java
+Patch:
+@@ -64,7 +64,7 @@ public static boolean isTinkerPatchServiceRunning(Context context) {
+             return false;
+         }
+         try {
+-            // ActivityManagergetRunningAppProcesses()
++            // ActivityManager getRunningAppProcesses()
+             List<ActivityManager.RunningAppProcessInfo> appProcessList = am
+                 .getRunningAppProcesses();
+ 
+@@ -122,7 +122,7 @@ private static String getServiceProcessName(Context context, Class<? extends Ser
+         ServiceInfo serviceInfo;
+         try {
+             serviceInfo = packageManager.getServiceInfo(component, 0);
+-        } catch (PackageManager.NameNotFoundException ignored) {
++        } catch (Throwable ignored) {
+             // Service is disabled.
+             return null;
+         }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/SystemClassLoaderAdder.java
+Patch:
+@@ -72,6 +72,7 @@ public static void installDexes(Application application, PathClassLoader loader,
+             }
+             //install done
+             sPatchDexCount = files.size();
++            Log.i(TAG, "after loaded classloader: " + classLoader + ", dex size:" + sPatchDexCount);
+ 
+             if (!checkDexInstall(classLoader)) {
+                 //reset patch dex
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerDexLoader.java
+Patch:
+@@ -142,7 +142,6 @@ public void onFailed(File dexFile, File optimizedDir, Throwable thr) {
+             ShareIntentUtil.setIntentReturnCode(intentResult, ShareConstants.ERROR_LOAD_PATCH_VERSION_DEX_LOAD_EXCEPTION);
+             return false;
+         }
+-        Log.i(TAG, "after loaded classloader: " + application.getClassLoader().toString());
+ 
+         return true;
+     }
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerInternals.java
+Patch:
+@@ -226,8 +226,6 @@ public static String getTypeString(int type) {
+         switch (type) {
+             case ShareConstants.TYPE_DEX:
+                 return "dex";
+-            case ShareConstants.TYPE_DEX_FOR_ART:
+-                return "dex_art";
+             case ShareConstants.TYPE_DEX_OPT:
+                 return "dex_opt";
+             case ShareConstants.TYPE_LIBRARY:
+@@ -282,6 +280,9 @@ public static boolean isInMainProcess(Context context) {
+ 
+     public static void killAllOtherProcess(Context context) {
+         final ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
++        if (am == null) {
++            return;
++        }
+         // NOTE: getRunningAppProcess() ONLY GIVE YOU THE PROCESS OF YOUR OWN PACKAGE IN ANDROID M
+         // BUT THAT'S ENOUGH HERE
+         for (ActivityManager.RunningAppProcessInfo ai : am.getRunningAppProcesses()) {
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/DexDiffPatchInternal.java
+Patch:
+@@ -18,6 +18,7 @@
+ 
+ import android.content.Context;
+ import android.content.pm.ApplicationInfo;
++import android.os.Build;
+ import android.os.SystemClock;
+ 
+ import com.tencent.tinker.commons.dexpatcher.DexPatchApplier;
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerInternals.java
+Patch:
+@@ -102,7 +102,7 @@ public static int checkSignatureAndTinkerID(Context context, File patchFile, Sha
+             return ShareConstants.ERROR_PACKAGE_CHECK_PATCH_TINKER_ID_NOT_FOUND;
+         }
+         if (!oldTinkerId.equals(patchTinkerId)) {
+-            Log.e(TAG, "tinkerId is not equal, base is " + oldTinkerId +", but patch is " + patchTinkerId);
++            Log.e(TAG, "tinkerId is not equal, base is " + oldTinkerId + ", but patch is " + patchTinkerId);
+             return ShareConstants.ERROR_PACKAGE_CHECK_TINKER_ID_NOT_EQUAL;
+         }
+         return ShareConstants.ERROR_PACKAGE_CHECK_OK;
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareTinkerInternals.java
+Patch:
+@@ -21,6 +21,7 @@
+ import android.content.SharedPreferences;
+ import android.content.pm.ApplicationInfo;
+ import android.content.pm.PackageManager;
++import android.os.Build;
+ import android.util.Log;
+ 
+ import java.io.File;
+@@ -47,7 +48,7 @@ public class ShareTinkerInternals {
+     private static String tinkerID = null;
+ 
+     public static boolean isVmArt() {
+-        return VM_IS_ART;
++        return VM_IS_ART || Build.VERSION.SDK_INT >= 21;
+     }
+ 
+     public static boolean isNullOrNil(final String object) {
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/RepairPatch.java
+Patch:
+@@ -66,9 +66,6 @@ public boolean tryPatch(Context context, String tempPatchPath, PatchResult patch
+             return false;
+         }
+ 
+-        patchResult.patchTinkerID = signatureCheck.getNewTinkerID();
+-        patchResult.baseTinkerID = signatureCheck.getTinkerID();
+-
+         //it is a old patch, so we should find a exist
+         SharePatchInfo oldInfo = manager.getTinkerLoadResultIfPresent().patchInfo;
+         String patchMd5 = SharePatchFileUtil.getMD5(patchFile);
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/UpgradePatch.java
+Patch:
+@@ -63,9 +63,6 @@ public boolean tryPatch(Context context, String tempPatchPath, PatchResult patch
+             return false;
+         }
+ 
+-        patchResult.patchTinkerID = signatureCheck.getNewTinkerID();
+-        patchResult.baseTinkerID = signatureCheck.getTinkerID();
+-
+         //it is a new patch, so we should not find a exist
+         SharePatchInfo oldInfo = manager.getTinkerLoadResultIfPresent().patchInfo;
+         String patchMd5 = SharePatchFileUtil.getMD5(patchFile);
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/app/BaseBuildInfo.java
+Patch:
+@@ -16,10 +16,13 @@
+ 
+ package tinker.sample.android.app;
+ 
++import tinker.sample.android.BuildConfig;
++
+ /**
+  * Created by zhangshaowen on 16/6/30.
+  * we add BaseBuildInfo to loader pattern, so it won't change with patch!
+  */
+ public class BaseBuildInfo {
+     public static String TEST_MESSAGE = "I won't change with tinker patch!";
++    public static String BASE_TINKER_ID = BuildConfig.TINKER_ID;
+ }
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/app/BuildInfo.java
+Patch:
+@@ -31,7 +31,7 @@ public class BuildInfo {
+     public static int     VERSION_CODE = BuildConfig.VERSION_CODE;
+ 
+     public static String MESSAGE       = BuildConfig.MESSAGE;
+-    public static String CLIENTVERSION = BuildConfig.CLIENTVERSION;
++    public static String TINKER_ID     = BuildConfig.TINKER_ID;
+     public static String PLATFORM      = BuildConfig.PLATFORM;
+ 
+ }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/UpgradePatch.java
+Patch:
+@@ -101,7 +101,7 @@ public boolean tryPatch(Context context, String tempPatchPath, PatchResult patch
+         //check ok, we can real recover a new patch
+         final String patchDirectory = manager.getPatchDirectory().getAbsolutePath();
+ 
+-        TinkerLog.i(TAG, "UpgradePatch tryPatch:dexDiffMd5:%s", patchMd5);
++        TinkerLog.i(TAG, "UpgradePatch tryPatch:patchMd5:%s", patchMd5);
+ 
+         final String patchName = SharePatchFileUtil.getPatchVersionDirectory(patchMd5);
+ 
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/DexDiffPatchInternal.java
+Patch:
+@@ -182,7 +182,7 @@ private static boolean extractDexDiffInternals(Context context, String dir, Stri
+                 String dexDiffMd5 = info.dexDiffMd5;
+                 String oldDexCrc = info.oldDexCrC;
+ 
+-                if (dexDiffMd5.equals("0") && !ShareTinkerInternals.isVmArt()) {
++                if (!ShareTinkerInternals.isVmArt() && info.destMd5InDvm.equals("0")) {
+                     TinkerLog.w(TAG, "patch dex %s is only for art, just continue", patchRealPath);
+                     continue;
+                 }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/reporter/DefaultLoadReporter.java
+Patch:
+@@ -234,6 +234,7 @@ public void onLoadException(Throwable e, int errorCode) {
+                 //exception can be caught, it is no need to disable Tinker with sharedPreference
+                 break;
+         }
++        TinkerLog.e(TAG, "tinker load exception, welcome to submit issue to us: https://github.com/Tencent/tinker/issues");
+         TinkerLog.printErrStackTrace(TAG, e, "tinker load exception");
+ 
+         Tinker.with(context).setTinkerDisable();
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/reporter/DefaultPatchReporter.java
+Patch:
+@@ -180,6 +180,7 @@ public void onPatchInfoCorrupted(File patchFile, String oldVersion, String newVe
+     @Override
+     public void onPatchException(File patchFile, Throwable e, boolean isUpgradePatch) {
+         TinkerLog.i(TAG, "patchReporter: patch exception path:%s, throwable:%s, isUpgrade:%b", patchFile.getAbsolutePath(), e.getMessage(), isUpgradePatch);
++        TinkerLog.e(TAG, "tinker patch exception, welcome to submit issue to us: https://github.com/Tencent/tinker/issues");
+         TinkerLog.printErrStackTrace(TAG, e, "tinker patch exception");
+         //don't accept request any more!
+         Tinker.with(context).setTinkerDisable();
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/listener/DefaultPatchListener.java
+Patch:
+@@ -60,7 +60,7 @@ public int onPatchReceived(String path, boolean isUpgrade) {
+ 
+     protected int patchCheck(String path, boolean isUpgrade) {
+         Tinker manager = Tinker.with(context);
+-        //check SharePrefenences also
++        //check SharePreferences also
+         if (!manager.isTinkerEnabled() || !ShareTinkerInternals.isTinkerEnableWithSharedPreferences(context)) {
+             return ShareConstants.ERROR_PATCH_DISABLE;
+         }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/PatchUtil.java
+Patch:
+@@ -117,7 +117,7 @@ public static void generatePublicResourceXml(AaptResourceCollector aaptResourceC
+                     Set<RDotTxtEntry> set = entry.getValue();
+                     for (RDotTxtEntry rDotTxtEntry : set) {
+ //                        if (rType.equals(RType.STYLE)) {
+-                            String rawName = aaptResourceCollector.getRawName(rDotTxtEntry.name);
++                            String rawName = aaptResourceCollector.getRawName(rType, rDotTxtEntry.name);
+                             if (StringUtil.isBlank(rawName)) {
+ //                                System.err.println("Blank?" + rDotTxtEntry.name);
+                                 rawName = rDotTxtEntry.name;
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/decoder/DexDiffDecoder.java
+Patch:
+@@ -308,9 +308,9 @@ private void generateStubModePatchDex() throws IOException {
+ 
+     @SuppressWarnings("NewApi")
+     private void generatePatchInfoFile() throws IOException {
+-        File tempFullPatchDexPath = new File(config.mOutFolder + File.separator + TypedValue.DEX_TEMP_PATCH_DIR + File.separator + "full");
++        File tempFullPatchDexPath = new File(config.mOutFolder + File.separator + TypedValue.DEX_TEMP_PATCH_DIR + File.separator + "dalvik");
+         ensureDirectoryExist(tempFullPatchDexPath);
+-        File tempSmallPatchDexPath = new File(config.mOutFolder + File.separator + TypedValue.DEX_TEMP_PATCH_DIR + File.separator + "small");
++        File tempSmallPatchDexPath = new File(config.mOutFolder + File.separator + TypedValue.DEX_TEMP_PATCH_DIR + File.separator + "art");
+         ensureDirectoryExist(tempSmallPatchDexPath);
+ 
+         // Generate dex diff out and full patched dex if a pair of dex is different.
+
+File: tinker-build/tinker-patch-lib/src/main/java/org/jf/dexlib2/builder/BuilderMutableMethodImplementation.java
+Patch:
+@@ -213,7 +213,7 @@ public void perform() {
+ 
+             for (ExceptionHandler exceptionHandler : tryBlock.getExceptionHandlers()) {
+                 tryBlocks.add(new BuilderTryBlock(startLabel, endLabel,
+-                        exceptionHandler.getExceptionTypeReference(),
++                        (TypeReference) convertReference(exceptionHandler.getExceptionTypeReference()),
+                         newLabel(codeAddressToIndex, exceptionHandler.getHandlerCodeAddress())));
+             }
+         }
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/RepairPatch.java
+Patch:
+@@ -59,7 +59,7 @@ public boolean tryPatch(Context context, String tempPatchPath, PatchResult patch
+         ShareSecurityCheck signatureCheck = new ShareSecurityCheck(context);
+ 
+ 
+-        int returnCode = ShareTinkerInternals.checkSignatureAndTinkerID(context, patchFile, signatureCheck);
++        int returnCode = ShareTinkerInternals.checkTinkerPackage(context, manager.getTinkerFlags(), patchFile, signatureCheck);
+         if (returnCode != ShareConstants.ERROR_PACKAGE_CHECK_OK) {
+             TinkerLog.e(TAG, "RepairPatch tryPatch:onPatchPackageCheckFail");
+             manager.getPatchReporter().onPatchPackageCheckFail(patchFile, false, returnCode);
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/patch/UpgradePatch.java
+Patch:
+@@ -56,7 +56,7 @@ public boolean tryPatch(Context context, String tempPatchPath, PatchResult patch
+         //check the signature, we should create a new checker
+         ShareSecurityCheck signatureCheck = new ShareSecurityCheck(context);
+ 
+-        int returnCode = ShareTinkerInternals.checkSignatureAndTinkerID(context, patchFile, signatureCheck);
++        int returnCode = ShareTinkerInternals.checkTinkerPackage(context, manager.getTinkerFlags(), patchFile, signatureCheck);
+         if (returnCode != ShareConstants.ERROR_PACKAGE_CHECK_OK) {
+             TinkerLog.e(TAG, "UpgradePatch tryPatch:onPatchPackageCheckFail");
+             manager.getPatchReporter().onPatchPackageCheckFail(patchFile, true, returnCode);
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/reporter/DefaultLoadReporter.java
+Patch:
+@@ -253,6 +253,7 @@ public void onLoadException(Throwable e, int errorCode) {
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_PATCH_TINKER_ID_NOT_FOUND}       can't find TINKER_PATCH in patch meta file
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_TINKER_ID_NOT_EQUAL}             apk and patch's TINKER_PATCH value is not equal
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_RESOURCE_META_CORRUPTED}         resource meta file's format check fail
++     *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_TINKERFLAG_NOT_SUPPORT}          some patch file type is not supported for current tinkerFlag
+      */
+     @Override
+     public void onLoadPackageCheckFail(File patchFile, int errorCode) {
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/reporter/DefaultPatchReporter.java
+Patch:
+@@ -69,6 +69,7 @@ public void onPatchServiceStart(Intent intent) {
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_PATCH_TINKER_ID_NOT_FOUND}       can't find TINKER_PATCH in patch meta file
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_TINKER_ID_NOT_EQUAL}             apk and patch's TINKER_PATCH value is not equal
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_RESOURCE_META_CORRUPTED}         resource meta file's format check fail
++     *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_TINKERFLAG_NOT_SUPPORT}          some patch file type is not supported for current tinkerFlag
+      */
+     @Override
+     public void onPatchPackageCheckFail(File patchFile, boolean isUpgradePatch, int errorCode) {
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/reporter/LoadReporter.java
+Patch:
+@@ -134,6 +134,7 @@ public interface LoadReporter {
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_PATCH_TINKER_ID_NOT_FOUND}       can't find TINKER_PATCH in patch meta file
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_TINKER_ID_NOT_EQUAL}             apk and patch's TINKER_PATCH value is not equal
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_RESOURCE_META_CORRUPTED}         resource meta file's format check fail
++     *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_TINKERFLAG_NOT_SUPPORT}          some patch file type is not supported for current tinkerFlag
+      */
+     void onLoadPackageCheckFail(File patchFile, int errorCode);
+ 
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/reporter/PatchReporter.java
+Patch:
+@@ -59,6 +59,7 @@ public interface PatchReporter {
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_PATCH_TINKER_ID_NOT_FOUND}       can't find TINKER_PATCH in patch meta file
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_TINKER_ID_NOT_EQUAL}             apk and patch's TINKER_PATCH value is not equal
+      *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_RESOURCE_META_CORRUPTED}         resource meta file's format check fail
++     *                  {@code ShareConstants.ERROR_PACKAGE_CHECK_TINKERFLAG_NOT_SUPPORT}          some patch file type is not supported for current tinkerFlag
+      */
+     void onPatchPackageCheckFail(File patchFile, boolean isUpgradePatch, int errorCode);
+ 
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerLoader.java
+Patch:
+@@ -152,9 +152,9 @@ private void tryLoadPatchFilesInternal(TinkerApplication app, int tinkerFlag, bo
+ 
+         ShareSecurityCheck securityCheck = new ShareSecurityCheck(app);
+ 
+-        int returnCode = ShareTinkerInternals.checkSignatureAndTinkerID(app, patchVersionFile, securityCheck);
+-        if (returnCode != 0) {
+-            Log.w(TAG, "tryLoadPatchFiles:checkSignatureAndTinkerID");
++        int returnCode = ShareTinkerInternals.checkTinkerPackage(app, tinkerFlag, patchVersionFile, securityCheck);
++        if (returnCode != ShareConstants.ERROR_PACKAGE_CHECK_OK) {
++            Log.w(TAG, "tryLoadPatchFiles:checkTinkerPackage");
+             resultIntent.putExtra(ShareIntentUtil.INTENT_PATCH_PACKAGE_PATCH_CHECK, returnCode);
+             ShareIntentUtil.setIntentReturnCode(resultIntent, ShareConstants.ERROR_LOAD_PATCH_PACKAGE_CHECK_FAIL);
+             return;
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareConstants.java
+Patch:
+@@ -168,5 +168,5 @@ public class ShareConstants {
+     public static final int ERROR_PACKAGE_CHECK_PATCH_TINKER_ID_NOT_FOUND = -6;
+     public static final int ERROR_PACKAGE_CHECK_TINKER_ID_NOT_EQUAL       = -7;
+     public static final int ERROR_PACKAGE_CHECK_RESOURCE_META_CORRUPTED   = -8;
+-
++    public static final int ERROR_PACKAGE_CHECK_TINKERFLAG_NOT_SUPPORT    = -9;
+ }
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/builder/PatchBuilder.java
+Patch:
+@@ -98,8 +98,8 @@ private void signApk(File input, File output) throws IOException, InterruptedExc
+             // -sigalg algorithm: If this option is not specified, then SHA1withDSA, SHA256withRSA,
+             // or SHA256withECDSA are used depending on the type of private key.
+             // issue https://github.com/Tencent/tinker/issues/118
+-//            command.add("-sigalg");
+-//            command.add("MD5withRSA");
++            command.add("-sigalg");
++            command.add("MD5withRSA");
+             command.add("-digestalg");
+             command.add("SHA1");
+             command.add("-keystore");
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/auxiliaryinject/AuxiliaryInjectAdapter.java
+Patch:
+@@ -89,7 +89,7 @@ public MethodVisitor visitMethod(int access, String name, String desc, String si
+                 this.isInjected = true;
+                 mv = new InjectImplMethodVisitor(mv);
+             } else
+-            if ("<init>".equals(name)){
++            if ("<init>".equals(name)) {
+                 this.isInitExists = true;
+                 this.isInjected = true;
+                 mv = new InjectImplMethodVisitor(mv);
+@@ -114,7 +114,7 @@ public void visitEnd() {
+     }
+ 
+     private class InjectImplMethodVisitor extends MethodVisitor {
+-        public InjectImplMethodVisitor(MethodVisitor mv) {
++        InjectImplMethodVisitor(MethodVisitor mv) {
+             super(Opcodes.ASM5, mv);
+         }
+ 
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/TinkerLoader.java
+Patch:
+@@ -224,7 +224,7 @@ private void tryLoadPatchFilesInternal(TinkerApplication app, int tinkerFlag, bo
+ 
+         //now we can load patch resource
+         if (isEnabledForResource) {
+-            boolean loadTinkerResources = TinkerResourceLoader.loadTinkerResources(tinkerLoadVerifyFlag, patchVersionDirectory, resultIntent);
++            boolean loadTinkerResources = TinkerResourceLoader.loadTinkerResources(app, tinkerLoadVerifyFlag, patchVersionDirectory, resultIntent);
+             if (!loadTinkerResources) {
+                 Log.w(TAG, "tryLoadPatchFiles:onPatchLoadResourcesFail");
+                 return;
+
+File: tinker-android/tinker-android-loader/src/main/java/com/tencent/tinker/loader/shareutil/ShareConstants.java
+Patch:
+@@ -47,7 +47,9 @@ public class ShareConstants {
+     public static final String DEX_OPTIMIZE_PATH        = "odex";
+     public static final String DEX_SUFFIX               = ".dex";
+     public static final String JAR_SUFFIX               = ".jar";
++
+     public static final String CHECK_DEX_INSTALL_FAIL = "checkDexInstall failed";
++    public static final String CHECK_RES_INSTALL_FAIL = "checkResInstall failed";
+ 
+     public static final String RES_META_FILE       = "assets/res_meta.txt";
+     public static final String RES_ARSC            = "resources.arsc";
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/decoder/ManifestDecoder.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.tencent.tinker.build.decoder;
+ 
+ 
+-import com.tencent.tinker.build.apkparser.AndroidManifest;
++import com.tencent.tinker.build.apkparser.AndroidParser;
+ import com.tencent.tinker.build.patch.Configuration;
+ import com.tencent.tinker.build.util.Logger;
+ import com.tencent.tinker.build.util.TinkerPatchException;
+@@ -42,8 +42,8 @@ public ManifestDecoder(Configuration config) throws IOException {
+     public boolean patch(File oldFile, File newFile) throws IOException, TinkerPatchException {
+         final boolean ignoreWarning = config.mIgnoreWarning;
+         try {
+-            AndroidManifest oldAndroidManifest = AndroidManifest.getAndroidManifest(oldFile);
+-            AndroidManifest newAndroidManifest = AndroidManifest.getAndroidManifest(newFile);
++            AndroidParser oldAndroidManifest = AndroidParser.getAndroidManifest(oldFile);
++            AndroidParser newAndroidManifest = AndroidParser.getAndroidManifest(newFile);
+             //check minSdkVersion
+             int minSdkVersion = Integer.parseInt(oldAndroidManifest.apkMeta.getMinSdkVersion());
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/dexpatcher/DexPatchGenerator.java
+Patch:
+@@ -63,7 +63,6 @@
+ import java.io.OutputStream;
+ import java.util.ArrayList;
+ import java.util.Collection;
+-import java.util.Comparator;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Set;
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/info/PatchInfoGen.java
+Patch:
+@@ -16,7 +16,7 @@
+ 
+ package com.tencent.tinker.build.info;
+ 
+-import com.tencent.tinker.build.apkparser.AndroidManifest;
++import com.tencent.tinker.build.apkparser.AndroidParser;
+ import com.tencent.tinker.build.patch.Configuration;
+ import com.tencent.tinker.build.util.TinkerPatchException;
+ import com.tencent.tinker.build.util.TypedValue;
+@@ -41,7 +41,7 @@ public PatchInfoGen(Configuration config) {
+ 
+     private void addTinkerID() throws IOException, ParseException {
+         if (!config.mPackageFields.containsKey(TypedValue.TINKER_ID)) {
+-            AndroidManifest oldAndroidManifest = AndroidManifest.getAndroidManifest(config.mOldApkFile);
++            AndroidParser oldAndroidManifest = AndroidParser.getAndroidManifest(config.mOldApkFile);
+             String tinkerID = oldAndroidManifest.metaDatas.get(TypedValue.TINKER_ID);
+ 
+             if (tinkerID == null) {
+@@ -51,7 +51,7 @@ private void addTinkerID() throws IOException, ParseException {
+         }
+ 
+         if (!config.mPackageFields.containsKey(TypedValue.NEW_TINKER_ID)) {
+-            AndroidManifest newAndroidManifest = AndroidManifest.getAndroidManifest(config.mNewApkFile);
++            AndroidParser newAndroidManifest = AndroidParser.getAndroidManifest(config.mNewApkFile);
+             String tinkerID = newAndroidManifest.metaDatas.get(TypedValue.TINKER_ID);
+ 
+             if (tinkerID == null) {
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/DexClassesComparator.java
+Patch:
+@@ -972,12 +972,12 @@ private boolean isSameEncodedValue(
+             case EncodedValueReader.ENCODED_FLOAT: {
+                 float oldFloat = oldAnnoReader.readFloat();
+                 float newFloat = newAnnoReader.readFloat();
+-                return oldFloat == newFloat;
++                return Float.compare(oldFloat, newFloat) == 0;
+             }
+             case EncodedValueReader.ENCODED_DOUBLE: {
+                 double oldDouble = oldAnnoReader.readDouble();
+                 double newDouble = newAnnoReader.readDouble();
+-                return oldDouble == newDouble;
++                return Double.compare(oldDouble, newDouble) == 0;
+             }
+             case EncodedValueReader.ENCODED_STRING: {
+                 int oldStringIdx = oldAnnoReader.readString();
+
+File: tinker-android/tinker-android-lib/src/main/java/com/tencent/tinker/lib/tinker/TinkerInstaller.java
+Patch:
+@@ -45,6 +45,7 @@ public class TinkerInstaller {
+      */
+     public static void install(ApplicationLike applicationLike) {
+         Tinker tinker = new Tinker.Builder(applicationLike.getApplication()).build();
++        Tinker.create(tinker);
+         tinker.install(applicationLike.getTinkerResultIntent());
+     }
+ 
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/PatchUtil.java
+Patch:
+@@ -119,7 +119,7 @@ public static void generatePublicResourceXml(AaptResourceCollector aaptResourceC
+ //                        if (rType.equals(RType.STYLE)) {
+                             String rawName = aaptResourceCollector.getRawName(rDotTxtEntry.name);
+                             if (StringUtil.isBlank(rawName)) {
+-                                System.err.println("Blank?" + rDotTxtEntry.name);
++//                                System.err.println("Blank?" + rDotTxtEntry.name);
+                                 rawName = rDotTxtEntry.name;
+                             }
+                             publicWriter.println("<public type=\"" + rType + "\" name=\"" + rawName + "\" id=\"" + rDotTxtEntry.idValue + "\" />");
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/util/TypedValue.java
+Patch:
+@@ -59,7 +59,6 @@ public class TypedValue {
+     public static final String RES_MANIFEST    = "AndroidManifest.xml";
+     public static final String RES_OUT         = "resources_out.zip";
+     public static final String RES_OUT_7ZIP    = "resources_out_7z.zip";
+-    public static final String RES_OUT_MD5_TAG = "%RES_OUT_MD5_TAG%";
+ 
+     public static final int ADD       = 1;
+     public static final int MOD       = 2;
+
+File: tinker-sample-android/app/src/main/java/tinker/sample/android/app/SampleApplicationLike.java
+Patch:
+@@ -83,7 +83,7 @@ public void onBaseContextAttached(Context base) {
+         MultiDex.install(base);
+ 
+         SampleApplicationContext.application = getApplication();
+-        SampleApplicationContext.context = getApplication().getApplicationContext();
++        SampleApplicationContext.context = getApplication();
+         TinkerManager.setTinkerApplicationLike(this);
+         TinkerManager.initFastCrashProtect();
+         //should set before tinker is installed
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/AaptUtil.java
+Patch:
+@@ -227,6 +227,7 @@ public static void processValuesFile(String valuesFullFilename, AaptResourceColl
+                 case DIMEN:
+                 case DRAWABLE:
+                 case BOOL:
++                case INTEGER:
+                     resourceValue = node.getTextContent().trim();
+                     break;
+                 case ARRAY://has sub item
+
+File: tinker-build/tinker-patch-lib/src/main/java/com/tencent/tinker/build/aapt/AaptUtil.java
+Patch:
+@@ -227,6 +227,7 @@ public static void processValuesFile(String valuesFullFilename, AaptResourceColl
+                 case DIMEN:
+                 case DRAWABLE:
+                 case BOOL:
++                case INTEGER:
+                     resourceValue = node.getTextContent().trim();
+                     break;
+                 case ARRAY://has sub item
+

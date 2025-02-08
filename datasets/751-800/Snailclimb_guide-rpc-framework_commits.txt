@@ -1,0 +1,579 @@
+File: rpc-framework-simple/src/main/java/github/javaguide/spring/CustomScannerRegistrar.java
+Patch:
+@@ -20,7 +20,7 @@
+  */
+ @Slf4j
+ public class CustomScannerRegistrar implements ImportBeanDefinitionRegistrar, ResourceLoaderAware {
+-    private static final String SPRING_BEAN_BASE_PACKAGE = "github.javaguide.spring";
++    private static final String SPRING_BEAN_BASE_PACKAGE = "github.javaguide";
+     private static final String BASE_PACKAGE_ATTRIBUTE_NAME = "basePackage";
+     private ResourceLoader resourceLoader;
+ 
+
+File: rpc-framework-common/src/main/java/github/javaguide/factory/SingletonFactory.java
+Patch:
+@@ -1,7 +1,6 @@
+ package github.javaguide.factory;
+ 
+ import java.lang.reflect.InvocationTargetException;
+-import java.util.HashMap;
+ import java.util.Map;
+ import java.util.concurrent.ConcurrentHashMap;
+ 
+
+File: rpc-framework-common/src/main/java/github/javaguide/utils/RuntimeUtil.java
+Patch:
+@@ -7,6 +7,7 @@
+ public class RuntimeUtil {
+     /**
+      * 获取CPU的核心数
++     *
+      * @return cpu的核心数
+      */
+     public static int cpus() {
+
+File: rpc-framework-simple/src/main/java/github/javaguide/compress/gzip/GzipCompress.java
+Patch:
+@@ -24,7 +24,7 @@ public byte[] compress(byte[] bytes) {
+             throw new NullPointerException("bytes is null");
+         }
+         try (ByteArrayOutputStream out = new ByteArrayOutputStream();
+-                GZIPOutputStream gzip = new GZIPOutputStream(out)) {
++             GZIPOutputStream gzip = new GZIPOutputStream(out)) {
+             gzip.write(bytes);
+             gzip.flush();
+             gzip.finish();
+@@ -40,7 +40,7 @@ public byte[] decompress(byte[] bytes) {
+             throw new NullPointerException("bytes is null");
+         }
+         try (ByteArrayOutputStream out = new ByteArrayOutputStream();
+-                GZIPInputStream gunzip = new GZIPInputStream(new ByteArrayInputStream(bytes))) {
++             GZIPInputStream gunzip = new GZIPInputStream(new ByteArrayInputStream(bytes))) {
+             byte[] buffer = new byte[BUFFER_SIZE];
+             int n;
+             while ((n = gunzip.read(buffer)) > -1) {
+
+File: rpc-framework-simple/src/main/java/github/javaguide/registry/zk/ZkServiceDiscoveryImpl.java
+Patch:
+@@ -20,16 +20,16 @@
+  * @createTime 2020年06月01日 15:16:00
+  */
+ @Slf4j
+-public class ZkServiceDiscovery implements ServiceDiscovery {
++public class ZkServiceDiscoveryImpl implements ServiceDiscovery {
+     private final LoadBalance loadBalance;
+ 
+-    public ZkServiceDiscovery() {
++    public ZkServiceDiscoveryImpl() {
+         this.loadBalance = ExtensionLoader.getExtensionLoader(LoadBalance.class).getExtension("loadBalance");
+     }
+ 
+     @Override
+     public InetSocketAddress lookupService(RpcRequest rpcRequest) {
+-        String rpcServiceName = rpcRequest.toRpcProperties().toRpcServiceName();
++        String rpcServiceName = rpcRequest.getRpcServiceName();
+         CuratorFramework zkClient = CuratorUtils.getZkClient();
+         List<String> serviceUrlList = CuratorUtils.getChildrenNodes(zkClient, rpcServiceName);
+         if (serviceUrlList == null || serviceUrlList.size() == 0) {
+
+File: rpc-framework-simple/src/main/java/github/javaguide/registry/zk/ZkServiceRegistryImpl.java
+Patch:
+@@ -14,7 +14,7 @@
+  * @createTime 2020年05月31日 10:56:00
+  */
+ @Slf4j
+-public class ZkServiceRegistry implements ServiceRegistry {
++public class ZkServiceRegistryImpl implements ServiceRegistry {
+ 
+     @Override
+     public void registerService(String rpcServiceName, InetSocketAddress inetSocketAddress) {
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/handler/RpcRequestHandler.java
+Patch:
+@@ -3,7 +3,7 @@
+ import github.javaguide.exception.RpcException;
+ import github.javaguide.factory.SingletonFactory;
+ import github.javaguide.provider.ServiceProvider;
+-import github.javaguide.provider.ServiceProviderImpl;
++import github.javaguide.provider.impl.ZkServiceProviderImpl;
+ import github.javaguide.remoting.dto.RpcRequest;
+ import lombok.extern.slf4j.Slf4j;
+ 
+@@ -21,14 +21,14 @@ public class RpcRequestHandler {
+     private final ServiceProvider serviceProvider;
+ 
+     public RpcRequestHandler() {
+-        serviceProvider = SingletonFactory.getInstance(ServiceProviderImpl.class);
++        serviceProvider = SingletonFactory.getInstance(ZkServiceProviderImpl.class);
+     }
+ 
+     /**
+      * Processing rpcRequest: call the corresponding method, and then return the method
+      */
+     public Object handle(RpcRequest rpcRequest) {
+-        Object service = serviceProvider.getService(rpcRequest.toRpcProperties());
++        Object service = serviceProvider.getService(rpcRequest.getRpcServiceName());
+         return invokeTargetMethod(rpcRequest, service);
+     }
+ 
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/netty/client/NettyRpcClient.java
+Patch:
+@@ -97,8 +97,6 @@ public Channel doConnect(InetSocketAddress inetSocketAddress) {
+     public Object sendRpcRequest(RpcRequest rpcRequest) {
+         // build return value
+         CompletableFuture<RpcResponse<Object>> resultFuture = new CompletableFuture<>();
+-        // build rpc service name by rpcRequest
+-//        String rpcServiceName = rpcRequest.toRpcProperties().toRpcServiceName();
+         // get server address
+         InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcRequest);
+         // get  server address related channel
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/netty/client/NettyRpcClientHandler.java
+Patch:
+@@ -1,12 +1,11 @@
+ package github.javaguide.remoting.transport.netty.client;
+ 
+-import github.javaguide.compress.Compress;
+ import github.javaguide.enums.CompressTypeEnum;
++import github.javaguide.enums.SerializationTypeEnum;
+ import github.javaguide.factory.SingletonFactory;
+ import github.javaguide.remoting.constants.RpcConstants;
+ import github.javaguide.remoting.dto.RpcMessage;
+ import github.javaguide.remoting.dto.RpcResponse;
+-import github.javaguide.enums.SerializationTypeEnum;
+ import io.netty.channel.Channel;
+ import io.netty.channel.ChannelFutureListener;
+ import io.netty.channel.ChannelHandlerContext;
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/socket/SocketRpcRequestHandlerRunnable.java
+Patch:
+@@ -30,7 +30,7 @@ public SocketRpcRequestHandlerRunnable(Socket socket) {
+     public void run() {
+         log.info("server handle message from client by thread: [{}]", Thread.currentThread().getName());
+         try (ObjectInputStream objectInputStream = new ObjectInputStream(socket.getInputStream());
+-                ObjectOutputStream objectOutputStream = new ObjectOutputStream(socket.getOutputStream())) {
++             ObjectOutputStream objectOutputStream = new ObjectOutputStream(socket.getOutputStream())) {
+             RpcRequest rpcRequest = (RpcRequest) objectInputStream.readObject();
+             Object result = rpcRequestHandler.handle(rpcRequest);
+             objectOutputStream.writeObject(RpcResponse.success(result, rpcRequest.getRequestId()));
+
+File: rpc-framework-simple/src/main/java/github/javaguide/serialize/kyro/KryoSerializer.java
+Patch:
+@@ -34,7 +34,7 @@ public class KryoSerializer implements Serializer {
+     @Override
+     public byte[] serialize(Object obj) {
+         try (ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+-                Output output = new Output(byteArrayOutputStream)) {
++             Output output = new Output(byteArrayOutputStream)) {
+             Kryo kryo = kryoThreadLocal.get();
+             // Object->byte:将对象序列化为byte数组
+             kryo.writeObject(output, obj);
+@@ -48,7 +48,7 @@ public byte[] serialize(Object obj) {
+     @Override
+     public <T> T deserialize(byte[] bytes, Class<T> clazz) {
+         try (ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(bytes);
+-                Input input = new Input(byteArrayInputStream)) {
++             Input input = new Input(byteArrayInputStream)) {
+             Kryo kryo = kryoThreadLocal.get();
+             // byte->Object:从byte数组中反序列化出对对象
+             Object o = kryo.readObject(input, clazz);
+
+File: rpc-framework-simple/src/test/java/github/javaguide/compress/gzip/GzipCompressTest.java
+Patch:
+@@ -16,7 +16,7 @@ void gzipCompressTest() {
+         RpcRequest rpcRequest = RpcRequest.builder().methodName("hello")
+                 .parameters(new Object[]{"sayhelooloo", "sayhelooloosayhelooloo"})
+                 .interfaceName("github.javaguide.HelloService")
+-                .paramTypes(new Class<?>[]{String.class,String.class})
++                .paramTypes(new Class<?>[]{String.class, String.class})
+                 .requestId(UUID.randomUUID().toString())
+                 .group("group1")
+                 .version("version1")
+
+File: rpc-framework-simple/src/main/java/github/javaguide/loadbalance/LoadBalance.java
+Patch:
+@@ -1,6 +1,7 @@
+ package github.javaguide.loadbalance;
+ 
+ import github.javaguide.extension.SPI;
++import github.javaguide.remoting.dto.RpcRequest;
+ 
+ import java.util.List;
+ 
+@@ -18,5 +19,5 @@ public interface LoadBalance {
+      * @param serviceAddresses Service address list
+      * @return target service address
+      */
+-    String selectServiceAddress(List<String> serviceAddresses, String rpcServiceName);
++    String selectServiceAddress(List<String> serviceAddresses, RpcRequest rpcRequest);
+ }
+
+File: rpc-framework-simple/src/main/java/github/javaguide/loadbalance/loadbalancer/RandomLoadBalance.java
+Patch:
+@@ -1,6 +1,7 @@
+ package github.javaguide.loadbalance.loadbalancer;
+ 
+ import github.javaguide.loadbalance.AbstractLoadBalance;
++import github.javaguide.remoting.dto.RpcRequest;
+ 
+ import java.util.List;
+ import java.util.Random;
+@@ -13,7 +14,7 @@
+  */
+ public class RandomLoadBalance extends AbstractLoadBalance {
+     @Override
+-    protected String doSelect(List<String> serviceAddresses, String rpcServiceName) {
++    protected String doSelect(List<String> serviceAddresses, RpcRequest rpcRequest) {
+         Random random = new Random();
+         return serviceAddresses.get(random.nextInt(serviceAddresses.size()));
+     }
+
+File: rpc-framework-simple/src/main/java/github/javaguide/registry/ServiceDiscovery.java
+Patch:
+@@ -1,6 +1,7 @@
+ package github.javaguide.registry;
+ 
+ import github.javaguide.extension.SPI;
++import github.javaguide.remoting.dto.RpcRequest;
+ 
+ import java.net.InetSocketAddress;
+ 
+@@ -15,8 +16,8 @@ public interface ServiceDiscovery {
+     /**
+      * lookup service by rpcServiceName
+      *
+-     * @param rpcServiceName rpc service name
++     * @param rpcRequest rpc service pojo
+      * @return service address
+      */
+-    InetSocketAddress lookupService(String rpcServiceName);
++    InetSocketAddress lookupService(RpcRequest rpcRequest);
+ }
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/netty/client/NettyRpcClient.java
+Patch:
+@@ -98,9 +98,9 @@ public Object sendRpcRequest(RpcRequest rpcRequest) {
+         // build return value
+         CompletableFuture<RpcResponse<Object>> resultFuture = new CompletableFuture<>();
+         // build rpc service name by rpcRequest
+-        String rpcServiceName = rpcRequest.toRpcProperties().toRpcServiceName();
++//        String rpcServiceName = rpcRequest.toRpcProperties().toRpcServiceName();
+         // get server address
+-        InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcServiceName);
++        InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcRequest);
+         // get  server address related channel
+         Channel channel = getChannel(inetSocketAddress);
+         if (channel.isActive()) {
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/socket/SocketRpcClient.java
+Patch:
+@@ -35,7 +35,7 @@ public Object sendRpcRequest(RpcRequest rpcRequest) {
+         // build rpc service name by rpcRequest
+         String rpcServiceName = RpcServiceProperties.builder().serviceName(rpcRequest.getInterfaceName())
+                 .group(rpcRequest.getGroup()).version(rpcRequest.getVersion()).build().toRpcServiceName();
+-        InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcServiceName);
++        InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcRequest);
+         try (Socket socket = new Socket()) {
+             socket.connect(inetSocketAddress);
+             ObjectOutputStream objectOutputStream = new ObjectOutputStream(socket.getOutputStream());
+
+File: rpc-framework-simple/src/main/java/github/javaguide/loadbalance/LoadBalance.java
+Patch:
+@@ -1,6 +1,7 @@
+ package github.javaguide.loadbalance;
+ 
+ import github.javaguide.extension.SPI;
++import github.javaguide.remoting.dto.RpcRequest;
+ 
+ import java.util.List;
+ 
+@@ -18,5 +19,5 @@ public interface LoadBalance {
+      * @param serviceAddresses Service address list
+      * @return target service address
+      */
+-    String selectServiceAddress(List<String> serviceAddresses, String rpcServiceName);
++    String selectServiceAddress(List<String> serviceAddresses, RpcRequest rpcRequest);
+ }
+
+File: rpc-framework-simple/src/main/java/github/javaguide/loadbalance/loadbalancer/RandomLoadBalance.java
+Patch:
+@@ -1,6 +1,7 @@
+ package github.javaguide.loadbalance.loadbalancer;
+ 
+ import github.javaguide.loadbalance.AbstractLoadBalance;
++import github.javaguide.remoting.dto.RpcRequest;
+ 
+ import java.util.List;
+ import java.util.Random;
+@@ -13,7 +14,7 @@
+  */
+ public class RandomLoadBalance extends AbstractLoadBalance {
+     @Override
+-    protected String doSelect(List<String> serviceAddresses, String rpcServiceName) {
++    protected String doSelect(List<String> serviceAddresses, RpcRequest rpcRequest) {
+         Random random = new Random();
+         return serviceAddresses.get(random.nextInt(serviceAddresses.size()));
+     }
+
+File: rpc-framework-simple/src/main/java/github/javaguide/registry/ServiceDiscovery.java
+Patch:
+@@ -1,6 +1,7 @@
+ package github.javaguide.registry;
+ 
+ import github.javaguide.extension.SPI;
++import github.javaguide.remoting.dto.RpcRequest;
+ 
+ import java.net.InetSocketAddress;
+ 
+@@ -15,8 +16,8 @@ public interface ServiceDiscovery {
+     /**
+      * lookup service by rpcServiceName
+      *
+-     * @param rpcServiceName rpc service name
++     * @param rpcRequest rpc service pojo
+      * @return service address
+      */
+-    InetSocketAddress lookupService(String rpcServiceName);
++    InetSocketAddress lookupService(RpcRequest rpcRequest);
+ }
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/netty/client/NettyRpcClient.java
+Patch:
+@@ -98,9 +98,9 @@ public Object sendRpcRequest(RpcRequest rpcRequest) {
+         // build return value
+         CompletableFuture<RpcResponse<Object>> resultFuture = new CompletableFuture<>();
+         // build rpc service name by rpcRequest
+-        String rpcServiceName = rpcRequest.toRpcProperties().toRpcServiceName();
++//        String rpcServiceName = rpcRequest.toRpcProperties().toRpcServiceName();
+         // get server address
+-        InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcServiceName);
++        InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcRequest);
+         // get  server address related channel
+         Channel channel = getChannel(inetSocketAddress);
+         if (channel.isActive()) {
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/socket/SocketRpcClient.java
+Patch:
+@@ -35,7 +35,7 @@ public Object sendRpcRequest(RpcRequest rpcRequest) {
+         // build rpc service name by rpcRequest
+         String rpcServiceName = RpcServiceProperties.builder().serviceName(rpcRequest.getInterfaceName())
+                 .group(rpcRequest.getGroup()).version(rpcRequest.getVersion()).build().toRpcServiceName();
+-        InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcServiceName);
++        InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcRequest);
+         try (Socket socket = new Socket()) {
+             socket.connect(inetSocketAddress);
+             ObjectOutputStream objectOutputStream = new ObjectOutputStream(socket.getOutputStream());
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/socket/SocketRpcServer.java
+Patch:
+@@ -30,7 +30,6 @@ public class SocketRpcServer {
+ 
+     public SocketRpcServer() {
+         threadPool = ThreadPoolFactoryUtils.createCustomThreadPoolIfAbsent("socket-server-rpc-pool");
+-        SingletonFactory.getInstance(ServiceProviderImpl.class);
+         serviceProvider = SingletonFactory.getInstance(ServiceProviderImpl.class);
+     }
+ 
+
+File: rpc-framework-common/src/main/java/github/javaguide/factory/SingletonFactory.java
+Patch:
+@@ -18,8 +18,9 @@ private SingletonFactory() {
+ 
+     public static <T> T getInstance(Class<T> c) {
+         String key = c.toString();
+-        Object instance = OBJECT_MAP.get(key);
++        Object instance = null;
+         synchronized (c) {
++            instance =  OBJECT_MAP.get(key);
+             if (instance == null) {
+                 try {
+                     instance = c.getDeclaredConstructor().newInstance();
+
+File: rpc-framework-common/src/main/java/github/javaguide/factory/SingletonFactory.java
+Patch:
+@@ -18,8 +18,9 @@ private SingletonFactory() {
+ 
+     public static <T> T getInstance(Class<T> c) {
+         String key = c.toString();
+-        Object instance = OBJECT_MAP.get(key);
++        Object instance = null;
+         synchronized (c) {
++            instance =  OBJECT_MAP.get(key);
+             if (instance == null) {
+                 try {
+                     instance = c.getDeclaredConstructor().newInstance();
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/netty/client/NettyClientTransport.java
+Patch:
+@@ -35,7 +35,7 @@ public NettyClientTransport() {
+     public CompletableFuture<RpcResponse<Object>> sendRpcRequest(RpcRequest rpcRequest) {
+         // build return value
+         CompletableFuture<RpcResponse<Object>> resultFuture = new CompletableFuture<>();
+-        // build rpc service name by ppcRequest
++        // build rpc service name by rpcRequest
+         String rpcServiceName = rpcRequest.toRpcProperties().toRpcServiceName();
+         // get server address
+         InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcServiceName);
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/socket/SocketRpcClient.java
+Patch:
+@@ -32,7 +32,7 @@ public SocketRpcClient() {
+ 
+     @Override
+     public Object sendRpcRequest(RpcRequest rpcRequest) {
+-        // build rpc service name by ppcRequest
++        // build rpc service name by rpcRequest
+         String rpcServiceName = RpcServiceProperties.builder().serviceName(rpcRequest.getInterfaceName())
+                 .group(rpcRequest.getGroup()).version(rpcRequest.getVersion()).build().toRpcServiceName();
+         InetSocketAddress inetSocketAddress = serviceDiscovery.lookupService(rpcServiceName);
+
+File: rpc-framework-simple/src/main/java/github/javaguide/remoting/transport/netty/codec/kyro/NettyKryoEncoder.java
+Patch:
+@@ -7,7 +7,7 @@
+ import lombok.AllArgsConstructor;
+ 
+ /**
+- * 自定义编码器。负责处理"出站"消息，将消息格式转换字节数组然后写入到字节数据的容日 ByteBuf 对象中。
++ * 自定义编码器。负责处理"出站"消息，将消息格式转换字节数组然后写入到字节数据的容器 ByteBuf 对象中。
+  * <p>
+  * 网络传输需要通过字节流来实现，ByteBuf 可以看作是 Netty 提供的字节数据的容器，使用它会让我们更加方便地处理字节数据。
+  *
+
+File: rpc-framework-simple/src/main/java/github/javaguide/spring/SpringBeanPostProcessor.java
+Patch:
+@@ -17,11 +17,10 @@
+  * @author shuang.kou
+  * @createTime 2020年07月14日 16:42:00
+  */
+-@Component
+ @Slf4j
++@Component
+ public class SpringBeanPostProcessor implements BeanPostProcessor {
+ 
+-
+     private final ServiceProvider serviceProvider;
+ 
+     public SpringBeanPostProcessor() {
+
+File: example-server/src/main/java/github/javaguide/RpcFrameworkSimpleServerMain.java
+Patch:
+@@ -10,6 +10,6 @@ public class RpcFrameworkSimpleServerMain {
+     public static void main(String[] args) {
+         HelloService helloService = new HelloServiceImpl();
+         SocketRpcServer socketRpcServer = new SocketRpcServer("127.0.0.1", 8080);
+-        socketRpcServer.publishService(helloService,HelloService.class);
++        socketRpcServer.publishService(helloService, HelloService.class);
+     }
+ }
+
+File: rpc-framework-simple/src/main/java/github/javaguide/registry/ZkServiceDiscovery.java
+Patch:
+@@ -24,7 +24,7 @@ public ZkServiceDiscovery() {
+ 
+     @Override
+     public InetSocketAddress lookupService(String serviceName) {
+-        // TODO 负载均衡
++        // TODO(shuang.kou):feat: 负载均衡
+         // 这里直接去了第一个找到的服务地址
+         String serviceAddress = CuratorHelper.getChildrenNodes(zkClient, serviceName).get(0);
+         logger.info("成功找到服务地址:{}", serviceAddress);
+
+File: rpc-framework-simple/src/main/java/github/javaguide/serialize/kyro/KryoSerializer.java
+Patch:
+@@ -30,8 +30,8 @@ public class KryoSerializer implements Serializer {
+         Kryo kryo = new Kryo();
+         kryo.register(RpcResponse.class);
+         kryo.register(RpcRequest.class);
+-        kryo.setReferences(true);//默认值为true,是否关闭注册行为,关闭之后可能存在序列化问题，一般推荐设置为 true
+-        kryo.setRegistrationRequired(false);//默认值为false,是否关闭循环引用，可以提高性能，但是一般不推荐设置为 true
++        kryo.setReferences(true); //默认值为true,是否关闭注册行为,关闭之后可能存在序列化问题，一般推荐设置为 true
++        kryo.setRegistrationRequired(false); //默认值为false,是否关闭循环引用，可以提高性能，但是一般不推荐设置为 true
+         return kryo;
+     });
+ 
+
+File: rpc-framework-simple/src/main/java/github/javaguide/transport/netty/client/ChannelProvider.java
+Patch:
+@@ -28,7 +28,7 @@ public class ChannelProvider {
+      * 最多重试次数
+      */
+     private static final int MAX_RETRY_COUNT = 5;
+-
++    
+     public static Channel get(InetSocketAddress inetSocketAddress) {
+         CountDownLatch countDownLatch = new CountDownLatch(1);
+         try {
+
+File: rpc-framework-simple/src/main/java/github/javaguide/handler/RpcRequestHandler.java
+Patch:
+@@ -12,6 +12,8 @@
+ import java.lang.reflect.Method;
+ 
+ /**
++ * RpcRequest 的处理器
++ *
+  * @author shuang.kou
+  * @createTime 2020年05月13日 09:05:00
+  */
+@@ -24,7 +26,7 @@ public class RpcRequestHandler {
+     }
+ 
+     /**
+-     * 处理 rpcRequest 然后返回方法执行结果
++     * 处理 rpcRequest ：调用对应的方法，然后返回方法执行结果
+      */
+     public Object handle(RpcRequest rpcRequest) {
+         Object result = null;
+
+File: rpc-framework-simple/src/main/java/github/javaguide/registry/ZkServiceRegistry.java
+Patch:
+@@ -34,6 +34,8 @@ public void registerService(String serviceName, InetSocketAddress inetSocketAddr
+ 
+     @Override
+     public InetSocketAddress lookupService(String serviceName) {
++        // TODO 负载均衡
++        // 这里直接去了第一个找到的服务地址
+         String serviceAddress = CuratorHelper.getChildrenNodes(zkClient, serviceName).get(0);
+         logger.info("成功找到服务地址:{}", serviceAddress);
+         return new InetSocketAddress(serviceAddress.split(":")[0], Integer.parseInt(serviceAddress.split(":")[1]));
+
+File: rpc-framework-simple/src/main/java/github/javaguide/transport/netty/client/NettyClientClientTransport.java
+Patch:
+@@ -52,6 +52,7 @@ public Object sendRpcRequest(RpcRequest rpcRequest) {
+                 RpcMessageChecker.check(rpcResponse, rpcRequest);
+                 result.set(rpcResponse.getData());
+             } else {
++                NettyClient.close();
+                 System.exit(0);
+             }
+ 
+
+File: rpc-framework-simple/src/main/java/github/javaguide/transport/netty/server/NettyServer.java
+Patch:
+@@ -46,8 +46,8 @@ public NettyServer(String host, int port) {
+         serviceProvider = new ServiceProviderImpl();
+     }
+ 
+-    public <T> void publishService(Object service, Class<T> serviceClass) {
+-        serviceProvider.addServiceProvider(service);
++    public <T> void publishService(T service, Class<T> serviceClass) {
++        serviceProvider.addServiceProvider(service, serviceClass);
+         serviceRegistry.registerService(serviceClass.getCanonicalName(), new InetSocketAddress(host, port));
+         start();
+     }
+
+File: rpc-framework-simple/src/main/java/github/javaguide/transport/socket/SocketRpcServer.java
+Patch:
+@@ -36,8 +36,8 @@ public SocketRpcServer(String host, int port) {
+         serviceProvider = new ServiceProviderImpl();
+     }
+ 
+-    public <T> void publishService(Object service, Class<T> serviceClass) {
+-        serviceProvider.addServiceProvider(service);
++    public <T> void publishService(T service, Class<T> serviceClass) {
++        serviceProvider.addServiceProvider(service, serviceClass);
+         serviceRegistry.registerService(serviceClass.getCanonicalName(), new InetSocketAddress(host, port));
+         start();
+     }
+

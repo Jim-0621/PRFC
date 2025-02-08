@@ -1,0 +1,759 @@
+File: AndResGuard-core/src/main/java/com/tencent/mm/resourceproguard/Configuration.java
+Patch:
+@@ -56,6 +56,7 @@ public class Configuration {
+   public boolean mKeepRoot = false;
+   public boolean mMergeDuplicatedRes = false;
+   public String mMetaName = "META-INF";
++  public String mFixedResName = null;
+   public boolean mUseSignAPK = false;
+   public boolean mUseKeepMapping = false;
+   public File mSignatureFile;
+@@ -136,6 +137,7 @@ public Configuration(InputParam param) throws IOException {
+     mKeepRoot = param.keepRoot;
+     mMergeDuplicatedRes = param.mergeDuplicatedRes;
+     mMetaName = param.metaName;
++    mFixedResName = param.fixedResName;
+     for (String item : param.compressFilePattern) {
+       mUseCompress = true;
+       addToCompressPatterns(item);
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -55,7 +55,7 @@
+ 
+ public class ARSCDecoder {
+ 
+-  private final static boolean DEBUG = true;
++  private final static boolean DEBUG = false;
+ 
+   private final static short ENTRY_FLAG_COMPLEX = 0x0001;
+   private static final Logger LOGGER = Logger.getLogger(ARSCDecoder.class.getName());
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/data/ResType.java
+Patch:
+@@ -38,8 +38,7 @@ public String getName() {
+   public void putSpecResguardName(String name) throws AndrolibException {
+     if (specNames.contains(name)) {
+       throw new AndrolibException(String.format(
+-          "spec proguard name duplicate in a singal type %s, spec name: %s\n "
+-          + "known issue: if you write a whilte list R.drawable.ab, and you have a png named ab.png, these may cost duplicate of ab\n",
++          "spec proguard name duplicate in a singal type %s, spec name: %s\n",
+           getName(),
+           name
+       ));
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/ResourceApkBuilder.java
+Patch:
+@@ -247,7 +247,7 @@ private void signWithV1sign(File unSignedApk, File signedApk) throws IOException
+             unSignedApk.getAbsolutePath(),
+             config.mStoreAlias
+         };
+-        dumpParams(argv);
++        //dumpParams(argv);
+         Utils.runExec(argv);
+     }
+ 
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/data/ResID.java
+Patch:
+@@ -29,7 +29,7 @@ public ResID(int package_, int type, int entry) {
+     }
+ 
+     public ResID(int id) {
+-        this(id >> 24, (id >> 16) & 0x000000ff, id & 0x0000ffff, id);
++        this((id >> 24) & 0xff, (id >> 16) & 0x000000ff, id & 0x0000ffff, id);
+     }
+ 
+     public ResID(int package_, int type, int entry, int id) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/resourceproguard/Main.java
+Patch:
+@@ -71,15 +71,15 @@ private void loadConfigFromGradle(InputParam inputParam) {
+     }
+ 
+     protected void resourceProguard(File outputDir, File outputFile, String apkFilePath,
+-            InputParam.SignatureType signatureType) {
+-        ApkDecoder decoder = new ApkDecoder(config);
++                                    InputParam.SignatureType signatureType) {
+         File apkFile = new File(apkFilePath);
+         if (!apkFile.exists()) {
+             System.err.printf("The input apk %s does not exist", apkFile.getAbsolutePath());
+             goToError();
+         }
+         mRawApkSize = FileOperation.getFileSizes(apkFile);
+         try {
++            ApkDecoder decoder = new ApkDecoder(config, apkFile);
+             /* 默认使用V1签名 */
+             decodeResource(outputDir, decoder, apkFile);
+             buildApk(decoder, apkFile, outputFile, signatureType);
+@@ -90,7 +90,6 @@ protected void resourceProguard(File outputDir, File outputFile, String apkFileP
+     }
+ 
+     private void decodeResource(File outputFile, ApkDecoder decoder, File apkFile) throws AndrolibException, IOException, DirectoryException {
+-        decoder.setApkFile(apkFile);
+         if (outputFile == null) {
+             mOutDir = new File(mRunningLocation, apkFile.getName().substring(0, apkFile.getName().indexOf(".apk")));
+         } else {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -978,7 +978,7 @@ public void reset() {
+             }
+             mReplaceCount = 3;
+ 
+-            final int size = mReplaceStringBuffer.size();
++            final int size = mReplaceStringBuffer.size() * 2;
+             mIsReplaced = new boolean[size];
+             mIsWhiteList = new boolean[size];
+             for (int i = 0; i < size; i++) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/ResourceApkBuilder.java
+Patch:
+@@ -219,7 +219,7 @@ private void signWithV1sign(File unSignedApk, File signedApk) throws IOException
+         String[] argv = {
+             "jarsigner",
+             "-sigalg", signatureAlgorithm,
+-            "-digestalg", "SHA1",
++            "-digestalg", config.digestAlg,
+             "-keystore", config.mSignatureFile.getAbsolutePath(),
+             "-storepass", config.mStorePass,
+             "-keypass", config.mKeyPass,
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -630,14 +630,14 @@ private void readValue(boolean flags, int specNamesId) throws IOException, Andro
+         if (mPkg.isCanProguard() && flags && type == TypedValue.TYPE_STRING && mShouldProguardForType && mShouldProguardTypeSet.contains(mType.getName())) {
+             if (mTableStringsProguard.get(data) == null) {
+                 String raw = mTableStrings.get(data).toString();
+-                if (StringUtil.isBlank(raw)) return;
++                if (StringUtil.isBlank(raw) || raw.equalsIgnoreCase("null")) return;
+ 
+                 String proguard = mPkg.getSpecRepplace(mResId);
+                 //这个要写死这个，因为resources.arsc里面就是用这个
+                 int secondSlash = raw.lastIndexOf("/");
+                 if (secondSlash == -1) {
+                     throw new AndrolibException(
+-                        String.format("can not find \\ or raw string in res path=%s", raw)
++                        String.format("can not find \\ or raw string in res path = %s", raw)
+                     );
+                 }
+ 
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -507,7 +507,7 @@ private void readEntry() throws IOException, AndrolibException {
+                             for (Iterator<Pattern> it = patterns.iterator(); it.hasNext(); ) {
+                                 Pattern p = it.next();
+                                 if (p.matcher(specName).matches()) {
+-                                    //System.out.println(String.format("[match] matcher %s ,typeName %s, specName :%s", p.pattern(), typeName, specName));
++                                    System.out.println(String.format("[match] matcher %s ,typeName %s, specName :%s", p.pattern(), typeName, specName));
+                                     mPkg.putSpecNamesReplace(mResId, specName);
+                                     mPkg.putSpecNamesblock(specName);
+                                     mProguardBuilder.setInWhiteList(mCurEntryID, true);
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/resourceproguard/Configuration.java
+Patch:
+@@ -286,6 +286,7 @@ private void addWhiteList(String item) throws IOException {
+         Pattern pattern = Pattern.compile(name);
+         patterns.add(pattern);
+         typeMap.put(typeName, patterns);
++        System.out.println(String.format("Utils typeName %s format %s", typeName, name));
+         mWhiteList.put(packageName, typeMap);
+     }
+ 
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/resourceproguard/Configuration.java
+Patch:
+@@ -65,8 +65,8 @@ public class Configuration {
+     public String  mKeyPass;
+     public String  mStorePass;
+     public String  mStoreAlias;
+-    public String m7zipPath;
+-    public String mZipalignPath;
++    public String  m7zipPath;
++    public String  mZipalignPath;
+ 
+     /**
+      * use by command line with xml config
+
+File: AndResGuard-core/src/main/java/com/mindprod/ledatastream/LEDataInputStream.java
+Patch:
+@@ -151,7 +151,7 @@ public final char readChar() throws IOException {
+      * Read a double. like DataInputStream.readDouble except little endian.
+      *
+      * @return little endian IEEE double from the datastream.
+-     * @throws IOException
++     * @throws IOException ioexception
+      */
+     @Override
+     public final double readDouble() throws IOException {
+@@ -208,7 +208,7 @@ public final int readInt() throws IOException {
+      *
+      * @return a rough approximation of the 8-bit stream as a 16-bit unicode
+      * string
+-     * @throws IOException
++     * @throws IOException ioexception
+      * @deprecated This method does not properly convert bytes to characters.
+      * Use a Reader instead with a little-endian encoding.
+      */
+@@ -222,7 +222,7 @@ public final String readLine() throws IOException {
+      * read a long, 64-bits. Like DataInputStream.readLong except little endian.
+      *
+      * @return little-endian binary long from the datastream.
+-     * @throws IOException
++     * @throws IOException ioexception
+      */
+     @Override
+     public final long readLong() throws IOException {
+
+File: AndResGuard-core/src/main/java/com/mindprod/ledatastream/LittleEndianDataOutputStream.java
+Patch:
+@@ -62,7 +62,8 @@ public LittleEndianDataOutputStream(OutputStream out) {
+      * array; equivalent to {@code ByteBuffer.allocate(8).putLong(value).array()}.
+      * For example, the input value {@code 0x1213141516171819L} would yield the
+      * byte array {@code {0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19}}.
+-     *
++     * @param value long
++     * @return byte array
+      */
+     public static byte[] toByteArray(long value) {
+         // Note that this code needs to stay compatible with GWT, which has known
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/util/FileOperation.java
+Patch:
+@@ -195,7 +195,8 @@ public static HashMap<String, Integer> unZipAPk(String fileName, String filePath
+      *
+      * @param resFileList file(dir) list
+      * @param zipFile     output zip file
+-     * @throws IOException
++     * @param compressData compress data
++     * @throws IOException io exception
+      */
+     public static void zipFiles(Collection<File> resFileList, File zipFile, HashMap<String, Integer> compressData) throws IOException {
+         ZipOutputStream zipout = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(zipFile), BUFFER));
+
+File: AndResGuard-core/src/main/java/com/mindprod/ledatastream/LittleEndianDataOutputStream.java
+Patch:
+@@ -62,7 +62,8 @@ public LittleEndianDataOutputStream(OutputStream out) {
+      * array; equivalent to {@code ByteBuffer.allocate(8).putLong(value).array()}.
+      * For example, the input value {@code 0x1213141516171819L} would yield the
+      * byte array {@code {0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19}}.
+-     *
++     * @param value long
++     * @return byte array
+      */
+     public static byte[] toByteArray(long value) {
+         // Note that this code needs to stay compatible with GWT, which has known
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/util/FileOperation.java
+Patch:
+@@ -195,7 +195,8 @@ public static HashMap<String, Integer> unZipAPk(String fileName, String filePath
+      *
+      * @param resFileList file(dir) list
+      * @param zipFile     output zip file
+-     * @throws IOException
++     * @param compressData compress data
++     * @throws IOException io exception
+      */
+     public static void zipFiles(Collection<File> resFileList, File zipFile, HashMap<String, Integer> compressData) throws IOException {
+         ZipOutputStream zipout = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(zipFile), BUFFER));
+
+File: AndResGuard-cli/src/main/java/com/tencent/mm/resourceproguard/cli/CliMain.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.tencent.mm.androlib.ResourceRepackage;
+ import com.tencent.mm.resourceproguard.Configuration;
++import com.tencent.mm.resourceproguard.InputParam;
+ import com.tencent.mm.resourceproguard.Main;
+ import com.tencent.mm.util.TypedValue;
+ 
+@@ -190,7 +191,7 @@ private void run(String[] args) {
+             return;
+         }
+         System.out.printf("[AndResGuard] begin: %s, %s\n", outputFile, apkFileName);
+-        resourceProguard(outputFile, apkFileName);
++        resourceProguard(outputFile, apkFileName, InputParam.SignatureType.SchemaV1);
+         System.out.printf("[AndResGuard] done, total time cost: %fs\n", diffTimeFromBegin());
+         System.out.printf("[AndResGuard] done, you can go to file to find the output %s\n", mOutDir.getAbsolutePath());
+         clean();
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/util/ExtDataInput.java
+Patch:
+@@ -78,7 +78,7 @@ public void skipCheckByte(byte expected) throws IOException {
+         }
+     }
+ 
+-    public String readNulEndedString(int length, boolean fixed)
++    public String readNullEndedString(int length, boolean fixed)
+         throws IOException {
+         StringBuilder string = new StringBuilder(16);
+         while (length-- != 0) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/util/ExtDataOutput.java
+Patch:
+@@ -58,5 +58,4 @@ public void writeCheckByte(byte value, byte expected) throws IOException {
+                 "Expected: 0x%08x, got: 0x%08x", expected, value));
+         }
+     }
+-
+ }
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -221,7 +221,6 @@ private void writeTable() throws IOException, AndrolibException {
+         }
+         for (int i = 0; i < packageCount; i++) {
+             mCurPackageID = i;
+-            System.out.printf("writeTable %d %d\n", mCurPackageID, mTableLenghtChange);
+             writePackage();
+         }
+         //最后需要把整个的size重写回去
+@@ -369,7 +368,7 @@ private void readLibraryType() throws AndrolibException, IOException {
+         for (int i = 0; i < libraryCount; i++) {
+             packageId = mIn.readInt();
+             packageName = mIn.readNullEndedString(128, true);
+-            LOGGER.info(String.format("Decoding Shared Library (%s), pkgId: %d", packageName, packageId));
++            System.out.printf("Decoding Shared Library (%s), pkgId: %d\n", packageName, packageId);
+         }
+ 
+         while(nextChunk().type == Header.TYPE_TYPE) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/RawARSCDecoder.java
+Patch:
+@@ -57,7 +57,7 @@ public class RawARSCDecoder {
+ 
+     private RawARSCDecoder(InputStream arscStream) throws AndrolibException, IOException {
+         mIn = new ExtDataInput(new LEDataInputStream(arscStream));
+-        mExistTypeNames = new HashMap<Integer, Set<String>>();
++        mExistTypeNames = new HashMap<>();
+     }
+ 
+     public static ResPackage[] decode(InputStream arscStream
+@@ -129,7 +129,7 @@ private void readLibraryType() throws AndrolibException, IOException {
+         for (int i = 0; i < libraryCount; i++) {
+             packageId = mIn.readInt();
+             packageName = mIn.readNullEndedString(128, true);
+-            LOGGER.info(String.format("Decoding Shared Library (%s), pkgId: %d", packageName, packageId));
++            System.out.printf("Decoding Shared Library (%s), pkgId: %d\n", packageName, packageId);
+         }
+ 
+         while(nextChunk().type == Header.TYPE_TYPE) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/util/ExtDataOutput.java
+Patch:
+@@ -58,5 +58,4 @@ public void writeCheckByte(byte value, byte expected) throws IOException {
+                 "Expected: 0x%08x, got: 0x%08x", expected, value));
+         }
+     }
+-
+ }
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -270,7 +270,7 @@ private void reWriteTable() throws AndrolibException, IOException {
+     private ResPackage readPackage() throws IOException, AndrolibException {
+         checkChunkType(Header.TYPE_PACKAGE);
+         int id = (byte) mIn.readInt();
+-        String name = mIn.readNulEndedString(128, true);
++        String name = mIn.readNullEndedString(128, true);
+         //add log
+         System.out.printf("reading packagename %s\n", name);
+ 
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/util/ExtDataInput.java
+Patch:
+@@ -78,7 +78,7 @@ public void skipCheckByte(byte expected) throws IOException {
+         }
+     }
+ 
+-    public String readNulEndedString(int length, boolean fixed)
++    public String readNullEndedString(int length, boolean fixed)
+         throws IOException {
+         StringBuilder string = new StringBuilder(16);
+         while (length-- != 0) {
+
+File: AndResGuard-cli/src/main/java/com/tencent/mm/resourceproguard/cli/CliMain.java
+Patch:
+@@ -189,10 +189,10 @@ private void run(String[] args) {
+             }
+             return;
+         }
+-        System.out.printf("resourceprpguard begin\n");
++        System.out.printf("[AndResGuard] begin: %s, %s\n", outputFile, apkFileName);
+         resourceProguard(outputFile, apkFileName);
+-        System.out.printf("resources proguard done, total time cost: %fs\n", diffTimeFromBegin());
+-        System.out.printf("resources proguard done, you can go to file to find the output %s\n", mOutDir.getAbsolutePath());
++        System.out.printf("[AndResGuard] done, total time cost: %fs\n", diffTimeFromBegin());
++        System.out.printf("[AndResGuard] done, you can go to file to find the output %s\n", mOutDir.getAbsolutePath());
+         clean();
+     }
+ 
+
+File: AndResGuard-cli/src/main/java/com/tencent/mm/resourceproguard/cli/CliMain.java
+Patch:
+@@ -189,10 +189,10 @@ private void run(String[] args) {
+             }
+             return;
+         }
+-        System.out.printf("resourceprpguard begin\n");
++        System.out.printf("[AndResGuard] begin: %s, %s\n", outputFile, apkFileName);
+         resourceProguard(outputFile, apkFileName);
+-        System.out.printf("resources proguard done, total time cost: %fs\n", diffTimeFromBegin());
+-        System.out.printf("resources proguard done, you can go to file to find the output %s\n", mOutDir.getAbsolutePath());
++        System.out.printf("[AndResGuard] done, total time cost: %fs\n", diffTimeFromBegin());
++        System.out.printf("[AndResGuard] done, you can go to file to find the output %s\n", mOutDir.getAbsolutePath());
+         clean();
+     }
+ 
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/ResourceApkBuilder.java
+Patch:
+@@ -105,7 +105,7 @@ private void signApk() throws IOException, InterruptedException {
+                 mSignedApk.delete();
+             }
+             String[] argv = {
+-                "jarsigner", "-sigalg", "MD5withRSA",
++                "jarsigner",
+                 "-digestalg", "SHA1",
+                 "-keystore", config.mSignatureFile.getAbsolutePath(),
+                 "-storepass", config.mStorePass,
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -6,6 +6,7 @@
+ import com.tencent.mm.androlib.ApkDecoder;
+ import com.tencent.mm.androlib.res.data.ResPackage;
+ import com.tencent.mm.androlib.res.data.ResType;
++import com.tencent.mm.androlib.res.util.StringUtil;
+ import com.tencent.mm.resourceproguard.Configuration;
+ import com.tencent.mm.util.ExtDataInput;
+ import com.tencent.mm.util.ExtDataOutput;
+@@ -587,8 +588,9 @@ private void readValue(boolean flags, int specNamesId) throws IOException, Andro
+         if (mPkg.isCanProguard() && flags && type == TypedValue.TYPE_STRING && mShouldProguardForType && mShouldProguardTypeSet.contains(mType.getName())) {
+             if (mTableStringsProguard.get(data) == null) {
+                 String raw = mTableStrings.get(data).toString();
+-                String proguard = mPkg.getSpecRepplace(mResId);
++                if (StringUtil.isBlank(raw)) return;
+ 
++                String proguard = mPkg.getSpecRepplace(mResId);
+                 //这个要写死这个，因为resources.arsc里面就是用这个
+                 int secondSlash = raw.lastIndexOf("/");
+                 if (secondSlash == -1) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/ResourceApkBuilder.java
+Patch:
+@@ -179,7 +179,7 @@ private void generalUnsignApk(HashMap<String, Integer> compressData) throws IOEx
+ 
+         File destResDir = new File(mOutDir.getAbsolutePath(), "res");
+         //添加修改后的res文件
+-        if (!config.mKeepRoot) {
++        if (!config.mKeepRoot && FileOperation.getlist(destResDir) == 0) {
+             destResDir = new File(mOutDir.getAbsolutePath(), TypedValue.RES_FILE_PATH);
+         }
+ 
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -146,7 +146,7 @@ private void proguardFileName() throws IOException, AndrolibException {
+                 HashMap<String, String> fileMapping = config.mOldFileMapping;
+                 List<String> keepFileNames = new ArrayList<String>();
+                 //这里面为了兼容以前，也需要用以前的文件名前缀，即res混淆成什么
+-                String resRoot = null;
++                String resRoot = TypedValue.RES_FILE_PATH;
+                 for (String name : fileMapping.values()) {
+                     int dot = name.indexOf("/");
+                     if (dot == -1) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -146,7 +146,7 @@ private void proguardFileName() throws IOException, AndrolibException {
+                 HashMap<String, String> fileMapping = config.mOldFileMapping;
+                 List<String> keepFileNames = new ArrayList<String>();
+                 //这里面为了兼容以前，也需要用以前的文件名前缀，即res混淆成什么
+-                String resRoot = null;
++                String resRoot = TypedValue.RES_FILE_PATH;
+                 for (String name : fileMapping.values()) {
+                     int dot = name.indexOf("/");
+                     if (dot == -1) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/ResourceApkBuilder.java
+Patch:
+@@ -63,7 +63,7 @@ private void use7zApk(HashMap<String, Integer> compressData) throws IOException,
+             return;
+         }
+         if (!config.mUseSignAPk) {
+-            throw new IOException("if you want to use 7z, you must set the sign issue to active in the config file first");
++            throw new IOException("if you want to use 7z, you must enable useSign in the config file first");
+         }
+         if (!mSignedApk.exists()) {
+             throw new IOException(
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/resourceproguard/Configuration.java
+Patch:
+@@ -90,7 +90,9 @@ public Configuration(InputParam param) throws IOException {
+         mOldResMapping = new HashMap<>();
+         mOldFileMapping = new HashMap<>();
+         mCompressPatterns = new HashSet<>();
+-        setSignData(param.signFile, param.keypass, param.storealias, param.storepass);
++        if (param.useSign) {
++            setSignData(param.signFile, param.keypass, param.storealias, param.storepass);
++        }
+         if (param.mappingFile != null) {
+             mUseKeepMapping = true;
+             setKeepMappingData(param.mappingFile);
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -642,6 +642,8 @@ private void readValue(boolean flags, int specNamesId) throws IOException, Andro
+                         );
+                     }
+                     FileOperation.copyFileUsingStream(resRawFile, resDestFile);
++                    //already copied
++                    mApkDecoder.removeCopiedResFile(resRawFile.toPath());
+                     mTableStringsProguard.put(data, result);
+                 }
+             }
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/resourceproguard/Configuration.java
+Patch:
+@@ -78,8 +78,8 @@ public Configuration(File config, String sevenzipPath, String zipAlignPath)
+         mOldFileMapping = new HashMap<>();
+         mCompressPatterns = new HashSet<>();
+         readXmlConfig(config);
+-        this.m7zipPath = sevenzipPath;
+-        this.mZipalignPath = zipAlignPath;
++        this.m7zipPath = Utils.spaceSafePath(sevenzipPath);
++        this.mZipalignPath = Utils.spaceSafePath(zipAlignPath);
+     }
+ 
+     /**
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/resourceproguard/Configuration.java
+Patch:
+@@ -85,7 +85,7 @@ public Configuration(File config, String sevenzipPath, String zipAlignPath)
+     /**
+      * use by gradle
+      */
+-    public Configuration(InputParam param, String sevenzipPath) throws IOException {
++    public Configuration(InputParam param) throws IOException {
+         mWhiteList = new HashMap<>();
+         mOldResMapping = new HashMap<>();
+         mOldFileMapping = new HashMap<>();
+@@ -106,7 +106,7 @@ public Configuration(InputParam param, String sevenzipPath) throws IOException {
+             mUseCompress = true;
+             addToCompressPatterns(item);
+         }
+-        this.m7zipPath = sevenzipPath;
++        this.m7zipPath = param.sevenZipPath;
+         this.mZipalignPath = param.zipAlignPath;
+     }
+ 
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/resourceproguard/Configuration.java
+Patch:
+@@ -85,7 +85,7 @@ public Configuration(File config, String sevenzipPath, String zipAlignPath)
+     /**
+      * use by gradle
+      */
+-    public Configuration(InputParam param, String sevenzipPath, String zipAlignPath) throws IOException {
++    public Configuration(InputParam param, String sevenzipPath) throws IOException {
+         mWhiteList = new HashMap<>();
+         mOldResMapping = new HashMap<>();
+         mOldFileMapping = new HashMap<>();
+@@ -107,7 +107,7 @@ public Configuration(InputParam param, String sevenzipPath, String zipAlignPath)
+             addToCompressPatterns(item);
+         }
+         this.m7zipPath = sevenzipPath;
+-        this.mZipalignPath = zipAlignPath;
++        this.mZipalignPath = param.zipAlignPath;
+     }
+ 
+     public void setSignData(File signatureFile, String keypass, String storealias, String storepass) throws IOException {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/resourceproguard/Configuration.java
+Patch:
+@@ -85,7 +85,7 @@ public Configuration(File config, String sevenzipPath, String zipAlignPath)
+     /**
+      * use by gradle
+      */
+-    public Configuration(InputParam param, String sevenzipPath, String zipAlignPath) throws IOException {
++    public Configuration(InputParam param, String sevenzipPath) throws IOException {
+         mWhiteList = new HashMap<>();
+         mOldResMapping = new HashMap<>();
+         mOldFileMapping = new HashMap<>();
+@@ -107,7 +107,7 @@ public Configuration(InputParam param, String sevenzipPath, String zipAlignPath)
+             addToCompressPatterns(item);
+         }
+         this.m7zipPath = sevenzipPath;
+-        this.mZipalignPath = zipAlignPath;
++        this.mZipalignPath = param.zipAlignPath;
+     }
+ 
+     public void setSignData(File signatureFile, String keypass, String storealias, String storepass) throws IOException {
+
+File: AndResGuard-example/app/src/main/java/andresguard/tencent/com/andresguard_example/MainActivity.java
+Patch:
+@@ -66,7 +66,6 @@ public boolean onOptionsItemSelected(MenuItem item) {
+         // as you specify a parent activity in AndroidManifest.xml.
+         int id = item.getItemId();
+ 
+-        //noinspection SimplifiableIfStatement
+         if (id == R.id.action_settings) {
+             return true;
+         }
+
+File: AndResGuard-cli/src/main/java/com/tencent/mm/resourceproguard/cli/CliMain.java
+Patch:
+@@ -192,6 +192,7 @@ private void run(String[] args) {
+         resourceProguard(outputFile, apkFileName);
+         System.out.printf("resources proguard done, total time cost: %fs\n", diffTimeFromBegin());
+         System.out.printf("resources proguard done, you can go to file to find the output %s\n", mOutDir.getAbsolutePath());
++        clean();
+     }
+ 
+     private void loadConfigFromXml(File configFile, File signatureFile, File mappingFile, String keypass, String storealias, String storepass) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -47,7 +47,7 @@ public class ARSCDecoder {
+     private static final Logger LOGGER             = Logger.getLogger(ARSCDecoder.class.getName());
+     private static final int    KNOWN_CONFIG_BYTES = 38;
+ 
+-    private static Map<Integer, String> mTableStringsProguard;
++    public static Map<Integer, String> mTableStringsProguard = new LinkedHashMap<>();
+ 
+     private ExtDataInput  mIn;
+     private ExtDataOutput mOut;
+@@ -75,7 +75,6 @@ public class ARSCDecoder {
+ 
+ 
+     private ARSCDecoder(InputStream arscStream, ApkDecoder decoder) throws AndrolibException, IOException {
+-        mTableStringsProguard = new LinkedHashMap<>();
+         mOldFileName = new LinkedHashMap<>();
+         mCurSpecNameToPos = new LinkedHashMap<>();
+         mShouldProguardTypeSet = new HashSet<>();
+@@ -85,7 +84,6 @@ private ARSCDecoder(InputStream arscStream, ApkDecoder decoder) throws AndrolibE
+     }
+ 
+     private ARSCDecoder(InputStream arscStream, ApkDecoder decoder, ResPackage[] pkgs) throws FileNotFoundException {
+-        mTableStringsProguard = new LinkedHashMap<>();
+         mOldFileName = new LinkedHashMap<>();
+         mCurSpecNameToPos = new LinkedHashMap<>();
+         mShouldProguardTypeSet = new HashSet<>();
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/resourceproguard/Main.java
+Patch:
+@@ -3,6 +3,7 @@
+ import com.tencent.mm.androlib.AndrolibException;
+ import com.tencent.mm.androlib.ApkDecoder;
+ import com.tencent.mm.androlib.ResourceApkBuilder;
++import com.tencent.mm.androlib.res.decoder.ARSCDecoder;
+ import com.tencent.mm.directory.DirectoryException;
+ import com.tencent.mm.util.FileOperation;
+ 
+@@ -43,8 +44,9 @@ private void run(InputParam inputParam) {
+         clean();
+     }
+ 
+-    private void clean() {
++    protected void clean() {
+         config = null;
++        ARSCDecoder.mTableStringsProguard.clear();
+     }
+ 
+     private void loadConfigFromGradle(InputParam inputParam) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/data/ResType.java
+Patch:
+@@ -26,12 +26,12 @@ public final class ResType {
+     private final String mName;
+ 
+     private final ResPackage      mPackage;
+-    private       HashSet<String> specNames;
++    private final HashSet<String> specNames;
+ 
+     public ResType(String name, ResPackage package_) {
+         this.mName = name;
+         this.mPackage = package_;
+-        specNames = new HashSet<String>();
++        specNames = new HashSet<>();
+     }
+ 
+     public String getName() {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/directory/ZipRODirectory.java
+Patch:
+@@ -99,8 +99,8 @@ protected void removeFileLocal(String name) {
+     }
+ 
+     private void loadAll() {
+-        mFiles = new LinkedHashSet<String>();
+-        mDirs = new LinkedHashMap<String, AbstractDirectory>();
++        mFiles = new LinkedHashSet<>();
++        mDirs = new LinkedHashMap<>();
+ 
+         int prefixLen = getPath().length();
+         Enumeration<? extends ZipEntry> entries = getZipFile().entries();
+@@ -113,7 +113,6 @@ private void loadAll() {
+             }
+ 
+             String subname = name.substring(prefixLen);
+-
+             int pos = subname.indexOf(separator);
+             if (pos == -1) {
+                 if (!entry.isDirectory()) {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/androlib/res/data/ResType.java
+Patch:
+@@ -26,12 +26,12 @@ public final class ResType {
+     private final String mName;
+ 
+     private final ResPackage      mPackage;
+-    private       HashSet<String> specNames;
++    private final HashSet<String> specNames;
+ 
+     public ResType(String name, ResPackage package_) {
+         this.mName = name;
+         this.mPackage = package_;
+-        specNames = new HashSet<String>();
++        specNames = new HashSet<>();
+     }
+ 
+     public String getName() {
+
+File: AndResGuard-core/src/main/java/com/tencent/mm/directory/ZipRODirectory.java
+Patch:
+@@ -99,8 +99,8 @@ protected void removeFileLocal(String name) {
+     }
+ 
+     private void loadAll() {
+-        mFiles = new LinkedHashSet<String>();
+-        mDirs = new LinkedHashMap<String, AbstractDirectory>();
++        mFiles = new LinkedHashSet<>();
++        mDirs = new LinkedHashMap<>();
+ 
+         int prefixLen = getPath().length();
+         Enumeration<? extends ZipEntry> entries = getZipFile().entries();
+@@ -113,7 +113,6 @@ private void loadAll() {
+             }
+ 
+             String subname = name.substring(prefixLen);
+-
+             int pos = subname.indexOf(separator);
+             if (pos == -1) {
+                 if (!entry.isDirectory()) {
+
+File: src/com/tencent/mm/androlib/res/decoder/ARSCDecoder.java
+Patch:
+@@ -1141,7 +1141,8 @@ public void reset() {
+ 		//对于某种类型用过的mapping，全部不能再用了
+ 		public void removeStrings(Collection<String> collection) {
+ //    		System.out.printf("size %d\n", mReplaceStringBuffer.size());
+-
++			if (collection == null)
++				return;
+     		mReplaceStringBuffer.removeAll(collection);
+ //    		System.out.printf("after size %d\n", mReplaceStringBuffer.size());
+ 
+

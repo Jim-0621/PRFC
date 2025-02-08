@@ -1,0 +1,226 @@
+File: library/src/main/java/com/daimajia/swipe/SwipeLayout.java
+Patch:
+@@ -329,10 +329,10 @@ public int getViewVerticalDragRange(View child) {
+         @Override
+         public void onViewReleased(View releasedChild, float xvel, float yvel) {
+             super.onViewReleased(releasedChild, xvel, yvel);
++            processHandRelease(xvel, yvel, isCloseBeforeDrag);
+             for (SwipeListener l : mSwipeListeners){
+                 l.onHandRelease(SwipeLayout.this, xvel, yvel);
+             }
+-            processHandRelease(xvel, yvel, isCloseBeforeDrag);
+ 
+             invalidate();
+         }
+
+File: library/src/main/java/com/daimajia/swipe/interfaces/SwipeItemMangerInterface.java
+Patch:
+@@ -13,6 +13,8 @@ public interface SwipeItemMangerInterface {
+     public void closeItem(int position);
+ 
+     public void closeAllExcept(SwipeLayout layout);
++    
++    public void closeAllItems();
+ 
+     public List<Integer> getOpenItems();
+ 
+
+File: demo/src/main/java/com/daimajia/swipedemo/ListViewExample.java
+Patch:
+@@ -14,6 +14,7 @@
+ import android.widget.ListView;
+ import android.widget.Toast;
+ 
++import com.daimajia.swipe.SwipeLayout;
+ import com.daimajia.swipe.implments.SwipeItemMangerImpl;
+ import com.daimajia.swipedemo.adapter.ListViewAdapter;
+ 
+@@ -43,7 +44,7 @@ protected void onCreate(Bundle savedInstanceState) {
+         mListView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+             @Override
+             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+-                Toast.makeText(mContext, "Click", Toast.LENGTH_SHORT).show();
++                ((SwipeLayout)(mListView.getChildAt(position - mListView.getFirstVisiblePosition()))).open(true);
+             }
+         });
+         mListView.setOnTouchListener(new View.OnTouchListener() {
+
+File: demo/src/main/java/com/daimajia/swipedemo/adapter/RecyclerViewAdapter.java
+Patch:
+@@ -19,7 +19,7 @@
+ 
+ public class RecyclerViewAdapter extends RecyclerSwipeAdapter {
+ 
+-    public static class SimpleViewHolder extends ViewHolder {
++    public static class SimpleViewHolder extends ViewHolder{
+         SwipeLayout swipeLayout;
+         TextView textViewPos;
+         TextView textViewData;
+@@ -50,7 +50,7 @@ public ViewHolder createRecyclerViewHolder(ViewGroup parent, int viewType) {
+     }
+ 
+     @Override
+-    public void bindRecyclerViewHolder(ViewHolder viewHolder, int position) {
++    public void bindRecyclerViewHolder(ViewHolder viewHolder, final int position) {
+         SimpleViewHolder simpleViewHolder = (SimpleViewHolder) viewHolder;
+         String item = mDataset.get(position);
+         simpleViewHolder.swipeLayout.setShowMode(SwipeLayout.ShowMode.LayDown);
+
+File: library/src/main/java/com/daimajia/swipe/SwipeLayout.java
+Patch:
+@@ -87,7 +87,7 @@ public SwipeLayout(Context context, AttributeSet attrs, int defStyle)
+         mDragHelper = ViewDragHelper.create(this, mDragHelperCallback);
+ 
+         TypedArray a = context.obtainStyledAttributes(attrs, R.styleable.SwipeLayout);
+-        int dragEdgeChoices = a.getInt(R.styleable.SwipeLayout_drag_edge, DragEdge.Right.ordinal());
++        int dragEdgeChoices = a.getInt(R.styleable.SwipeLayout_drag_edge, DRAG_RIGHT);
+         mLeftEdgeSwipeOffset = a.getDimension(R.styleable.SwipeLayout_leftEdgeSwipeOffset, 0);
+         mRightEdgeSwipeOffset = a.getDimension(R.styleable.SwipeLayout_rightEdgeSwipeOffset, 0);
+         mTopEdgeSwipeOffset = a.getDimension(R.styleable.SwipeLayout_topEdgeSwipeOffset, 0);
+
+File: demo/src/main/java/com/daimajia/swipedemo/MyActivity.java
+Patch:
+@@ -27,7 +27,7 @@ protected void onCreate(Bundle savedInstanceState) {
+         //sample1
+ 
+         sample1 = (SwipeLayout) findViewById(R.id.sample1);
+-        sample1.setShowMode(SwipeLayout.ShowMode.LayDown);
++        sample1.setShowMode(SwipeLayout.ShowMode.PullOut);
+         sample1.setDragEdges(SwipeLayout.DragEdge.Left, SwipeLayout.DragEdge.Right);
+         Toast.makeText(this, sample1.getDragEdge() + " is the drag edge", Toast.LENGTH_LONG).show();
+         sample1.addRevealListener(R.id.delete, new SwipeLayout.OnRevealListener() {
+
+File: library/src/main/java/com/daimajia/swipe/adapters/SimpleCursorSwipeAdapter.java
+Patch:
+@@ -1,11 +1,10 @@
+ package com.daimajia.swipe.adapters;
+ 
+-import android.annotation.TargetApi;
+ import android.content.Context;
+ import android.database.Cursor;
++import android.support.v4.widget.SimpleCursorAdapter;
+ import android.view.View;
+ import android.view.ViewGroup;
+-import android.widget.SimpleCursorAdapter;
+ 
+ import com.daimajia.swipe.SwipeLayout;
+ import com.daimajia.swipe.implments.SwipeItemMangerImpl;
+@@ -18,7 +17,6 @@ public abstract class SimpleCursorSwipeAdapter extends SimpleCursorAdapter imple
+ 
+     private SwipeItemMangerImpl mItemManger = new SwipeItemMangerImpl(this);
+ 
+-    @TargetApi(11)
+     protected SimpleCursorSwipeAdapter(Context context, int layout, Cursor c, String[] from, int[] to, int flags) {
+         super(context, layout, c, from, to, flags);
+     }
+
+File: library/src/main/java/com/daimajia/swipe/SwipeAdapter.java
+Patch:
+@@ -189,6 +189,8 @@ class SwipeMemory extends SimpleSwipeListener{
+         public void onClose(SwipeLayout layout) {
+             if(mode == Mode.Multiple){
+                 mOpenPositions.remove(position);
++            }else{
++                mOpenPosition = INVALID_POSITION;
+             }
+         }
+ 
+
+File: library/src/main/java/com/daimajia/swipe/SwipeLayout.java
+Patch:
+@@ -651,9 +651,8 @@ public boolean onInterceptTouchEvent(MotionEvent ev) {
+                     mTouchConsumedByChild = childNeedHandleTouchEvent(getSurfaceView(), ev) != null;
+                 }else if(status == Status.Open){
+                     mTouchConsumedByChild = childNeedHandleTouchEvent(getBottomView(), ev) != null;
+-                }else{
+-                    break;
+                 }
++                break;
+             case MotionEvent.ACTION_UP:
+             case MotionEvent.ACTION_CANCEL:
+                 mTouchConsumedByChild = false;
+
+File: library/src/main/java/com/daimajia/swipe/SwipeLayout.java
+Patch:
+@@ -930,7 +930,7 @@ public Status getOpenStatus(){
+      */
+     private void processSurfaceRelease(float xvel, float yvel){
+         if(xvel == 0 && getOpenStatus() == Status.Middle)
+-            open();
++            close();
+ 
+         if(mDragEdge == DragEdge.Left || mDragEdge == DragEdge.Right){
+             if(xvel > 0){
+
+File: library/src/main/java/com/daimajia/swipe/SwipeLayout.java
+Patch:
+@@ -930,7 +930,7 @@ public Status getOpenStatus(){
+      */
+     private void processSurfaceRelease(float xvel, float yvel){
+         if(xvel == 0 && getOpenStatus() == Status.Middle)
+-            open();
++            close();
+ 
+         if(mDragEdge == DragEdge.Left || mDragEdge == DragEdge.Right){
+             if(xvel > 0){
+
+File: demo/src/main/java/com/daimajia/swipedemo/MyActivity.java
+Patch:
+@@ -21,8 +21,8 @@ protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+         setContentView(R.layout.main);
+ 
+-        SwipeLayout swipeLayout = (SwipeLayout)findViewById(R.id.godfather);
+-        swipeLayout.setDragEdge(SwipeLayout.DragEdge.Bottom);
++//        SwipeLayout swipeLayout = (SwipeLayout)findViewById(R.id.godfather);
++//        swipeLayout.setDragEdge(SwipeLayout.DragEdge.Bottom); // Set in XML
+ 
+         //sample1
+ 
+
+File: demo/src/main/java/com/daimajia/swipedemo/ListViewExample.java
+Patch:
+@@ -12,6 +12,7 @@
+ import android.widget.AdapterView;
+ import android.widget.ListView;
+ 
++import com.daimajia.swipe.SwipeAdapter;
+ import com.daimajia.swipedemo.adapter.ListViewAdapter;
+ 
+ public class ListViewExample extends Activity {
+@@ -26,6 +27,7 @@ protected void onCreate(Bundle savedInstanceState) {
+         mListView = (ListView)findViewById(R.id.listview);
+         mAdapter = new ListViewAdapter(this);
+         mListView.setAdapter(mAdapter);
++        mAdapter.setMode(SwipeAdapter.Mode.Single);
+         mListView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+             @Override
+             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+
+File: library/src/main/java/com/daimajia/swipe/SwipeAdapter.java
+Patch:
+@@ -47,6 +47,7 @@ public final View getView(int position, View convertView, ViewGroup parent) {
+                 OnLayoutListener onLayoutListener = new OnLayoutListener(position);
+                 SwipeMemory swipeMemory = new SwipeMemory(position);
+                 swipeLayout.addSwipeListener(swipeMemory);
++                swipeLayout.addOnLayoutListener(onLayoutListener);
+                 swipeLayout.setTag(swipeResourceId, new ValueBox(position, swipeMemory, onLayoutListener));
+             }
+         }else{
+@@ -58,7 +59,6 @@ public final View getView(int position, View convertView, ViewGroup parent) {
+                 valueBox.position = position;
+             }
+         }
+-        swipeLayout.addOnLayoutListener(new OnLayoutListener(position));
+         fillValues(position, v);
+         return v;
+     }
+@@ -89,7 +89,6 @@ public void setPosition(int position){
+ 
+         @Override
+         public void onLayout(SwipeLayout v) {
+-            v.removeOnLayoutListener(this);
+             if(mOpenPositions.contains(position))
+                 v.open(false);
+             else{
+

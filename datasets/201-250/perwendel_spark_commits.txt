@@ -1,0 +1,4807 @@
+File: src/main/java/spark/Service.java
+Patch:
+@@ -72,7 +72,7 @@ public final class Service extends Routable {
+     protected int maxThreads = -1;
+     protected int minThreads = -1;
+     protected int threadIdleTimeoutMillis = -1;
+-    protected Optional<Integer> webSocketIdleTimeoutMillis = Optional.empty();
++    protected Optional<Long> webSocketIdleTimeoutMillis = Optional.empty();
+ 
+     protected EmbeddedServer server;
+     protected Deque<String> pathDeque = new ArrayDeque<>();
+@@ -440,7 +440,7 @@ private synchronized void addWebSocketHandler(String path, WebSocketHandlerWrapp
+      * @param timeoutMillis The max idle timeout in milliseconds.
+      * @return the object with max idle timeout set for WebSocket connections
+      */
+-    public synchronized Service webSocketIdleTimeoutMillis(int timeoutMillis) {
++    public synchronized Service webSocketIdleTimeoutMillis(long timeoutMillis) {
+         if (initialized) {
+             throwBeforeRouteMappingException();
+         }
+
+File: src/main/java/spark/embeddedserver/EmbeddedServer.java
+Patch:
+@@ -62,7 +62,7 @@ default void trustForwardHeaders(boolean trust) {
+      * @param webSocketIdleTimeoutMillis - Optional WebSocket idle timeout (ms).
+      */
+     default void configureWebSockets(Map<String, WebSocketHandlerWrapper> webSocketHandlers,
+-                                     Optional<Integer> webSocketIdleTimeoutMillis) {
++                                     Optional<Long> webSocketIdleTimeoutMillis) {
+ 
+         NotSupportedException.raise(getClass().getSimpleName(), "Web Sockets");
+     }
+
+File: src/main/java/spark/embeddedserver/jetty/EmbeddedJettyServer.java
+Patch:
+@@ -55,7 +55,7 @@ public class EmbeddedJettyServer implements EmbeddedServer {
+     private final Logger logger = LoggerFactory.getLogger(this.getClass());
+ 
+     private Map<String, WebSocketHandlerWrapper> webSocketHandlers;
+-    private Optional<Integer> webSocketIdleTimeoutMillis;
++    private Optional<Long> webSocketIdleTimeoutMillis;
+ 
+     private ThreadPool threadPool = null;
+     private boolean trustForwardHeaders = true; // true by default
+@@ -67,7 +67,7 @@ public EmbeddedJettyServer(JettyServerFactory serverFactory, Handler handler) {
+ 
+     @Override
+     public void configureWebSockets(Map<String, WebSocketHandlerWrapper> webSocketHandlers,
+-                                    Optional<Integer> webSocketIdleTimeoutMillis) {
++                                    Optional<Long> webSocketIdleTimeoutMillis) {
+ 
+         this.webSocketHandlers = webSocketHandlers;
+         this.webSocketIdleTimeoutMillis = webSocketIdleTimeoutMillis;
+
+File: src/main/java/spark/embeddedserver/jetty/websocket/WebSocketServletContextHandlerFactory.java
+Patch:
+@@ -42,7 +42,7 @@ public class WebSocketServletContextHandlerFactory {
+      * @return a new websocket servlet context handler or 'null' if creation failed.
+      */
+     public static ServletContextHandler create(Map<String, WebSocketHandlerWrapper> webSocketHandlers,
+-                                               Optional<Integer> webSocketIdleTimeoutMillis) {
++                                               Optional<Long> webSocketIdleTimeoutMillis) {
+         ServletContextHandler webSocketServletContextHandler = null;
+         if (webSocketHandlers != null) {
+             try {
+
+File: src/test/java/spark/embeddedserver/jetty/websocket/WebSocketServletContextHandlerFactoryTest.java
+Patch:
+@@ -75,7 +75,7 @@ public void testCreate_whenNoIdleTimeoutIsPresent() throws Exception {
+     @Test
+     public void testCreate_whenTimeoutIsPresent() throws Exception {
+ 
+-        final Integer timeout = Integer.valueOf(1000);
++        final Long timeout = Long.valueOf(1000);
+ 
+         Map<String, WebSocketHandlerWrapper> webSocketHandlers = new HashMap<>();
+ 
+
+File: src/main/java/spark/Service.java
+Patch:
+@@ -134,8 +134,6 @@ public synchronized void embeddedServerIdentifier(Object obj) {
+     /**
+      * Get the identifier used to select the EmbeddedServer;
+      * null for the default.
+-     *
+-     * @param embeddedServerIdentifier the identifier passed to {@link EmbeddedServers}.
+      */
+     public synchronized Object embeddedServerIdentifier() {
+         return embeddedServerIdentifier;
+
+File: src/main/java/spark/embeddedserver/jetty/SocketConnectorFactory.java
+Patch:
+@@ -69,7 +69,8 @@ public static ServerConnector createSecureSocketConnector(Server server,
+         Assert.notNull(host, "'host' must not be null");
+         Assert.notNull(sslStores, "'sslStores' must not be null");
+ 
+-        SslContextFactory sslContextFactory = new SslContextFactory(sslStores.keystoreFile());
++        SslContextFactory.Server sslContextFactory = new SslContextFactory.Server();
++        sslContextFactory.setKeyStorePath(sslStores.keystoreFile());
+ 
+         if (sslStores.keystorePassword() != null) {
+             sslContextFactory.setKeyStorePassword(sslStores.keystorePassword());
+
+File: src/test/java/spark/RequestTest.java
+Patch:
+@@ -63,7 +63,6 @@ public void setup() {
+         request = new Request(match, servletRequest);
+ 
+     }
+-    
+ 
+     @Test
+     public void queryParamShouldReturnsParametersFromQueryString() {
+
+File: src/main/java/spark/route/Routes.java
+Patch:
+@@ -83,7 +83,7 @@ public void add(HttpMethod httpMethod, FilterImpl filter) {
+     public RouteMatch find(HttpMethod httpMethod, String path, String acceptType) {
+         List<RouteEntry> routeEntries = this.findTargetsForRequestedRoute(httpMethod, path);
+         RouteEntry entry = findTargetWithGivenAcceptType(routeEntries, acceptType);
+-        return entry != null ? new RouteMatch(entry.target, entry.path, path, acceptType) : null;
++        return entry != null ? new RouteMatch(entry.target, entry.path, path, acceptType, httpMethod) : null;
+     }
+ 
+     /**
+@@ -103,10 +103,10 @@ public List<RouteMatch> findMultiple(HttpMethod httpMethod, String path, String
+                 String bestMatch = MimeParse.bestMatch(Arrays.asList(routeEntry.acceptedType), acceptType);
+ 
+                 if (routeWithGivenAcceptType(bestMatch)) {
+-                    matchSet.add(new RouteMatch(routeEntry.target, routeEntry.path, path, acceptType));
++                    matchSet.add(new RouteMatch(routeEntry.target, routeEntry.path, path, acceptType, httpMethod));
+                 }
+             } else {
+-                matchSet.add(new RouteMatch(routeEntry.target, routeEntry.path, path, acceptType));
++                matchSet.add(new RouteMatch(routeEntry.target, routeEntry.path, path, acceptType, httpMethod));
+             }
+         }
+ 
+
+File: src/test/java/spark/RequestTest.java
+Patch:
+@@ -24,7 +24,7 @@ public class RequestTest {
+     HttpSession httpSession;
+     Request request;
+ 
+-    RouteMatch match = new RouteMatch(null, "/hi", "/hi", "text/html");
++    RouteMatch match = new RouteMatch(null, "/hi", "/hi", "text/html", null);
+ 
+     @Before
+     public void setup() {
+
+File: src/main/java/spark/staticfiles/MimeType.java
+Patch:
+@@ -55,6 +55,7 @@ public class MimeType {
+         mappings.put("jar", "application/java-archive");
+         mappings.put("jpg", "image/jpeg");
+         mappings.put("js", "application/javascript");
++        mappings.put("mjs", "application/javascript");
+         mappings.put("json", "application/json");
+         mappings.put("midi", "audio/x-midi");
+         mappings.put("mp3", "audio/mpeg");
+
+File: src/main/java/spark/resource/ClassPathResourceHandler.java
+Patch:
+@@ -80,7 +80,7 @@ protected AbstractFileResolvingResource getResource(String path) throws Malforme
+             }
+ 
+             if (resource != null && resource.exists()) {
+-                DirectoryTraversal.protectAgainstInClassPath(resource.getPath());
++                DirectoryTraversal.protectAgainstInClassPath(resource.getPath(), baseResource);
+                 return resource;
+             } else {
+                 return null;
+
+File: src/main/java/spark/resource/ExternalResourceHandler.java
+Patch:
+@@ -79,7 +79,7 @@ protected AbstractFileResolvingResource getResource(String path) throws Malforme
+             }
+ 
+             if (resource != null && resource.exists()) {
+-                DirectoryTraversal.protectAgainstForExternal(resource.getPath());
++                DirectoryTraversal.protectAgainstForExternal(resource.getPath(), baseResource);
+                 return resource;
+             } else {
+                 return null;
+
+File: src/main/java/spark/staticfiles/StaticFilesConfiguration.java
+Patch:
+@@ -148,7 +148,6 @@ public synchronized void configure(String folder) {
+ 
+             staticResourceHandlers.add(new ClassPathResourceHandler(folder, "index.html"));
+             LOG.info("StaticResourceHandler configured with folder = " + folder);
+-            StaticFilesFolder.localConfiguredTo(folder);
+             staticResourcesSet = true;
+         }
+     }
+@@ -178,7 +177,6 @@ public synchronized void configureExternal(String folder) {
+                 LOG.error("Error when creating external StaticResourceHandler", e);
+             }
+ 
+-            StaticFilesFolder.externalConfiguredTo(folder);
+             externalStaticResourcesSet = true;
+         }
+     }
+
+File: src/main/java/spark/Service.java
+Patch:
+@@ -85,7 +85,7 @@ public final class Service extends Routable {
+     public final StaticFiles staticFiles;
+ 
+     private final StaticFilesConfiguration staticFilesConfiguration;
+-    private final ExceptionMapper exceptionMapper = ExceptionMapper.getInstance();
++    private final ExceptionMapper exceptionMapper = new ExceptionMapper();
+ 
+     // default exception handler during initialization phase
+     private Consumer<Exception> initExceptionHandler = (e) -> {
+@@ -565,6 +565,7 @@ public synchronized void init() {
+ 
+                     server = EmbeddedServers.create(embeddedServerIdentifier,
+                                                     routes,
++                                                    exceptionMapper,
+                                                     staticFilesConfiguration,
+                                                     hasMultipleHandlers());
+ 
+
+File: src/main/java/spark/embeddedserver/EmbeddedServerFactory.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package spark.embeddedserver;
+ 
++import spark.ExceptionMapper;
+ import spark.route.Routes;
+ import spark.staticfiles.StaticFilesConfiguration;
+ 
+@@ -32,5 +33,5 @@ public interface EmbeddedServerFactory {
+      * @param hasMultipleHandler true if other handlers exist
+      * @return the created instance
+      */
+-    public EmbeddedServer create(Routes routeMatcher, StaticFilesConfiguration staticFilesConfiguration, boolean hasMultipleHandler);
++    public EmbeddedServer create(Routes routeMatcher, StaticFilesConfiguration staticFilesConfiguration, ExceptionMapper exceptionMapper, boolean hasMultipleHandler);
+ }
+
+File: src/main/java/spark/embeddedserver/EmbeddedServers.java
+Patch:
+@@ -19,6 +19,7 @@
+ import java.util.HashMap;
+ import java.util.Map;
+ 
++import spark.ExceptionMapper;
+ import spark.embeddedserver.jetty.EmbeddedJettyFactory;
+ import spark.route.Routes;
+ import spark.staticfiles.StaticFilesConfiguration;
+@@ -56,13 +57,14 @@ public static Identifiers defaultIdentifier() {
+      */
+     public static EmbeddedServer create(Object identifier,
+                                         Routes routeMatcher,
++                                        ExceptionMapper exceptionMapper,
+                                         StaticFilesConfiguration staticFilesConfiguration,
+                                         boolean multipleHandlers) {
+ 
+         EmbeddedServerFactory factory = factories.get(identifier);
+ 
+         if (factory != null) {
+-            return factory.create(routeMatcher, staticFilesConfiguration, multipleHandlers);
++            return factory.create(routeMatcher, staticFilesConfiguration, exceptionMapper, multipleHandlers);
+         } else {
+             throw new RuntimeException("No embedded server matching the identifier");
+         }
+
+File: src/main/java/spark/http/matching/GeneralError.java
+Patch:
+@@ -39,9 +39,10 @@ static void modify(HttpServletRequest httpRequest,
+                        Body body,
+                        RequestWrapper requestWrapper,
+                        ResponseWrapper responseWrapper,
++                       ExceptionMapper exceptionMapper,
+                        Exception e) {
+ 
+-        ExceptionHandlerImpl handler = ExceptionMapper.getInstance().getHandler(e);
++        ExceptionHandlerImpl handler = exceptionMapper.getHandler(e);
+ 
+         if (handler != null) {
+             handler.handle(e, requestWrapper, responseWrapper);
+
+File: src/main/java/spark/servlet/SparkFilter.java
+Patch:
+@@ -31,6 +31,7 @@
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import spark.ExceptionMapper;
+ import spark.globalstate.ServletFlag;
+ import spark.http.matching.MatcherFilter;
+ import spark.route.ServletRoutes;
+@@ -71,7 +72,7 @@ public void init(FilterConfig filterConfig) throws ServletException {
+ 
+         filterPath = FilterTools.getFilterPath(filterConfig);
+ 
+-        matcherFilter = new MatcherFilter(ServletRoutes.get(), StaticFilesConfiguration.servletInstance, true, false);
++        matcherFilter = new MatcherFilter(ServletRoutes.get(), StaticFilesConfiguration.servletInstance, ExceptionMapper.getServletInstance(), true, false);
+     }
+ 
+     /**
+
+File: src/test/java/spark/embeddedserver/EmbeddedServersTest.java
+Patch:
+@@ -40,7 +40,7 @@ public void testAddAndCreate_whenCreate_createsCustomServer() throws Exception {
+ 
+         // Register custom server
+         EmbeddedServers.add(id, new EmbeddedJettyFactory(serverFactory));
+-        EmbeddedServer embeddedServer = EmbeddedServers.create(id, null, null, false);
++        EmbeddedServer embeddedServer = EmbeddedServers.create(id, null, null, null, false);
+         assertNotNull(embeddedServer);
+         embeddedServer.ignite("localhost", 0, null, 0, 0, 0);
+ 
+
+File: src/main/java/spark/http/matching/Body.java
+Patch:
+@@ -65,13 +65,13 @@ public void serializeTo(HttpServletResponse httpResponse,
+                 httpResponse.setContentType("text/html; charset=utf-8");
+             }
+ 
+-            // Check if gzip is wanted/accepted and in that case handle that
++            // Check if GZIP is wanted/accepted and in that case handle that
+             OutputStream responseStream = GzipUtils.checkAndWrap(httpRequest, httpResponse, true);
+ 
+-            // serialize the body to output stream
++            // Serialize the body to output stream
+             serializerChain.process(responseStream, content);
+ 
+-            responseStream.flush(); // needed for GZIP stream. NOt sure where the HTTP response actually gets cleaned up
++            responseStream.flush(); // needed for GZIP stream. Not sure where the HTTP response actually gets cleaned up
+             responseStream.close(); // needed for GZIP
+         }
+     }
+
+File: src/test/java/spark/examples/staticresources/StaticResources.java
+Patch:
+@@ -17,7 +17,7 @@
+ package spark.examples.staticresources;
+ 
+ import static spark.Spark.get;
+-import static spark.Spark.staticFileLocation;
++import static spark.Spark.staticFiles;
+ 
+ /**
+  * Example showing how serve static resources.
+@@ -27,7 +27,7 @@ public class StaticResources {
+     public static void main(String[] args) {
+ 
+         // Will serve all static file are under "/public" in classpath if the route isn't consumed by others routes.
+-        staticFileLocation("/public");
++        staticFiles.location("/public");
+ 
+         get("/hello", (request, response) -> {
+             return "Hello World!";
+
+File: src/main/java/spark/embeddedserver/jetty/JettyServerFactory.java
+Patch:
+@@ -1,12 +1,12 @@
+ package spark.embeddedserver.jetty;
+ 
+ import org.eclipse.jetty.server.Server;
++import org.eclipse.jetty.util.thread.ThreadPool;
+ 
+ /**
+  * This interface can be implemented to provide custom Jetty server instances
+  * with specific settings or features.
+  */
+-@FunctionalInterface
+ public interface JettyServerFactory {
+     /**
+      * Creates a Jetty server.
+@@ -17,4 +17,6 @@ public interface JettyServerFactory {
+      * @return a new jetty server instance
+      */
+     Server create(int maxThreads, int minThreads, int threadTimeoutMillis);
++
++    Server create(ThreadPool threadPool);
+ }
+
+File: src/test/java/spark/embeddedserver/jetty/JettyServerTest.java
+Patch:
+@@ -12,7 +12,7 @@ public class JettyServerTest {
+     @Test
+     public void testCreateServer_useDefaults() throws Exception {
+ 
+-        Server server = JettyServer.create(0, 0, 0);
++        Server server = new JettyServer().create(0, 0, 0);
+ 
+         QueuedThreadPool threadPool = (QueuedThreadPool) server.getThreadPool();
+ 
+@@ -29,7 +29,7 @@ public void testCreateServer_useDefaults() throws Exception {
+     @Test
+     public void testCreateServer_whenNonDefaultMaxThreadOnly_thenUseDefaultMinThreadAndTimeout() throws Exception {
+ 
+-        Server server = JettyServer.create(1, 0, 0);
++        Server server = new JettyServer().create(1, 0, 0);
+ 
+         QueuedThreadPool threadPool = (QueuedThreadPool) server.getThreadPool();
+ 
+@@ -42,4 +42,4 @@ public void testCreateServer_whenNonDefaultMaxThreadOnly_thenUseDefaultMinThread
+         assertEquals("Server thread pool default idleTimeout should be 60000", 60000, idleTimeout);
+ 
+     }
+-}
+\ No newline at end of file
++}
+
+File: src/main/java/spark/embeddedserver/jetty/SocketConnectorFactory.java
+Patch:
+@@ -110,4 +110,4 @@ private static HttpConnectionFactory createHttpConnectionFactory() {
+         return new HttpConnectionFactory(httpConfig);
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: src/test/java/spark/InitExceptionHandlerTest.java
+Patch:
+@@ -1,12 +1,12 @@
+ package spark;
+ 
+-import static spark.Service.ignite;
+-
+ import org.junit.AfterClass;
+ import org.junit.Assert;
+ import org.junit.BeforeClass;
+ import org.junit.Test;
+ 
++import static spark.Service.ignite;
++
+ public class InitExceptionHandlerTest {
+ 
+     private static int NON_VALID_PORT = Integer.MAX_VALUE;
+
+File: src/main/java/spark/Spark.java
+Patch:
+@@ -16,7 +16,6 @@
+  */
+ package spark;
+ 
+-import java.util.Map;
+ import java.util.function.Consumer;
+ 
+ import static spark.Service.ignite;
+@@ -1194,7 +1193,7 @@ public static void init() {
+      * @param viewName the view name
+      * @return the model and view
+      */
+-    public static ModelAndView modelAndView(Map<String, Object> model, String viewName) {
++    public static ModelAndView modelAndView(Object model, String viewName) {
+         return new ModelAndView(model, viewName);
+     }
+ 
+
+File: src/main/java/spark/TemplateEngine.java
+Patch:
+@@ -1,8 +1,6 @@
+ package spark;
+ 
+ 
+-import java.util.Map;
+-
+ /**
+  * A Template holds the implementation of the 'render' method.
+  * TemplateViewRoute instead of returning the result of calling toString() as body, it returns the result of calling render method.
+@@ -30,7 +28,7 @@ public String render(Object object) {
+      * @param viewName to be rendered.
+      * @return object with model and view set.
+      */
+-    public ModelAndView modelAndView(Map<String, Object> model, String viewName) {
++    public ModelAndView modelAndView(Object model, String viewName) {
+         return new ModelAndView(model, viewName);
+     }
+ 
+
+File: src/main/java/spark/TemplateViewRouteImpl.java
+Patch:
+@@ -17,8 +17,6 @@
+ package spark;
+ 
+ 
+-import java.util.Map;
+-
+ /**
+  * A TemplateViewRoute is built up by a path (for url-matching) and the implementation of the 'render' method.
+  * TemplateViewRoute instead of returning the result of calling toString() as body, it returns the result of calling render method.
+@@ -95,7 +93,7 @@ public Object render(Object object) {
+      * @param viewName t be rendered.
+      * @return object with model and view set.
+      */
+-    public ModelAndView modelAndView(Map<String, Object> model, String viewName) {
++    public ModelAndView modelAndView(Object model, String viewName) {
+         return new ModelAndView(model, viewName);
+     }
+ 
+
+File: src/main/java/spark/staticfiles/StaticFilesConfiguration.java
+Patch:
+@@ -72,6 +72,9 @@ public boolean consume(HttpServletRequest httpRequest,
+             }
+ 
+         } catch (DirectoryTraversal.DirectoryTraversalDetection directoryTraversalDetection) {
++            httpResponse.setStatus(400);
++            httpResponse.getWriter().write("Bad request");
++            httpResponse.getWriter().flush();
+             LOG.warn(directoryTraversalDetection.getMessage() + " directory traversal detection for path: "
+                              + httpRequest.getPathInfo());
+         }
+
+File: src/main/java/spark/Spark.java
+Patch:
+@@ -16,7 +16,6 @@
+  */
+ package spark;
+ 
+-import java.util.Map;
+ import java.util.function.Consumer;
+ 
+ import static spark.Service.ignite;
+@@ -1194,7 +1193,7 @@ public static void init() {
+      * @param viewName the view name
+      * @return the model and view
+      */
+-    public static ModelAndView modelAndView(Map<String, Object> model, String viewName) {
++    public static ModelAndView modelAndView(Object model, String viewName) {
+         return new ModelAndView(model, viewName);
+     }
+ 
+
+File: src/main/java/spark/TemplateEngine.java
+Patch:
+@@ -1,8 +1,6 @@
+ package spark;
+ 
+ 
+-import java.util.Map;
+-
+ /**
+  * A Template holds the implementation of the 'render' method.
+  * TemplateViewRoute instead of returning the result of calling toString() as body, it returns the result of calling render method.
+@@ -30,7 +28,7 @@ public String render(Object object) {
+      * @param viewName to be rendered.
+      * @return object with model and view set.
+      */
+-    public ModelAndView modelAndView(Map<String, Object> model, String viewName) {
++    public ModelAndView modelAndView(Object model, String viewName) {
+         return new ModelAndView(model, viewName);
+     }
+ 
+
+File: src/main/java/spark/TemplateViewRouteImpl.java
+Patch:
+@@ -17,8 +17,6 @@
+ package spark;
+ 
+ 
+-import java.util.Map;
+-
+ /**
+  * A TemplateViewRoute is built up by a path (for url-matching) and the implementation of the 'render' method.
+  * TemplateViewRoute instead of returning the result of calling toString() as body, it returns the result of calling render method.
+@@ -95,7 +93,7 @@ public Object render(Object object) {
+      * @param viewName t be rendered.
+      * @return object with model and view set.
+      */
+-    public ModelAndView modelAndView(Map<String, Object> model, String viewName) {
++    public ModelAndView modelAndView(Object model, String viewName) {
+         return new ModelAndView(model, viewName);
+     }
+ 
+
+File: src/main/java/spark/embeddedserver/jetty/HttpRequestWrapper.java
+Patch:
+@@ -42,8 +42,8 @@ public boolean notConsumed() {
+         return notConsumed;
+     }
+ 
+-    public void notConsumed(boolean consumed) {
+-        notConsumed = consumed;
++    public void notConsumed(boolean notConsumed) {
++        this.notConsumed = notConsumed;
+     }
+ 
+     @Override
+
+File: src/main/java/spark/ExceptionHandler.java
+Patch:
+@@ -4,7 +4,7 @@
+  * Created by Per Wendel on 2014-05-10.
+  */
+ @FunctionalInterface
+-public interface ExceptionHandler {
++public interface ExceptionHandler<T extends Exception> {
+ 
+     /**
+      * Invoked when an exception that is mapped to this handler occurs during routing
+@@ -13,5 +13,5 @@ public interface ExceptionHandler {
+      * @param request   The request object providing information about the HTTP request
+      * @param response  The response object providing functionality for modifying the response
+      */
+-    void handle(Exception exception, Request request, Response response);
++    void handle(T exception, Request request, Response response);
+ }
+
+File: src/main/java/spark/Service.java
+Patch:
+@@ -542,11 +542,11 @@ private void initializeRouteMatcher() {
+      * @param exceptionClass the exception class
+      * @param handler        The handler
+      */
+-    public synchronized void exception(Class<? extends Exception> exceptionClass, ExceptionHandler handler) {
++    public synchronized <T extends Exception> void exception(Class<T> exceptionClass, ExceptionHandler<? super T> handler) {
+         // wrap
+-        ExceptionHandlerImpl wrapper = new ExceptionHandlerImpl(exceptionClass) {
++        ExceptionHandlerImpl wrapper = new ExceptionHandlerImpl<T>(exceptionClass) {
+             @Override
+-            public void handle(Exception exception, Request request, Response response) {
++            public void handle(T exception, Request request, Response response) {
+                 handler.handle(exception, request, response);
+             }
+         };
+
+File: src/main/java/spark/Spark.java
+Patch:
+@@ -879,7 +879,7 @@ public static void patch(String path,
+      * @param exceptionClass the exception class
+      * @param handler        The handler
+      */
+-    public static void exception(Class<? extends Exception> exceptionClass, ExceptionHandler handler) {
++    public static <T extends Exception> void exception(Class<T> exceptionClass, ExceptionHandler<? super T> handler) {
+         getInstance().exception(exceptionClass, handler);
+     }
+ 
+
+File: src/main/java/spark/ExceptionHandler.java
+Patch:
+@@ -4,7 +4,7 @@
+  * Created by Per Wendel on 2014-05-10.
+  */
+ @FunctionalInterface
+-public interface ExceptionHandler {
++public interface ExceptionHandler<T extends Exception> {
+ 
+     /**
+      * Invoked when an exception that is mapped to this handler occurs during routing
+@@ -13,5 +13,5 @@ public interface ExceptionHandler {
+      * @param request   The request object providing information about the HTTP request
+      * @param response  The response object providing functionality for modifying the response
+      */
+-    void handle(Exception exception, Request request, Response response);
++    void handle(T exception, Request request, Response response);
+ }
+
+File: src/main/java/spark/Service.java
+Patch:
+@@ -540,11 +540,11 @@ private void initializeRouteMatcher() {
+      * @param exceptionClass the exception class
+      * @param handler        The handler
+      */
+-    public synchronized void exception(Class<? extends Exception> exceptionClass, ExceptionHandler handler) {
++    public synchronized <T extends Exception> void exception(Class<T> exceptionClass, ExceptionHandler<? super T> handler) {
+         // wrap
+-        ExceptionHandlerImpl wrapper = new ExceptionHandlerImpl(exceptionClass) {
++        ExceptionHandlerImpl wrapper = new ExceptionHandlerImpl<T>(exceptionClass) {
+             @Override
+-            public void handle(Exception exception, Request request, Response response) {
++            public void handle(T exception, Request request, Response response) {
+                 handler.handle(exception, request, response);
+             }
+         };
+
+File: src/main/java/spark/Spark.java
+Patch:
+@@ -879,7 +879,7 @@ public static void patch(String path,
+      * @param exceptionClass the exception class
+      * @param handler        The handler
+      */
+-    public static void exception(Class<? extends Exception> exceptionClass, ExceptionHandler handler) {
++    public static <T extends Exception> void exception(Class<T> exceptionClass, ExceptionHandler<? super T> handler) {
+         getInstance().exception(exceptionClass, handler);
+     }
+ 
+
+File: src/test/java/spark/customerrorpages/CustomErrorPagesTest.java
+Patch:
+@@ -81,4 +81,5 @@ public void testCustomInternalFailingRoute() throws Exception {
+         Assert.assertEquals(500, response.status);
+         Assert.assertEquals(CustomErrorPages.INTERNAL_ERROR, response.body);
+     }
++
+ }
+
+File: src/main/java/spark/CustomErrorPages.java
+Patch:
+@@ -1,3 +1,4 @@
++
+ /*
+  * Copyright 2016 - Per Wendel
+  *
+
+File: src/main/java/spark/TemplateEngine.java
+Patch:
+@@ -1,6 +1,8 @@
+ package spark;
+ 
+ 
++import java.util.Map;
++
+ /**
+  * A Template holds the implementation of the 'render' method.
+  * TemplateViewRoute instead of returning the result of calling toString() as body, it returns the result of calling render method.
+@@ -28,7 +30,7 @@ public String render(Object object) {
+      * @param viewName to be rendered.
+      * @return object with model and view set.
+      */
+-    public ModelAndView modelAndView(Object model, String viewName) {
++    public ModelAndView modelAndView(Map<String, Object> model, String viewName) {
+         return new ModelAndView(model, viewName);
+     }
+ 
+
+File: src/main/java/spark/TemplateViewRouteImpl.java
+Patch:
+@@ -17,6 +17,8 @@
+ package spark;
+ 
+ 
++import java.util.Map;
++
+ /**
+  * A TemplateViewRoute is built up by a path (for url-matching) and the implementation of the 'render' method.
+  * TemplateViewRoute instead of returning the result of calling toString() as body, it returns the result of calling render method.
+@@ -93,7 +95,7 @@ public Object render(Object object) {
+      * @param viewName t be rendered.
+      * @return object with model and view set.
+      */
+-    public ModelAndView modelAndView(Object model, String viewName) {
++    public ModelAndView modelAndView(Map<String, Object> model, String viewName) {
+         return new ModelAndView(model, viewName);
+     }
+ 
+
+File: src/main/java/spark/embeddedserver/EmbeddedServers.java
+Patch:
+@@ -36,7 +36,9 @@ public enum Identifiers {
+     private static Map<Object, EmbeddedServerFactory> factories = new HashMap<>();
+ 
+     public static void initialize() {
+-        add(Identifiers.JETTY, new EmbeddedJettyFactory());
++        if (!factories.containsKey(Identifiers.JETTY)) {
++            add(Identifiers.JETTY, new EmbeddedJettyFactory());
++        }
+     }
+ 
+     public static Identifiers defaultIdentifier() {
+
+File: src/main/java/spark/route/HttpMethod.java
+Patch:
+@@ -4,7 +4,7 @@
+  *  Licensed under the Apache License, Version 2.0 (the "License");
+  *  you may not use this file except in compliance with the License.
+  *  You may obtain a copy of the License at
+- *  
++ *
+  *
+  *      http://www.apache.org/licenses/LICENSE-2.0
+  *
+@@ -22,7 +22,7 @@
+  * @author Per Wendel
+  */
+ public enum HttpMethod {
+-    get, post, put, patch, delete, head, trace, connect, options, before, after, unsupported;
++    get, post, put, patch, delete, head, trace, connect, options, before, after, afterafter, unsupported;
+ 
+     private static HashMap<String, HttpMethod> methods = new HashMap<>();
+ 
+
+File: src/main/java/spark/route/RouteEntry.java
+Patch:
+@@ -43,7 +43,7 @@ class RouteEntry {
+     }
+ 
+     boolean matches(HttpMethod httpMethod, String path) {
+-        if ((httpMethod == HttpMethod.before || httpMethod == HttpMethod.after)
++        if ((httpMethod == HttpMethod.before || httpMethod == HttpMethod.after || httpMethod == HttpMethod.afterafter)
+                 && (this.httpMethod == httpMethod)
+                 && this.path.equals(SparkUtils.ALL_PATHS)) {
+             // Is filter and matches all
+@@ -126,6 +126,7 @@ private boolean matchPath(String path) { // NOSONAR
+         }
+     }
+ 
++    @Override
+     public String toString() {
+         return httpMethod.name() + ", " + path + ", " + target;
+     }
+
+File: src/test/java/spark/examples/simple/SimpleExample.java
+Patch:
+@@ -16,8 +16,6 @@
+  */
+ package spark.examples.simple;
+ 
+-import spark.Spark;
+-
+ import static spark.Spark.*;
+ 
+ /**
+
+File: src/test/java/spark/staticfiles/StaticFilesTest.java
+Patch:
+@@ -139,7 +139,7 @@ public void testStaticFilePageHtml() throws Exception {
+ 
+     @Test
+     public void testDirectoryTraversalProtectionLocal() throws Exception {
+-        String path = "/" + URLEncoder.encode("..\\spark\\") + "Spark.class";
++        String path = "/" + URLEncoder.encode("..\\spark\\", "UTF-8") + "Spark.class";
+         SparkTestUtil.UrlResponse response = doGet(path);
+ 
+         Assert.assertEquals(404, response.status);
+
+File: src/main/java/spark/embeddedserver/EmbeddedServer.java
+Patch:
+@@ -44,7 +44,7 @@ int ignite(String host,
+                SslStores sslStores,
+                int maxThreads,
+                int minThreads,
+-               int threadIdleTimeoutMillis);
++               int threadIdleTimeoutMillis) throws Exception;
+ 
+     /**
+      * Configures the web sockets for the embedded server.
+
+File: src/main/java/spark/Service.java
+Patch:
+@@ -389,6 +389,7 @@ public void awaitInitialization() {
+             latch.await();
+         } catch (InterruptedException e) {
+             LOG.info("Interrupted by another thread");
++            Thread.currentThread().interrupt();
+         }
+     }
+ 
+
+File: src/main/java/spark/embeddedserver/EmbeddedServer.java
+Patch:
+@@ -72,5 +72,5 @@ default void configureWebSockets(Map<String, WebSocketHandlerWrapper> webSocketH
+      *
+      * @return The approximate number of currently active threads
+      */
+-    int getActiveThreadCount();
++    int activeThreadCount();
+ }
+
+File: src/main/java/spark/Routable.java
+Patch:
+@@ -303,7 +303,7 @@ public void after(String path, String acceptType, Filter filter) {
+      * @param filter The filter
+      */
+     public void afterAfter(Filter filter) {
+-        addFilter(HttpMethod.done.name(), FilterImpl.create(SparkUtils.ALL_PATHS, filter));
++        addFilter(HttpMethod.afterafter.name(), FilterImpl.create(SparkUtils.ALL_PATHS, filter));
+     }
+ 
+     /**
+@@ -312,7 +312,7 @@ public void afterAfter(Filter filter) {
+      * @param filter The filter
+      */
+     public void afterAfter(String path, Filter filter) {
+-        addFilter(HttpMethod.done.name(), FilterImpl.create(path, filter));
++        addFilter(HttpMethod.afterafter.name(), FilterImpl.create(path, filter));
+     }
+ 
+     //////////////////////////////////////////////////
+
+File: src/main/java/spark/http/matching/AfterAfterFilters.java
+Patch:
+@@ -27,13 +27,13 @@
+ /**
+  * Executes the done filters matching an HTTP request.
+  */
+-final class DoneFilters {
++final class AfterAfterFilters {
+ 
+     static void execute(RouteContext context) throws Exception {
+ 
+         Object content = context.body().get();
+ 
+-        List<RouteMatch> matchSet = context.routeMatcher().findMultiple(HttpMethod.done,
++        List<RouteMatch> matchSet = context.routeMatcher().findMultiple(HttpMethod.afterafter,
+                                                                                context.uri(),
+                                                                                context.acceptType());
+ 
+
+File: src/main/java/spark/http/matching/MatcherFilter.java
+Patch:
+@@ -173,7 +173,7 @@ public void doFilter(ServletRequest servletRequest,
+             }
+         } finally {
+             try {
+-                DoneFilters.execute(context);
++                AfterAfterFilters.execute(context);
+             } catch (Exception generalException) {
+                 GeneralError.modify(
+                         httpRequest,
+
+File: src/main/java/spark/route/HttpMethod.java
+Patch:
+@@ -4,7 +4,7 @@
+  *  Licensed under the Apache License, Version 2.0 (the "License");
+  *  you may not use this file except in compliance with the License.
+  *  You may obtain a copy of the License at
+- *  
++ *
+  *
+  *      http://www.apache.org/licenses/LICENSE-2.0
+  *
+@@ -22,7 +22,7 @@
+  * @author Per Wendel
+  */
+ public enum HttpMethod {
+-    get, post, put, patch, delete, head, trace, connect, options, before, after, done, unsupported;
++    get, post, put, patch, delete, head, trace, connect, options, before, after, afterafter, unsupported;
+ 
+     private static HashMap<String, HttpMethod> methods = new HashMap<>();
+ 
+
+File: src/main/java/spark/route/RouteEntry.java
+Patch:
+@@ -43,7 +43,7 @@ class RouteEntry {
+     }
+ 
+     boolean matches(HttpMethod httpMethod, String path) {
+-        if ((httpMethod == HttpMethod.before || httpMethod == HttpMethod.after || httpMethod == HttpMethod.done)
++        if ((httpMethod == HttpMethod.before || httpMethod == HttpMethod.after || httpMethod == HttpMethod.afterafter)
+                 && (this.httpMethod == httpMethod)
+                 && this.path.equals(SparkUtils.ALL_PATHS)) {
+             // Is filter and matches all
+@@ -126,6 +126,7 @@ private boolean matchPath(String path) { // NOSONAR
+         }
+     }
+ 
++    @Override
+     public String toString() {
+         return httpMethod.name() + ", " + path + ", " + target;
+     }
+
+File: src/main/java/spark/Routable.java
+Patch:
+@@ -303,7 +303,7 @@ public void after(String path, String acceptType, Filter filter) {
+      * @param filter The filter
+      */
+     public void afterAfter(Filter filter) {
+-        addFilter(HttpMethod.afterAfter.name(), FilterImpl.create(SparkUtils.ALL_PATHS, filter));
++        addFilter(HttpMethod.afterafter.name(), FilterImpl.create(SparkUtils.ALL_PATHS, filter));
+     }
+ 
+     /**
+@@ -312,7 +312,7 @@ public void afterAfter(Filter filter) {
+      * @param filter The filter
+      */
+     public void afterAfter(String path, Filter filter) {
+-        addFilter(HttpMethod.afterAfter.name(), FilterImpl.create(path, filter));
++        addFilter(HttpMethod.afterafter.name(), FilterImpl.create(path, filter));
+     }
+ 
+     //////////////////////////////////////////////////
+
+File: src/main/java/spark/http/matching/AfterAfterFilters.java
+Patch:
+@@ -33,7 +33,7 @@ static void execute(RouteContext context) throws Exception {
+ 
+         Object content = context.body().get();
+ 
+-        List<RouteMatch> matchSet = context.routeMatcher().findMultiple(HttpMethod.afterAfter,
++        List<RouteMatch> matchSet = context.routeMatcher().findMultiple(HttpMethod.afterafter,
+                                                                                context.uri(),
+                                                                                context.acceptType());
+ 
+
+File: src/main/java/spark/route/HttpMethod.java
+Patch:
+@@ -4,7 +4,7 @@
+  *  Licensed under the Apache License, Version 2.0 (the "License");
+  *  you may not use this file except in compliance with the License.
+  *  You may obtain a copy of the License at
+- *  
++ *
+  *
+  *      http://www.apache.org/licenses/LICENSE-2.0
+  *
+@@ -22,7 +22,7 @@
+  * @author Per Wendel
+  */
+ public enum HttpMethod {
+-    get, post, put, patch, delete, head, trace, connect, options, before, after, afterAfter, unsupported;
++    get, post, put, patch, delete, head, trace, connect, options, before, after, afterafter, unsupported;
+ 
+     private static HashMap<String, HttpMethod> methods = new HashMap<>();
+ 
+
+File: src/main/java/spark/route/RouteEntry.java
+Patch:
+@@ -43,7 +43,7 @@ class RouteEntry {
+     }
+ 
+     boolean matches(HttpMethod httpMethod, String path) {
+-        if ((httpMethod == HttpMethod.before || httpMethod == HttpMethod.after || httpMethod == HttpMethod.afterAfter)
++        if ((httpMethod == HttpMethod.before || httpMethod == HttpMethod.after || httpMethod == HttpMethod.afterafter)
+                 && (this.httpMethod == httpMethod)
+                 && this.path.equals(SparkUtils.ALL_PATHS)) {
+             // Is filter and matches all
+@@ -126,6 +126,7 @@ private boolean matchPath(String path) { // NOSONAR
+         }
+     }
+ 
++    @Override
+     public String toString() {
+         return httpMethod.name() + ", " + path + ", " + target;
+     }
+
+File: src/main/java/spark/Service.java
+Patch:
+@@ -453,11 +453,11 @@ public synchronized void init() {
+                             ipAddress,
+                             port,
+                             sslStores,
+-                            latch,
+                             maxThreads,
+                             minThreads,
+                             threadIdleTimeoutMillis);
+                     try {
++                        latch.countDown();
+                         server.join();
+                     } catch (InterruptedException e) {
+                         LOG.error("server interrupted", e);
+
+File: src/main/java/spark/embeddedserver/EmbeddedServer.java
+Patch:
+@@ -18,7 +18,6 @@
+ 
+ import java.util.Map;
+ import java.util.Optional;
+-import java.util.concurrent.CountDownLatch;
+ 
+ import spark.embeddedserver.jetty.websocket.WebSocketHandlerWrapper;
+ import spark.ssl.SslStores;
+@@ -35,7 +34,6 @@ public interface EmbeddedServer {
+      * @param host                    The address to listen on
+      * @param port                    - the port
+      * @param sslStores               - The SSL sslStores.
+-     * @param latch                   - the countdown latch
+      * @param maxThreads              - max nbr of threads.
+      * @param minThreads              - min nbr of threads.
+      * @param threadIdleTimeoutMillis - idle timeout (ms).
+@@ -44,7 +42,6 @@ public interface EmbeddedServer {
+     int ignite(String host,
+                int port,
+                SslStores sslStores,
+-               CountDownLatch latch,
+                int maxThreads,
+                int minThreads,
+                int threadIdleTimeoutMillis);
+
+File: src/main/java/spark/embeddedserver/jetty/EmbeddedJettyServer.java
+Patch:
+@@ -22,7 +22,6 @@
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Optional;
+-import java.util.concurrent.CountDownLatch;
+ 
+ import org.eclipse.jetty.server.Connector;
+ import org.eclipse.jetty.server.Handler;
+@@ -75,7 +74,6 @@ public void configureWebSockets(Map<String, WebSocketHandlerWrapper> webSocketHa
+     public int ignite(String host,
+                       int port,
+                       SslStores sslStores,
+-                      CountDownLatch latch,
+                       int maxThreads,
+                       int minThreads,
+                       int threadIdleTimeoutMillis) {
+@@ -127,7 +125,6 @@ public int ignite(String host,
+             logger.info(">> Listening on {}:{}", host, port);
+ 
+             server.start();
+-            latch.countDown();
+         } catch (Exception e) {
+             logger.error("ignite failed", e);
+             System.exit(100);
+
+File: src/main/java/spark/route/HttpMethod.java
+Patch:
+@@ -22,7 +22,7 @@
+  * @author Per Wendel
+  */
+ public enum HttpMethod {
+-    get, post, put, patch, delete, head, trace, connect, options, before, after, unsupported;
++    get, post, put, patch, delete, head, trace, connect, options, before, after, done, unsupported;
+ 
+     private static HashMap<String, HttpMethod> methods = new HashMap<>();
+ 
+
+File: src/main/java/spark/route/RouteEntry.java
+Patch:
+@@ -43,7 +43,7 @@ class RouteEntry {
+     }
+ 
+     boolean matches(HttpMethod httpMethod, String path) {
+-        if ((httpMethod == HttpMethod.before || httpMethod == HttpMethod.after)
++        if ((httpMethod == HttpMethod.before || httpMethod == HttpMethod.after || httpMethod == HttpMethod.done)
+                 && (this.httpMethod == httpMethod)
+                 && this.path.equals(SparkUtils.ALL_PATHS)) {
+             // Is filter and matches all
+
+File: src/main/java/spark/CustomErrorPages.java
+Patch:
+@@ -35,7 +35,7 @@ public static Object getFor(int status, Request request, Response response) {
+         Object customRenderer = CustomErrorPages.getInstance().customPages.get(status);
+         Object customPage;
+ 
+-        customPage = status == 400 ? NOT_FOUND : INTERNAL_ERROR;
++        customPage = status == 404 ? NOT_FOUND : INTERNAL_ERROR;
+ 
+         if (customRenderer instanceof String) {
+             customPage = customRenderer;
+
+File: src/main/java/spark/staticfiles/MimeType.java
+Patch:
+@@ -51,6 +51,7 @@ public class MimeType {
+         put("jar", "application/java-archive");
+         put("jpg", "image/jpeg");
+         put("js", "application/javascript");
++        put("json", "application/json");
+         put("midi", "audio/x-midi");
+         put("mp3", "audio/mpeg");
+         put("mpeg", "video/mpeg");
+
+File: src/main/java/spark/embeddedserver/jetty/websocket/WebSocketServletContextHandlerFactory.java
+Patch:
+@@ -19,9 +19,9 @@
+ import java.util.Map;
+ import java.util.Optional;
+ 
++import org.eclipse.jetty.http.pathmap.ServletPathSpec;
+ import org.eclipse.jetty.servlet.ServletContextHandler;
+ import org.eclipse.jetty.websocket.server.WebSocketUpgradeFilter;
+-import org.eclipse.jetty.websocket.server.pathmap.ServletPathSpec;
+ import org.eclipse.jetty.websocket.servlet.WebSocketCreator;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+
+File: src/main/java/spark/CustomErrorPages.java
+Patch:
+@@ -35,7 +35,7 @@ public static Object getFor(int status, Request request, Response response) {
+         Object customRenderer = CustomErrorPages.getInstance().customPages.get(status);
+         Object customPage;
+ 
+-        customPage = status == 400 ? NOT_FOUND : INTERNAL_ERROR;
++        customPage = status == 404 ? NOT_FOUND : INTERNAL_ERROR;
+ 
+         if (customRenderer instanceof String) {
+             customPage = customRenderer;
+
+File: src/main/java/spark/staticfiles/MimeType.java
+Patch:
+@@ -51,6 +51,7 @@ public class MimeType {
+         put("jar", "application/java-archive");
+         put("jpg", "image/jpeg");
+         put("js", "application/javascript");
++        put("json", "application/json");
+         put("midi", "audio/x-midi");
+         put("mp3", "audio/mpeg");
+         put("mpeg", "video/mpeg");
+
+File: src/main/java/spark/resource/ClassPathResourceHandler.java
+Patch:
+@@ -70,11 +70,11 @@ protected AbstractFileResolvingResource getResource(String path) throws Malforme
+ 
+             ClassPathResource resource = new ClassPathResource(addedPath);
+ 
+-            if (resource.exists() && resource.getFile().isDirectory()) {
++            if (resource.exists() && path.endsWith("/")) {
+                 if (welcomeFile != null) {
+                     resource = new ClassPathResource(addPaths(resource.getPath(), welcomeFile));
+                 } else {
+-                    //  No welcome file configured, serve nothing since it's a directory
++                    // No welcome file configured, serve nothing since it's a directory
+                     resource = null;
+                 }
+             }
+
+File: src/main/java/spark/staticfiles/MimeType.java
+Patch:
+@@ -51,6 +51,7 @@ public class MimeType {
+         put("jar", "application/java-archive");
+         put("jpg", "image/jpeg");
+         put("js", "application/javascript");
++        put("json", "application/json");
+         put("midi", "audio/x-midi");
+         put("mp3", "audio/mpeg");
+         put("mpeg", "video/mpeg");
+
+File: src/main/java/spark/ExceptionHandlerImpl.java
+Patch:
+@@ -16,7 +16,7 @@
+  */
+ package spark;
+ 
+-public abstract class ExceptionHandlerImpl {
++public abstract class ExceptionHandlerImpl implements ExceptionHandler {
+     /**
+      * Holds the type of exception that this filter will handle
+      */
+
+File: src/main/java/spark/ResponseTransformerRouteImpl.java
+Patch:
+@@ -36,7 +36,7 @@ public static ResponseTransformerRouteImpl create(String path,
+                                                       String acceptType,
+                                                       Route route,
+                                                       ResponseTransformer transformer) {
+-        return new ResponseTransformerRouteImpl(path, acceptType) {
++        return new ResponseTransformerRouteImpl(path, acceptType, route) {
+             @Override
+             public Object render(Object model) throws Exception {
+                 return transformer.render(model);
+@@ -49,8 +49,8 @@ public Object handle(Request request, Response response) throws Exception {
+         };
+     }
+ 
+-    protected ResponseTransformerRouteImpl(String path, String acceptType) {
+-        super(path, acceptType);
++    protected ResponseTransformerRouteImpl(String path, String acceptType, Route route) {
++        super(path, acceptType, route);
+     }
+ 
+     /**
+
+File: src/main/java/spark/RouteImpl.java
+Patch:
+@@ -30,7 +30,7 @@ public abstract class RouteImpl implements Route, Wrapper {
+ 
+     private String path;
+     private String acceptType;
+-    private Route delegate;
++    private Object delegate;
+ 
+     /**
+      * Wraps the route in RouteImpl
+@@ -90,7 +90,7 @@ protected RouteImpl(String path, String acceptType) {
+      * @param acceptType The accept type which is used for matching.
+      * @param route      The route used to create the route implementation
+      */
+-    protected RouteImpl(String path, String acceptType, Route route) {
++    protected RouteImpl(String path, String acceptType, Object route) {
+         this(path, acceptType);
+         this.delegate = route;
+     }
+
+File: src/main/java/spark/TemplateViewRoute.java
+Patch:
+@@ -34,7 +34,7 @@ public interface TemplateViewRoute {
+      * @param request  The request object providing information about the HTTP request
+      * @param response The response object providing functionality for modifying the response
+      * @return The content to be set in the response
+-     * @throws java.lang.Exception
++     * @throws java.lang.Exception when handle fails
+      */
+     ModelAndView handle(Request request, Response response) throws Exception;
+ 
+
+File: src/main/java/spark/embeddedserver/jetty/websocket/WebSocketServletContextHandlerFactory.java
+Patch:
+@@ -40,7 +40,7 @@ public class WebSocketServletContextHandlerFactory {
+      * @param webSocketIdleTimeoutMillis webSocketIdleTimeoutMillis
+      * @return a new websocket servlet context handler or 'null' if creation failed.
+      */
+-    public static ServletContextHandler create(Map<String, Class<?>> webSocketHandlers,
++    public static ServletContextHandler create(Map<String, WebSocketHandlerWrapper> webSocketHandlers,
+                                                Optional<Integer> webSocketIdleTimeoutMillis) {
+         ServletContextHandler webSocketServletContextHandler = null;
+         if (webSocketHandlers != null) {
+
+File: src/main/java/spark/route/HttpMethod.java
+Patch:
+@@ -35,6 +35,9 @@ public enum HttpMethod {
+     /**
+      * Gets the HttpMethod corresponding to the provided string. If no corresponding method can be found
+      * {@link spark.route.HttpMethod#unsupported} will be returned.
++     *
++     * @param methodStr The string containing HTTP method name
++     * @return          The HttpMethod corresponding to the provided string
+      */
+     public static HttpMethod get(String methodStr) {
+         HttpMethod method = methods.get(methodStr);
+
+File: src/test/java/spark/examples/templateview/FreeMarkerExample.java
+Patch:
+@@ -3,9 +3,8 @@
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+-import spark.ModelAndView;
+-
+ import static spark.Spark.get;
++import static spark.Spark.modelAndView;
+ 
+ public class FreeMarkerExample {
+ 
+@@ -17,7 +16,7 @@ public static void main(String args[]) {
+ 
+             // The hello.ftl file is located in directory:
+             // src/test/resources/spark/examples/templateview/freemarker
+-            return new ModelAndView(attributes, "hello.ftl");
++            return modelAndView(attributes, "hello.ftl");
+         }, new FreeMarkerTemplateEngine());
+ 
+     }
+
+File: src/main/java/spark/Service.java
+Patch:
+@@ -336,7 +336,7 @@ public synchronized void notFound(String page) {
+      *
+      * @param page the custom 500 internal server error page.
+      */
+-    public void internalServerError(String page) {
++    public synchronized void internalServerError(String page) {
+         CustomErrorPages.add(500, page);
+     }
+ 
+@@ -350,7 +350,7 @@ public synchronized void notFound(Route route) {
+     /**
+      * Maps 500 internal server errors to the provided route.
+      */
+-    public void internalServerError(Route route) {
++    public synchronized void internalServerError(Route route) {
+         CustomErrorPages.add(500, route);
+     }
+ 
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -103,7 +103,7 @@ protected Request() {
+     }
+ 
+     /**
+-     * Constructor - Used solely in the case of custom error pages.
++     * Constructor - Used to create a request and no RouteMatch is available.
+      *
+      * @param request the servlet request
+      */
+
+File: src/main/java/spark/RequestResponseFactory.java
+Patch:
+@@ -27,7 +27,7 @@ private RequestResponseFactory() {
+     }
+ 
+     /**
+-     * Solely used for custom error pages.
++     * Used to create a request and no RouteMatch is available.
+      */
+     public static Request create(HttpServletRequest request) {
+         return new Request(request);
+
+File: src/main/java/spark/Service.java
+Patch:
+@@ -354,7 +354,6 @@ public void internalServerError(Route route) {
+         CustomErrorPages.add(500, route);
+     }
+ 
+-
+     /**
+      * Waits for the spark server to be initialized.
+      * If it's already initialized will return immediately
+
+File: src/main/java/spark/resource/ClassPathResourceHandler.java
+Patch:
+@@ -70,11 +70,11 @@ protected AbstractFileResolvingResource getResource(String path) throws Malforme
+ 
+             ClassPathResource resource = new ClassPathResource(addedPath);
+ 
+-            if (resource.exists() && resource.getFile().isDirectory()) {
++            if (resource.exists() && path.endsWith("/")) {
+                 if (welcomeFile != null) {
+                     resource = new ClassPathResource(addPaths(resource.getPath(), welcomeFile));
+                 } else {
+-                    //  No welcome file configured, serve nothing since it's a directory
++                    // No welcome file configured, serve nothing since it's a directory
+                     resource = null;
+                 }
+             }
+
+File: src/main/java/spark/ExceptionHandlerImpl.java
+Patch:
+@@ -16,7 +16,7 @@
+  */
+ package spark;
+ 
+-public abstract class ExceptionHandlerImpl {
++public abstract class ExceptionHandlerImpl implements ExceptionHandler {
+     /**
+      * Holds the type of exception that this filter will handle
+      */
+
+File: src/main/java/spark/ResponseTransformerRouteImpl.java
+Patch:
+@@ -36,7 +36,7 @@ public static ResponseTransformerRouteImpl create(String path,
+                                                       String acceptType,
+                                                       Route route,
+                                                       ResponseTransformer transformer) {
+-        return new ResponseTransformerRouteImpl(path, acceptType) {
++        return new ResponseTransformerRouteImpl(path, acceptType, route) {
+             @Override
+             public Object render(Object model) throws Exception {
+                 return transformer.render(model);
+@@ -49,8 +49,8 @@ public Object handle(Request request, Response response) throws Exception {
+         };
+     }
+ 
+-    protected ResponseTransformerRouteImpl(String path, String acceptType) {
+-        super(path, acceptType);
++    protected ResponseTransformerRouteImpl(String path, String acceptType, Route route) {
++        super(path, acceptType, route);
+     }
+ 
+     /**
+
+File: src/main/java/spark/RouteImpl.java
+Patch:
+@@ -30,7 +30,7 @@ public abstract class RouteImpl implements Route, Wrapper {
+ 
+     private String path;
+     private String acceptType;
+-    private Route delegate;
++    private Object delegate;
+ 
+     /**
+      * Wraps the route in RouteImpl
+@@ -90,7 +90,7 @@ protected RouteImpl(String path, String acceptType) {
+      * @param acceptType The accept type which is used for matching.
+      * @param route      The route used to create the route implementation
+      */
+-    protected RouteImpl(String path, String acceptType, Route route) {
++    protected RouteImpl(String path, String acceptType, Object route) {
+         this(path, acceptType);
+         this.delegate = route;
+     }
+
+File: src/main/java/spark/TemplateViewRoute.java
+Patch:
+@@ -34,7 +34,7 @@ public interface TemplateViewRoute {
+      * @param request  The request object providing information about the HTTP request
+      * @param response The response object providing functionality for modifying the response
+      * @return The content to be set in the response
+-     * @throws java.lang.Exception
++     * @throws java.lang.Exception when handle fails
+      */
+     ModelAndView handle(Request request, Response response) throws Exception;
+ 
+
+File: src/main/java/spark/embeddedserver/jetty/websocket/WebSocketServletContextHandlerFactory.java
+Patch:
+@@ -40,7 +40,7 @@ public class WebSocketServletContextHandlerFactory {
+      * @param webSocketIdleTimeoutMillis webSocketIdleTimeoutMillis
+      * @return a new websocket servlet context handler or 'null' if creation failed.
+      */
+-    public static ServletContextHandler create(Map<String, Class<?>> webSocketHandlers,
++    public static ServletContextHandler create(Map<String, WebSocketHandlerWrapper> webSocketHandlers,
+                                                Optional<Integer> webSocketIdleTimeoutMillis) {
+         ServletContextHandler webSocketServletContextHandler = null;
+         if (webSocketHandlers != null) {
+
+File: src/main/java/spark/route/HttpMethod.java
+Patch:
+@@ -35,6 +35,9 @@ public enum HttpMethod {
+     /**
+      * Gets the HttpMethod corresponding to the provided string. If no corresponding method can be found
+      * {@link spark.route.HttpMethod#unsupported} will be returned.
++     *
++     * @param methodStr The string containing HTTP method name
++     * @return          The HttpMethod corresponding to the provided string
+      */
+     public static HttpMethod get(String methodStr) {
+         HttpMethod method = methods.get(methodStr);
+
+File: src/test/java/spark/examples/templateview/FreeMarkerExample.java
+Patch:
+@@ -3,9 +3,8 @@
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+-import spark.ModelAndView;
+-
+ import static spark.Spark.get;
++import static spark.Spark.modelAndView;
+ 
+ public class FreeMarkerExample {
+ 
+@@ -17,7 +16,7 @@ public static void main(String args[]) {
+ 
+             // The hello.ftl file is located in directory:
+             // src/test/resources/spark/examples/templateview/freemarker
+-            return new ModelAndView(attributes, "hello.ftl");
++            return modelAndView(attributes, "hello.ftl");
+         }, new FreeMarkerTemplateEngine());
+ 
+     }
+
+File: src/main/java/spark/ExceptionHandlerImpl.java
+Patch:
+@@ -16,7 +16,7 @@
+  */
+ package spark;
+ 
+-public abstract class ExceptionHandlerImpl {
++public abstract class ExceptionHandlerImpl implements ExceptionHandler {
+     /**
+      * Holds the type of exception that this filter will handle
+      */
+
+File: src/main/java/spark/ResponseTransformerRouteImpl.java
+Patch:
+@@ -36,7 +36,7 @@ public static ResponseTransformerRouteImpl create(String path,
+                                                       String acceptType,
+                                                       Route route,
+                                                       ResponseTransformer transformer) {
+-        return new ResponseTransformerRouteImpl(path, acceptType) {
++        return new ResponseTransformerRouteImpl(path, acceptType, route) {
+             @Override
+             public Object render(Object model) throws Exception {
+                 return transformer.render(model);
+@@ -49,8 +49,8 @@ public Object handle(Request request, Response response) throws Exception {
+         };
+     }
+ 
+-    protected ResponseTransformerRouteImpl(String path, String acceptType) {
+-        super(path, acceptType);
++    protected ResponseTransformerRouteImpl(String path, String acceptType, Route route) {
++        super(path, acceptType, route);
+     }
+ 
+     /**
+
+File: src/main/java/spark/RouteImpl.java
+Patch:
+@@ -30,7 +30,7 @@ public abstract class RouteImpl implements Route, Wrapper {
+ 
+     private String path;
+     private String acceptType;
+-    private Route delegate;
++    private Object delegate;
+ 
+     /**
+      * Wraps the route in RouteImpl
+@@ -90,7 +90,7 @@ protected RouteImpl(String path, String acceptType) {
+      * @param acceptType The accept type which is used for matching.
+      * @param route      The route used to create the route implementation
+      */
+-    protected RouteImpl(String path, String acceptType, Route route) {
++    protected RouteImpl(String path, String acceptType, Object route) {
+         this(path, acceptType);
+         this.delegate = route;
+     }
+
+File: src/main/java/spark/TemplateViewRoute.java
+Patch:
+@@ -34,7 +34,7 @@ public interface TemplateViewRoute {
+      * @param request  The request object providing information about the HTTP request
+      * @param response The response object providing functionality for modifying the response
+      * @return The content to be set in the response
+-     * @throws java.lang.Exception
++     * @throws java.lang.Exception when handle fails
+      */
+     ModelAndView handle(Request request, Response response) throws Exception;
+ 
+
+File: src/main/java/spark/embeddedserver/jetty/websocket/WebSocketServletContextHandlerFactory.java
+Patch:
+@@ -40,7 +40,7 @@ public class WebSocketServletContextHandlerFactory {
+      * @param webSocketIdleTimeoutMillis webSocketIdleTimeoutMillis
+      * @return a new websocket servlet context handler or 'null' if creation failed.
+      */
+-    public static ServletContextHandler create(Map<String, Class<?>> webSocketHandlers,
++    public static ServletContextHandler create(Map<String, WebSocketHandlerWrapper> webSocketHandlers,
+                                                Optional<Integer> webSocketIdleTimeoutMillis) {
+         ServletContextHandler webSocketServletContextHandler = null;
+         if (webSocketHandlers != null) {
+
+File: src/main/java/spark/route/HttpMethod.java
+Patch:
+@@ -35,6 +35,9 @@ public enum HttpMethod {
+     /**
+      * Gets the HttpMethod corresponding to the provided string. If no corresponding method can be found
+      * {@link spark.route.HttpMethod#unsupported} will be returned.
++     *
++     * @param methodStr The string containing HTTP method name
++     * @return          The HttpMethod corresponding to the provided string
+      */
+     public static HttpMethod get(String methodStr) {
+         HttpMethod method = methods.get(methodStr);
+
+File: src/test/java/spark/examples/templateview/FreeMarkerExample.java
+Patch:
+@@ -3,9 +3,8 @@
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+-import spark.ModelAndView;
+-
+ import static spark.Spark.get;
++import static spark.Spark.modelAndView;
+ 
+ public class FreeMarkerExample {
+ 
+@@ -17,7 +16,7 @@ public static void main(String args[]) {
+ 
+             // The hello.ftl file is located in directory:
+             // src/test/resources/spark/examples/templateview/freemarker
+-            return new ModelAndView(attributes, "hello.ftl");
++            return modelAndView(attributes, "hello.ftl");
+         }, new FreeMarkerTemplateEngine());
+ 
+     }
+
+File: src/main/java/spark/staticfiles/StaticFilesConfiguration.java
+Patch:
+@@ -78,7 +78,8 @@ public boolean consume(HttpServletRequest httpRequest,
+                 return true;
+             }
+         } catch (DirectoryTraversal.DirectoryTraversalDetection directoryTraversalDetection) {
+-            LOG.warn("directoryTraversalDetection for path: " + httpRequest.getPathInfo());
++            LOG.warn(directoryTraversalDetection.getMessage() + " directory traversal detection for path: "
++                             + httpRequest.getPathInfo());
+         }
+         return false;
+     }
+
+File: src/test/java/spark/StaticFilesTest.java
+Patch:
+@@ -69,7 +69,6 @@ public static void setup() throws IOException {
+         testUtil = new SparkTestUtil(4567);
+ 
+         tmpExternalFile = new File(System.getProperty("java.io.tmpdir"), EXTERNAL_FILE_NAME_HTML);
+-        System.out.println("externalFileFolder = " + System.getProperty("java.io.tmpdir"));
+ 
+         FileWriter writer = new FileWriter(tmpExternalFile);
+         writer.write(CONTENT_OF_EXTERNAL_FILE);
+
+File: src/main/java/spark/Service.java
+Patch:
+@@ -45,7 +45,7 @@
+  * the semantic makes sense. For example 'http' is a good variable name since when adding routes it would be:
+  * Service http = ignite();
+  * ...
+- * http.get("/hello", (q, a) -> "Hello World");
++ * http.get("/hello", (q, a) {@literal ->} "Hello World");
+  */
+ public final class Service extends Routable {
+     private static final Logger LOG = LoggerFactory.getLogger("spark.Spark");
+
+File: src/main/java/spark/TemplateViewRoute.java
+Patch:
+@@ -34,7 +34,7 @@ public interface TemplateViewRoute {
+      * @param request  The request object providing information about the HTTP request
+      * @param response The response object providing functionality for modifying the response
+      * @return The content to be set in the response
+-     * @throws java.lang.Exception
++     * @throws java.lang.Exception when handle fails
+      */
+     ModelAndView handle(Request request, Response response) throws Exception;
+ 
+
+File: src/main/java/spark/embeddedserver/NotSupportedException.java
+Patch:
+@@ -25,6 +25,9 @@ public class NotSupportedException extends RuntimeException {
+ 
+     /**
+      * Raises a NotSupportedException for the provided class name and feature name.
++     *
++     * @param clazz   the class name
++     * @param feature the feature name
+      */
+     public static void raise(String clazz, String feature) {
+         throw new NotSupportedException(clazz, feature);
+
+File: src/main/java/spark/http/matching/MatcherFilter.java
+Patch:
+@@ -59,6 +59,7 @@ public class MatcherFilter implements Filter {
+      * Constructor
+      *
+      * @param routeMatcher      The route matcher
++     * @param staticFiles       The static files configuration object
+      * @param externalContainer Tells the filter that Spark is run in an external web container.
+      *                          If true, chain.doFilter will be invoked if request is not consumed by Spark.
+      * @param hasOtherHandlers  If true, do nothing if request is not consumed by Spark in order to let others handlers process the request.
+
+File: src/main/java/spark/route/HttpMethod.java
+Patch:
+@@ -35,6 +35,9 @@ public enum HttpMethod {
+     /**
+      * Gets the HttpMethod corresponding to the provided string. If no corresponding method can be found
+      * {@link spark.route.HttpMethod#unsupported} will be returned.
++     *
++     * @param methodStr The string containing HTTP method name
++     * @return          The HttpMethod corresponding to the provided string
+      */
+     public static HttpMethod get(String methodStr) {
+         HttpMethod method = methods.get(methodStr);
+
+File: src/main/java/spark/RouteImpl.java
+Patch:
+@@ -30,7 +30,7 @@ public abstract class RouteImpl implements Route, Wrapper {
+ 
+     private String path;
+     private String acceptType;
+-    private Route delegate;
++    private Object delegate;
+ 
+     /**
+      * Wraps the route in RouteImpl
+@@ -90,7 +90,7 @@ protected RouteImpl(String path, String acceptType) {
+      * @param acceptType The accept type which is used for matching.
+      * @param route      The route used to create the route implementation
+      */
+-    protected RouteImpl(String path, String acceptType, Route route) {
++    protected RouteImpl(String path, String acceptType, Object route) {
+         this(path, acceptType);
+         this.delegate = route;
+     }
+
+File: src/main/java/spark/RouteImpl.java
+Patch:
+@@ -30,7 +30,7 @@ public abstract class RouteImpl implements Route, Wrapper {
+ 
+     private String path;
+     private String acceptType;
+-    private Route delegate;
++    private Object delegate;
+ 
+     /**
+      * Wraps the route in RouteImpl
+@@ -90,7 +90,7 @@ protected RouteImpl(String path, String acceptType) {
+      * @param acceptType The accept type which is used for matching.
+      * @param route      The route used to create the route implementation
+      */
+-    protected RouteImpl(String path, String acceptType, Route route) {
++    protected RouteImpl(String path, String acceptType, Object route) {
+         this(path, acceptType);
+         this.delegate = route;
+     }
+
+File: src/main/java/spark/ResponseTransformerRouteImpl.java
+Patch:
+@@ -36,7 +36,7 @@ public static ResponseTransformerRouteImpl create(String path,
+                                                       String acceptType,
+                                                       Route route,
+                                                       ResponseTransformer transformer) {
+-        return new ResponseTransformerRouteImpl(path, acceptType) {
++        return new ResponseTransformerRouteImpl(path, acceptType, route) {
+             @Override
+             public Object render(Object model) throws Exception {
+                 return transformer.render(model);
+@@ -49,8 +49,8 @@ public Object handle(Request request, Response response) throws Exception {
+         };
+     }
+ 
+-    protected ResponseTransformerRouteImpl(String path, String acceptType) {
+-        super(path, acceptType);
++    protected ResponseTransformerRouteImpl(String path, String acceptType, Route route) {
++        super(path, acceptType, route);
+     }
+ 
+     /**
+
+File: src/main/java/spark/embeddedserver/EmbeddedServer.java
+Patch:
+@@ -38,8 +38,10 @@ public interface EmbeddedServer {
+      * @param maxThreads              - max nbr of threads.
+      * @param minThreads              - min nbr of threads.
+      * @param threadIdleTimeoutMillis - idle timeout (ms).
++     *
++     * @return The port number the server was launched on.
+      */
+-    void ignite(String host,
++    int ignite(String host,
+                 int port,
+                 SslStores sslStores,
+                 CountDownLatch latch,
+
+File: src/main/java/spark/embeddedserver/jetty/EmbeddedJettyServer.java
+Patch:
+@@ -71,7 +71,7 @@ public void configureWebSockets(Map<String, Class<?>> webSocketHandlers,
+      * {@inheritDoc}
+      */
+     @Override
+-    public void ignite(String host,
++    public int ignite(String host,
+                        int port,
+                        SslStores sslStores,
+                        CountDownLatch latch,
+@@ -132,6 +132,8 @@ public void ignite(String host,
+             logger.error("ignite failed", e);
+             System.exit(100); // NOSONAR
+         }
++
++        return port;
+     }
+ 
+     /**
+
+File: src/main/java/spark/ResponseTransformerRouteImpl.java
+Patch:
+@@ -36,7 +36,7 @@ public static ResponseTransformerRouteImpl create(String path,
+                                                       String acceptType,
+                                                       Route route,
+                                                       ResponseTransformer transformer) {
+-        return new ResponseTransformerRouteImpl(path, acceptType) {
++        return new ResponseTransformerRouteImpl(path, acceptType, route) {
+             @Override
+             public Object render(Object model) throws Exception {
+                 return transformer.render(model);
+@@ -49,8 +49,8 @@ public Object handle(Request request, Response response) throws Exception {
+         };
+     }
+ 
+-    protected ResponseTransformerRouteImpl(String path, String acceptType) {
+-        super(path, acceptType);
++    protected ResponseTransformerRouteImpl(String path, String acceptType, Route route) {
++        super(path, acceptType, route);
+     }
+ 
+     /**
+
+File: src/main/java/spark/Service.java
+Patch:
+@@ -42,7 +42,7 @@
+  * the semantic makes sense. For example 'http' is a good variable name since when adding routes it would be:
+  * Service http = ignite();
+  * ...
+- * http.get("/hello", (q, a) -> "Hello World");
++ * http.get("/hello", (q, a) {@literal ->} "Hello World");
+  */
+ public final class Service extends Routable {
+     private static final Logger LOG = LoggerFactory.getLogger("spark.Spark");
+
+File: src/main/java/spark/TemplateViewRoute.java
+Patch:
+@@ -34,7 +34,7 @@ public interface TemplateViewRoute {
+      * @param request  The request object providing information about the HTTP request
+      * @param response The response object providing functionality for modifying the response
+      * @return The content to be set in the response
+-     * @throws java.lang.Exception
++     * @throws java.lang.Exception when handle fails
+      */
+     ModelAndView handle(Request request, Response response) throws Exception;
+ 
+
+File: src/main/java/spark/embeddedserver/NotSupportedException.java
+Patch:
+@@ -25,6 +25,9 @@ public class NotSupportedException extends RuntimeException {
+ 
+     /**
+      * Raises a NotSupportedException for the provided class name and feature name.
++     *
++     * @param clazz   the class name
++     * @param feature the feature name
+      */
+     public static void raise(String clazz, String feature) {
+         throw new NotSupportedException(clazz, feature);
+
+File: src/main/java/spark/http/matching/MatcherFilter.java
+Patch:
+@@ -59,6 +59,7 @@ public class MatcherFilter implements Filter {
+      * Constructor
+      *
+      * @param routeMatcher      The route matcher
++     * @param staticFiles       The static files configuration object
+      * @param externalContainer Tells the filter that Spark is run in an external web container.
+      *                          If true, chain.doFilter will be invoked if request is not consumed by Spark.
+      * @param hasOtherHandlers  If true, do nothing if request is not consumed by Spark in order to let others handlers process the request.
+
+File: src/main/java/spark/route/HttpMethod.java
+Patch:
+@@ -35,6 +35,9 @@ public enum HttpMethod {
+     /**
+      * Gets the HttpMethod corresponding to the provided string. If no corresponding method can be found
+      * {@link spark.route.HttpMethod#unsupported} will be returned.
++     *
++     * @param methodStr The string containing HTTP method name
++     * @return          The HttpMethod corresponding to the provided string
+      */
+     public static HttpMethod get(String methodStr) {
+         HttpMethod method = methods.get(methodStr);
+
+File: src/main/java/spark/staticfiles/MimeType.java
+Patch:
+@@ -80,6 +80,7 @@ public class MimeType {
+         put("txt", "text/plain");
+         put("wav", "audio/wav,audio/x-wav");
+         put("woff", "application/font-woff");
++        put("woff2", "application/font-woff2");
+         put("xlam", "application/vnd.ms-excel.addin.macroEnabled.12");
+         put("xls", "application/vnd.ms-excel");
+         put("xlsb", "application/vnd.ms-excel.sheet.binary.macroEnabled.12");
+
+File: src/main/java/spark/staticfiles/StaticFilesConfiguration.java
+Patch:
+@@ -86,7 +86,7 @@ private boolean consumeWithFileResourceHandlers(HttpServletRequest httpRequest,
+                 AbstractFileResolvingResource resource = staticResourceHandler.getResource(httpRequest);
+ 
+                 if (resource != null && resource.isReadable()) {
+-                    httpResponse.setHeader(MimeType.CONTENT_TYPE, MimeType.getFromResource(resource));
++                    httpResponse.setHeader(MimeType.CONTENT_TYPE, MimeType.fromResource(resource));
+                     customHeaders.forEach(httpResponse::setHeader); //add all user-defined headers to response
+                     OutputStream wrappedOutputStream = GzipUtils.checkAndWrap(httpRequest, httpResponse, false);
+                     IOUtils.copy(resource.getInputStream(), wrappedOutputStream);
+
+File: src/main/java/spark/staticfiles/StaticFilesConfiguration.java
+Patch:
+@@ -44,7 +44,7 @@
+ 
+ /**
+  * Holds the static file configuration.
+- * TODO: Cache-Control and ETAG
++ * TODO: ETAG ?
+  */
+ public class StaticFilesConfiguration {
+     private final Logger LOG = LoggerFactory.getLogger(StaticFilesConfiguration.class);
+@@ -86,8 +86,9 @@ private boolean consumeWithFileResourceHandlers(HttpServletRequest httpRequest,
+                 AbstractFileResolvingResource resource = staticResourceHandler.getResource(httpRequest);
+ 
+                 if (resource != null && resource.isReadable()) {
+-                    OutputStream wrappedOutputStream = GzipUtils.checkAndWrap(httpRequest, httpResponse, false);
++                    httpResponse.setHeader(MimeType.CONTENT_TYPE, MimeType.getFromResource(resource));
+                     customHeaders.forEach(httpResponse::setHeader); //add all user-defined headers to response
++                    OutputStream wrappedOutputStream = GzipUtils.checkAndWrap(httpRequest, httpResponse, false);
+                     IOUtils.copy(resource.getInputStream(), wrappedOutputStream);
+                     wrappedOutputStream.flush();
+                     wrappedOutputStream.close();
+
+File: src/test/java/spark/StaticFilesTest.java
+Patch:
+@@ -106,6 +106,8 @@ public void testMimeTypes() throws Exception {
+     public void testCustomMimeType() throws Exception {
+         staticFiles.registerMimeType("png", "custom-png-value");
+         Assert.assertEquals("custom-png-value", doGet("/img/sparkLogo.png").headers.get("Content-Type"));
++        staticFiles.registerMimeType("png", "image/png");
++        Assert.assertEquals("image/png", doGet("/img/sparkLogo.png").headers.get("Content-Type"));
+     }
+ 
+     @Test
+@@ -166,5 +168,4 @@ private SparkTestUtil.UrlResponse doGet(String fileName) throws Exception {
+         return testUtil.doMethod("GET", fileName, null);
+     }
+ 
+-
+ }
+
+File: src/main/java/spark/staticfiles/StaticFilesConfiguration.java
+Patch:
+@@ -44,7 +44,7 @@
+ 
+ /**
+  * Holds the static file configuration.
+- * TODO: Cache-Control and ETAG
++ * TODO: ETAG ?
+  */
+ public class StaticFilesConfiguration {
+     private final Logger LOG = LoggerFactory.getLogger(StaticFilesConfiguration.class);
+@@ -86,8 +86,9 @@ private boolean consumeWithFileResourceHandlers(HttpServletRequest httpRequest,
+                 AbstractFileResolvingResource resource = staticResourceHandler.getResource(httpRequest);
+ 
+                 if (resource != null && resource.isReadable()) {
+-                    OutputStream wrappedOutputStream = GzipUtils.checkAndWrap(httpRequest, httpResponse, false);
++                    httpResponse.setHeader(MimeType.CONTENT_TYPE, MimeType.getFromResource(resource));
+                     customHeaders.forEach(httpResponse::setHeader); //add all user-defined headers to response
++                    OutputStream wrappedOutputStream = GzipUtils.checkAndWrap(httpRequest, httpResponse, false);
+                     IOUtils.copy(resource.getInputStream(), wrappedOutputStream);
+                     wrappedOutputStream.flush();
+                     wrappedOutputStream.close();
+
+File: src/main/java/spark/embeddedserver/EmbeddedServer.java
+Patch:
+@@ -38,8 +38,10 @@ public interface EmbeddedServer {
+      * @param maxThreads              - max nbr of threads.
+      * @param minThreads              - min nbr of threads.
+      * @param threadIdleTimeoutMillis - idle timeout (ms).
++     *
++     * @return The port number the server was launched on.
+      */
+-    void ignite(String host,
++    int ignite(String host,
+                 int port,
+                 SslStores sslStores,
+                 CountDownLatch latch,
+
+File: src/main/java/spark/embeddedserver/jetty/EmbeddedJettyServer.java
+Patch:
+@@ -71,7 +71,7 @@ public void configureWebSockets(Map<String, Class<?>> webSocketHandlers,
+      * {@inheritDoc}
+      */
+     @Override
+-    public void ignite(String host,
++    public int ignite(String host,
+                        int port,
+                        SslStores sslStores,
+                        CountDownLatch latch,
+@@ -132,6 +132,8 @@ public void ignite(String host,
+             logger.error("ignite failed", e);
+             System.exit(100); // NOSONAR
+         }
++
++        return port;
+     }
+ 
+     /**
+
+File: src/main/java/spark/embeddedserver/EmbeddedServer.java
+Patch:
+@@ -45,7 +45,7 @@ void ignite(String host,
+                 CountDownLatch latch,
+                 int maxThreads,
+                 int minThreads,
+-                int threadIdleTimeoutMillis);
++                int threadIdleTimeoutMillis) throws Exception;
+ 
+     /**
+      * Configures the web sockets for the embedded server.
+
+File: src/main/java/spark/ResponseTransformerRouteImpl.java
+Patch:
+@@ -29,7 +29,7 @@
+ public abstract class ResponseTransformerRouteImpl extends RouteImpl {
+ 
+     public static ResponseTransformerRouteImpl create(String path, Route route, ResponseTransformer transformer) {
+-        return create(path, SparkInstance.DEFAULT_ACCEPT_TYPE, route, transformer);
++        return create(path, Service.DEFAULT_ACCEPT_TYPE, route, transformer);
+     }
+ 
+     public static ResponseTransformerRouteImpl create(String path,
+
+File: src/main/java/spark/TemplateViewRouteImpl.java
+Patch:
+@@ -38,7 +38,7 @@ public static TemplateViewRouteImpl create(String path,
+                                                TemplateViewRoute route,
+                                                TemplateEngine engine) {
+ 
+-        return create(path, SparkInstance.DEFAULT_ACCEPT_TYPE, route, engine);
++        return create(path, Service.DEFAULT_ACCEPT_TYPE, route, engine);
+     }
+ 
+     /**
+
+File: src/main/java/spark/http/matching/AfterFilters.java
+Patch:
+@@ -33,9 +33,9 @@ static void execute(RouteContext context) throws Exception {
+ 
+         Object content = context.body().get();
+ 
+-        List<RouteMatch> matchSet = context.routeMatcher().findTargetsForRequestedRoute(HttpMethod.after,
+-                                                                                        context.uri(),
+-                                                                                        context.acceptType());
++        List<RouteMatch> matchSet = context.routeMatcher().findMultiple(HttpMethod.after,
++                                                                        context.uri(),
++                                                                        context.acceptType());
+ 
+         for (RouteMatch filterMatch : matchSet) {
+             Object filterTarget = filterMatch.getTarget();
+
+File: src/main/java/spark/http/matching/BeforeFilters.java
+Patch:
+@@ -32,7 +32,7 @@ final class BeforeFilters {
+     static void execute(RouteContext context) throws Exception {
+         Object content = context.body().get();
+ 
+-        List<RouteMatch> matchSet = context.routeMatcher().findTargetsForRequestedRoute(HttpMethod.before, context.uri(), context.acceptType());
++        List<RouteMatch> matchSet = context.routeMatcher().findMultiple(HttpMethod.before, context.uri(), context.acceptType());
+ 
+         for (RouteMatch filterMatch : matchSet) {
+             Object filterTarget = filterMatch.getTarget();
+
+File: src/main/java/spark/resource/AbstractResourceHandler.java
+Patch:
+@@ -77,7 +77,7 @@ public AbstractFileResolvingResource getResource(HttpServletRequest request) thr
+      * @param segment2 URI path segment (should be encoded)
+      * @return Legally combined path segments.
+      */
+-    protected static String addPaths(String segment1, String segment2) {
++    public static String addPaths(String segment1, String segment2) {
+         if (segment1 == null || segment1.length() == 0) {
+             if (segment1 != null && segment2 == null) {
+                 return segment1;
+
+File: src/main/java/spark/utils/CollectionUtils.java
+Patch:
+@@ -17,7 +17,6 @@
+ package spark.utils;
+ 
+ import java.util.Collection;
+-import java.util.Map;
+ 
+ /**
+  * Miscellaneous collection utility methods.
+
+File: src/main/java/spark/utils/MimeParse.java
+Patch:
+@@ -171,8 +171,8 @@ private static FitnessAndQuality fitnessAndQualityParsed(String mimeType, Collec
+      * @return the best match
+      */
+     public static String bestMatch(Collection<String> supported, String header) {
+-        List<ParseResults> parseResults = new LinkedList<ParseResults>();
+-        List<FitnessAndQuality> weightedMatches = new LinkedList<FitnessAndQuality>();
++        List<ParseResults> parseResults = new LinkedList<>();
++        List<FitnessAndQuality> weightedMatches = new LinkedList<>();
+         for (String r : header.split(",")) {
+             parseResults.add(parseMediaRange(r));
+         }
+
+File: src/main/java/spark/utils/SparkUtils.java
+Patch:
+@@ -33,7 +33,7 @@ private SparkUtils() {
+ 
+     public static List<String> convertRouteToList(String route) {
+         String[] pathArray = route.split("/");
+-        List<String> path = new ArrayList<String>();
++        List<String> path = new ArrayList<>();
+         for (String p : pathArray) {
+             if (p.length() > 0) {
+                 path.add(p);
+
+File: src/main/java/spark/utils/StringUtils.java
+Patch:
+@@ -220,7 +220,7 @@ public static String cleanPath(String path) {
+         }
+ 
+         String[] pathArray = delimitedListToStringArray(pathToUse, FOLDER_SEPARATOR);
+-        List<String> pathElements = new LinkedList<String>();
++        List<String> pathElements = new LinkedList<>();
+         int tops = 0;
+ 
+         for (int i = pathArray.length - 1; i >= 0; i--) {
+@@ -299,7 +299,7 @@ public static String[] delimitedListToStringArray(String str, String delimiter,
+         if (delimiter == null) {
+             return new String[] {str};
+         }
+-        List<String> result = new ArrayList<String>();
++        List<String> result = new ArrayList<>();
+         if ("".equals(delimiter)) {
+             for (int i = 0; i < str.length(); i++) {
+                 result.add(deleteAny(str.substring(i, i + 1), charsToDelete));
+
+File: src/test/java/spark/CookiesIntegrationTest.java
+Patch:
+@@ -7,7 +7,7 @@
+ import org.apache.http.HttpResponse;
+ import org.apache.http.client.HttpClient;
+ import org.apache.http.client.methods.HttpPost;
+-import org.apache.http.impl.client.DefaultHttpClient;
++import org.apache.http.impl.client.HttpClientBuilder;
+ import org.junit.AfterClass;
+ import org.junit.BeforeClass;
+ import org.junit.Test;
+@@ -20,7 +20,7 @@
+ public class CookiesIntegrationTest {
+ 
+     private static final String DEFAULT_HOST_URL = "http://localhost:4567";
+-    private HttpClient httpClient = new DefaultHttpClient();
++    private HttpClient httpClient = HttpClientBuilder.create().build();
+ 
+     @BeforeClass
+     public static void initRoutes() throws InterruptedException {
+
+File: src/test/java/spark/GzipTest.java
+Patch:
+@@ -27,7 +27,6 @@
+ 
+ import static org.junit.Assert.assertEquals;
+ import static spark.Spark.awaitInitialization;
+-import static spark.Spark.staticFileLocation;
+ import static spark.Spark.stop;
+ 
+ /**
+
+File: src/test/java/spark/QueryParamsMapTest.java
+Patch:
+@@ -16,7 +16,7 @@ public class QueryParamsMapTest {
+     
+     @Test
+     public void constructorWithParametersMap() {
+-        Map<String,String[]> params = new HashMap<String,String[]>();
++        Map<String,String[]> params = new HashMap<>();
+         
+         params.put("user[info][name]",new String[] {"fede"});
+         
+@@ -102,7 +102,7 @@ public void testConstructor() {
+     
+     @Test
+     public void testToMap() {
+-        Map<String,String[]> params = new HashMap<String,String[]>();
++        Map<String,String[]> params = new HashMap<>();
+         
+         params.put("user[info][name]",new String[] {"fede"});
+         params.put("user[info][last]",new String[] {"dayan"});
+
+File: src/test/java/spark/embeddedserver/jetty/SocketConnectorFactoryTest.java
+Patch:
+@@ -1,5 +1,6 @@
+ package spark.embeddedserver.jetty;
+ 
++import org.eclipse.jetty.server.ConnectionFactory;
+ import org.eclipse.jetty.server.Server;
+ import org.eclipse.jetty.server.ServerConnector;
+ import org.eclipse.jetty.server.SslConnectionFactory;
+@@ -120,7 +121,7 @@ public void testCreateSecureSocketConnector() throws  Exception {
+         assertEquals("Server Connector Host should be set to the specified server", host, internalHost);
+         assertEquals("Server Connector Port should be set to the specified port", port, internalPort);
+ 
+-        Map factories = Whitebox.getInternalState(serverConnector, "_factories");
++        Map<String, ConnectionFactory> factories = Whitebox.getInternalState(serverConnector, "_factories");
+ 
+         assertTrue("Should return true because factory for SSL should have been set",
+                 factories.containsKey("ssl") && factories.get("ssl") != null);
+
+File: src/test/java/spark/embeddedserver/jetty/websocket/WebSocketCreatorFactoryTest.java
+Patch:
+@@ -10,7 +10,6 @@
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.fail;
+-import static org.powermock.api.mockito.PowerMockito.mockStatic;
+ 
+ public class WebSocketCreatorFactoryTest {
+ 
+@@ -41,7 +40,7 @@ public void testCannotCreateInvalidHandlers() {
+     public void testCreate_whenInstantiationException() throws Exception {
+ 
+         try {
+-            WebSocketCreator annotated = WebSocketCreatorFactory.create(FailingHandler.class);
++            WebSocketCreatorFactory.create(FailingHandler.class);
+             fail("Handler creation should have thrown a RunTimeException");
+         } catch(RuntimeException ex) {
+             assertEquals("Could not instantiate websocket handler", ex.getMessage());
+
+File: src/test/java/spark/embeddedserver/jetty/websocket/WebSocketServletContextHandlerFactoryTest.java
+Patch:
+@@ -5,6 +5,7 @@
+ import org.eclipse.jetty.websocket.server.WebSocketUpgradeFilter;
+ import org.eclipse.jetty.websocket.server.pathmap.PathMappings;
+ import org.eclipse.jetty.websocket.server.pathmap.PathSpec;
++import org.eclipse.jetty.websocket.servlet.WebSocketCreator;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.powermock.api.mockito.PowerMockito;
+@@ -46,7 +47,7 @@ public void testCreate_whenNoIdleTimeoutIsPresent() throws Exception {
+ 
+         assertNotNull("Should return a WebSocketUpgradeFilter because we configured it to have one", webSocketUpgradeFilter);
+ 
+-        PathMappings.MappedResource mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
++        PathMappings.MappedResource<WebSocketCreator> mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
+         WebSocketCreatorFactory.SparkWebSocketCreator sc = (WebSocketCreatorFactory.SparkWebSocketCreator) mappedResource.getResource();
+         PathSpec pathSpec = (PathSpec) mappedResource.getPathSpec();
+ 
+@@ -78,7 +79,7 @@ public void testCreate_whenTimeoutIsPresent() throws Exception {
+         assertEquals("Timeout value should be the same as the timeout specified when context handler was created",
+                 timeout.longValue(), webSocketServerFactory.getPolicy().getIdleTimeout());
+ 
+-        PathMappings.MappedResource mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
++        PathMappings.MappedResource<WebSocketCreator> mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
+         WebSocketCreatorFactory.SparkWebSocketCreator sc = (WebSocketCreatorFactory.SparkWebSocketCreator) mappedResource.getResource();
+         PathSpec pathSpec = (PathSpec) mappedResource.getPathSpec();
+ 
+
+File: src/test/java/spark/examples/books/Books.java
+Patch:
+@@ -35,7 +35,7 @@ public class Books {
+     /**
+      * Map holding the books
+      */
+-    public static Map<String, Book> books = new HashMap<String, Book>();
++    public static Map<String, Book> books = new HashMap<>();
+ 
+     public static void main(String[] args) {
+ 
+
+File: src/test/java/spark/examples/filter/FilterExample.java
+Patch:
+@@ -44,7 +44,7 @@
+  */
+ public class FilterExample {
+ 
+-    private static Map<String, String> usernamePasswords = new HashMap<String, String>();
++    private static Map<String, String> usernamePasswords = new HashMap<>();
+ 
+     public static void main(String[] args) {
+ 
+
+File: src/test/java/spark/examples/templateview/FreeMarkerTemplateEngine.java
+Patch:
+@@ -34,7 +34,7 @@ public String render(ModelAndView modelAndView) {
+     }
+ 
+     private Configuration createFreemarkerConfiguration() {
+-        Configuration retVal = new Configuration();
++        Configuration retVal = new Configuration(Configuration.DEFAULT_INCOMPATIBLE_IMPROVEMENTS);
+         retVal.setClassForTemplateLoading(FreeMarkerTemplateEngine.class, "freemarker");
+         return retVal;
+     }
+
+File: src/test/java/spark/utils/CollectionUtilsTest.java
+Patch:
+@@ -4,7 +4,6 @@
+ 
+ import java.util.ArrayList;
+ import java.util.Collection;
+-import java.util.Set;
+ 
+ import static org.junit.Assert.*;
+ 
+@@ -13,15 +12,15 @@ public class CollectionUtilsTest {
+     @Test
+     public void testIsEmpty_whenCollectionIsEmpty_thenReturnTrue() throws Exception {
+ 
+-        Collection testCollection = new ArrayList<>();
++        Collection<Object> testCollection = new ArrayList<>();
+ 
+         assertTrue("Should return true because collection is empty", CollectionUtils.isEmpty(testCollection));
+     }
+ 
+     @Test
+     public void testIsEmpty_whenCollectionIsNotEmpty_thenReturnFalse() throws Exception {
+ 
+-        Collection testCollection = new ArrayList<>();
++        Collection<Integer> testCollection = new ArrayList<>();
+         testCollection.add(1);
+         testCollection.add(2);
+ 
+
+File: src/test/java/spark/utils/SparkUtilsTest.java
+Patch:
+@@ -1,7 +1,6 @@
+ package spark.utils;
+ 
+ import org.junit.Test;
+-import spark.Spark;
+ 
+ import java.util.Arrays;
+ import java.util.List;
+
+File: src/main/java/spark/resource/AbstractResourceHandler.java
+Patch:
+@@ -77,7 +77,7 @@ public AbstractFileResolvingResource getResource(HttpServletRequest request) thr
+      * @param segment2 URI path segment (should be encoded)
+      * @return Legally combined path segments.
+      */
+-    protected static String addPaths(String segment1, String segment2) {
++    public static String addPaths(String segment1, String segment2) {
+         if (segment1 == null || segment1.length() == 0) {
+             if (segment1 != null && segment2 == null) {
+                 return segment1;
+
+File: src/main/java/spark/resource/AbstractResourceHandler.java
+Patch:
+@@ -77,7 +77,7 @@ public AbstractFileResolvingResource getResource(HttpServletRequest request) thr
+      * @param segment2 URI path segment (should be encoded)
+      * @return Legally combined path segments.
+      */
+-    protected static String addPaths(String segment1, String segment2) {
++    public static String addPaths(String segment1, String segment2) {
+         if (segment1 == null || segment1.length() == 0) {
+             if (segment1 != null && segment2 == null) {
+                 return segment1;
+
+File: src/test/java/spark/CookiesIntegrationTest.java
+Patch:
+@@ -7,7 +7,7 @@
+ import org.apache.http.HttpResponse;
+ import org.apache.http.client.HttpClient;
+ import org.apache.http.client.methods.HttpPost;
+-import org.apache.http.impl.client.DefaultHttpClient;
++import org.apache.http.impl.client.HttpClientBuilder;
+ import org.junit.AfterClass;
+ import org.junit.BeforeClass;
+ import org.junit.Test;
+@@ -20,7 +20,7 @@
+ public class CookiesIntegrationTest {
+ 
+     private static final String DEFAULT_HOST_URL = "http://localhost:4567";
+-    private HttpClient httpClient = new DefaultHttpClient();
++    private HttpClient httpClient = HttpClientBuilder.create().build();
+ 
+     @BeforeClass
+     public static void initRoutes() throws InterruptedException {
+
+File: src/test/java/spark/examples/templateview/FreeMarkerTemplateEngine.java
+Patch:
+@@ -34,7 +34,7 @@ public String render(ModelAndView modelAndView) {
+     }
+ 
+     private Configuration createFreemarkerConfiguration() {
+-        Configuration retVal = new Configuration();
++        Configuration retVal = new Configuration(Configuration.DEFAULT_INCOMPATIBLE_IMPROVEMENTS);
+         retVal.setClassForTemplateLoading(FreeMarkerTemplateEngine.class, "freemarker");
+         return retVal;
+     }
+
+File: src/main/java/spark/QueryParamsMap.java
+Patch:
+@@ -36,7 +36,7 @@ public class QueryParamsMap {
+     /**
+      * Holds the nested keys
+      */
+-    private Map<String, QueryParamsMap> queryMap = new HashMap<String, QueryParamsMap>();
++    private Map<String, QueryParamsMap> queryMap = new HashMap<>();
+ 
+     /**
+      * Value(s) for this key
+@@ -277,7 +277,7 @@ public NullQueryParamsMap() {
+      * @return Map representation
+      */
+     public Map<String, String[]> toMap() {
+-        Map<String, String[]> map = new HashMap<String, String[]>();
++        Map<String, String[]> map = new HashMap<>();
+ 
+         for (Entry<String, QueryParamsMap> key : this.queryMap.entrySet()) {
+             map.put(key.getKey(), key.getValue().values);
+
+File: src/main/java/spark/Session.java
+Patch:
+@@ -60,7 +60,7 @@ public void attribute(String name, Object value) {
+      * containing the names of all the objects bound to this session.
+      */
+     public Set<String> attributes() {
+-        TreeSet<String> attributes = new TreeSet<String>();
++        TreeSet<String> attributes = new TreeSet<>();
+         Enumeration<String> enumeration = session.getAttributeNames();
+         while (enumeration.hasMoreElements()) {
+             attributes.add(enumeration.nextElement());
+
+File: src/main/java/spark/utils/MimeParse.java
+Patch:
+@@ -171,8 +171,8 @@ private static FitnessAndQuality fitnessAndQualityParsed(String mimeType, Collec
+      * @return the best match
+      */
+     public static String bestMatch(Collection<String> supported, String header) {
+-        List<ParseResults> parseResults = new LinkedList<ParseResults>();
+-        List<FitnessAndQuality> weightedMatches = new LinkedList<FitnessAndQuality>();
++        List<ParseResults> parseResults = new LinkedList<>();
++        List<FitnessAndQuality> weightedMatches = new LinkedList<>();
+         for (String r : header.split(",")) {
+             parseResults.add(parseMediaRange(r));
+         }
+
+File: src/main/java/spark/utils/SparkUtils.java
+Patch:
+@@ -33,7 +33,7 @@ private SparkUtils() {
+ 
+     public static List<String> convertRouteToList(String route) {
+         String[] pathArray = route.split("/");
+-        List<String> path = new ArrayList<String>();
++        List<String> path = new ArrayList<>();
+         for (String p : pathArray) {
+             if (p.length() > 0) {
+                 path.add(p);
+
+File: src/main/java/spark/utils/StringUtils.java
+Patch:
+@@ -220,7 +220,7 @@ public static String cleanPath(String path) {
+         }
+ 
+         String[] pathArray = delimitedListToStringArray(pathToUse, FOLDER_SEPARATOR);
+-        List<String> pathElements = new LinkedList<String>();
++        List<String> pathElements = new LinkedList<>();
+         int tops = 0;
+ 
+         for (int i = pathArray.length - 1; i >= 0; i--) {
+@@ -299,7 +299,7 @@ public static String[] delimitedListToStringArray(String str, String delimiter,
+         if (delimiter == null) {
+             return new String[] {str};
+         }
+-        List<String> result = new ArrayList<String>();
++        List<String> result = new ArrayList<>();
+         if ("".equals(delimiter)) {
+             for (int i = 0; i < str.length(); i++) {
+                 result.add(deleteAny(str.substring(i, i + 1), charsToDelete));
+
+File: src/test/java/spark/QueryParamsMapTest.java
+Patch:
+@@ -16,7 +16,7 @@ public class QueryParamsMapTest {
+     
+     @Test
+     public void constructorWithParametersMap() {
+-        Map<String,String[]> params = new HashMap<String,String[]>();
++        Map<String,String[]> params = new HashMap<>();
+         
+         params.put("user[info][name]",new String[] {"fede"});
+         
+@@ -102,7 +102,7 @@ public void testConstructor() {
+     
+     @Test
+     public void testToMap() {
+-        Map<String,String[]> params = new HashMap<String,String[]>();
++        Map<String,String[]> params = new HashMap<>();
+         
+         params.put("user[info][name]",new String[] {"fede"});
+         params.put("user[info][last]",new String[] {"dayan"});
+
+File: src/test/java/spark/RequestTest.java
+Patch:
+@@ -45,7 +45,7 @@ public void queryParamShouldReturnsParametersFromQueryString() {
+ 
+     @Test
+     public void queryParamShouldBeParsedAsHashMap() {
+-        Map<String, String[]> params = new HashMap<String, String[]>();
++        Map<String, String[]> params = new HashMap<>();
+         params.put("user[name]", new String[] {"Federico"});
+ 
+         when(servletRequest.getParameterMap()).thenReturn(params);
+
+File: src/test/java/spark/examples/books/Books.java
+Patch:
+@@ -35,7 +35,7 @@ public class Books {
+     /**
+      * Map holding the books
+      */
+-    public static Map<String, Book> books = new HashMap<String, Book>();
++    public static Map<String, Book> books = new HashMap<>();
+ 
+     public static void main(String[] args) {
+ 
+
+File: src/test/java/spark/examples/filter/FilterExample.java
+Patch:
+@@ -44,7 +44,7 @@
+  */
+ public class FilterExample {
+ 
+-    private static Map<String, String> usernamePasswords = new HashMap<String, String>();
++    private static Map<String, String> usernamePasswords = new HashMap<>();
+ 
+     public static void main(String[] args) {
+ 
+
+File: src/test/java/spark/util/SparkTestUtil.java
+Patch:
+@@ -118,7 +118,7 @@ public UrlResponse doMethod(String requestMethod, String path, String body, bool
+         } else {
+             urlResponse.body = "";
+         }
+-        Map<String, String> headers = new HashMap<String, String>();
++        Map<String, String> headers = new HashMap<>();
+         Header[] allHeaders = httpResponse.getAllHeaders();
+         for (Header header : allHeaders) {
+             headers.put(header.getName(), header.getValue());
+
+File: src/test/java/spark/SessionTest.java
+Patch:
+@@ -31,7 +31,7 @@ public void testSession_whenHttpSessionIsNull_thenThrowException() {
+ 
+         try {
+ 
+-            Session session = new Session(null);
++            new Session(null);
+             fail("Session instantiation with a null HttpSession should throw an IllegalArgumentException");
+ 
+         } catch(IllegalArgumentException ex) {
+
+File: src/test/java/spark/embeddedserver/jetty/SocketConnectorFactoryTest.java
+Patch:
+@@ -1,5 +1,6 @@
+ package spark.embeddedserver.jetty;
+ 
++import org.eclipse.jetty.server.ConnectionFactory;
+ import org.eclipse.jetty.server.Server;
+ import org.eclipse.jetty.server.ServerConnector;
+ import org.eclipse.jetty.server.SslConnectionFactory;
+@@ -120,7 +121,7 @@ public void testCreateSecureSocketConnector() throws  Exception {
+         assertEquals("Server Connector Host should be set to the specified server", host, internalHost);
+         assertEquals("Server Connector Port should be set to the specified port", port, internalPort);
+ 
+-        Map factories = Whitebox.getInternalState(serverConnector, "_factories");
++        Map<String, ConnectionFactory> factories = Whitebox.getInternalState(serverConnector, "_factories");
+ 
+         assertTrue("Should return true because factory for SSL should have been set",
+                 factories.containsKey("ssl") && factories.get("ssl") != null);
+
+File: src/test/java/spark/embeddedserver/jetty/websocket/WebSocketCreatorFactoryTest.java
+Patch:
+@@ -40,7 +40,7 @@ public void testCannotCreateInvalidHandlers() {
+     public void testCreate_whenInstantiationException() throws Exception {
+ 
+         try {
+-            WebSocketCreator annotated = WebSocketCreatorFactory.create(FailingHandler.class);
++            WebSocketCreatorFactory.create(FailingHandler.class);
+             fail("Handler creation should have thrown a RunTimeException");
+         } catch(RuntimeException ex) {
+             assertEquals("Could not instantiate websocket handler", ex.getMessage());
+
+File: src/test/java/spark/embeddedserver/jetty/websocket/WebSocketServletContextHandlerFactoryTest.java
+Patch:
+@@ -5,6 +5,7 @@
+ import org.eclipse.jetty.websocket.server.WebSocketUpgradeFilter;
+ import org.eclipse.jetty.websocket.server.pathmap.PathMappings;
+ import org.eclipse.jetty.websocket.server.pathmap.PathSpec;
++import org.eclipse.jetty.websocket.servlet.WebSocketCreator;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.powermock.api.mockito.PowerMockito;
+@@ -46,7 +47,7 @@ public void testCreate_whenNoIdleTimeoutIsPresent() throws Exception {
+ 
+         assertNotNull("Should return a WebSocketUpgradeFilter because we configured it to have one", webSocketUpgradeFilter);
+ 
+-        PathMappings.MappedResource mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
++        PathMappings.MappedResource<WebSocketCreator> mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
+         WebSocketCreatorFactory.SparkWebSocketCreator sc = (WebSocketCreatorFactory.SparkWebSocketCreator) mappedResource.getResource();
+         PathSpec pathSpec = (PathSpec) mappedResource.getPathSpec();
+ 
+@@ -78,7 +79,7 @@ public void testCreate_whenTimeoutIsPresent() throws Exception {
+         assertEquals("Timeout value should be the same as the timeout specified when context handler was created",
+                 timeout.longValue(), webSocketServerFactory.getPolicy().getIdleTimeout());
+ 
+-        PathMappings.MappedResource mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
++        PathMappings.MappedResource<WebSocketCreator> mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
+         WebSocketCreatorFactory.SparkWebSocketCreator sc = (WebSocketCreatorFactory.SparkWebSocketCreator) mappedResource.getResource();
+         PathSpec pathSpec = (PathSpec) mappedResource.getPathSpec();
+ 
+
+File: src/test/java/spark/utils/CollectionUtilsTest.java
+Patch:
+@@ -12,15 +12,15 @@ public class CollectionUtilsTest {
+     @Test
+     public void testIsEmpty_whenCollectionIsEmpty_thenReturnTrue() throws Exception {
+ 
+-        Collection testCollection = new ArrayList<>();
++        Collection<Object> testCollection = new ArrayList<>();
+ 
+         assertTrue("Should return true because collection is empty", CollectionUtils.isEmpty(testCollection));
+     }
+ 
+     @Test
+     public void testIsEmpty_whenCollectionIsNotEmpty_thenReturnFalse() throws Exception {
+ 
+-        Collection testCollection = new ArrayList<>();
++        Collection<Integer> testCollection = new ArrayList<>();
+         testCollection.add(1);
+         testCollection.add(2);
+ 
+
+File: src/test/java/spark/SessionTest.java
+Patch:
+@@ -31,7 +31,7 @@ public void testSession_whenHttpSessionIsNull_thenThrowException() {
+ 
+         try {
+ 
+-            Session session = new Session(null);
++            new Session(null);
+             fail("Session instantiation with a null HttpSession should throw an IllegalArgumentException");
+ 
+         } catch(IllegalArgumentException ex) {
+
+File: src/test/java/spark/embeddedserver/jetty/SocketConnectorFactoryTest.java
+Patch:
+@@ -1,5 +1,6 @@
+ package spark.embeddedserver.jetty;
+ 
++import org.eclipse.jetty.server.ConnectionFactory;
+ import org.eclipse.jetty.server.Server;
+ import org.eclipse.jetty.server.ServerConnector;
+ import org.eclipse.jetty.server.SslConnectionFactory;
+@@ -120,7 +121,7 @@ public void testCreateSecureSocketConnector() throws  Exception {
+         assertEquals("Server Connector Host should be set to the specified server", host, internalHost);
+         assertEquals("Server Connector Port should be set to the specified port", port, internalPort);
+ 
+-        Map factories = Whitebox.getInternalState(serverConnector, "_factories");
++        Map<String, ConnectionFactory> factories = Whitebox.getInternalState(serverConnector, "_factories");
+ 
+         assertTrue("Should return true because factory for SSL should have been set",
+                 factories.containsKey("ssl") && factories.get("ssl") != null);
+
+File: src/test/java/spark/embeddedserver/jetty/websocket/WebSocketCreatorFactoryTest.java
+Patch:
+@@ -40,7 +40,7 @@ public void testCannotCreateInvalidHandlers() {
+     public void testCreate_whenInstantiationException() throws Exception {
+ 
+         try {
+-            WebSocketCreator annotated = WebSocketCreatorFactory.create(FailingHandler.class);
++            WebSocketCreatorFactory.create(FailingHandler.class);
+             fail("Handler creation should have thrown a RunTimeException");
+         } catch(RuntimeException ex) {
+             assertEquals("Could not instantiate websocket handler", ex.getMessage());
+
+File: src/test/java/spark/embeddedserver/jetty/websocket/WebSocketServletContextHandlerFactoryTest.java
+Patch:
+@@ -5,6 +5,7 @@
+ import org.eclipse.jetty.websocket.server.WebSocketUpgradeFilter;
+ import org.eclipse.jetty.websocket.server.pathmap.PathMappings;
+ import org.eclipse.jetty.websocket.server.pathmap.PathSpec;
++import org.eclipse.jetty.websocket.servlet.WebSocketCreator;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.powermock.api.mockito.PowerMockito;
+@@ -46,7 +47,7 @@ public void testCreate_whenNoIdleTimeoutIsPresent() throws Exception {
+ 
+         assertNotNull("Should return a WebSocketUpgradeFilter because we configured it to have one", webSocketUpgradeFilter);
+ 
+-        PathMappings.MappedResource mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
++        PathMappings.MappedResource<WebSocketCreator> mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
+         WebSocketCreatorFactory.SparkWebSocketCreator sc = (WebSocketCreatorFactory.SparkWebSocketCreator) mappedResource.getResource();
+         PathSpec pathSpec = (PathSpec) mappedResource.getPathSpec();
+ 
+@@ -78,7 +79,7 @@ public void testCreate_whenTimeoutIsPresent() throws Exception {
+         assertEquals("Timeout value should be the same as the timeout specified when context handler was created",
+                 timeout.longValue(), webSocketServerFactory.getPolicy().getIdleTimeout());
+ 
+-        PathMappings.MappedResource mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
++        PathMappings.MappedResource<WebSocketCreator> mappedResource = webSocketUpgradeFilter.getMappings().getMatch("/websocket");
+         WebSocketCreatorFactory.SparkWebSocketCreator sc = (WebSocketCreatorFactory.SparkWebSocketCreator) mappedResource.getResource();
+         PathSpec pathSpec = (PathSpec) mappedResource.getPathSpec();
+ 
+
+File: src/test/java/spark/utils/CollectionUtilsTest.java
+Patch:
+@@ -12,15 +12,15 @@ public class CollectionUtilsTest {
+     @Test
+     public void testIsEmpty_whenCollectionIsEmpty_thenReturnTrue() throws Exception {
+ 
+-        Collection testCollection = new ArrayList<>();
++        Collection<Object> testCollection = new ArrayList<>();
+ 
+         assertTrue("Should return true because collection is empty", CollectionUtils.isEmpty(testCollection));
+     }
+ 
+     @Test
+     public void testIsEmpty_whenCollectionIsNotEmpty_thenReturnFalse() throws Exception {
+ 
+-        Collection testCollection = new ArrayList<>();
++        Collection<Integer> testCollection = new ArrayList<>();
+         testCollection.add(1);
+         testCollection.add(2);
+ 
+
+File: src/test/java/spark/CookiesIntegrationTest.java
+Patch:
+@@ -7,7 +7,7 @@
+ import org.apache.http.HttpResponse;
+ import org.apache.http.client.HttpClient;
+ import org.apache.http.client.methods.HttpPost;
+-import org.apache.http.impl.client.DefaultHttpClient;
++import org.apache.http.impl.client.HttpClientBuilder;
+ import org.junit.AfterClass;
+ import org.junit.BeforeClass;
+ import org.junit.Test;
+@@ -20,7 +20,7 @@
+ public class CookiesIntegrationTest {
+ 
+     private static final String DEFAULT_HOST_URL = "http://localhost:4567";
+-    private HttpClient httpClient = new DefaultHttpClient();
++    private HttpClient httpClient = HttpClientBuilder.create().build();
+ 
+     @BeforeClass
+     public static void initRoutes() throws InterruptedException {
+
+File: src/test/java/spark/examples/templateview/FreeMarkerTemplateEngine.java
+Patch:
+@@ -34,7 +34,7 @@ public String render(ModelAndView modelAndView) {
+     }
+ 
+     private Configuration createFreemarkerConfiguration() {
+-        Configuration retVal = new Configuration();
++        Configuration retVal = new Configuration(Configuration.DEFAULT_INCOMPATIBLE_IMPROVEMENTS);
+         retVal.setClassForTemplateLoading(FreeMarkerTemplateEngine.class, "freemarker");
+         return retVal;
+     }
+
+File: src/main/java/spark/QueryParamsMap.java
+Patch:
+@@ -36,7 +36,7 @@ public class QueryParamsMap {
+     /**
+      * Holds the nested keys
+      */
+-    private Map<String, QueryParamsMap> queryMap = new HashMap<String, QueryParamsMap>();
++    private Map<String, QueryParamsMap> queryMap = new HashMap<>();
+ 
+     /**
+      * Value(s) for this key
+@@ -277,7 +277,7 @@ public NullQueryParamsMap() {
+      * @return Map representation
+      */
+     public Map<String, String[]> toMap() {
+-        Map<String, String[]> map = new HashMap<String, String[]>();
++        Map<String, String[]> map = new HashMap<>();
+ 
+         for (Entry<String, QueryParamsMap> key : this.queryMap.entrySet()) {
+             map.put(key.getKey(), key.getValue().values);
+
+File: src/main/java/spark/Session.java
+Patch:
+@@ -60,7 +60,7 @@ public void attribute(String name, Object value) {
+      * containing the names of all the objects bound to this session.
+      */
+     public Set<String> attributes() {
+-        TreeSet<String> attributes = new TreeSet<String>();
++        TreeSet<String> attributes = new TreeSet<>();
+         Enumeration<String> enumeration = session.getAttributeNames();
+         while (enumeration.hasMoreElements()) {
+             attributes.add(enumeration.nextElement());
+
+File: src/main/java/spark/utils/MimeParse.java
+Patch:
+@@ -171,8 +171,8 @@ private static FitnessAndQuality fitnessAndQualityParsed(String mimeType, Collec
+      * @return the best match
+      */
+     public static String bestMatch(Collection<String> supported, String header) {
+-        List<ParseResults> parseResults = new LinkedList<ParseResults>();
+-        List<FitnessAndQuality> weightedMatches = new LinkedList<FitnessAndQuality>();
++        List<ParseResults> parseResults = new LinkedList<>();
++        List<FitnessAndQuality> weightedMatches = new LinkedList<>();
+         for (String r : header.split(",")) {
+             parseResults.add(parseMediaRange(r));
+         }
+
+File: src/main/java/spark/utils/SparkUtils.java
+Patch:
+@@ -33,7 +33,7 @@ private SparkUtils() {
+ 
+     public static List<String> convertRouteToList(String route) {
+         String[] pathArray = route.split("/");
+-        List<String> path = new ArrayList<String>();
++        List<String> path = new ArrayList<>();
+         for (String p : pathArray) {
+             if (p.length() > 0) {
+                 path.add(p);
+
+File: src/main/java/spark/utils/StringUtils.java
+Patch:
+@@ -220,7 +220,7 @@ public static String cleanPath(String path) {
+         }
+ 
+         String[] pathArray = delimitedListToStringArray(pathToUse, FOLDER_SEPARATOR);
+-        List<String> pathElements = new LinkedList<String>();
++        List<String> pathElements = new LinkedList<>();
+         int tops = 0;
+ 
+         for (int i = pathArray.length - 1; i >= 0; i--) {
+@@ -299,7 +299,7 @@ public static String[] delimitedListToStringArray(String str, String delimiter,
+         if (delimiter == null) {
+             return new String[] {str};
+         }
+-        List<String> result = new ArrayList<String>();
++        List<String> result = new ArrayList<>();
+         if ("".equals(delimiter)) {
+             for (int i = 0; i < str.length(); i++) {
+                 result.add(deleteAny(str.substring(i, i + 1), charsToDelete));
+
+File: src/test/java/spark/QueryParamsMapTest.java
+Patch:
+@@ -16,7 +16,7 @@ public class QueryParamsMapTest {
+     
+     @Test
+     public void constructorWithParametersMap() {
+-        Map<String,String[]> params = new HashMap<String,String[]>();
++        Map<String,String[]> params = new HashMap<>();
+         
+         params.put("user[info][name]",new String[] {"fede"});
+         
+@@ -102,7 +102,7 @@ public void testConstructor() {
+     
+     @Test
+     public void testToMap() {
+-        Map<String,String[]> params = new HashMap<String,String[]>();
++        Map<String,String[]> params = new HashMap<>();
+         
+         params.put("user[info][name]",new String[] {"fede"});
+         params.put("user[info][last]",new String[] {"dayan"});
+
+File: src/test/java/spark/RequestTest.java
+Patch:
+@@ -45,7 +45,7 @@ public void queryParamShouldReturnsParametersFromQueryString() {
+ 
+     @Test
+     public void queryParamShouldBeParsedAsHashMap() {
+-        Map<String, String[]> params = new HashMap<String, String[]>();
++        Map<String, String[]> params = new HashMap<>();
+         params.put("user[name]", new String[] {"Federico"});
+ 
+         when(servletRequest.getParameterMap()).thenReturn(params);
+
+File: src/test/java/spark/examples/books/Books.java
+Patch:
+@@ -35,7 +35,7 @@ public class Books {
+     /**
+      * Map holding the books
+      */
+-    public static Map<String, Book> books = new HashMap<String, Book>();
++    public static Map<String, Book> books = new HashMap<>();
+ 
+     public static void main(String[] args) {
+ 
+
+File: src/test/java/spark/examples/filter/FilterExample.java
+Patch:
+@@ -44,7 +44,7 @@
+  */
+ public class FilterExample {
+ 
+-    private static Map<String, String> usernamePasswords = new HashMap<String, String>();
++    private static Map<String, String> usernamePasswords = new HashMap<>();
+ 
+     public static void main(String[] args) {
+ 
+
+File: src/test/java/spark/util/SparkTestUtil.java
+Patch:
+@@ -118,7 +118,7 @@ public UrlResponse doMethod(String requestMethod, String path, String body, bool
+         } else {
+             urlResponse.body = "";
+         }
+-        Map<String, String> headers = new HashMap<String, String>();
++        Map<String, String> headers = new HashMap<>();
+         Header[] allHeaders = httpResponse.getAllHeaders();
+         for (Header header : allHeaders) {
+             headers.put(header.getName(), header.getValue());
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -267,7 +267,7 @@ public String queryParams(String queryParam) {
+ 
+     /**
+      * Gets all the values of the query param
+-     * Example: query parameter 'id' from the following request URI: /hello?id=foo&id=bar
++     * Example: query parameter 'id' from the following request URI: /hello?id=foo&amp;id=bar
+      *
+      * @param queryParam the query parameter
+      * @return the values of the provided queryParam, null if it doesn't exists
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -267,7 +267,7 @@ public String queryParams(String queryParam) {
+ 
+     /**
+      * Gets all the values of the query param
+-     * Example: query parameter 'id' from the following request URI: /hello?id=foo&id=bar
++     * Example: query parameter 'id' from the following request URI: /hello?id=foo&amp;id=bar
+      *
+      * @param queryParam the query parameter
+      * @return the values of the provided queryParam, null if it doesn't exists
+
+File: src/main/java/spark/embeddedserver/EmbeddedServers.java
+Patch:
+@@ -33,7 +33,7 @@ public enum Identifiers {
+ 
+     private static Map<Object, EmbeddedServerFactory> factories = new HashMap<>();
+ 
+-    static {
++    public static void initialize() {
+         add(Identifiers.JETTY, new EmbeddedJettyFactory());
+     }
+ 
+
+File: src/main/java/spark/embeddedserver/EmbeddedServers.java
+Patch:
+@@ -33,7 +33,7 @@ public enum Identifiers {
+ 
+     private static Map<Object, EmbeddedServerFactory> factories = new HashMap<>();
+ 
+-    static {
++    public static void initialize() {
+         add(Identifiers.JETTY, new EmbeddedJettyFactory());
+     }
+ 
+
+File: src/main/java/spark/utils/Assert.java
+Patch:
+@@ -26,7 +26,7 @@
+  * <p>Typically used to validate method arguments rather than configuration
+  * properties, to check for cases that are usually programmer errors rather than
+  * configuration errors. In contrast to config initialization code, there is
+- * usally no point in falling back to defaults in such methods.
++ * usually no point in falling back to defaults in such methods.
+  * <p>This class is similar to JUnit's assertion library. If an argument value is
+  * deemed invalid, an {@link IllegalArgumentException} is thrown (typically).
+  *
+
+File: src/test/java/spark/examples/books/Books.java
+Patch:
+@@ -26,7 +26,7 @@
+ import java.util.Random;
+ 
+ /**
+- * A simple RESTful example showing howto create, get, update and delete book resources.
++ * A simple RESTful example showing how to create, get, update and delete book resources.
+  *
+  * @author Per Wendel
+  */
+
+File: src/test/java/spark/examples/filter/FilterExample.java
+Patch:
+@@ -29,7 +29,7 @@
+ import static spark.Spark.halt;
+ 
+ /**
+- * Example showing a very simple (and stupid) autentication filter that is
++ * Example showing a very simple (and stupid) authentication filter that is
+  * executed before all other resources.
+  * When requesting the resource with e.g.
+  * http://localhost:4567/hello?user=some&password=guy the filter will stop the
+
+File: src/main/java/spark/QueryParamsMap.java
+Patch:
+@@ -139,7 +139,7 @@ protected static final String cleanKey(String group) {
+     }
+ 
+     /**
+-     * Retruns and element fro the specified key. <br>
++     * Returns an element from the specified key. <br>
+      * For querystring: <br>
+      * <br>
+      * user[name]=fede
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -408,7 +408,7 @@ public Session session(boolean create) {
+     }
+ 
+     /**
+-     * @return request cookies (or empty Map if cookies dosn't present)
++     * @return request cookies (or empty Map if cookies aren't present)
+      */
+     public Map<String, String> cookies() {
+         Map<String, String> result = new HashMap<String, String>();
+
+File: src/main/java/spark/webserver/jetty/SocketConnectorFactory.java
+Patch:
+@@ -49,7 +49,7 @@ public static ServerConnector createSocketConnector(Server server, String host,
+ 
+     /**
+      * Creates a ssl jetty socket jetty. Keystore required, truststore
+-     * optional. If truststore not specifed keystore will be reused.
++     * optional. If truststore not specified keystore will be reused.
+      *
+      * @param server    Jetty server
+      * @param sslStores the security sslStores.
+
+File: src/main/java/spark/ExceptionHandler.java
+Patch:
+@@ -3,6 +3,7 @@
+ /**
+  * Created by Per Wendel on 2014-05-10.
+  */
++@FunctionalInterface
+ public interface ExceptionHandler {
+ 
+     /**
+
+File: src/main/java/spark/Filter.java
+Patch:
+@@ -3,6 +3,7 @@
+ /**
+  * Created by Per Wendel on 2014-05-10.
+  */
++@FunctionalInterface
+ public interface Filter {
+ 
+     /**
+
+File: src/main/java/spark/ResponseTransformer.java
+Patch:
+@@ -21,6 +21,7 @@
+  *
+  * @author alex
+  */
++@FunctionalInterface
+ public interface ResponseTransformer {
+ 
+     /**
+
+File: src/main/java/spark/Route.java
+Patch:
+@@ -3,6 +3,7 @@
+ /**
+  * Created by Per Wendel on 2014-05-10.
+  */
++@FunctionalInterface
+ public interface Route {
+ 
+     /**
+
+File: src/main/java/spark/TemplateViewRoute.java
+Patch:
+@@ -25,6 +25,7 @@
+  *
+  * @author alex
+  */
++@FunctionalInterface
+ public interface TemplateViewRoute {
+ 
+     /**
+
+File: src/main/java/spark/QueryParamsMap.java
+Patch:
+@@ -139,7 +139,7 @@ protected static final String cleanKey(String group) {
+     }
+ 
+     /**
+-     * Retruns and element fro the specified key. <br>
++     * Returns an element from the specified key. <br>
+      * For querystring: <br>
+      * <br>
+      * user[name]=fede
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -408,7 +408,7 @@ public Session session(boolean create) {
+     }
+ 
+     /**
+-     * @return request cookies (or empty Map if cookies dosn't present)
++     * @return request cookies (or empty Map if cookies aren't present)
+      */
+     public Map<String, String> cookies() {
+         Map<String, String> result = new HashMap<String, String>();
+
+File: src/main/java/spark/webserver/jetty/SocketConnectorFactory.java
+Patch:
+@@ -49,7 +49,7 @@ public static ServerConnector createSocketConnector(Server server, String host,
+ 
+     /**
+      * Creates a ssl jetty socket jetty. Keystore required, truststore
+-     * optional. If truststore not specifed keystore will be reused.
++     * optional. If truststore not specified keystore will be reused.
+      *
+      * @param server    Jetty server
+      * @param sslStores the security sslStores.
+
+File: src/main/java/spark/ExceptionHandler.java
+Patch:
+@@ -3,6 +3,7 @@
+ /**
+  * Created by Per Wendel on 2014-05-10.
+  */
++@FunctionalInterface
+ public interface ExceptionHandler {
+ 
+     /**
+
+File: src/main/java/spark/Filter.java
+Patch:
+@@ -3,6 +3,7 @@
+ /**
+  * Created by Per Wendel on 2014-05-10.
+  */
++@FunctionalInterface
+ public interface Filter {
+ 
+     /**
+
+File: src/main/java/spark/ResponseTransformer.java
+Patch:
+@@ -21,6 +21,7 @@
+  *
+  * @author alex
+  */
++@FunctionalInterface
+ public interface ResponseTransformer {
+ 
+     /**
+
+File: src/main/java/spark/Route.java
+Patch:
+@@ -3,6 +3,7 @@
+ /**
+  * Created by Per Wendel on 2014-05-10.
+  */
++@FunctionalInterface
+ public interface Route {
+ 
+     /**
+
+File: src/main/java/spark/TemplateViewRoute.java
+Patch:
+@@ -25,6 +25,7 @@
+  *
+  * @author alex
+  */
++@FunctionalInterface
+ public interface TemplateViewRoute {
+ 
+     /**
+
+File: src/test/java/spark/utils/SparkUtilsTest.java
+Patch:
+@@ -19,6 +19,7 @@ public void testConvertRouteToList() throws Exception {
+         List<String> actual = SparkUtils.convertRouteToList("/api/person/:id");
+ 
+         assertThat("Should return route as a list of individual elements that path is made of",
++                actual,
+                 is(expected));
+ 
+     }
+
+File: src/main/java/spark/utils/Assert.java
+Patch:
+@@ -26,7 +26,7 @@
+  * <p>Typically used to validate method arguments rather than configuration
+  * properties, to check for cases that are usually programmer errors rather than
+  * configuration errors. In contrast to config initialization code, there is
+- * usally no point in falling back to defaults in such methods.
++ * usually no point in falling back to defaults in such methods.
+  * <p>This class is similar to JUnit's assertion library. If an argument value is
+  * deemed invalid, an {@link IllegalArgumentException} is thrown (typically).
+  *
+
+File: src/test/java/spark/examples/books/Books.java
+Patch:
+@@ -26,7 +26,7 @@
+ import java.util.Random;
+ 
+ /**
+- * A simple RESTful example showing howto create, get, update and delete book resources.
++ * A simple RESTful example showing how to create, get, update and delete book resources.
+  *
+  * @author Per Wendel
+  */
+
+File: src/test/java/spark/examples/filter/FilterExample.java
+Patch:
+@@ -29,7 +29,7 @@
+ import static spark.Spark.halt;
+ 
+ /**
+- * Example showing a very simple (and stupid) autentication filter that is
++ * Example showing a very simple (and stupid) authentication filter that is
+  * executed before all other resources.
+  * When requesting the resource with e.g.
+  * http://localhost:4567/hello?user=some&password=guy the filter will stop the
+
+File: src/test/java/spark/GzipTest.java
+Patch:
+@@ -37,7 +37,7 @@ public class GzipTest {
+ 
+     @BeforeClass
+     public static void setup() {
+-        staticFileLocation("/public");
++        GzipExample.addStaticFileLocation();
+         GzipExample.addRoutes();
+         awaitInitialization();
+     }
+
+File: src/test/java/spark/GzipTest.java
+Patch:
+@@ -37,7 +37,7 @@ public class GzipTest {
+ 
+     @BeforeClass
+     public static void setup() {
+-        staticFileLocation("/public");
++        GzipExample.addStaticFileLocation();
+         GzipExample.addRoutes();
+         awaitInitialization();
+     }
+
+File: src/main/java/spark/ExceptionMapper.java
+Patch:
+@@ -30,7 +30,7 @@ public class ExceptionMapper {
+      *
+      * @return Default instance
+      */
+-    public static ExceptionMapper getInstance() {
++    public synchronized static ExceptionMapper getInstance() {
+         if (defaultInstance == null) {
+             defaultInstance = new ExceptionMapper();
+         }
+
+File: src/main/java/spark/staticfiles/StaticFiles.java
+Patch:
+@@ -83,7 +83,7 @@ public static void clear() {
+      *
+      * @param folder the location
+      */
+-    public static void configureStaticResources(String folder) {
++    public synchronized static void configureStaticResources(String folder) {
+         Assert.notNull(folder, "'folder' must not be null");
+ 
+         if (!staticResourcesSet) {
+@@ -112,7 +112,7 @@ public static void configureStaticResources(String folder) {
+      *
+      * @param folder the location
+      */
+-    public static void configureExternalStaticResources(String folder) {
++    public synchronized static void configureExternalStaticResources(String folder) {
+         Assert.notNull(folder, "'folder' must not be null");
+ 
+         if (!externalStaticResourcesSet) {
+
+File: src/test/java/spark/servlet/MyApp.java
+Patch:
+@@ -18,7 +18,7 @@ public class MyApp implements SparkApplication {
+     static File tmpExternalFile;
+ 
+     @Override
+-    public void init() {
++    public synchronized void init() {
+         try {
+             externalStaticFileLocation(System.getProperty("java.io.tmpdir"));
+             staticFileLocation("/public");
+
+File: src/main/java/spark/ExceptionMapper.java
+Patch:
+@@ -30,7 +30,7 @@ public class ExceptionMapper {
+      *
+      * @return Default instance
+      */
+-    public static ExceptionMapper getInstance() {
++    public synchronized static ExceptionMapper getInstance() {
+         if (defaultInstance == null) {
+             defaultInstance = new ExceptionMapper();
+         }
+
+File: src/main/java/spark/staticfiles/StaticFiles.java
+Patch:
+@@ -83,7 +83,7 @@ public static void clear() {
+      *
+      * @param folder the location
+      */
+-    public static void configureStaticResources(String folder) {
++    public synchronized static void configureStaticResources(String folder) {
+         Assert.notNull(folder, "'folder' must not be null");
+ 
+         if (!staticResourcesSet) {
+@@ -112,7 +112,7 @@ public static void configureStaticResources(String folder) {
+      *
+      * @param folder the location
+      */
+-    public static void configureExternalStaticResources(String folder) {
++    public synchronized static void configureExternalStaticResources(String folder) {
+         Assert.notNull(folder, "'folder' must not be null");
+ 
+         if (!externalStaticResourcesSet) {
+
+File: src/test/java/spark/servlet/MyApp.java
+Patch:
+@@ -18,7 +18,7 @@ public class MyApp implements SparkApplication {
+     static File tmpExternalFile;
+ 
+     @Override
+-    public void init() {
++    public synchronized void init() {
+         try {
+             externalStaticFileLocation(System.getProperty("java.io.tmpdir"));
+             staticFileLocation("/public");
+
+File: src/main/java/spark/QueryParamsMap.java
+Patch:
+@@ -139,7 +139,7 @@ protected static final String cleanKey(String group) {
+     }
+ 
+     /**
+-     * Retruns and element fro the specified key. <br>
++     * Returns an element from the specified key. <br>
+      * For querystring: <br>
+      * <br>
+      * user[name]=fede
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -408,7 +408,7 @@ public Session session(boolean create) {
+     }
+ 
+     /**
+-     * @return request cookies (or empty Map if cookies dosn't present)
++     * @return request cookies (or empty Map if cookies aren't present)
+      */
+     public Map<String, String> cookies() {
+         Map<String, String> result = new HashMap<String, String>();
+
+File: src/main/java/spark/webserver/jetty/SocketConnectorFactory.java
+Patch:
+@@ -49,7 +49,7 @@ public static ServerConnector createSocketConnector(Server server, String host,
+ 
+     /**
+      * Creates a ssl jetty socket jetty. Keystore required, truststore
+-     * optional. If truststore not specifed keystore will be reused.
++     * optional. If truststore not specified keystore will be reused.
+      *
+      * @param server    Jetty server
+      * @param sslStores the security sslStores.
+
+File: src/main/java/spark/QueryParamsMap.java
+Patch:
+@@ -139,7 +139,7 @@ protected static final String cleanKey(String group) {
+     }
+ 
+     /**
+-     * Retruns and element fro the specified key. <br>
++     * Returns an element from the specified key. <br>
+      * For querystring: <br>
+      * <br>
+      * user[name]=fede
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -408,7 +408,7 @@ public Session session(boolean create) {
+     }
+ 
+     /**
+-     * @return request cookies (or empty Map if cookies dosn't present)
++     * @return request cookies (or empty Map if cookies aren't present)
+      */
+     public Map<String, String> cookies() {
+         Map<String, String> result = new HashMap<String, String>();
+
+File: src/main/java/spark/webserver/jetty/SocketConnectorFactory.java
+Patch:
+@@ -49,7 +49,7 @@ public static ServerConnector createSocketConnector(Server server, String host,
+ 
+     /**
+      * Creates a ssl jetty socket jetty. Keystore required, truststore
+-     * optional. If truststore not specifed keystore will be reused.
++     * optional. If truststore not specified keystore will be reused.
+      *
+      * @param server    Jetty server
+      * @param sslStores the security sslStores.
+
+File: src/main/java/spark/staticfiles/StaticFiles.java
+Patch:
+@@ -95,7 +95,6 @@ public static void configureStaticResources(String folder) {
+                     staticResourceHandlers = new ArrayList<>();
+                 }
+                 staticResourceHandlers.add(new ClassPathResourceHandler(folder, "index.html"));
+-                System.out.println("StaticResourceHandler configured with folder = " + folder);
+                 LOG.info("StaticResourceHandler configured with folder = " + folder);
+             } catch (IOException e) {
+                 LOG.error("Error when creating StaticResourceHandler", e);
+
+File: src/test/java/spark/servlet/MyApp.java
+Patch:
+@@ -16,13 +16,15 @@ public class MyApp implements SparkApplication {
+ 
+     public static final String EXTERNAL_FILE = "externalFileServlet.html";
+ 
++    static File tmpExternalFile;
++
+     @Override
+     public void init() {
+         try {
+             externalStaticFileLocation(System.getProperty("java.io.tmpdir"));
+             staticFileLocation("/public");
+ 
+-            File tmpExternalFile = new File(System.getProperty("java.io.tmpdir"), EXTERNAL_FILE);
++            tmpExternalFile = new File(System.getProperty("java.io.tmpdir"), EXTERNAL_FILE);
+             FileWriter writer = new FileWriter(tmpExternalFile);
+             writer.write("Content of external file");
+             writer.flush();
+
+File: src/main/java/spark/webserver/MatcherFilter.java
+Patch:
+@@ -130,7 +130,7 @@ public void doFilter(ServletRequest servletRequest, ServletResponse servletRespo
+             }
+             // BEFORE filters, END
+ 
+-            HttpMethod httpMethod = HttpMethod.valueOf(httpMethodStr);
++            HttpMethod httpMethod = HttpMethod.parseString(httpMethodStr);
+ 
+             RouteMatch match = null;
+             match = routeMatcher.findTargetForRequestedRoute(httpMethod, uri, acceptType);
+
+File: src/main/java/spark/SparkInstance.java
+Patch:
+@@ -304,7 +304,7 @@ private void throwBeforeRouteMappingException() {
+     }
+ 
+     private boolean hasMultipleHandlers() {
+-        return staticFileFolder != null || externalStaticFileFolder != null;
++        return staticFileFolder != null || externalStaticFileFolder != null || webSocketHandlers != null;
+     }
+ 
+ 
+
+File: src/main/java/spark/staticfiles/StaticFiles.java
+Patch:
+@@ -57,7 +57,7 @@ public static void setLocationIfPresent(String staticFileLocation,
+      */
+     public static void setExternalLocationIfPresent(String externalFileLocation,
+                                                     List<Handler> handlersInList) {
+-        
++
+         Assert.notNull(handlersInList, "'handlersInList' must not be null");
+ 
+         if (externalFileLocation != null) {
+
+File: src/main/java/spark/ExceptionHandler.java
+Patch:
+@@ -3,6 +3,7 @@
+ /**
+  * Created by Per Wendel on 2014-05-10.
+  */
++@FunctionalInterface
+ public interface ExceptionHandler {
+ 
+     /**
+
+File: src/main/java/spark/Filter.java
+Patch:
+@@ -3,6 +3,7 @@
+ /**
+  * Created by Per Wendel on 2014-05-10.
+  */
++@FunctionalInterface
+ public interface Filter {
+ 
+     /**
+
+File: src/main/java/spark/ResponseTransformer.java
+Patch:
+@@ -21,6 +21,7 @@
+  *
+  * @author alex
+  */
++@FunctionalInterface
+ public interface ResponseTransformer {
+ 
+     /**
+
+File: src/main/java/spark/Route.java
+Patch:
+@@ -3,6 +3,7 @@
+ /**
+  * Created by Per Wendel on 2014-05-10.
+  */
++@FunctionalInterface
+ public interface Route {
+ 
+     /**
+
+File: src/main/java/spark/TemplateViewRoute.java
+Patch:
+@@ -25,6 +25,7 @@
+  *
+  * @author alex
+  */
++@FunctionalInterface
+ public interface TemplateViewRoute {
+ 
+     /**
+
+File: src/main/java/spark/Spark.java
+Patch:
+@@ -25,7 +25,7 @@
+  * The main building block of a Spark application is a set of routes. A route is
+  * made up of three simple pieces:
+  * <ul>
+- * <li>A verb (get, post, put, delete, head, trace, connect, options)</li>
++ * <li>A verb (get, post, put, patch, delete, head, trace, connect, options)</li>
+  * <li>A path (/hello, /users/:name)</li>
+  * <li>A callback (request, response)</li>
+  * </ul>
+
+File: src/main/java/spark/TemplateViewRoute.java
+Patch:
+@@ -33,7 +33,8 @@ public interface TemplateViewRoute {
+      * @param request  The request object providing information about the HTTP request
+      * @param response The response object providing functionality for modifying the response
+      * @return The content to be set in the response
++     * @throws java.lang.Exception
+      */
+-    ModelAndView handle(Request request, Response response);
++    ModelAndView handle(Request request, Response response) throws Exception;
+ 
+ }
+
+File: src/test/java/spark/examples/filter/FilterExampleAttributes.java
+Patch:
+@@ -48,12 +48,12 @@ public static void main(String[] args) {
+         });
+ 
+         after("/hi", (request, response) -> {
+-            Object foo = request.attribute("foo");
++            String foo = request.attribute("foo");
+             response.body(asXml("foo", foo));
+         });
+     }
+ 
+-    private static String asXml(String name, Object value) {
++    private static String asXml(String name, String value) {
+         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><" + name + ">" + value + "</" + name + ">";
+     }
+ 
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -327,8 +327,8 @@ public void attribute(String attribute, Object value) {
+      * @param attribute The attribute value or null if not present
+      * @return the value for the provided attribute
+      */
+-    public Object attribute(String attribute) {
+-        return servletRequest.getAttribute(attribute);
++    public <T> T attribute(String attribute) {
++        return (T) servletRequest.getAttribute(attribute);
+     }
+ 
+ 
+
+File: src/main/java/spark/webserver/RequestWrapper.java
+Patch:
+@@ -194,7 +194,7 @@ public void attribute(String attribute, Object value) {
+     }
+ 
+     @Override
+-    public Object attribute(String attribute) {
++    public <T> T attribute(String attribute) {
+         return delegate.attribute(attribute);
+     }
+ 
+
+File: src/test/java/spark/examples/filter/FilterExampleAttributes.java
+Patch:
+@@ -48,12 +48,12 @@ public static void main(String[] args) {
+         });
+ 
+         after("/hi", (request, response) -> {
+-            Object foo = request.attribute("foo");
++            String foo = request.attribute("foo");
+             response.body(asXml("foo", foo));
+         });
+     }
+ 
+-    private static String asXml(String name, Object value) {
++    private static String asXml(String name, String value) {
+         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><" + name + ">" + value + "</" + name + ">";
+     }
+ 
+
+File: src/main/java/spark/TemplateViewRoute.java
+Patch:
+@@ -33,6 +33,7 @@ public interface TemplateViewRoute {
+      * @param request  The request object providing information about the HTTP request
+      * @param response The response object providing functionality for modifying the response
+      * @return The content to be set in the response
++     * @throws java.lang.Exception
+      */
+     ModelAndView handle(Request request, Response response) throws Exception;
+ 
+
+File: src/main/java/spark/webserver/JettyHandler.java
+Patch:
+@@ -87,7 +87,7 @@ private void cacheInputStream() throws IOException {
+ 
+         public class CachedServletInputStream extends ServletInputStream {
+             private ByteArrayInputStream byteArrayInputStream;
+-            
++
+             public CachedServletInputStream() {
+                 byteArrayInputStream = new ByteArrayInputStream(cachedBytes);
+             }
+@@ -108,7 +108,8 @@ public boolean isReady() {
+             }
+ 
+             @Override
+-            public void setReadListener(ReadListener readListener) {}
++            public void setReadListener(ReadListener readListener) {
++            }
+         }
+     }
+ }
+\ No newline at end of file
+
+File: src/main/java/spark/servlet/SparkApplication.java
+Patch:
+@@ -31,5 +31,5 @@ public interface SparkApplication {
+     /**
+      * Invoked from the SparkFilter.
+      */
+-    void destroy();
++    default void destroy() {}
+ }
+
+File: src/main/java/spark/SparkBase.java
+Patch:
+@@ -173,7 +173,7 @@ public static synchronized void secure(String keystoreFile,
+     }
+ 
+     /**
+-     * Configures the embedded web servers thread pool.
++     * Configures the embedded web server's thread pool.
+      *
+      * @param maxThreads        max nbr of threads.
+      */
+@@ -182,7 +182,7 @@ public static synchronized void threadPool(int maxThreads) {
+     }
+ 
+     /**
+-     * Configures the embedded web servers thread pool.
++     * Configures the embedded web server's thread pool.
+      *
+      * @param maxThreads        max nbr of threads.
+      * @param minThreads        min nbr of threads.
+
+File: src/main/java/spark/QueryParamsMap.java
+Patch:
+@@ -21,8 +21,8 @@
+  * <br>
+  * <br>
+  * That is:<br>
+- * queryParamsMapInstance.get("user).get("name").value(); <br>
+- * queryParamsMapInstance.get("user).get("lastname").value();
++ * queryParamsMapInstance.get("user").get("name").value(); <br>
++ * queryParamsMapInstance.get("user").get("lastname").value();
+  * <br><br>
+  * It is null safe, meaning that if a key does not exist, it does not throw NullPointerException
+  * , it just returns null.
+
+File: src/main/java/spark/QueryParamsMap.java
+Patch:
+@@ -21,8 +21,8 @@
+  * <br>
+  * <br>
+  * That is:<br>
+- * queryParamsMapInstance.get("user).get("name").value(); <br>
+- * queryParamsMapInstance.get("user).get("lastname").value();
++ * queryParamsMapInstance.get("user").get("name").value(); <br>
++ * queryParamsMapInstance.get("user").get("lastname").value();
+  * <br><br>
+  * It is null safe, meaning that if a key does not exist, it does not throw NullPointerException
+  * , it just returns null.
+
+File: src/main/java/spark/webserver/DefaultSerializer.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2011- Per Wendel
++ * Copyright 2015 - Per Wendel
+  *
+  *  Licensed under the Apache License, Version 2.0 (the "License");
+  *  you may not use this file except in compliance with the License.
+@@ -22,6 +22,7 @@
+ 
+ /**
+  * Serilizer that writes the result of toString to output in UTF-8 encoding
++ *
+  * @author alsoto
+  */
+ public class DefaultSerializer extends Serializer {
+@@ -36,7 +37,7 @@ public void process(OutputStream outputStream, Object element) throws IOExceptio
+         try {
+             outputStream.write(element.toString().getBytes("utf-8"));
+         } catch (UnsupportedEncodingException e) {
+-           throw new IOException(e);
++            throw new IOException(e);
+         }
+     }
+ 
+
+File: src/main/java/spark/utils/IOUtils.java
+Patch:
+@@ -173,7 +173,6 @@ public static int copy(final InputStream input, final OutputStream output) throw
+     *
+     * @param input the <code>InputStream</code> to read from
+     * @param output the <code>OutputStream</code> to write to
+-    * @param buffer the buffer to use for the copy
+     * @return the number of bytes copied
+     * @throws NullPointerException if the input or output is null
+     * @throws IOException if an I/O error occurs
+
+File: src/main/java/spark/servlet/SparkFilter.java
+Patch:
+@@ -95,8 +95,8 @@ protected SparkApplication getApplication(FilterConfig filterConfig) throws Serv
+ 
+     @Override
+     public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws
+-                                                                                              IOException,
+-                                                                                              ServletException {
++        IOException,
++        ServletException {
+         HttpServletRequest httpRequest = (HttpServletRequest) request; // NOSONAR
+ 
+         final String relativePath = FilterTools.getRelativePath(httpRequest, filterPath);
+@@ -117,7 +117,7 @@ public String getRequestURI() {
+             for (AbstractResourceHandler staticResourceHandler : staticResourceHandlers) {
+                 AbstractFileResolvingResource resource = staticResourceHandler.getResource(httpRequest);
+                 if (resource != null && resource.isReadable()) {
+-                    IOUtils.copy(resource.getInputStream(), response.getWriter());
++                    IOUtils.copy(resource.getInputStream(), response.getOutputStream());
+                     return;
+                 }
+             }
+
+File: src/main/java/spark/route/SimpleRouteMatcher.java
+Patch:
+@@ -245,7 +245,7 @@ private boolean removeRoute(HttpMethod httpMethod, String path) {
+             }
+ 
+             if (routeEntry.matches(httpMethodToMatch, path)) {
+-                LOG.debug("Removing path %s", path, httpMethod == null ? "" : " with HTTP method " + httpMethod);
++                LOG.debug("Removing path {}", path, httpMethod == null ? "" : " with HTTP method " + httpMethod);
+ 
+                 forRemoval.add(routeEntry);
+             }
+
+File: src/main/java/spark/webserver/SparkServer.java
+Patch:
+@@ -21,6 +21,7 @@
+ import java.net.ServerSocket;
+ import java.util.ArrayList;
+ import java.util.List;
++import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.TimeUnit;
+ 
+ import org.eclipse.jetty.server.Connector;
+@@ -69,7 +70,7 @@ public SparkServer(Handler handler) {
+     public void ignite(String host, int port, String keystoreFile,
+                        String keystorePassword, String truststoreFile,
+                        String truststorePassword, String staticFilesFolder,
+-                       String externalFilesFolder) {
++                       String externalFilesFolder, CountDownLatch latch) {
+ 
+         if (port == 0) {
+             try (ServerSocket s = new ServerSocket(0)) {
+@@ -121,6 +122,7 @@ public void ignite(String host, int port, String keystoreFile,
+             logger.info(">> Listening on {}:{}", host, port);
+ 
+             server.start();
++            latch.countDown();
+             server.join();
+         } catch (Exception e) {
+             logger.error("ignite failed",e);
+
+File: src/main/java/spark/servlet/SparkFilter.java
+Patch:
+@@ -95,8 +95,8 @@ protected SparkApplication getApplication(FilterConfig filterConfig) throws Serv
+ 
+     @Override
+     public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws
+-                                                                                              IOException,
+-                                                                                              ServletException {
++        IOException,
++        ServletException {
+         HttpServletRequest httpRequest = (HttpServletRequest) request; // NOSONAR
+ 
+         final String relativePath = FilterTools.getRelativePath(httpRequest, filterPath);
+@@ -117,7 +117,7 @@ public String getRequestURI() {
+             for (AbstractResourceHandler staticResourceHandler : staticResourceHandlers) {
+                 AbstractFileResolvingResource resource = staticResourceHandler.getResource(httpRequest);
+                 if (resource != null && resource.isReadable()) {
+-                    IOUtils.copy(resource.getInputStream(), response.getWriter());
++                    IOUtils.copy(resource.getInputStream(), response.getOutputStream());
+                     return;
+                 }
+             }
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -95,7 +95,10 @@ protected Request() {
+      */
+     Request(RouteMatch match, HttpServletRequest request) {
+         this.servletRequest = request;
++        changeMatch(match);
++    }
+ 
++    protected void changeMatch(RouteMatch match) {
+         List<String> requestList = SparkUtils.convertRouteToList(match.getRequestURI());
+         List<String> matchedList = SparkUtils.convertRouteToList(match.getMatchUri());
+ 
+
+File: src/test/java/spark/BodyAvailabilityTest.java
+Patch:
+@@ -15,7 +15,7 @@
+ 
+ public class BodyAvailabilityTest {
+ 
+-    private static final Logger LOGGER = LoggerFactory.getLogger(GenericIntegrationTest.class);
++    private static final Logger LOGGER = LoggerFactory.getLogger(BodyAvailabilityTest.class);
+ 
+     private static final String BODY_CONTENT = "the body content";
+ 
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -95,7 +95,10 @@ protected Request() {
+      */
+     Request(RouteMatch match, HttpServletRequest request) {
+         this.servletRequest = request;
++        changeMatch(match);
++    }
+ 
++    protected void changeMatch(RouteMatch match) {
+         List<String> requestList = SparkUtils.convertRouteToList(match.getRequestURI());
+         List<String> matchedList = SparkUtils.convertRouteToList(match.getMatchUri());
+ 
+
+File: src/main/java/spark/FilterImpl.java
+Patch:
+@@ -26,7 +26,7 @@
+  *
+  * @author Per Wendel
+  */
+-public abstract class FilterImpl {
++public abstract class FilterImpl implements Filter {
+ 
+     private static final String DEFAUT_CONTENT_TYPE = "text/html";
+ 
+
+File: src/main/java/spark/Route.java
+Patch:
+@@ -12,6 +12,6 @@ public interface Route {
+      * @param response The response object providing functionality for modifying the response
+      * @return The content to be set in the response
+      */
+-    Object handle(Request request, Response response);
++    Object handle(Request request, Response response)  throws Exception;
+ 
+ }
+
+File: src/main/java/spark/RouteImpl.java
+Patch:
+@@ -24,7 +24,7 @@
+  *
+  * @author Per Wendel
+  */
+-public abstract class RouteImpl {
++public abstract class RouteImpl implements Route {
+ 
+     private static final String DEFAULT_ACCEPT_TYPE = "*/*";
+ 
+
+File: src/main/java/spark/webserver/MatcherFilter.java
+Patch:
+@@ -212,8 +212,9 @@ public void doFilter(ServletRequest servletRequest, ServletResponse servletRespo
+         }
+ 
+         if (!consumed && !isServletContext) {
++            LOG.info("The requested route [" + uri + "] has not been mapped in Spark");
+             httpResponse.setStatus(HttpServletResponse.SC_NOT_FOUND);
+-            bodyContent = String.format(NOT_FOUND, uri);
++            bodyContent = String.format(NOT_FOUND);
+             consumed = true;
+         }
+ 
+@@ -234,6 +235,6 @@ public void destroy() {
+         // TODO Auto-generated method stub
+     }
+ 
+-    private static final String NOT_FOUND = "<html><body><h2>404 Not found</h2>The requested route [%s] has not been mapped in Spark</body></html>";
++    private static final String NOT_FOUND = "<html><body><h2>404 Not found</h2></body></html>";
+     private static final String INTERNAL_ERROR = "<html><body><h2>500 Internal Error</h2></body></html>";
+ }
+
+File: src/main/java/spark/FilterImpl.java
+Patch:
+@@ -26,7 +26,7 @@
+  *
+  * @author Per Wendel
+  */
+-public abstract class FilterImpl {
++public abstract class FilterImpl implements Filter {
+ 
+     private static final String DEFAUT_CONTENT_TYPE = "text/html";
+ 
+
+File: src/main/java/spark/Route.java
+Patch:
+@@ -12,6 +12,6 @@ public interface Route {
+      * @param response The response object providing functionality for modifying the response
+      * @return The content to be set in the response
+      */
+-    Object handle(Request request, Response response);
++    Object handle(Request request, Response response)  throws Exception;
+ 
+ }
+
+File: src/main/java/spark/RouteImpl.java
+Patch:
+@@ -24,7 +24,7 @@
+  *
+  * @author Per Wendel
+  */
+-public abstract class RouteImpl {
++public abstract class RouteImpl implements Route {
+ 
+     private static final String DEFAULT_ACCEPT_TYPE = "*/*";
+ 
+
+File: src/main/java/spark/webserver/MatcherFilter.java
+Patch:
+@@ -212,8 +212,9 @@ public void doFilter(ServletRequest servletRequest, ServletResponse servletRespo
+         }
+ 
+         if (!consumed && !isServletContext) {
++            LOG.info("The requested route [" + uri + "] has not been mapped in Spark");
+             httpResponse.setStatus(HttpServletResponse.SC_NOT_FOUND);
+-            bodyContent = String.format(NOT_FOUND, uri);
++            bodyContent = String.format(NOT_FOUND);
+             consumed = true;
+         }
+ 
+@@ -234,6 +235,6 @@ public void destroy() {
+         // TODO Auto-generated method stub
+     }
+ 
+-    private static final String NOT_FOUND = "<html><body><h2>404 Not found</h2>The requested route [%s] has not been mapped in Spark</body></html>";
++    private static final String NOT_FOUND = "<html><body><h2>404 Not found</h2></body></html>";
+     private static final String INTERNAL_ERROR = "<html><body><h2>500 Internal Error</h2></body></html>";
+ }
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -301,8 +301,8 @@ public void attribute(String attribute, Object value) {
+      * @param attribute The attribute value or null if not present
+      * @return the value for the provided attribute
+      */
+-    public Object attribute(String attribute) {
+-        return servletRequest.getAttribute(attribute);
++    public <T> T attribute(String attribute) {
++        return (T) servletRequest.getAttribute(attribute);
+     }
+ 
+ 
+
+File: src/main/java/spark/webserver/RequestWrapper.java
+Patch:
+@@ -178,7 +178,7 @@ public void attribute(String attribute, Object value) {
+     }
+ 
+     @Override
+-    public Object attribute(String attribute) {
++    public <T> T attribute(String attribute) {
+         return delegate.attribute(attribute);
+     }
+ 
+
+File: src/test/java/spark/examples/filter/FilterExampleAttributes.java
+Patch:
+@@ -44,12 +44,12 @@ public static void main(String[] args) {
+         });
+ 
+         after("/hi", (request, response) -> {
+-            Object foo = request.attribute("foo");
++            String foo = request.attribute("foo");
+             response.body(asXml("foo", foo));
+         });
+     }
+ 
+-    private static String asXml(String name, Object value) {
++    private static String asXml(String name, String value) {
+         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><" + name + ">" + value + "</" + name + ">";
+     }
+ 
+
+File: src/test/java/spark/BooksIntegrationTest.java
+Patch:
+@@ -167,7 +167,7 @@ public void canDeleteBook() {
+     @Test
+     public void wontFindBook() {
+         try {
+-            doMethod("GET", "/books/" + bookId, null);
++            getResponse("GET", "/books/" + bookId, null);
+         } catch (Exception e) {
+             if (e instanceof FileNotFoundException) {
+                 assertTrue(true);
+
+File: src/test/java/spark/BooksIntegrationTest.java
+Patch:
+@@ -118,10 +118,11 @@ public void testGetBook() {
+         }
+     }
+ 
+-    @Ignore
+     @Test
+     public void testUpdateBook() {
+         try {
++            bookId = createBookViaPOST().body.trim();
++
+             UrlResponse response = doMethod("PUT", "/books/" + bookId + "?title=" + NEW_TITLE, null);
+             String result = response.body;
+             assertNotNull(response);
+
+File: src/test/java/spark/BooksIntegrationTest.java
+Patch:
+@@ -149,10 +149,11 @@ public void testGetUpdatedBook() {
+         }
+     }
+ 
+-    @Ignore
+     @Test
+     public void testDeleteBook() {
+         try {
++            bookId = createBookViaPOST().body.trim();
++
+             UrlResponse response = doMethod("DELETE", "/books/" + bookId, null);
+             String result = response.body;
+             assertNotNull(response);
+
+File: src/main/java/spark/Session.java
+Patch:
+@@ -27,7 +27,7 @@ public class Session {
+     }
+ 
+     /**
+-     * @return  the raw <code>HttpSession</code> object handed in by the servlet container.
++     * @return the raw <code>HttpSession</code> object handed in by the servlet container.
+      */
+     public HttpSession raw() {
+         return session;
+@@ -37,7 +37,7 @@ public HttpSession raw() {
+      * Returns the object bound with the specified name in this session, or null if no object is bound under the name.
+      *
+      * @param name a string specifying the name of the object
+-     * @param <T> The type parameter
++     * @param <T>  The type parameter
+      * @return the object with the specified name
+      */
+     @SuppressWarnings("unchecked")
+
+File: src/main/java/spark/TemplateViewRouteImpl.java
+Patch:
+@@ -71,7 +71,7 @@ public Object handle(Request request, Response response) throws Exception {
+     /**
+      * Constructor
+      *
+-     * @param path the path
++     * @param path       the path
+      * @param acceptType the accept type
+      */
+     protected TemplateViewRouteImpl(String path, String acceptType) {
+
+File: src/main/java/spark/servlet/FilterTools.java
+Patch:
+@@ -59,7 +59,8 @@ static String getFilterPath(FilterConfig config) {
+         } else if (!result.startsWith(SLASH) || !result.endsWith(SLASH_WILDCARD)) {
+             throw new RuntimeException(
+                     "The " + FILTER_MAPPING_PARAM + " must start with \"/\" and end with \"/*\". It's: "
+-                            + result); // NOSONAR
++                            + result
++            ); // NOSONAR
+         }
+         return result.substring(1, result.length() - 1);
+     }
+
+File: src/main/java/spark/webserver/SparkServerFactory.java
+Patch:
+@@ -30,7 +30,7 @@ public static SparkServer create(boolean hasMultipleHandler) {
+         MatcherFilter matcherFilter = new MatcherFilter(RouteMatcherFactory.get(), false, hasMultipleHandler);
+         matcherFilter.init(null);
+         JettyHandler handler = new JettyHandler(matcherFilter);
+-        return new SparkServerImpl(handler);
++        return new SparkServer(handler);
+     }
+ 
+ }
+
+File: src/test/java/spark/examples/simple/SimpleSecureExample.java
+Patch:
+@@ -19,7 +19,7 @@
+ import static spark.Spark.get;
+ import static spark.Spark.halt;
+ import static spark.Spark.post;
+-import static spark.Spark.setSecure;
++import static spark.Spark.secure;
+ 
+ /**
+  * A simple example just showing some basic functionality You'll need to provide
+@@ -32,10 +32,10 @@ public class SimpleSecureExample {
+ 
+     public static void main(String[] args) {
+ 
+-        // setPort(5678); <- Uncomment this if you want spark to listen on a
++        // port(5678); <- Uncomment this if you want spark to listen on a
+         // port different than 4567.
+ 
+-        setSecure(args[0], args[1], null, null);
++        secure(args[0], args[1], null, null);
+ 
+         get("/hello", (request, response) -> {
+             return "Hello Secure World!";
+
+File: src/main/java/spark/resource/AbstractResourceHandler.java
+Patch:
+@@ -41,9 +41,9 @@ public abstract class AbstractResourceHandler {
+     public AbstractFileResolvingResource getResource(HttpServletRequest request) throws MalformedURLException {
+         String servletPath;
+         String pathInfo;
+-        Boolean included = request.getAttribute(RequestDispatcher.INCLUDE_REQUEST_URI) != null;
++        boolean included = request.getAttribute(RequestDispatcher.INCLUDE_REQUEST_URI) != null;
+ 
+-        if (included != null && included.booleanValue()) {
++        if (included) {
+             servletPath = (String) request.getAttribute(RequestDispatcher.INCLUDE_SERVLET_PATH);
+             pathInfo = (String) request.getAttribute(RequestDispatcher.INCLUDE_PATH_INFO);
+ 
+
+File: src/main/java/spark/route/RouteMatcherFactory.java
+Patch:
+@@ -26,11 +26,11 @@ public final class RouteMatcherFactory {
+     /** The logger. */
+     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(RouteMatcherFactory.class);
+ 
+-    private static RouteMatcher routeMatcher = null;
++    private static SimpleRouteMatcher routeMatcher = null;
+ 
+     private RouteMatcherFactory() {}
+     
+-    public static synchronized RouteMatcher get() {
++    public static synchronized SimpleRouteMatcher get() {
+         if (routeMatcher == null) {
+             LOG.debug("creates RouteMatcher");
+             routeMatcher = new SimpleRouteMatcher();
+
+File: src/main/java/spark/webserver/RequestWrapper.java
+Patch:
+@@ -34,7 +34,7 @@ public void setDelegate(Request delegate) {
+     }
+ 
+ 	public Request getDelegate() {
+-		return delegate;
++        return delegate;
+ 	}
+ 
+     @Override
+
+File: src/main/java/spark/webserver/ResponseWrapper.java
+Patch:
+@@ -29,7 +29,7 @@ public void setDelegate(Response delegate) {
+     }
+ 
+ 	public Response getDelegate() {
+-		return delegate;
++        return delegate;
+ 	}
+ 
+     @Override
+
+File: src/test/java/spark/CookiesIntegrationTest.java
+Patch:
+@@ -72,7 +72,6 @@ public Object handle(Request request, Response response) {
+     
+     @AfterClass
+     public static void stopServer() {
+-        Spark.clearRoutes();
+         Spark.stop();
+     }
+     
+
+File: src/test/java/spark/GenericIntegrationTest.java
+Patch:
+@@ -28,7 +28,6 @@ public class GenericIntegrationTest {
+ 
+     @AfterClass
+     public static void tearDown() {
+-        Spark.clearRoutes();
+         Spark.stop();
+         if (tmpExternalFile != null) {
+             tmpExternalFile.delete();
+
+File: src/test/java/spark/GenericSecureIntegrationTest.java
+Patch:
+@@ -20,7 +20,6 @@ public class GenericSecureIntegrationTest {
+ 
+     @AfterClass
+     public static void tearDown() {
+-        Spark.clearRoutes();
+         Spark.stop();
+     }
+ 
+
+File: src/test/java/spark/servlet/ServletTest.java
+Patch:
+@@ -11,7 +11,7 @@
+ import org.junit.BeforeClass;
+ import org.junit.Test;
+ 
+-import spark.TAccess;
++import spark.Spark;
+ import spark.util.SparkTestUtil;
+ import spark.util.SparkTestUtil.UrlResponse;
+ 
+@@ -25,8 +25,7 @@ public class ServletTest {
+ 
+     @AfterClass
+     public static void tearDown() {
+-        TAccess.clearRoutes();
+-        TAccess.stop();
++        Spark.stop();
+     }
+ 
+     @BeforeClass
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -130,7 +130,7 @@ public String[] splat() {
+      * Returns request method e.g. GET, POST, PUT, ...
+      */
+     public String requestMethod() {
+-        return httpMethod.name();
++        return servletRequest.getMethod();
+     }
+ 
+     /**
+
+File: src/main/java/spark/webserver/MatcherFilter.java
+Patch:
+@@ -202,7 +202,7 @@ public void doFilter(ServletRequest servletRequest, ServletResponse servletRespo
+         if (consumed) {
+             // Write body content
+             if (!httpResponse.isCommitted()) {
+-                if (httpResponse.getHeader(CONTENT_TYPE_RESPONSE_HEADER) == null) {
++                if (httpResponse.containsHeader(CONTENT_TYPE_RESPONSE_HEADER)) {
+                     httpResponse.setHeader(CONTENT_TYPE_RESPONSE_HEADER, acceptType);
+                 }
+                 httpResponse.getOutputStream().write(bodyContent.getBytes("utf-8"));
+
+File: src/main/java/spark/webserver/MatcherFilter.java
+Patch:
+@@ -202,7 +202,7 @@ public void doFilter(ServletRequest servletRequest, ServletResponse servletRespo
+         if (consumed) {
+             // Write body content
+             if (!httpResponse.isCommitted()) {
+-                if (httpResponse.getHeader(CONTENT_TYPE_RESPONSE_HEADER) == null) {
++                if (httpResponse.containsHeader(CONTENT_TYPE_RESPONSE_HEADER)) {
+                     httpResponse.setHeader(CONTENT_TYPE_RESPONSE_HEADER, acceptType);
+                 }
+                 httpResponse.getOutputStream().write(bodyContent.getBytes("utf-8"));
+
+File: src/main/java/spark/webserver/RequestWrapper.java
+Patch:
+@@ -54,8 +54,7 @@ public String pathInfo() {
+     }
+ 
+     @Override
+-    public String servletPath()
+-    {
++    public String servletPath() {
+         return delegate.servletPath();
+     }
+ 
+
+File: src/main/java/spark/Route.java
+Patch:
+@@ -26,7 +26,7 @@
+  */
+ public abstract class Route extends AbstractRoute {
+ 
+-    private static final String DEFAULT_ACCEPT_TYPE = "text/html";
++    private static final String DEFAULT_ACCEPT_TYPE = "*/*";
+     
+ 	private String path;
+     private String acceptType;
+
+File: src/main/java/spark/webserver/MatcherFilter.java
+Patch:
+@@ -114,7 +114,7 @@ public void doFilter(ServletRequest servletRequest, ServletResponse servletRespo
+             HttpMethod httpMethod = HttpMethod.valueOf(httpMethodStr);
+             
+             RouteMatch match = null;
+-            match = routeMatcher.findTargetForRequestedRoute(HttpMethod.valueOf(httpMethodStr), uri, acceptType);
++            match = routeMatcher.findTargetForRequestedRoute(httpMethod, uri, acceptType);
+             
+             Object target = null;
+             if (match != null) {
+
+File: src/test/java/spark/examples/transformer/JsonTransformer.java
+Patch:
+@@ -1,6 +1,5 @@
+ package spark.examples.transformer;
+ 
+-import spark.Model;
+ import spark.ResponseTransformerRoute;
+ 
+ import com.google.gson.Gson;
+@@ -18,8 +17,8 @@ protected JsonTransformer(String path, String acceptType) {
+ 	}
+ 	
+ 	@Override
+-	public String render(Model model) {
+-		return gson.toJson(model.getModel());
++	public String render(Object model) {
++		return gson.toJson(model);
+ 	}
+ 
+ }
+
+File: src/test/java/spark/examples/transformer/TransformerExample.java
+Patch:
+@@ -1,7 +1,6 @@
+ package spark.examples.transformer;
+ 
+ import static spark.Spark.get;
+-import spark.Model;
+ import spark.Request;
+ import spark.Response;
+ 
+@@ -11,8 +10,8 @@ public static void main(String args[]) {
+ 
+ 		get(new JsonTransformer("/hello", "application/json") {
+ 			@Override
+-			public Model handle(Request request, Response response) {
+-				return new Model(new MyMessage("Hello World"));
++			public Object handle(Request request, Response response) {
++				return new MyMessage("Hello World");
+ 			}
+ 		});
+ 
+
+File: src/main/java/spark/Spark.java
+Patch:
+@@ -281,15 +281,15 @@ static synchronized void stop() {
+     private static void addRoute(String httpMethod, Route route) {
+         init();
+         routeMatcher.parseValidateAddRoute(httpMethod + " '" + route.getPath()
+-                + "'", route);
++                + "'", route.getAcceptType(), route);
+     }
+ 
+     private static void addFilter(String httpMethod, Filter filter) {
+         init();
+         routeMatcher.parseValidateAddRoute(httpMethod + " '" + filter.getPath()
+-                + "'", filter);
++                + "'", filter.getAcceptType(), filter);
+     }
+-
++    
+     private static boolean hasMultipleHandlers() {
+         return staticFileFolder != null || externalStaticFileFolder != null;
+     }
+
+File: src/test/java/spark/RequestTest.java
+Patch:
+@@ -33,7 +33,7 @@
+ 
+ public class RequestTest {
+     
+-    RouteMatch match =  new RouteMatch(HttpMethod.get,null,"/hi","/hi"); 
++    RouteMatch match =  new RouteMatch(HttpMethod.get,null,"/hi","/hi", "text/html"); 
+ 
+     @Test
+     public void queryParamShouldReturnsParametersFromQueryString() {
+
+File: src/main/java/spark/Session.java
+Patch:
+@@ -18,7 +18,7 @@ public class Session {
+      * @param session
+      * @throws IllegalArgumentException If the session is null.
+      */
+-    Session(HttpSession session) throws IllegalArgumentException {
++    Session(HttpSession session) {
+         if (session == null) {
+             throw new IllegalArgumentException("session cannot be null");
+         }
+
+File: src/main/java/spark/utils/IOUtils.java
+Patch:
+@@ -98,7 +98,7 @@ public final class IOUtils {
+     public static final String LINE_SEPARATOR;
+     static {
+         // avoid security issues
+-        StringWriter buf = new StringWriter(4);
++        StringWriter buf = new StringWriter(4); // NOSONAR
+         PrintWriter out = new PrintWriter(buf);
+         out.println();
+         LINE_SEPARATOR = buf.toString();
+@@ -148,7 +148,7 @@ public static String toString(InputStream input) throws IOException {
+      */
+     public static void copy(InputStream input, Writer output)
+             throws IOException {
+-        InputStreamReader in = new InputStreamReader(input);
++        InputStreamReader in = new InputStreamReader(input); // NOSONAR
+         copy(in, output);
+     }
+ 
+
+File: src/main/java/spark/HaltException.java
+Patch:
+@@ -16,6 +16,8 @@
+  */
+ package spark;
+ 
++import javax.servlet.http.HttpServletResponse;
++
+ /**
+  * Exception used for stopping the execution
+  *
+@@ -24,7 +26,7 @@
+ public class HaltException extends RuntimeException {
+     private static final long serialVersionUID = 1L;
+     
+-    private int statusCode = 200;
++    private int statusCode = HttpServletResponse.SC_OK;
+     private String body = null;
+     
+     HaltException() {
+
+File: src/main/java/spark/RequestResponseFactory.java
+Patch:
+@@ -21,8 +21,10 @@
+ 
+ import spark.route.RouteMatch;
+ 
+-public class RequestResponseFactory {
++public final class RequestResponseFactory {
+ 
++    private RequestResponseFactory() {}
++    
+     public static Request create(RouteMatch match, HttpServletRequest request) {
+         return new Request(match, request);
+     }
+
+File: src/main/java/spark/route/RouteMatcher.java
+Patch:
+@@ -25,8 +25,8 @@
+  */
+ public interface RouteMatcher {
+     
+-    public static final String ROOT = "/";
+-    public static final char SINGLE_QUOTE = '\'';
++    static final String ROOT = "/";
++    static final char SINGLE_QUOTE = '\'';
+     
+     /**
+      * Parses, validates and adds a route
+
+File: src/main/java/spark/route/SimpleRouteMatcher.java
+Patch:
+@@ -28,7 +28,7 @@
+  */
+ public class SimpleRouteMatcher implements RouteMatcher {
+ 
+-    private static org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(SimpleRouteMatcher.class);
++    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(SimpleRouteMatcher.class);
+     
+     private List<RouteEntry> routes;
+ 
+
+File: src/main/java/spark/servlet/FilterTools.java
+Patch:
+@@ -3,12 +3,14 @@
+ import javax.servlet.FilterConfig;
+ import javax.servlet.http.HttpServletRequest;
+ 
+-class FilterTools {
++final class FilterTools {
+ 
+     private static final String SLASH_WILDCARD = "/*";
+     private static final String SLASH = "/";
+     private static final String FILTER_MAPPING_PARAM = "filterMappingUrlPattern";
+     
++    private FilterTools() {}
++    
+     static String getRelativePath(HttpServletRequest request, String filterPath) {
+         String path = request.getRequestURI();
+         String contextPath = request.getContextPath();
+
+File: src/main/java/spark/servlet/SparkFilter.java
+Patch:
+@@ -75,16 +75,15 @@ protected SparkApplication getApplication(FilterConfig filterConfig) throws Serv
+         try {
+             String applicationClassName = filterConfig.getInitParameter(APPLICATION_CLASS_PARAM);
+             Class<?> applicationClass = Class.forName(applicationClassName);
+-            SparkApplication application = (SparkApplication) applicationClass.newInstance();
+-            return application;
++            return (SparkApplication) applicationClass.newInstance();
+         } catch (Exception e) {
+             throw new ServletException(e);
+         }
+     }
+ 
+     @Override
+     public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
+-        HttpServletRequest httpRequest = (HttpServletRequest) request;
++        HttpServletRequest httpRequest = (HttpServletRequest) request; // NOSONAR
+         
+         final String relativePath = FilterTools.getRelativePath(httpRequest, filterPath);
+         
+
+File: src/main/java/spark/utils/IOUtils.java
+Patch:
+@@ -67,7 +67,7 @@
+  * @author Sandy McArthur
+  * @version $Id: IOUtils.java 481854 2006-12-03 18:30:07Z scolebourne $
+  */
+-public class IOUtils {
++public final class IOUtils {
+     // NOTE: This class is focussed on InputStream, OutputStream, Reader and
+     // Writer. Each method should take at least one of these as a parameter,
+     // or return one of them.
+@@ -109,6 +109,8 @@ public class IOUtils {
+      */
+     private static final int DEFAULT_BUFFER_SIZE = 1024 * 4;
+     
++    private IOUtils() {}
++    
+     // read toString
+     //-----------------------------------------------------------------------
+     /**
+
+File: src/main/java/spark/utils/SparkUtils.java
+Patch:
+@@ -24,10 +24,12 @@
+  *
+  * @author Per Wendel
+  */
+-public class SparkUtils {
++public final class SparkUtils {
+ 
+     public static final String ALL_PATHS = "+/*paths";
+     
++    private SparkUtils() {}
++    
+     public static List<String> convertRouteToList(String route) {
+         String[] pathArray = route.split("/");
+         List<String> path = new ArrayList<String>();
+
+File: src/main/java/spark/webserver/RequestWrapper.java
+Patch:
+@@ -79,7 +79,7 @@ public int hashCode() {
+     }
+ 
+     @Override
+-    public final String params(String param) {
++    public String params(String param) {
+         return delegate.params(param);
+     }
+ 
+
+File: src/main/java/spark/webserver/SparkServerFactory.java
+Patch:
+@@ -23,8 +23,10 @@
+  *
+  * @author Per Wendel
+  */
+-public class SparkServerFactory {
++public final class SparkServerFactory {
+ 
++    private SparkServerFactory() {}
++    
+     public static SparkServer create(boolean hasMultipleHandler) {
+         MatcherFilter matcherFilter = new MatcherFilter(RouteMatcherFactory.get(), false, hasMultipleHandler);
+         matcherFilter.init(null);
+
+File: src/main/java/spark/QueryParamsMap.java
+Patch:
+@@ -61,7 +61,6 @@ public class QueryParamsMap {
+      * 
+      * @param request
+      */
+-    @SuppressWarnings("unchecked")
+     public QueryParamsMap(HttpServletRequest request) {
+         if (request == null) throw new IllegalArgumentException("HttpServletRequest cannot be null.");
+         loadQueryString(request.getParameterMap());
+
+File: src/main/java/spark/Request.java
+Patch:
+@@ -215,15 +215,13 @@ public String headers(String header) {
+     /**
+      * Returns all query parameters
+      */
+-    @SuppressWarnings("unchecked")
+     public Set<String> queryParams() {
+         return servletRequest.getParameterMap().keySet();
+     }
+ 
+     /**
+      * Returns all headers
+      */
+-    @SuppressWarnings("unchecked")
+     public Set<String> headers() {
+         if (headers == null) {
+             headers = new TreeSet<String>();
+@@ -263,7 +261,6 @@ public Object attribute(String attribute) {
+     /**
+      * Returns all attributes
+      */
+-    @SuppressWarnings("unchecked")
+     public Set<String> attributes() {
+         Set<String> attrList = new HashSet<String>();
+         Enumeration<String> attributes = (Enumeration<String>) servletRequest.getAttributeNames();
+
+File: src/main/java/spark/Session.java
+Patch:
+@@ -57,7 +57,6 @@ public void attribute(String name, Object value) {
+      * Returns an <code>Enumeration</code> of <code>String</code> objects
+      * containing the names of all the objects bound to this session. 
+      */
+-    @SuppressWarnings("unchecked")
+     public Set<String> attributes() {
+         TreeSet<String> attributes = new TreeSet<String>();
+         Enumeration<String> enumeration = session.getAttributeNames();
+
+File: src/test/java/spark/servlet/FilterConfigWrapper.java
+Patch:
+@@ -38,8 +38,7 @@ public String getInitParameter(String name) {
+      * @return
+      * @see javax.servlet.FilterConfig#getInitParameterNames()
+      */
+-    @SuppressWarnings({ "rawtypes" })
+-    public Enumeration getInitParameterNames() {
++    public Enumeration<String> getInitParameterNames() {
+         return delegate.getInitParameterNames();
+     }
+ 
+
+File: src/main/java/spark/Spark.java
+Patch:
+@@ -59,7 +59,7 @@ public class Spark {
+      * Set the IP address that Spark should listen on. If not called the default address is '0.0.0.0'.
+      * This has to be called before any route mapping is done.
+      * 
+-     * @param port The port number
++     * @param port The ipAddress
+      */
+     public synchronized static void setIpAddress(String ipAddress) {
+         if (initialized) {
+
+File: src/main/java/spark/webserver/SparkServer.java
+Patch:
+@@ -45,8 +45,8 @@ public interface SparkServer {
+     /**
+      * Ignites the spark server listening on the provided address and port
+      * 
+-     * @param port The port to listen on
+      * @param host The address to listen on
++     * @param port The port to listen on
+      */
+     void ignite(String host, int port);
+ 
+
+File: src/test/java/spark/BooksIntegrationTest.java
+Patch:
+@@ -104,7 +104,8 @@ public void testGetBook() {
+          Assert.assertTrue(response.headers.get("FOO").get(0).equals("BAR"));
+ 		 
+ 		 // delete the book again
+-		 testDeleteBook();
++		 //Comment this delete to ensure the running of the tests
++		 //testDeleteBook();
+       } catch (Throwable e) {
+          throw new RuntimeException(e);
+       }
+
+File: src/test/java/spark/BooksIntegrationTest.java
+Patch:
+@@ -104,7 +104,8 @@ public void testGetBook() {
+          Assert.assertTrue(response.headers.get("FOO").get(0).equals("BAR"));
+ 		 
+ 		 // delete the book again
+-		 testDeleteBook();
++		 //Comment this delete to ensure the running of the tests
++		 //testDeleteBook();
+       } catch (Throwable e) {
+          throw new RuntimeException(e);
+       }
+
+File: src/main/java/spark/Spark.java
+Patch:
+@@ -183,8 +183,8 @@ synchronized static void clearRoutes() {
+     synchronized static void stop() {
+     	if (server != null) {
+     		server.stop();
+-    		initialized = false;
+     	}
++    	initialized = false;
+     }
+     
+     private synchronized static final void init() {
+
+File: src/test/java/spark/BooksIntegrationTest.java
+Patch:
+@@ -26,6 +26,7 @@ public class BooksIntegrationTest {
+    @AfterClass
+    public static void tearDown() {
+        Spark.clearRoutes();
++       Spark.stop();
+    }
+    
+    @BeforeClass
+
+File: src/test/java/spark/GenericIntegrationTest.java
+Patch:
+@@ -24,6 +24,7 @@ public class GenericIntegrationTest {
+     @AfterClass
+     public static void tearDown() {
+         Spark.clearRoutes();
++        Spark.stop();
+     }
+     
+     @BeforeClass
+
+File: src/test/java/spark/servlet/ServletTest.java
+Patch:
+@@ -30,6 +30,7 @@ public class ServletTest {
+     @AfterClass
+     public static void tearDown() {
+         TAccess.clearRoutes();
++        TAccess.stop();
+     }
+     
+     @BeforeClass
+
+File: src/main/java/spark/HttpMethod.java
+Patch:
+@@ -10,5 +10,5 @@
+ package spark;
+ 
+ public enum HttpMethod {
+-    get, post, put, delete
++    get, post, put, delete, head, trace, connect, options
+ }
+

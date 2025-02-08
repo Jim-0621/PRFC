@@ -1,0 +1,2954 @@
+File: src/main/java/com/squareup/javapoet/AnnotationSpec.java
+Patch:
+@@ -232,6 +232,9 @@ Builder addMemberForValue(String memberName, Object value) {
+       if (value instanceof Float) {
+         return addMember(memberName, "$Lf", value);
+       }
++      if (value instanceof Long) {
++        return addMember(memberName, "$LL", value);
++      }
+       if (value instanceof Character) {
+         return addMember(memberName, "'$L'", characterLiteralWithoutSingleQuotes((char) value));
+       }
+
+File: src/test/java/com/squareup/javapoet/AnnotationSpecTest.java
+Patch:
+@@ -59,7 +59,7 @@ public enum Breakfast {
+ 
+     int c() default 7;
+ 
+-    long d() default 8;
++    long d() default 12345678910L;
+ 
+     float e() default 9.0f;
+ 
+@@ -313,7 +313,7 @@ public class IsAnnotated {
+         + "    a = 5,\n"
+         + "    b = 6,\n"
+         + "    c = 7,\n"
+-        + "    d = 8,\n"
++        + "    d = 12345678910L,\n"
+         + "    e = 9.0f,\n"
+         + "    f = 11.1,\n"
+         + "    g = {\n"
+
+File: src/test/java/com/squareup/javapoet/ParameterSpecTest.java
+Patch:
+@@ -99,7 +99,7 @@ public void foo(@Nullable final String bar) {
+     VariableElement parameterElement = element.getParameters().get(0);
+ 
+     assertThat(ParameterSpec.get(parameterElement).toString())
+-        .isEqualTo("@javax.annotation.Nullable java.lang.String arg0");
++        .isEqualTo("java.lang.String arg0");
+   }
+ 
+   @Test public void addNonFinalModifier() {
+
+File: src/test/java/com/squareup/javapoet/TypeSpecTest.java
+Patch:
+@@ -2284,12 +2284,15 @@ private String toString(TypeSpec typeSpec) {
+             .addStatement("foo = $S", "FOO")
+             .build())
+         .addOriginatingElement(originatingElement)
++        .alwaysQualify("com.example.AlwaysQualified")
+         .build();
+ 
+     TypeSpec recreatedTaco = taco.toBuilder().build();
+     assertThat(toString(taco)).isEqualTo(toString(recreatedTaco));
+     assertThat(taco.originatingElements)
+         .containsExactlyElementsIn(recreatedTaco.originatingElements);
++    assertThat(taco.alwaysQualifiedNames)
++        .containsExactlyElementsIn(recreatedTaco.alwaysQualifiedNames);
+ 
+     TypeSpec initializersAdded = taco.toBuilder()
+         .addInitializerBlock(CodeBlock.builder()
+
+File: src/main/java/com/squareup/javapoet/CodeWriter.java
+Patch:
+@@ -461,7 +461,7 @@ private ClassName stackClassName(int stackDepth, String simpleName) {
+    */
+   CodeWriter emitAndIndent(String s) throws IOException {
+     boolean first = true;
+-    for (String line : s.split("\n", -1)) {
++    for (String line : s.split("\\R", -1)) {
+       // Emit a newline character. Make sure blank lines in Javadoc & comments look good.
+       if (!first) {
+         if ((javadoc || comment) && trailingNewline) {
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -168,6 +168,7 @@ public Builder toBuilder() {
+     builder.typeSpecs.addAll(typeSpecs);
+     builder.initializerBlock.add(initializerBlock);
+     builder.staticBlock.add(staticBlock);
++    builder.originatingElements.addAll(originatingElements);
+     return builder;
+   }
+ 
+
+File: src/main/java/com/squareup/javapoet/MethodSpec.java
+Patch:
+@@ -132,7 +132,7 @@ void emit(CodeWriter codeWriter, String enclosingName, Set<Modifier> implicitMod
+       codeWriter.emit(" {\n");
+ 
+       codeWriter.indent();
+-      codeWriter.emit(code);
++      codeWriter.emit(code, true);
+       codeWriter.unindent();
+ 
+       codeWriter.emit("}\n");
+
+File: src/main/java/com/squareup/javapoet/FieldSpec.java
+Patch:
+@@ -111,10 +111,11 @@ public static final class Builder {
+     private final String name;
+ 
+     private final CodeBlock.Builder javadoc = CodeBlock.builder();
+-    private final List<AnnotationSpec> annotations = new ArrayList<>();
+-    private final List<Modifier> modifiers = new ArrayList<>();
+     private CodeBlock initializer = null;
+ 
++    public final List<AnnotationSpec> annotations = new ArrayList<>();
++    public final List<Modifier> modifiers = new ArrayList<>();
++
+     private Builder(TypeName type, String name) {
+       this.type = type;
+       this.name = name;
+
+File: src/main/java/com/squareup/javapoet/JavaFile.java
+Patch:
+@@ -225,10 +225,11 @@ public static final class Builder {
+     private final String packageName;
+     private final TypeSpec typeSpec;
+     private final CodeBlock.Builder fileComment = CodeBlock.builder();
+-    private final Set<String> staticImports = new TreeSet<>();
+     private boolean skipJavaLangImports;
+     private String indent = "  ";
+ 
++    public final Set<String> staticImports = new TreeSet<>();
++
+     private Builder(String packageName, TypeSpec typeSpec) {
+       this.packageName = packageName;
+       this.typeSpec = typeSpec;
+
+File: src/main/java/com/squareup/javapoet/ParameterSpec.java
+Patch:
+@@ -136,8 +136,8 @@ public static final class Builder {
+     private final String name;
+     private final CodeBlock.Builder javadoc = CodeBlock.builder();
+ 
+-    private final List<AnnotationSpec> annotations = new ArrayList<>();
+-    private final List<Modifier> modifiers = new ArrayList<>();
++    public final List<AnnotationSpec> annotations = new ArrayList<>();
++    public final List<Modifier> modifiers = new ArrayList<>();
+ 
+     private Builder(TypeName type, String name) {
+       this.type = type;
+
+File: src/test/java/com/squareup/javapoet/MethodSpecTest.java
+Patch:
+@@ -179,9 +179,7 @@ static void staticMethod() {
+     TypeElement classElement = getElement(ExtendsIterableWithDefaultMethods.class);
+     DeclaredType classType = (DeclaredType) classElement.asType();
+     List<ExecutableElement> methods = methodsIn(elements.getAllMembers(classElement));
+-    ExecutableElement exec = 
+-      
+-      (methods, "spliterator");
++    ExecutableElement exec = findFirst(methods, "spliterator");
+     MethodSpec method = MethodSpec.overriding(exec, classType, types).build();
+     assertThat(method.toString()).isEqualTo(""
+         + "@java.lang.Override\n"
+
+File: src/test/java/com/squareup/javapoet/MethodSpecTest.java
+Patch:
+@@ -179,9 +179,7 @@ static void staticMethod() {
+     TypeElement classElement = getElement(ExtendsIterableWithDefaultMethods.class);
+     DeclaredType classType = (DeclaredType) classElement.asType();
+     List<ExecutableElement> methods = methodsIn(elements.getAllMembers(classElement));
+-    ExecutableElement exec = 
+-      
+-      (methods, "spliterator");
++    ExecutableElement exec = findFirst(methods, "spliterator");
+     MethodSpec method = MethodSpec.overriding(exec, classType, types).build();
+     assertThat(method.toString()).isEqualTo(""
+         + "@java.lang.Override\n"
+
+File: src/main/java/com/squareup/javapoet/ParameterSpec.java
+Patch:
+@@ -160,6 +160,9 @@ public Builder addModifiers(Modifier... modifiers) {
+     public Builder addModifiers(Iterable<Modifier> modifiers) {
+       checkNotNull(modifiers, "modifiers == null");
+       for (Modifier modifier : modifiers) {
++        if (!modifier.equals(Modifier.FINAL)) {
++          throw new IllegalStateException("unexpected parameter modifier: " + modifier);
++        }
+         this.modifiers.add(modifier);
+       }
+       return this;
+
+File: src/main/java/com/squareup/javapoet/MethodSpec.java
+Patch:
+@@ -137,6 +137,7 @@ void emit(CodeWriter codeWriter, String enclosingName, Set<Modifier> implicitMod
+ 
+       codeWriter.emit("}\n");
+     }
++    codeWriter.popTypeVariables(typeVariables);
+   }
+ 
+   public boolean hasModifier(Modifier modifier) {
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -316,6 +316,7 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+ 
+       codeWriter.unindent();
+       codeWriter.popType();
++      codeWriter.popTypeVariables(typeVariables);
+ 
+       codeWriter.emit("}");
+       if (enumName == null && anonymousTypeArguments == null) {
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -435,6 +435,7 @@ public Builder addAnnotations(Iterable<AnnotationSpec> annotationSpecs) {
+     }
+ 
+     public Builder addAnnotation(AnnotationSpec annotationSpec) {
++      checkNotNull(annotationSpec, "annotationSpec == null");
+       this.annotations.add(annotationSpec);
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -435,6 +435,7 @@ public Builder addAnnotations(Iterable<AnnotationSpec> annotationSpecs) {
+     }
+ 
+     public Builder addAnnotation(AnnotationSpec annotationSpec) {
++      checkNotNull(annotationSpec, "annotationSpec == null");
+       this.annotations.add(annotationSpec);
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/JavaFile.java
+Patch:
+@@ -145,7 +145,7 @@ private void emit(CodeWriter codeWriter) throws IOException {
+     int importedTypesCount = 0;
+     for (ClassName className : new TreeSet<>(codeWriter.importedTypes().values())) {
+       if (skipJavaLangImports && className.packageName().equals("java.lang")) continue;
+-      codeWriter.emit("import $L;\n", className);
++      codeWriter.emit("import $L;\n", className.withoutAnnotations());
+       importedTypesCount++;
+     }
+ 
+
+File: src/main/java/com/squareup/javapoet/MethodSpec.java
+Patch:
+@@ -77,7 +77,7 @@ private MethodSpec(Builder builder) {
+ 
+   private boolean lastParameterIsArray(List<ParameterSpec> parameters) {
+     return !parameters.isEmpty()
+-        && TypeName.arrayComponent(parameters.get(parameters.size() - 1).type) != null;
++        && TypeName.asArray((parameters.get(parameters.size() - 1).type)) != null;
+   }
+ 
+   void emit(CodeWriter codeWriter, String enclosingName, Set<Modifier> implicitModifiers)
+
+File: src/main/java/com/squareup/javapoet/ParameterSpec.java
+Patch:
+@@ -51,10 +51,11 @@ void emit(CodeWriter codeWriter, boolean varargs) throws IOException {
+     codeWriter.emitAnnotations(annotations, true);
+     codeWriter.emitModifiers(modifiers);
+     if (varargs) {
+-      codeWriter.emit("$T... $L", TypeName.arrayComponent(type), name);
++      TypeName.asArray(type).emit(codeWriter, true);
+     } else {
+-      codeWriter.emit("$T $L", type, name);
++      type.emit(codeWriter);
+     }
++    codeWriter.emit(" $L", name);
+   }
+ 
+   @Override public boolean equals(Object o) {
+
+File: src/main/java/com/squareup/javapoet/TypeVariableName.java
+Patch:
+@@ -80,6 +80,7 @@ private static TypeVariableName of(String name, List<TypeName> bounds) {
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
++    emitAnnotations(out);
+     return out.emitAndIndent(name);
+   }
+ 
+
+File: src/main/java/com/squareup/javapoet/CodeWriter.java
+Patch:
+@@ -116,7 +116,7 @@ public CodeWriter pushPackage(String packageName) {
+   }
+ 
+   public CodeWriter popPackage() {
+-    checkState(this.packageName != NO_PACKAGE, "package already set: %s", this.packageName);
++    checkState(this.packageName != NO_PACKAGE, "package not set");
+     this.packageName = NO_PACKAGE;
+     return this;
+   }
+
+File: src/main/java/com/squareup/javapoet/LineWrapper.java
+Patch:
+@@ -93,6 +93,7 @@ void wrappingSpace(int indentLevel) throws IOException {
+   void zeroWidthSpace(int indentLevel) throws IOException {
+     if (closed) throw new IllegalStateException("closed");
+ 
++    if (column == 0) return;
+     if (this.nextFlush != null) flush(nextFlush);
+     this.nextFlush = FlushType.EMPTY;
+     this.indentLevel = indentLevel;
+
+File: src/main/java/com/squareup/javapoet/ClassName.java
+Patch:
+@@ -58,7 +58,7 @@ private ClassName(List<String> names, List<AnnotationSpec> annotations) {
+     return new ClassName(names, concatAnnotations(annotations));
+   }
+ 
+-  @Override public TypeName withoutAnnotations() {
++  @Override public ClassName withoutAnnotations() {
+     return new ClassName(names);
+   }
+ 
+
+File: src/main/java/com/squareup/javapoet/CodeWriter.java
+Patch:
+@@ -364,7 +364,7 @@ String lookupName(ClassName className) {
+       ClassName resolved = resolve(c.simpleName());
+       nameResolved = resolved != null;
+ 
+-      if (Objects.equals(resolved, c)) {
++      if (resolved != null && Objects.equals(resolved.canonicalName, c.canonicalName)) {
+         int suffixOffset = c.simpleNames().size() - 1;
+         return join(".", className.simpleNames().subList(
+             suffixOffset, className.simpleNames().size()));
+
+File: src/main/java/com/squareup/javapoet/ClassName.java
+Patch:
+@@ -58,7 +58,7 @@ private ClassName(List<String> names, List<AnnotationSpec> annotations) {
+     return new ClassName(names, concatAnnotations(annotations));
+   }
+ 
+-  @Override public TypeName withoutAnnotations() {
++  @Override public ClassName withoutAnnotations() {
+     return new ClassName(names);
+   }
+ 
+
+File: src/main/java/com/squareup/javapoet/CodeWriter.java
+Patch:
+@@ -364,7 +364,7 @@ String lookupName(ClassName className) {
+       ClassName resolved = resolve(c.simpleName());
+       nameResolved = resolved != null;
+ 
+-      if (Objects.equals(resolved, c)) {
++      if (resolved != null && Objects.equals(resolved.canonicalName, c.canonicalName)) {
+         int suffixOffset = c.simpleNames().size() - 1;
+         return join(".", className.simpleNames().subList(
+             suffixOffset, className.simpleNames().size()));
+
+File: src/main/java/com/squareup/javapoet/CodeWriter.java
+Patch:
+@@ -191,6 +191,7 @@ public void emitTypeVariables(List<TypeVariableName> typeVariables) throws IOExc
+     boolean firstTypeVariable = true;
+     for (TypeVariableName typeVariable : typeVariables) {
+       if (!firstTypeVariable) emit(", ");
++      emitAnnotations(typeVariable.annotations, true);
+       emit("$L", typeVariable.name);
+       boolean firstBound = true;
+       for (TypeName bound : typeVariable.bounds) {
+
+File: src/test/java/com/squareup/javapoet/TypeSpecTest.java
+Patch:
+@@ -597,7 +597,7 @@ private boolean isJava8() {
+         + "import java.lang.Comparable;\n"
+         + "import java.lang.Number;\n"
+         + "\n"
+-        + "class Location<P extends Number & Comparable, Q extends Number & Comparable> {\n"
++        + "class Location<P extends Number & Comparable, @A Q extends Number & Comparable> {\n"
+         + "  P x;\n"
+         + "\n"
+         + "  @A Q y;\n"
+
+File: src/test/java/com/squareup/javapoet/ClassNameTest.java
+Patch:
+@@ -107,6 +107,8 @@ private void assertBestGuessThrows(String s) {
+         .isEqualTo("java.lang.Object");
+     assertThat(ClassName.get(OuterClass.InnerClass.class).toString())
+         .isEqualTo("com.squareup.javapoet.ClassNameTest.OuterClass.InnerClass");
++    assertThat((ClassName.get(new Object() {}.getClass())).toString())
++        .isEqualTo("com.squareup.javapoet.ClassNameTest$1");
+   }
+ 
+   @Test public void peerClass() {
+
+File: src/test/java/com/squareup/javapoet/TypeSpecTest.java
+Patch:
+@@ -127,7 +127,7 @@ private boolean isJava8() {
+     ParameterSpec thungParameter = ParameterSpec.builder(thungOfSuperFoo, "thung")
+         .addModifiers(Modifier.FINAL)
+         .build();
+-    TypeSpec aSimpleThung = TypeSpec.anonymousClassBuilder("$N", thungParameter)
++    TypeSpec aSimpleThung = TypeSpec.anonymousClassBuilder(CodeBlock.of("$N", thungParameter))
+         .superclass(simpleThungOfBar)
+         .addMethod(MethodSpec.methodBuilder("doSomething")
+             .addAnnotation(Override.class)
+
+File: src/test/java/com/squareup/javapoet/TypeNameTest.java
+Patch:
+@@ -25,6 +25,7 @@
+ 
+ import static com.google.common.truth.Truth.assertThat;
+ import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
+ import static org.junit.Assert.assertNotEquals;
+ 
+ public class TypeNameTest {
+@@ -178,5 +179,6 @@ private void assertEqualsHashCodeAndToString(TypeName a, TypeName b) {
+     assertEquals(a.toString(), b.toString());
+     assertThat(a.equals(b)).isTrue();
+     assertThat(a.hashCode()).isEqualTo(b.hashCode());
++    assertFalse(a.equals(null));
+   }
+ }
+
+File: src/main/java/com/squareup/javapoet/CodeBlock.java
+Patch:
+@@ -228,7 +228,9 @@ public Builder add(String format, Object... args) {
+         if (indexStart < indexEnd) {
+           index = Integer.parseInt(format.substring(indexStart, indexEnd)) - 1;
+           hasIndexed = true;
+-          indexedParameterCount[index % args.length]++; // modulo is needed, checked below anyway
++          if (args.length > 0) {
++            indexedParameterCount[index % args.length]++; // modulo is needed, checked below anyway
++          }
+         } else {
+           index = relativeParameterCount;
+           hasRelative = true;
+
+File: src/test/java/com/squareup/javapoet/JavaFileTest.java
+Patch:
+@@ -41,7 +41,7 @@ public final class JavaFileTest {
+         .addStatement("result.add($T.createNimbus(\"2001\"))", hoverboard)
+         .addStatement("result.add($T.createNimbus($T.THUNDERBOLT))", hoverboard, namedBoards)
+         .addStatement("$T.sort(result)", Collections.class)
+-        .addStatement("return result.isEmpty() $T.emptyList() : result", Collections.class)
++        .addStatement("return result.isEmpty() ? $T.emptyList() : result", Collections.class)
+         .build();
+     TypeSpec hello = TypeSpec.classBuilder("HelloWorld")
+         .addMethod(beyond)
+@@ -69,7 +69,7 @@ public final class JavaFileTest {
+         + "    result.add(createNimbus(\"2001\"));\n"
+         + "    result.add(createNimbus(THUNDERBOLT));\n"
+         + "    sort(result);\n"
+-        + "    return result.isEmpty() emptyList() : result;\n"
++        + "    return result.isEmpty() ? emptyList() : result;\n"
+         + "  }\n"
+         + "}\n");
+   }
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -149,7 +149,6 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+     codeWriter.statementLine = -1;
+ 
+     try {
+-      codeWriter.pushType(this);
+       if (enumName != null) {
+         codeWriter.emitJavadoc(javadoc);
+         codeWriter.emitAnnotations(annotations, false);
+@@ -214,6 +213,7 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+         codeWriter.emit(" {\n");
+       }
+ 
++      codeWriter.pushType(this);
+       codeWriter.indent();
+       boolean firstMember = true;
+       for (Iterator<Map.Entry<String, TypeSpec>> i = enumConstants.entrySet().iterator();
+@@ -285,13 +285,13 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+       }
+ 
+       codeWriter.unindent();
++      codeWriter.popType();
+ 
+       codeWriter.emit("}");
+       if (enumName == null && anonymousTypeArguments == null) {
+         codeWriter.emit("\n"); // If this type isn't also a value, include a trailing newline.
+       }
+     } finally {
+-      codeWriter.popType();
+       codeWriter.statementLine = previousStatementLine;
+     }
+   }
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -149,7 +149,6 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+     codeWriter.statementLine = -1;
+ 
+     try {
+-      codeWriter.pushType(this);
+       if (enumName != null) {
+         codeWriter.emitJavadoc(javadoc);
+         codeWriter.emitAnnotations(annotations, false);
+@@ -214,6 +213,7 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+         codeWriter.emit(" {\n");
+       }
+ 
++      codeWriter.pushType(this);
+       codeWriter.indent();
+       boolean firstMember = true;
+       for (Iterator<Map.Entry<String, TypeSpec>> i = enumConstants.entrySet().iterator();
+@@ -285,13 +285,13 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+       }
+ 
+       codeWriter.unindent();
++      codeWriter.popType();
+ 
+       codeWriter.emit("}");
+       if (enumName == null && anonymousTypeArguments == null) {
+         codeWriter.emit("\n"); // If this type isn't also a value, include a trailing newline.
+       }
+     } finally {
+-      codeWriter.popType();
+       codeWriter.statementLine = previousStatementLine;
+     }
+   }
+
+File: src/main/java/com/squareup/javapoet/MethodSpec.java
+Patch:
+@@ -99,7 +99,7 @@ void emit(CodeWriter codeWriter, String enclosingName, Set<Modifier> implicitMod
+     boolean firstParameter = true;
+     for (Iterator<ParameterSpec> i = parameters.iterator(); i.hasNext(); ) {
+       ParameterSpec parameter = i.next();
+-      if (!firstParameter) codeWriter.emit(", ");
++      if (!firstParameter) codeWriter.emit(",").emitWrappingSpace();
+       parameter.emit(codeWriter, !i.hasNext() && varargs);
+       firstParameter = false;
+     }
+@@ -112,11 +112,11 @@ void emit(CodeWriter codeWriter, String enclosingName, Set<Modifier> implicitMod
+     }
+ 
+     if (!exceptions.isEmpty()) {
+-      codeWriter.emit(" throws");
++      codeWriter.emitWrappingSpace().emit("throws");
+       boolean firstException = true;
+       for (TypeName exception : exceptions) {
+         if (!firstException) codeWriter.emit(",");
+-        codeWriter.emit(" $T", exception);
++        codeWriter.emitWrappingSpace().emit("$T", exception);
+         firstException = false;
+       }
+     }
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -454,7 +454,7 @@ public Builder superclass(Type superclass) {
+     public Builder addSuperinterfaces(Iterable<? extends TypeName> superinterfaces) {
+       checkArgument(superinterfaces != null, "superinterfaces == null");
+       for (TypeName superinterface : superinterfaces) {
+-        this.superinterfaces.add(superinterface);
++        addSuperinterface(superinterface);
+       }
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -454,7 +454,7 @@ public Builder superclass(Type superclass) {
+     public Builder addSuperinterfaces(Iterable<? extends TypeName> superinterfaces) {
+       checkArgument(superinterfaces != null, "superinterfaces == null");
+       for (TypeName superinterface : superinterfaces) {
+-        this.superinterfaces.add(superinterface);
++        addSuperinterface(superinterface);
+       }
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/Util.java
+Patch:
+@@ -15,8 +15,6 @@
+  */
+ package com.squareup.javapoet;
+ 
+-import static java.lang.Character.isISOControl;
+-
+ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+@@ -28,6 +26,8 @@
+ import java.util.Set;
+ import javax.lang.model.element.Modifier;
+ 
++import static java.lang.Character.isISOControl;
++
+ /**
+  * Like Guava, but worse and standalone. This makes it easier to mix JavaPoet with libraries that
+  * bring their own version of Guava.
+
+File: src/test/java/com/squareup/javapoet/MethodSpecTest.java
+Patch:
+@@ -132,7 +132,7 @@ interface ExtendsIterableWithDefaultMethods extends Iterable<Object> {
+         + "@java.lang.Override\n"
+         + "protected <T extends java.lang.Runnable & java.io.Closeable> "
+         + "java.lang.Runnable everything("
+-        + "java.lang.String arg0, "
++        + "@" + Nullable.class.getCanonicalName() + " java.lang.String arg0, "
+         + "java.util.List<? extends T> arg1) "
+         + "throws java.io.IOException, java.lang.SecurityException {\n"
+         + "}\n");
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -460,6 +460,7 @@ public Builder addSuperinterfaces(Iterable<? extends TypeName> superinterfaces)
+     }
+ 
+     public Builder addSuperinterface(TypeName superinterface) {
++      checkArgument(superinterface != null, "superinterface == null");
+       this.superinterfaces.add(superinterface);
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -460,6 +460,7 @@ public Builder addSuperinterfaces(Iterable<? extends TypeName> superinterfaces)
+     }
+ 
+     public Builder addSuperinterface(TypeName superinterface) {
++      checkArgument(superinterface != null, "superinterface == null");
+       this.superinterfaces.add(superinterface);
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/CodeBlock.java
+Patch:
+@@ -48,8 +48,8 @@
+  *       for types may be {@linkplain Class classes}, {@linkplain javax.lang.model.type.TypeMirror
+ ,*       type mirrors}, and {@linkplain javax.lang.model.element.Element elements}.
+  *   <li>{@code $$} emits a dollar sign.
+- *   <li>{@code $&gt;} increases the indentation level.
+- *   <li>{@code $&lt;} decreases the indentation level.
++ *   <li>{@code $>} increases the indentation level.
++ *   <li>{@code $<} decreases the indentation level.
+  *   <li>{@code $[} begins a statement. For multiline statements, every line after the first line
+  *       is double-indented.
+  *   <li>{@code $]} ends a statement.
+
+File: src/main/java/com/squareup/javapoet/CodeBlock.java
+Patch:
+@@ -48,8 +48,8 @@
+  *       for types may be {@linkplain Class classes}, {@linkplain javax.lang.model.type.TypeMirror
+ ,*       type mirrors}, and {@linkplain javax.lang.model.element.Element elements}.
+  *   <li>{@code $$} emits a dollar sign.
+- *   <li>{@code $&gt;} increases the indentation level.
+- *   <li>{@code $&lt;} decreases the indentation level.
++ *   <li>{@code $>} increases the indentation level.
++ *   <li>{@code $<} decreases the indentation level.
+  *   <li>{@code $[} begins a statement. For multiline statements, every line after the first line
+  *       is double-indented.
+  *   <li>{@code $]} ends a statement.
+
+File: src/test/java/com/squareup/javapoet/MethodSpecTest.java
+Patch:
+@@ -130,10 +130,9 @@ interface ExtendsIterableWithDefaultMethods extends Iterable<Object> {
+     MethodSpec method = MethodSpec.overriding(methodElement).build();
+     assertThat(method.toString()).isEqualTo(""
+         + "@java.lang.Override\n"
+-        + "@java.lang.Deprecated\n"
+         + "protected <T extends java.lang.Runnable & java.io.Closeable> "
+         + "java.lang.Runnable everything("
+-        + "@com.squareup.javapoet.MethodSpecTest.Nullable java.lang.String arg0, "
++        + "java.lang.String arg0, "
+         + "java.util.List<? extends T> arg1) "
+         + "throws java.io.IOException, java.lang.SecurityException {\n"
+         + "}\n");
+
+File: src/main/java/com/squareup/javapoet/MethodSpec.java
+Patch:
+@@ -207,6 +207,7 @@ public static Builder overriding(ExecutableElement method) {
+ 
+     modifiers = new LinkedHashSet<>(modifiers);
+     modifiers.remove(Modifier.ABSTRACT);
++    modifiers.remove(Util.DEFAULT); // LinkedHashSet permits null as element for Java 7
+     methodBuilder.addModifiers(modifiers);
+ 
+     for (TypeParameterElement typeParameterElement : method.getTypeParameters()) {
+
+File: src/main/java/com/squareup/javapoet/MethodSpec.java
+Patch:
+@@ -207,6 +207,7 @@ public static Builder overriding(ExecutableElement method) {
+ 
+     modifiers = new LinkedHashSet<>(modifiers);
+     modifiers.remove(Modifier.ABSTRACT);
++    modifiers.remove(Util.DEFAULT); // LinkedHashSet permits null as element for Java 7
+     methodBuilder.addModifiers(modifiers);
+ 
+     for (TypeParameterElement typeParameterElement : method.getTypeParameters()) {
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -149,6 +149,7 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+     codeWriter.statementLine = -1;
+ 
+     try {
++      codeWriter.pushType(this);
+       if (enumName != null) {
+         codeWriter.emitJavadoc(javadoc);
+         codeWriter.emitAnnotations(annotations, false);
+@@ -213,7 +214,6 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+         codeWriter.emit(" {\n");
+       }
+ 
+-      codeWriter.pushType(this);
+       codeWriter.indent();
+       boolean firstMember = true;
+       for (Iterator<Map.Entry<String, TypeSpec>> i = enumConstants.entrySet().iterator();
+@@ -285,13 +285,13 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+       }
+ 
+       codeWriter.unindent();
+-      codeWriter.popType();
+ 
+       codeWriter.emit("}");
+       if (enumName == null && anonymousTypeArguments == null) {
+         codeWriter.emit("\n"); // If this type isn't also a value, include a trailing newline.
+       }
+     } finally {
++      codeWriter.popType();
+       codeWriter.statementLine = previousStatementLine;
+     }
+   }
+
+File: src/main/java/com/squareup/javapoet/TypeVariableName.java
+Patch:
+@@ -65,7 +65,7 @@ public TypeVariableName withBounds(TypeName... bounds) {
+     return withBounds(Arrays.asList(bounds));
+   }
+ 
+-  public TypeVariableName withBounds(List<TypeName> bounds) {
++  public TypeVariableName withBounds(List<? extends TypeName> bounds) {
+     ArrayList<TypeName> newBounds = new ArrayList<>();
+     newBounds.addAll(this.bounds);
+     newBounds.addAll(bounds);
+
+File: src/main/java/com/squareup/javapoet/TypeVariableName.java
+Patch:
+@@ -65,7 +65,7 @@ public TypeVariableName withBounds(TypeName... bounds) {
+     return withBounds(Arrays.asList(bounds));
+   }
+ 
+-  public TypeVariableName withBounds(List<TypeName> bounds) {
++  public TypeVariableName withBounds(List<? extends TypeName> bounds) {
+     ArrayList<TypeName> newBounds = new ArrayList<>();
+     newBounds.addAll(this.bounds);
+     newBounds.addAll(bounds);
+
+File: src/test/java/com/squareup/javapoet/UtilTest.java
+Patch:
+@@ -33,7 +33,7 @@ public class UtilTest {
+     assertEquals("\\r", Util.characterLiteralWithoutSingleQuotes('\r'));
+     assertEquals("\"", Util.characterLiteralWithoutSingleQuotes('"'));
+     assertEquals("\\'", Util.characterLiteralWithoutSingleQuotes('\''));
+-    assertEquals("\\", Util.characterLiteralWithoutSingleQuotes('\\'));
++    assertEquals("\\\\", Util.characterLiteralWithoutSingleQuotes('\\'));
+     // octal escapes
+     assertEquals("\\u0000", Util.characterLiteralWithoutSingleQuotes('\0'));
+     assertEquals("\\u0007", Util.characterLiteralWithoutSingleQuotes('\7'));
+@@ -61,6 +61,8 @@ public class UtilTest {
+     stringLiteral("♦♥♠♣");
+     stringLiteral("€\\t@\\t$", "€\t@\t$", " ");
+     stringLiteral("abc();\\n\"\n  + \"def();", "abc();\ndef();", " ");
++    stringLiteral("This is \\\"quoted\\\"!", "This is \"quoted\"!", " ");
++    stringLiteral("e^{i\\\\pi}+1=0", "e^{i\\pi}+1=0", " ");
+   }
+ 
+   void stringLiteral(String string) {
+
+File: src/test/java/com/squareup/javapoet/UtilTest.java
+Patch:
+@@ -33,7 +33,7 @@ public class UtilTest {
+     assertEquals("\\r", Util.characterLiteralWithoutSingleQuotes('\r'));
+     assertEquals("\"", Util.characterLiteralWithoutSingleQuotes('"'));
+     assertEquals("\\'", Util.characterLiteralWithoutSingleQuotes('\''));
+-    assertEquals("\\", Util.characterLiteralWithoutSingleQuotes('\\'));
++    assertEquals("\\\\", Util.characterLiteralWithoutSingleQuotes('\\'));
+     // octal escapes
+     assertEquals("\\u0000", Util.characterLiteralWithoutSingleQuotes('\0'));
+     assertEquals("\\u0007", Util.characterLiteralWithoutSingleQuotes('\7'));
+@@ -61,6 +61,8 @@ public class UtilTest {
+     stringLiteral("♦♥♠♣");
+     stringLiteral("€\\t@\\t$", "€\t@\t$", " ");
+     stringLiteral("abc();\\n\"\n  + \"def();", "abc();\ndef();", " ");
++    stringLiteral("This is \\\"quoted\\\"!", "This is \"quoted\"!", " ");
++    stringLiteral("e^{i\\\\pi}+1=0", "e^{i\\pi}+1=0", " ");
+   }
+ 
+   void stringLiteral(String string) {
+
+File: src/test/java/com/squareup/javapoet/AbstractTypesTest.java
+Patch:
+@@ -21,7 +21,6 @@
+ import java.io.Serializable;
+ import java.lang.annotation.Annotation;
+ import java.nio.charset.Charset;
+-import java.util.Collections;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Set;
+
+File: src/test/java/com/squareup/javapoet/AbstractTypesTest.java
+Patch:
+@@ -21,7 +21,6 @@
+ import java.io.Serializable;
+ import java.lang.annotation.Annotation;
+ import java.nio.charset.Charset;
+-import java.util.Collections;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Set;
+
+File: src/test/java/com/squareup/javapoet/JavaFileTest.java
+Patch:
+@@ -274,7 +274,7 @@ private TypeSpec importStaticTypeSpec(String name) {
+     String source = JavaFile.builder("com.squareup.tacos",
+         TypeSpec.classBuilder("Taco")
+             .addField(Date.class, "madeFreshDate")
+-            .addField(java.sql.Date.class, "madeFreshDatabaseDate")
++            .addField(ClassName.get("java.sql", "Date"), "madeFreshDatabaseDate")
+             .build())
+         .build()
+         .toString();
+
+File: src/test/java/com/squareup/javapoet/TypeNameTest.java
+Patch:
+@@ -21,10 +21,10 @@
+ 
+ import java.io.Serializable;
+ import java.lang.reflect.Method;
+-import java.rmi.server.UID;
+ import java.util.Comparator;
+ import java.util.List;
+ import java.util.Set;
++import java.util.UUID;
+ import org.junit.Test;
+ 
+ public class TypeNameTest {
+@@ -70,8 +70,8 @@ protected <E extends Enum<E>> E generic(E[] values) {
+   @Test public void equalsAndHashCodeParameterizedTypeName() {
+     assertEqualsHashCodeAndToString(ParameterizedTypeName.get(Object.class),
+         ParameterizedTypeName.get(Object.class));
+-    assertEqualsHashCodeAndToString(ParameterizedTypeName.get(Set.class, UID.class),
+-        ParameterizedTypeName.get(Set.class, UID.class));
++    assertEqualsHashCodeAndToString(ParameterizedTypeName.get(Set.class, UUID.class),
++        ParameterizedTypeName.get(Set.class, UUID.class));
+     assertNotEquals(ClassName.get(List.class), ParameterizedTypeName.get(List.class,
+         String.class));
+   }
+
+File: src/main/java/com/squareup/javapoet/ArrayTypeName.java
+Patch:
+@@ -41,7 +41,7 @@ private ArrayTypeName(TypeName componentType, List<AnnotationSpec> annotations)
+   }
+ 
+   @Override public ArrayTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new ArrayTypeName(componentType, prependAnnotations(annotations));
++    return new ArrayTypeName(componentType, concatAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/main/java/com/squareup/javapoet/ClassName.java
+Patch:
+@@ -55,7 +55,7 @@ private ClassName(List<String> names, List<AnnotationSpec> annotations) {
+   }
+ 
+   @Override public ClassName annotated(List<AnnotationSpec> annotations) {
+-    return new ClassName(names, prependAnnotations(annotations));
++    return new ClassName(names, concatAnnotations(annotations));
+   }
+ 
+   /** Returns the package name, like {@code "java.util"} for {@code Map.Entry}. */
+
+File: src/main/java/com/squareup/javapoet/ParameterizedTypeName.java
+Patch:
+@@ -49,7 +49,7 @@ public final class ParameterizedTypeName extends TypeName {
+   }
+ 
+   @Override public ParameterizedTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new ParameterizedTypeName(rawType, typeArguments, prependAnnotations(annotations));
++    return new ParameterizedTypeName(rawType, typeArguments, concatAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/main/java/com/squareup/javapoet/WildcardTypeName.java
+Patch:
+@@ -55,7 +55,7 @@ private WildcardTypeName(List<TypeName> upperBounds, List<TypeName> lowerBounds,
+   }
+ 
+   @Override public WildcardTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new WildcardTypeName(upperBounds, lowerBounds, prependAnnotations(annotations));
++    return new WildcardTypeName(upperBounds, lowerBounds, concatAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/test/java/com/squareup/javapoet/AnnotatedTypeNameTest.java
+Patch:
+@@ -55,7 +55,7 @@ public class AnnotatedTypeNameTest {
+   }
+ 
+   @Test public void annotatedTwice() {
+-    String expected = "@java.lang.Override @" + NN + " java.lang.String";
++    String expected = "@" + NN + " @java.lang.Override java.lang.String";
+     TypeName type = TypeName.get(String.class);
+     String actual =
+         type.annotated(NEVER_NULL)
+
+File: src/main/java/com/squareup/javapoet/ArrayTypeName.java
+Patch:
+@@ -41,7 +41,7 @@ private ArrayTypeName(TypeName componentType, List<AnnotationSpec> annotations)
+   }
+ 
+   @Override public ArrayTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new ArrayTypeName(componentType, prependAnnotations(annotations));
++    return new ArrayTypeName(componentType, concatAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/main/java/com/squareup/javapoet/ClassName.java
+Patch:
+@@ -55,7 +55,7 @@ private ClassName(List<String> names, List<AnnotationSpec> annotations) {
+   }
+ 
+   @Override public ClassName annotated(List<AnnotationSpec> annotations) {
+-    return new ClassName(names, prependAnnotations(annotations));
++    return new ClassName(names, concatAnnotations(annotations));
+   }
+ 
+   /** Returns the package name, like {@code "java.util"} for {@code Map.Entry}. */
+
+File: src/main/java/com/squareup/javapoet/ParameterizedTypeName.java
+Patch:
+@@ -49,7 +49,7 @@ public final class ParameterizedTypeName extends TypeName {
+   }
+ 
+   @Override public ParameterizedTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new ParameterizedTypeName(rawType, typeArguments, prependAnnotations(annotations));
++    return new ParameterizedTypeName(rawType, typeArguments, concatAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/main/java/com/squareup/javapoet/WildcardTypeName.java
+Patch:
+@@ -55,7 +55,7 @@ private WildcardTypeName(List<TypeName> upperBounds, List<TypeName> lowerBounds,
+   }
+ 
+   @Override public WildcardTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new WildcardTypeName(upperBounds, lowerBounds, prependAnnotations(annotations));
++    return new WildcardTypeName(upperBounds, lowerBounds, concatAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/test/java/com/squareup/javapoet/AnnotatedTypeNameTest.java
+Patch:
+@@ -55,7 +55,7 @@ public class AnnotatedTypeNameTest {
+   }
+ 
+   @Test public void annotatedTwice() {
+-    String expected = "@java.lang.Override @" + NN + " java.lang.String";
++    String expected = "@" + NN + " @java.lang.Override java.lang.String";
+     TypeName type = TypeName.get(String.class);
+     String actual =
+         type.annotated(NEVER_NULL)
+
+File: src/main/java/com/squareup/javapoet/ArrayTypeName.java
+Patch:
+@@ -41,7 +41,7 @@ private ArrayTypeName(TypeName componentType, List<AnnotationSpec> annotations)
+   }
+ 
+   @Override public ArrayTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new ArrayTypeName(componentType, annotations);
++    return new ArrayTypeName(componentType, prependAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/main/java/com/squareup/javapoet/ClassName.java
+Patch:
+@@ -55,7 +55,7 @@ private ClassName(List<String> names, List<AnnotationSpec> annotations) {
+   }
+ 
+   @Override public ClassName annotated(List<AnnotationSpec> annotations) {
+-    return new ClassName(names, annotations);
++    return new ClassName(names, prependAnnotations(annotations));
+   }
+ 
+   /** Returns the package name, like {@code "java.util"} for {@code Map.Entry}. */
+
+File: src/main/java/com/squareup/javapoet/ParameterizedTypeName.java
+Patch:
+@@ -49,7 +49,7 @@ public final class ParameterizedTypeName extends TypeName {
+   }
+ 
+   @Override public ParameterizedTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new ParameterizedTypeName(rawType, typeArguments, annotations);
++    return new ParameterizedTypeName(rawType, typeArguments, prependAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/main/java/com/squareup/javapoet/WildcardTypeName.java
+Patch:
+@@ -55,7 +55,7 @@ private WildcardTypeName(List<TypeName> upperBounds, List<TypeName> lowerBounds,
+   }
+ 
+   @Override public WildcardTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new WildcardTypeName(upperBounds, lowerBounds, annotations);
++    return new WildcardTypeName(upperBounds, lowerBounds, prependAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/main/java/com/squareup/javapoet/ArrayTypeName.java
+Patch:
+@@ -41,7 +41,7 @@ private ArrayTypeName(TypeName componentType, List<AnnotationSpec> annotations)
+   }
+ 
+   @Override public ArrayTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new ArrayTypeName(componentType, annotations);
++    return new ArrayTypeName(componentType, prependAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/main/java/com/squareup/javapoet/ClassName.java
+Patch:
+@@ -55,7 +55,7 @@ private ClassName(List<String> names, List<AnnotationSpec> annotations) {
+   }
+ 
+   @Override public ClassName annotated(List<AnnotationSpec> annotations) {
+-    return new ClassName(names, annotations);
++    return new ClassName(names, prependAnnotations(annotations));
+   }
+ 
+   /** Returns the package name, like {@code "java.util"} for {@code Map.Entry}. */
+
+File: src/main/java/com/squareup/javapoet/ParameterizedTypeName.java
+Patch:
+@@ -49,7 +49,7 @@ public final class ParameterizedTypeName extends TypeName {
+   }
+ 
+   @Override public ParameterizedTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new ParameterizedTypeName(rawType, typeArguments, annotations);
++    return new ParameterizedTypeName(rawType, typeArguments, prependAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/main/java/com/squareup/javapoet/WildcardTypeName.java
+Patch:
+@@ -55,7 +55,7 @@ private WildcardTypeName(List<TypeName> upperBounds, List<TypeName> lowerBounds,
+   }
+ 
+   @Override public WildcardTypeName annotated(List<AnnotationSpec> annotations) {
+-    return new WildcardTypeName(upperBounds, lowerBounds, annotations);
++    return new WildcardTypeName(upperBounds, lowerBounds, prependAnnotations(annotations));
+   }
+ 
+   @Override CodeWriter emit(CodeWriter out) throws IOException {
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -302,7 +302,7 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+     }
+   }
+ 
+-  private enum Kind {
++  public enum Kind {
+     CLASS(
+         Collections.<Modifier>emptySet(),
+         Collections.<Modifier>emptySet(),
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -302,7 +302,7 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+     }
+   }
+ 
+-  private enum Kind {
++  public enum Kind {
+     CLASS(
+         Collections.<Modifier>emptySet(),
+         Collections.<Modifier>emptySet(),
+
+File: src/test/java/com/squareup/javapoet/AnnotationSpecTest.java
+Patch:
+@@ -62,7 +62,7 @@ public enum Breakfast {
+ 
+     double f() default 10.0;
+ 
+-    char[] g() default {0, 0xCAFE, 'z', '€', '"', '\'', '\t', '\n'};
++    char[] g() default {0, 0xCAFE, 'z', '€', 'ℕ', '"', '\'', '\t', '\n'};
+ 
+     boolean h() default true;
+ 
+@@ -318,6 +318,7 @@ public class IsAnnotated {
+         + "        '쫾',\n"
+         + "        'z',\n"
+         + "        '€',\n"
++        + "        'ℕ',\n"
+         + "        '\"',\n"
+         + "        '\\'',\n"
+         + "        '\\t',\n"
+
+File: src/main/java/com/squareup/javapoet/AnnotationSpec.java
+Patch:
+@@ -234,6 +234,9 @@ private Builder addValue(String memberName, Object value) {
+       if (value instanceof Float) {
+         return addMember(memberName, "$Lf", value);
+       }
++      if (value instanceof Character) {
++        return addMember(memberName, "'$L'", value);
++      }
+       return addMember(memberName, "$L", value);
+     }
+ 
+
+File: src/test/java/com/squareup/javapoet/AnnotationSpecTest.java
+Patch:
+@@ -313,7 +313,7 @@ public class IsAnnotated {
+         + "    d = 8,\n"
+         + "    e = 9.0f,\n"
+         + "    f = 11.1,\n"
+-        + "    g = k,\n"
++        + "    g = 'k',\n"
+         + "    h = true,\n"
+         + "    i = AnnotationSpecTest.Breakfast.WAFFLES,\n"
+         + "    j = @AnnotationSpecTest.AnnotationA,\n"
+
+File: src/main/java/com/squareup/javapoet/CodeWriter.java
+Patch:
+@@ -66,11 +66,11 @@ final class CodeWriter {
+     this(out, "  ");
+   }
+ 
+-  public CodeWriter(Appendable out, String indent) {
++  CodeWriter(Appendable out, String indent) {
+     this(out, indent, Collections.<String, ClassName>emptyMap());
+   }
+ 
+-  public CodeWriter(Appendable out, String indent, Map<String, ClassName> importedTypes) {
++  CodeWriter(Appendable out, String indent, Map<String, ClassName> importedTypes) {
+     this.out = checkNotNull(out, "out == null");
+     this.indent = checkNotNull(indent, "indent == null");
+     this.importedTypes = checkNotNull(importedTypes, "importedTypes == null");
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -321,7 +321,7 @@ private enum Kind {
+     private final Set<Modifier> implicitTypeModifiers;
+     private final Set<Modifier> asMemberModifiers;
+ 
+-    private Kind(Set<Modifier> implicitFieldModifiers,
++    Kind(Set<Modifier> implicitFieldModifiers,
+         Set<Modifier> implicitMethodModifiers,
+         Set<Modifier> implicitTypeModifiers,
+         Set<Modifier> asMemberModifiers) {
+
+File: src/main/java/com/squareup/javapoet/TypeName.java
+Patch:
+@@ -104,9 +104,8 @@ private TypeName(String keyword, List<AnnotationSpec> annotations) {
+     this(null, annotations);
+   }
+ 
+-  public TypeName annotated(AnnotationSpec... annotations) {
+-    Util.checkNotNull(annotations, "annotations == null");
+-    return new TypeName(keyword, Arrays.asList(annotations));
++  public final TypeName annotated(AnnotationSpec... annotations) {
++    return annotated(Arrays.asList(annotations));
+   }
+ 
+   public TypeName annotated(List<AnnotationSpec> annotations) {
+
+File: src/main/java/com/squareup/javapoet/TypeName.java
+Patch:
+@@ -104,9 +104,8 @@ private TypeName(String keyword, List<AnnotationSpec> annotations) {
+     this(null, annotations);
+   }
+ 
+-  public TypeName annotated(AnnotationSpec... annotations) {
+-    Util.checkNotNull(annotations, "annotations == null");
+-    return new TypeName(keyword, Arrays.asList(annotations));
++  public final TypeName annotated(AnnotationSpec... annotations) {
++    return annotated(Arrays.asList(annotations));
+   }
+ 
+   public TypeName annotated(List<AnnotationSpec> annotations) {
+
+File: src/main/java/com/squareup/javapoet/CodeWriter.java
+Patch:
+@@ -309,6 +309,9 @@ String lookupName(ClassName className) {
+   }
+ 
+   private void importableType(ClassName className) {
++    if (className.packageName().isEmpty()) {
++      return;
++    }
+     ClassName topLevelClassName = className.topLevelClassName();
+     String simpleName = topLevelClassName.simpleName();
+     ClassName replaced = importableTypes.put(simpleName, topLevelClassName);
+
+File: src/main/java/com/squareup/javapoet/CodeWriter.java
+Patch:
+@@ -309,6 +309,9 @@ String lookupName(ClassName className) {
+   }
+ 
+   private void importableType(ClassName className) {
++    if (className.packageName().isEmpty()) {
++      return;
++    }
+     ClassName topLevelClassName = className.topLevelClassName();
+     String simpleName = topLevelClassName.simpleName();
+     ClassName replaced = importableTypes.put(simpleName, topLevelClassName);
+
+File: src/main/java/com/squareup/javapoet/JavaFile.java
+Patch:
+@@ -27,6 +27,7 @@
+ import java.util.Collections;
+ import java.util.List;
+ import java.util.Map;
++import java.util.TreeSet;
+ import javax.annotation.processing.Filer;
+ import javax.lang.model.element.Element;
+ import javax.lang.model.element.Modifier;
+@@ -69,7 +70,7 @@ public void writeTo(Appendable out) throws IOException {
+     // First pass: emit the entire class, just to collect the types we'll need to import.
+     CodeWriter importsCollector = new CodeWriter(NULL_APPENDABLE, indent);
+     emit(importsCollector);
+-    Map<ClassName, String> suggestedImports = importsCollector.suggestedImports();
++    Map<String, ClassName> suggestedImports = importsCollector.suggestedImports();
+ 
+     // Second pass: write the code, taking advantage of the imports.
+     CodeWriter codeWriter = new CodeWriter(out, indent, suggestedImports);
+@@ -131,7 +132,7 @@ private void emit(CodeWriter codeWriter) throws IOException {
+     }
+ 
+     int importedTypesCount = 0;
+-    for (ClassName className : codeWriter.importedTypes().keySet()) {
++    for (ClassName className : new TreeSet<>(codeWriter.importedTypes().values())) {
+       if (skipJavaLangImports && className.packageName().equals("java.lang")) continue;
+       codeWriter.emit("import $L;\n", className);
+       importedTypesCount++;
+
+File: src/main/java/com/squareup/javapoet/CodeWriter.java
+Patch:
+@@ -231,12 +231,12 @@ public CodeWriter emit(CodeBlock codeBlock) throws IOException {
+           break;
+ 
+         case "$[":
+-          checkState(statementLine == -1, "statements cannot be re-entrant");
++          checkState(statementLine == -1, "statement enter $[ followed by statement enter $[");
+           statementLine = 0;
+           break;
+ 
+         case "$]":
+-          checkState(statementLine != -1, "statement exit has no matching statement enter");
++          checkState(statementLine != -1, "statement exit $] has no matching statement enter $[");
+           if (statementLine > 0) {
+             unindent(2); // End a multi-line statement. Decrease the indentation level.
+           }
+
+File: src/main/java/com/squareup/javapoet/CodeWriter.java
+Patch:
+@@ -231,12 +231,12 @@ public CodeWriter emit(CodeBlock codeBlock) throws IOException {
+           break;
+ 
+         case "$[":
+-          checkState(statementLine == -1, "statements cannot be re-entrant");
++          checkState(statementLine == -1, "statement enter $[ followed by statement enter $[");
+           statementLine = 0;
+           break;
+ 
+         case "$]":
+-          checkState(statementLine != -1, "statement exit has no matching statement enter");
++          checkState(statementLine != -1, "statement exit $] has no matching statement enter $[");
+           if (statementLine > 0) {
+             unindent(2); // End a multi-line statement. Decrease the indentation level.
+           }
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -131,6 +131,7 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+     try {
+       if (enumName != null) {
+         codeWriter.emitJavadoc(javadoc);
++        codeWriter.emitAnnotations(annotations, false);
+         codeWriter.emit("$L", enumName);
+         if (!anonymousTypeArguments.formatParts.isEmpty()) {
+           codeWriter.emit("(");
+@@ -352,7 +353,6 @@ public Builder addJavadoc(String format, Object... args) {
+     }
+ 
+     public Builder addAnnotations(Iterable<AnnotationSpec> annotationSpecs) {
+-      checkState(anonymousTypeArguments == null, "forbidden on anonymous types.");
+       checkArgument(annotationSpecs != null, "annotationSpecs == null");
+       for (AnnotationSpec annotationSpec : annotationSpecs) {
+         this.annotations.add(annotationSpec);
+@@ -361,7 +361,6 @@ public Builder addAnnotations(Iterable<AnnotationSpec> annotationSpecs) {
+     }
+ 
+     public Builder addAnnotation(AnnotationSpec annotationSpec) {
+-      checkState(anonymousTypeArguments == null, "forbidden on anonymous types.");
+       this.annotations.add(annotationSpec);
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -131,6 +131,7 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+     try {
+       if (enumName != null) {
+         codeWriter.emitJavadoc(javadoc);
++        codeWriter.emitAnnotations(annotations, false);
+         codeWriter.emit("$L", enumName);
+         if (!anonymousTypeArguments.formatParts.isEmpty()) {
+           codeWriter.emit("(");
+@@ -352,7 +353,6 @@ public Builder addJavadoc(String format, Object... args) {
+     }
+ 
+     public Builder addAnnotations(Iterable<AnnotationSpec> annotationSpecs) {
+-      checkState(anonymousTypeArguments == null, "forbidden on anonymous types.");
+       checkArgument(annotationSpecs != null, "annotationSpecs == null");
+       for (AnnotationSpec annotationSpec : annotationSpecs) {
+         this.annotations.add(annotationSpec);
+@@ -361,7 +361,6 @@ public Builder addAnnotations(Iterable<AnnotationSpec> annotationSpecs) {
+     }
+ 
+     public Builder addAnnotation(AnnotationSpec annotationSpec) {
+-      checkState(anonymousTypeArguments == null, "forbidden on anonymous types.");
+       this.annotations.add(annotationSpec);
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -130,6 +130,7 @@ void emit(CodeWriter codeWriter, String enumName, Set<Modifier> implicitModifier
+ 
+     try {
+       if (enumName != null) {
++        codeWriter.emitJavadoc(javadoc);
+         codeWriter.emit("$L", enumName);
+         if (!anonymousTypeArguments.formatParts.isEmpty()) {
+           codeWriter.emit("(");
+@@ -346,7 +347,6 @@ private Builder(Kind kind, String name,
+     }
+ 
+     public Builder addJavadoc(String format, Object... args) {
+-      checkState(anonymousTypeArguments == null, "forbidden on anonymous types.");
+       javadoc.add(format, args);
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/TypeName.java
+Patch:
+@@ -245,7 +245,7 @@ public static TypeName get(Type type) {
+ 
+   /** Converts an array of types to a list of type names. */
+   static List<TypeName> list(Type[] types) {
+-    List<TypeName> result = new ArrayList<>();
++    List<TypeName> result = new ArrayList<>(types.length);
+     for (Type type : types) {
+       result.add(get(type));
+     }
+
+File: src/main/java/com/squareup/javapoet/Util.java
+Patch:
+@@ -16,6 +16,7 @@
+ package com.squareup.javapoet;
+ 
+ import java.util.ArrayList;
++import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.Collections;
+ import java.util.LinkedHashMap;
+@@ -101,7 +102,8 @@ public static void requireExactlyOneOf(Set<Modifier> modifiers, Modifier... mutu
+       if (check == null && Util.DEFAULT == null) continue; // Skip 'DEFAULT' if it doesn't exist!
+       if (modifiers.contains(check)) count++;
+     }
+-    checkArgument(count == 1, "%s must contain one of %s", modifiers, mutuallyExclusive);
++    checkArgument(count == 1, "modifiers %s must contain one of %s",
++            modifiers, Arrays.toString(mutuallyExclusive));
+   }
+ 
+   public static boolean hasDefaultModifier(Collection<Modifier> modifiers) {
+
+File: src/main/java/com/squareup/javapoet/Util.java
+Patch:
+@@ -16,6 +16,7 @@
+ package com.squareup.javapoet;
+ 
+ import java.util.ArrayList;
++import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.Collections;
+ import java.util.LinkedHashMap;
+@@ -101,7 +102,8 @@ public static void requireExactlyOneOf(Set<Modifier> modifiers, Modifier... mutu
+       if (check == null && Util.DEFAULT == null) continue; // Skip 'DEFAULT' if it doesn't exist!
+       if (modifiers.contains(check)) count++;
+     }
+-    checkArgument(count == 1, "%s must contain one of %s", modifiers, mutuallyExclusive);
++    checkArgument(count == 1, "modifiers %s must contain one of %s",
++            modifiers, Arrays.toString(mutuallyExclusive));
+   }
+ 
+   public static boolean hasDefaultModifier(Collection<Modifier> modifiers) {
+
+File: src/main/java/com/squareup/javapoet/CodeBlock.java
+Patch:
+@@ -47,7 +47,7 @@
+  *       MethodSpec methods}, and {@linkplain TypeSpec types}.
+  *   <li>{@code $S} escapes the value as a <em>string</em>, wraps it with double quotes, and emits
+  *       that. For example, {@code 6" sandwich} is emitted {@code "6\" sandwich"}.
+- *   <li>{@code T} emits a <em>type</em> reference. Types will be imported if possible. Arguments
++ *   <li>{@code $T} emits a <em>type</em> reference. Types will be imported if possible. Arguments
+  *       for types may be {@linkplain Class classes}, {@linkplain javax.lang.model.type.TypeMirror
+ ,*       type mirrors}, and {@linkplain javax.lang.model.element.Element elements}.
+  *   <li>{@code $$} emits a dollar sign.
+
+File: src/main/java/com/squareup/javapoet/JavaFile.java
+Patch:
+@@ -141,7 +141,7 @@ private void emit(CodeWriter codeWriter) throws IOException {
+     codeWriter.popPackage();
+   }
+ 
+-  public String toString() {
++  @Override public String toString() {
+     try {
+       StringBuilder result = new StringBuilder();
+       writeTo(result);
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -366,6 +366,9 @@ public Builder addTypeVariable(TypeVariableName typeVariable) {
+     }
+ 
+     public Builder superclass(TypeName superclass) {
++      checkState(this.superclass == ClassName.OBJECT,
++          "superclass already set to " + this.superclass);
++      checkArgument(!superclass.isPrimitive(), "superclass may not be a primitive");
+       this.superclass = superclass;
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/CodeBlock.java
+Patch:
+@@ -143,9 +143,7 @@ public Builder beginControlFlow(String controlFlow, Object... args) {
+      */
+     public Builder nextControlFlow(String controlFlow, Object... args) {
+       unindent();
+-      add("} ", args);
+-      add(controlFlow, args);
+-      add(" {\n", args);
++      add("} " + controlFlow + " {\n", args);
+       indent();
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/CodeBlock.java
+Patch:
+@@ -143,9 +143,7 @@ public Builder beginControlFlow(String controlFlow, Object... args) {
+      */
+     public Builder nextControlFlow(String controlFlow, Object... args) {
+       unindent();
+-      add("} ", args);
+-      add(controlFlow, args);
+-      add(" {\n", args);
++      add("} " + controlFlow + " {\n", args);
+       indent();
+       return this;
+     }
+
+File: src/main/java/com/squareup/javapoet/JavaPoet.java
+Patch:
+@@ -30,6 +30,7 @@
+ import static com.squareup.javapoet.Util.checkArgument;
+ 
+ /** Writes generated types to a filesystem using the standard directory structure. */
++// TODO(jwilson): fold this into JavaFile.
+ public final class JavaPoet {
+   private final List<JavaFile> javaFiles = new ArrayList<>();
+   private String indent = "  ";
+
+File: src/main/java/com/squareup/javapoet/JavaPoet.java
+Patch:
+@@ -30,6 +30,7 @@
+ import static com.squareup.javapoet.Util.checkArgument;
+ 
+ /** Writes generated types to a filesystem using the standard directory structure. */
++// TODO(jwilson): fold this into JavaFile.
+ public final class JavaPoet {
+   private final List<JavaFile> javaFiles = new ArrayList<>();
+   private String indent = "  ";
+
+File: src/main/java/com/squareup/javapoet/TypeSpec.java
+Patch:
+@@ -371,11 +371,10 @@ public Builder addOriginatingElement(Element originatingElement) {
+     }
+ 
+     public TypeSpec build() {
+-      boolean isInterface = kind == Kind.INTERFACE;
+-      boolean isAbstract = modifiers.contains(Modifier.ABSTRACT) || isInterface;
+       checkArgument(kind != Kind.ENUM || !enumConstants.isEmpty(),
+           "at least one enum constant is required for %s", name);
+ 
++      boolean isAbstract = modifiers.contains(Modifier.ABSTRACT) || kind != Kind.CLASS;
+       for (MethodSpec methodSpec : methodSpecs) {
+         checkArgument(isAbstract || !methodSpec.hasModifier(Modifier.ABSTRACT),
+             "non-abstract type %s cannot declare abstract method %s", name, methodSpec.name);
+
+File: src/main/java/com/squareup/javapoet/AnnotationSpec.java
+Patch:
+@@ -39,7 +39,7 @@ public final class AnnotationSpec {
+   public final ImmutableMultimap<String, CodeBlock> members;
+ 
+   private AnnotationSpec(Builder builder) {
+-    this.type = checkNotNull(builder.type, "type");
++    this.type = builder.type;
+     this.members = ImmutableListMultimap.copyOf(builder.members);
+   }
+ 
+@@ -99,6 +99,7 @@ private void emitAnnotationValue(CodeWriter codeWriter, String whitespace, Strin
+   }
+ 
+   public static Builder builder(Type type) {
++    checkNotNull(type, "type == null");
+     return new Builder(type);
+   }
+ 
+
+File: src/main/java/com/squareup/javapoet/MethodSpec.java
+Patch:
+@@ -24,6 +24,7 @@
+ import java.util.Collections;
+ import java.util.Iterator;
+ import java.util.List;
++import java.util.Set;
+ import javax.lang.model.SourceVersion;
+ import javax.lang.model.element.Modifier;
+ 
+@@ -70,7 +71,7 @@ private boolean lastParameterIsArray(List<ParameterSpec> parameters) {
+     return !parameters.isEmpty() && Types.arrayComponent(getLast(parameters).type) != null;
+   }
+ 
+-  void emit(CodeWriter codeWriter, String enclosingName, ImmutableSet<Modifier> implicitModifiers)
++  void emit(CodeWriter codeWriter, String enclosingName, Set<Modifier> implicitModifiers)
+       throws IOException {
+     codeWriter.emitJavadoc(javadoc);
+     codeWriter.emitAnnotations(annotations, false);
+
+File: src/main/java/com/squareup/javapoet/ParameterSpec.java
+Patch:
+@@ -57,6 +57,8 @@ void emit(CodeWriter codeWriter, boolean varargs) throws IOException {
+   }
+ 
+   public static Builder builder(Type type, String name, Modifier... modifiers) {
++    checkNotNull(type, "type == null");
++    checkArgument(SourceVersion.isName(name), "not a valid name: %s", name);
+     return new Builder(type, name)
+         .addModifiers(modifiers);
+   }
+@@ -69,7 +71,6 @@ public static final class Builder {
+     private final List<Modifier> modifiers = new ArrayList<>();
+ 
+     private Builder(Type type, String name) {
+-      checkArgument(SourceVersion.isName(name), "not a valid name: %s", name);
+       this.type = type;
+       this.name = name;
+     }
+
+File: src/main/java/com/squareup/javapoet/AnnotationSpec.java
+Patch:
+@@ -39,7 +39,7 @@ public final class AnnotationSpec {
+   public final ImmutableMultimap<String, CodeBlock> members;
+ 
+   private AnnotationSpec(Builder builder) {
+-    this.type = checkNotNull(builder.type, "type");
++    this.type = builder.type;
+     this.members = ImmutableListMultimap.copyOf(builder.members);
+   }
+ 
+@@ -99,6 +99,7 @@ private void emitAnnotationValue(CodeWriter codeWriter, String whitespace, Strin
+   }
+ 
+   public static Builder builder(Type type) {
++    checkNotNull(type, "type == null");
+     return new Builder(type);
+   }
+ 
+
+File: src/main/java/com/squareup/javapoet/MethodSpec.java
+Patch:
+@@ -24,6 +24,7 @@
+ import java.util.Collections;
+ import java.util.Iterator;
+ import java.util.List;
++import java.util.Set;
+ import javax.lang.model.SourceVersion;
+ import javax.lang.model.element.Modifier;
+ 
+@@ -70,7 +71,7 @@ private boolean lastParameterIsArray(List<ParameterSpec> parameters) {
+     return !parameters.isEmpty() && Types.arrayComponent(getLast(parameters).type) != null;
+   }
+ 
+-  void emit(CodeWriter codeWriter, String enclosingName, ImmutableSet<Modifier> implicitModifiers)
++  void emit(CodeWriter codeWriter, String enclosingName, Set<Modifier> implicitModifiers)
+       throws IOException {
+     codeWriter.emitJavadoc(javadoc);
+     codeWriter.emitAnnotations(annotations, false);
+
+File: src/main/java/com/squareup/javapoet/ParameterSpec.java
+Patch:
+@@ -57,6 +57,8 @@ void emit(CodeWriter codeWriter, boolean varargs) throws IOException {
+   }
+ 
+   public static Builder builder(Type type, String name, Modifier... modifiers) {
++    checkNotNull(type, "type == null");
++    checkArgument(SourceVersion.isName(name), "not a valid name: %s", name);
+     return new Builder(type, name)
+         .addModifiers(modifiers);
+   }
+@@ -69,7 +71,6 @@ public static final class Builder {
+     private final List<Modifier> modifiers = new ArrayList<>();
+ 
+     private Builder(Type type, String name) {
+-      checkArgument(SourceVersion.isName(name), "not a valid name: %s", name);
+       this.type = type;
+       this.name = name;
+     }
+
+File: src/main/java/com/squareup/javawriter/FieldSpec.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.ImmutableSet;
++import java.io.IOException;
+ import java.lang.reflect.Type;
+ import java.util.ArrayList;
+ import java.util.Collections;
+@@ -49,7 +50,7 @@ public boolean hasModifier(Modifier modifier) {
+     return modifiers.contains(modifier);
+   }
+ 
+-  void emit(CodeWriter codeWriter, ImmutableSet<Modifier> implicitModifiers) {
++  void emit(CodeWriter codeWriter, ImmutableSet<Modifier> implicitModifiers) throws IOException {
+     codeWriter.emitJavadoc(javadocSnippets);
+     codeWriter.emitAnnotations(annotations, false);
+     codeWriter.emitModifiers(modifiers, implicitModifiers);
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -62,7 +62,7 @@ public void writeTo(Path directory) throws IOException {
+ 
+       Path outputPath = outputDirectory.resolve(javaFile.typeSpec.name + ".java");
+       try (Writer writer = new OutputStreamWriter(Files.newOutputStream(outputPath))) {
+-        writer.write(javaFile.toString());
++        javaFile.emit(writer);
+       }
+     }
+   }
+@@ -77,7 +77,7 @@ public void writeTo(Filer filer) throws IOException {
+           javaFile.packageName + "." + javaFile.typeSpec.name,
+           Iterables.toArray(javaFile.typeSpec.originatingElements, Element.class));
+       try (Writer writer = filerSourceFile.openWriter()) {
+-        writer.write(javaFile.toString());
++        javaFile.emit(writer);
+       } catch (Exception e) {
+         try {
+           filerSourceFile.delete();
+
+File: src/main/java/com/squareup/javawriter/MethodSpec.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.ImmutableSet;
++import java.io.IOException;
+ import java.lang.reflect.Type;
+ import java.lang.reflect.TypeVariable;
+ import java.util.ArrayList;
+@@ -68,7 +69,8 @@ private boolean lastParameterIsArray(List<ParameterSpec> parameters) {
+     return !parameters.isEmpty() && Types.arrayComponent(getLast(parameters).type) != null;
+   }
+ 
+-  void emit(CodeWriter codeWriter, String enclosingName, ImmutableSet<Modifier> implicitModifiers) {
++  void emit(CodeWriter codeWriter, String enclosingName, ImmutableSet<Modifier> implicitModifiers)
++      throws IOException {
+     codeWriter.emitJavadoc(javadocSnippets);
+     codeWriter.emitAnnotations(annotations, false);
+     codeWriter.emitModifiers(modifiers, implicitModifiers);
+
+File: src/main/java/com/squareup/javawriter/ParameterSpec.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.ImmutableSet;
++import java.io.IOException;
+ import java.lang.reflect.Type;
+ import java.util.ArrayList;
+ import java.util.Collections;
+@@ -45,7 +46,7 @@ public boolean hasModifier(Modifier modifier) {
+     return modifiers.contains(modifier);
+   }
+ 
+-  void emit(CodeWriter codeWriter, boolean varargs) {
++  void emit(CodeWriter codeWriter, boolean varargs) throws IOException {
+     codeWriter.emitAnnotations(annotations, true);
+     codeWriter.emitModifiers(modifiers);
+     if (varargs) {
+
+File: src/main/java/com/squareup/javawriter/TypeSpec.java
+Patch:
+@@ -19,6 +19,7 @@
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.ImmutableMap;
+ import com.google.common.collect.ImmutableSet;
++import java.io.IOException;
+ import java.lang.reflect.Type;
+ import java.lang.reflect.TypeVariable;
+ import java.util.ArrayList;
+@@ -123,7 +124,7 @@ public static Builder anonymousClassBuilder(String typeArgumentsFormat, Object..
+     return new Builder(DeclarationType.CLASS, null, new Snippet(typeArgumentsFormat, args));
+   }
+ 
+-  void emit(CodeWriter codeWriter, String enumName) {
++  void emit(CodeWriter codeWriter, String enumName) throws IOException {
+     if (enumName != null) {
+       codeWriter.emit("$L", enumName);
+       if (!anonymousTypeArguments.formatParts.isEmpty()) {
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -16,8 +16,6 @@
+ package com.squareup.javawriter;
+ 
+ import com.google.common.collect.Iterables;
+-import com.squareup.javawriter.builders.JavaFile;
+-import com.squareup.javawriter.builders.TypeSpec;
+ import java.io.File;
+ import java.io.IOException;
+ import java.io.OutputStreamWriter;
+
+File: src/main/java/com/squareup/javawriter/Name.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.squareup.javawriter.builders;
++package com.squareup.javawriter;
+ 
+ import static com.google.common.base.Preconditions.checkNotNull;
+ 
+
+File: src/test/java/com/squareup/javawriter/JavaWriterTest.java
+Patch:
+@@ -17,7 +17,6 @@
+ 
+ import com.google.common.collect.Iterables;
+ import com.google.common.jimfs.Jimfs;
+-import com.squareup.javawriter.builders.TypeSpec;
+ import java.io.File;
+ import java.io.IOException;
+ import java.nio.file.FileSystem;
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -16,8 +16,6 @@
+ package com.squareup.javawriter;
+ 
+ import com.google.common.collect.Iterables;
+-import com.squareup.javawriter.builders.JavaFile;
+-import com.squareup.javawriter.builders.TypeSpec;
+ import java.io.File;
+ import java.io.IOException;
+ import java.io.OutputStreamWriter;
+
+File: src/main/java/com/squareup/javawriter/Name.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.squareup.javawriter.builders;
++package com.squareup.javawriter;
+ 
+ import static com.google.common.base.Preconditions.checkNotNull;
+ 
+
+File: src/test/java/com/squareup/javawriter/JavaWriterTest.java
+Patch:
+@@ -17,7 +17,6 @@
+ 
+ import com.google.common.collect.Iterables;
+ import com.google.common.jimfs.Jimfs;
+-import com.squareup.javawriter.builders.TypeSpec;
+ import java.io.File;
+ import java.io.IOException;
+ import java.nio.file.FileSystem;
+
+File: src/main/java/com/squareup/javawriter/TypeName.java
+Patch:
+@@ -15,5 +15,5 @@
+  */
+ package com.squareup.javawriter;
+ 
+-public interface TypeName extends HasClassReferences, Writable {
++public interface TypeName {
+ }
+
+File: src/main/java/com/squareup/javawriter/builders/MethodSpec.java
+Patch:
+@@ -58,7 +58,7 @@ private MethodSpec(Builder builder) {
+     this.snippets = ImmutableList.copyOf(builder.snippets);
+   }
+ 
+-  void emit(CodeWriter codeWriter, ClassName enclosing, ImmutableSet<Modifier> implicitModifiers) {
++  void emit(CodeWriter codeWriter, String enclosingName, ImmutableSet<Modifier> implicitModifiers) {
+     codeWriter.emitAnnotations(annotations, false);
+     codeWriter.emitModifiers(modifiers, implicitModifiers);
+ 
+@@ -68,7 +68,7 @@ void emit(CodeWriter codeWriter, ClassName enclosing, ImmutableSet<Modifier> imp
+     }
+ 
+     if (name == Name.CONSTRUCTOR) {
+-      codeWriter.emit("$L(", enclosing.simpleName());
++      codeWriter.emit("$L(", enclosingName);
+     } else {
+       codeWriter.emit("$T $L(", returnType, name);
+     }
+
+File: src/main/java/com/squareup/javawriter/ClassName.java
+Patch:
+@@ -48,6 +48,8 @@
+  * @since 2.0
+  */
+ public final class ClassName implements TypeName, Comparable<ClassName> {
++  public static final ClassName OBJECT = ClassName.fromClass(Object.class);
++
+   private String fullyQualifiedName = null;
+   private final String packageName;
+   /* From top to bottom.  E.g.: this field will contain ["A", "B"] for pgk.A.B.C */
+
+File: src/main/java/com/squareup/javawriter/ClassName.java
+Patch:
+@@ -48,6 +48,8 @@
+  * @since 2.0
+  */
+ public final class ClassName implements TypeName, Comparable<ClassName> {
++  public static final ClassName OBJECT = ClassName.fromClass(Object.class);
++
+   private String fullyQualifiedName = null;
+   private final String packageName;
+   /* From top to bottom.  E.g.: this field will contain ["A", "B"] for pgk.A.B.C */
+
+File: src/main/java/com/squareup/javawriter/ClassName.java
+Patch:
+@@ -163,7 +163,7 @@ public static ClassName fromClass(Class<?> clazz) {
+     Class<?> current = clazz.getEnclosingClass();
+     while (current != null) {
+       enclosingNames.add(current.getSimpleName());
+-      current = clazz.getEnclosingClass();
++      current = current.getEnclosingClass();
+     }
+     Collections.reverse(enclosingNames);
+     return create(clazz.getPackage().getName(), enclosingNames, clazz.getSimpleName());
+
+File: src/test/java/com/squareup/javawriter/EnumWriterTest.java
+Patch:
+@@ -69,7 +69,7 @@ public final class EnumWriterTest {
+     valueWriter.addModifiers(Modifier.PUBLIC, Modifier.FINAL);
+ 
+     ConstructorWriter constructorWriterWriter = enumWriter.addConstructor();
+-    constructorWriterWriter.addModifiers(Modifier.PRIVATE);
++    constructorWriterWriter.addModifier(Modifier.PRIVATE);
+     constructorWriterWriter.addParameter(String.class, "value");
+     constructorWriterWriter.body().addSnippet("this.value = value;");
+ 
+@@ -94,13 +94,13 @@ public final class EnumWriterTest {
+     EnumWriter.ConstantWriter helloWriter = enumWriter.addConstant("HELLO");
+     MethodWriter helloToStringWriter = helloWriter.addMethod(String.class, "toString");
+     helloToStringWriter.annotate(Override.class);
+-    helloToStringWriter.addModifiers(Modifier.PUBLIC);
++    helloToStringWriter.addModifier(Modifier.PUBLIC);
+     helloToStringWriter.body().addSnippet("return \"Hello\";");
+ 
+     EnumWriter.ConstantWriter worldWriter = enumWriter.addConstant("WORLD");
+     MethodWriter worldToStringWriter = worldWriter.addMethod(String.class, "toString");
+     worldToStringWriter.annotate(Override.class);
+-    worldToStringWriter.addModifiers(Modifier.PUBLIC);
++    worldToStringWriter.addModifier(Modifier.PUBLIC);
+     worldToStringWriter.body().addSnippet("return \"World!\";");
+ 
+     assertThat(enumWriter.toString()).isEqualTo(""
+
+File: src/test/java/com/squareup/javawriter/TypeWriterTest.java
+Patch:
+@@ -84,13 +84,13 @@ public class TypeWriterTest {
+     ClassWriter middle = outer.addNestedClass("Middle");
+     Element middleElement1 = Mockito.mock(Element.class);
+     Element middleElement2 = Mockito.mock(Element.class);
+-    middle.addOriginatingElement(middleElement1, middleElement2);
++    middle.addOriginatingElements(middleElement1, middleElement2);
+ 
+     ClassWriter inner = middle.addNestedClass("Inner");
+     Element innerElement1 = Mockito.mock(Element.class);
+     Element innerElement2 = Mockito.mock(Element.class);
+     Element innerElement3 = Mockito.mock(Element.class);
+-    inner.addOriginatingElement(ImmutableList.of(innerElement1, innerElement2, innerElement3));
++    inner.addOriginatingElements(ImmutableList.of(innerElement1, innerElement2, innerElement3));
+ 
+     assertThat(outer.originatingElements()).containsExactly(outerElement, middleElement1,
+         middleElement2, innerElement1, innerElement2, innerElement3);
+
+File: src/test/java/com/squareup/javawriter/EnumWriterTest.java
+Patch:
+@@ -69,7 +69,7 @@ public final class EnumWriterTest {
+     valueWriter.addModifiers(Modifier.PUBLIC, Modifier.FINAL);
+ 
+     ConstructorWriter constructorWriterWriter = enumWriter.addConstructor();
+-    constructorWriterWriter.addModifiers(Modifier.PRIVATE);
++    constructorWriterWriter.addModifier(Modifier.PRIVATE);
+     constructorWriterWriter.addParameter(String.class, "value");
+     constructorWriterWriter.body().addSnippet("this.value = value;");
+ 
+@@ -94,13 +94,13 @@ public final class EnumWriterTest {
+     EnumWriter.ConstantWriter helloWriter = enumWriter.addConstant("HELLO");
+     MethodWriter helloToStringWriter = helloWriter.addMethod(String.class, "toString");
+     helloToStringWriter.annotate(Override.class);
+-    helloToStringWriter.addModifiers(Modifier.PUBLIC);
++    helloToStringWriter.addModifier(Modifier.PUBLIC);
+     helloToStringWriter.body().addSnippet("return \"Hello\";");
+ 
+     EnumWriter.ConstantWriter worldWriter = enumWriter.addConstant("WORLD");
+     MethodWriter worldToStringWriter = worldWriter.addMethod(String.class, "toString");
+     worldToStringWriter.annotate(Override.class);
+-    worldToStringWriter.addModifiers(Modifier.PUBLIC);
++    worldToStringWriter.addModifier(Modifier.PUBLIC);
+     worldToStringWriter.body().addSnippet("return \"World!\";");
+ 
+     assertThat(enumWriter.toString()).isEqualTo(""
+
+File: src/test/java/com/squareup/javawriter/TypeWriterTest.java
+Patch:
+@@ -84,13 +84,13 @@ public class TypeWriterTest {
+     ClassWriter middle = outer.addNestedClass("Middle");
+     Element middleElement1 = Mockito.mock(Element.class);
+     Element middleElement2 = Mockito.mock(Element.class);
+-    middle.addOriginatingElement(middleElement1, middleElement2);
++    middle.addOriginatingElements(middleElement1, middleElement2);
+ 
+     ClassWriter inner = middle.addNestedClass("Inner");
+     Element innerElement1 = Mockito.mock(Element.class);
+     Element innerElement2 = Mockito.mock(Element.class);
+     Element innerElement3 = Mockito.mock(Element.class);
+-    inner.addOriginatingElement(ImmutableList.of(innerElement1, innerElement2, innerElement3));
++    inner.addOriginatingElements(ImmutableList.of(innerElement1, innerElement2, innerElement3));
+ 
+     assertThat(outer.originatingElements()).containsExactly(outerElement, middleElement1,
+         middleElement2, innerElement1, innerElement2, innerElement3);
+
+File: src/main/java/com/squareup/javawriter/ClassWriter.java
+Patch:
+@@ -118,10 +118,9 @@ private boolean isDefaultConstructor(ConstructorWriter constructorWriter) {
+ 
+   @Override
+   public Set<ClassName> referencedClasses() {
+-    @SuppressWarnings("unchecked")
+     Iterable<? extends HasClassReferences> concat =
+-        Iterables.concat(nestedTypeWriters, fieldWriters.values(), constructorWriters,
+-            methodWriters, implementedTypes, supertype.asSet(), typeVariables, annotations);
++        Iterables.concat(super.referencedClasses(), constructorWriters, supertype.asSet(),
++            typeVariables);
+     return FluentIterable.from(concat)
+         .transformAndConcat(GET_REFERENCED_CLASSES)
+         .toSet();
+
+File: src/main/java/com/squareup/javawriter/EnumWriter.java
+Patch:
+@@ -107,10 +107,8 @@ private boolean isDefaultConstructor(ConstructorWriter constructorWriter) {
+ 
+   @Override
+   public Set<ClassName> referencedClasses() {
+-    @SuppressWarnings("unchecked")
+     Iterable<? extends HasClassReferences> concat =
+-        Iterables.concat(nestedTypeWriters, constantWriters.values(), fieldWriters.values(),
+-            constructorWriters, methodWriters, implementedTypes, annotations);
++        Iterables.concat(super.referencedClasses(), constantWriters.values(), constructorWriters);
+     return FluentIterable.from(concat)
+         .transformAndConcat(GET_REFERENCED_CLASSES)
+         .toSet();
+
+File: src/main/java/com/squareup/javawriter/FieldWriter.java
+Patch:
+@@ -17,7 +17,6 @@
+ 
+ import com.google.common.base.Optional;
+ import com.google.common.collect.FluentIterable;
+-import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.Iterables;
+ import java.io.IOException;
+ import java.util.Set;
+@@ -52,7 +51,7 @@ public Appendable write(Appendable appendable, Context context) throws IOExcepti
+   @Override
+   public Set<ClassName> referencedClasses() {
+     Iterable<? extends HasClassReferences> concat =
+-        Iterables.concat(ImmutableList.of(type()), initializer.asSet(), annotations);
++        Iterables.concat(super.referencedClasses(), initializer.asSet());
+     return FluentIterable.from(concat)
+         .transformAndConcat(GET_REFERENCED_CLASSES)
+         .toSet();
+
+File: src/main/java/com/squareup/javawriter/InterfaceWriter.java
+Patch:
+@@ -31,6 +31,7 @@ public static InterfaceWriter forClassName(ClassName name) {
+   }
+ 
+   private final List<TypeVariableName> typeVariables;
++
+   InterfaceWriter(ClassName name) {
+     super(name);
+     this.typeVariables = Lists.newArrayList();
+@@ -62,10 +63,8 @@ public Appendable write(Appendable appendable, Context context) throws IOExcepti
+ 
+   @Override
+   public Set<ClassName> referencedClasses() {
+-    @SuppressWarnings("unchecked")
+     Iterable<? extends HasClassReferences> concat =
+-        Iterables.concat(nestedTypeWriters, methodWriters, implementedTypes, typeVariables,
+-            annotations);
++        Iterables.concat(super.referencedClasses(), typeVariables);
+     return FluentIterable.from(concat)
+         .transformAndConcat(GET_REFERENCED_CLASSES)
+         .toSet();
+
+File: src/test/java/com/squareup/javawriter/TypeNamesTest.java
+Patch:
+@@ -77,7 +77,7 @@ public void forTypeMirror_typeVariable() {
+         getElement(Parameterized.class).getTypeParameters();
+ 
+     assert_().that(TypeNames.forTypeMirror(typeVariables.get(0).asType()))
+-        .isEqualTo(TypeVariableName.named("Simple"));
++        .isEqualTo(TypeVariableName.create("Simple"));
+     assert_().that(TypeNames.forTypeMirror(typeVariables.get(1).asType()))
+         .isEqualTo(new TypeVariableName("ExtendsClass", ImmutableList.<TypeName>of(
+             ClassName.fromClass(Number.class))));
+@@ -86,7 +86,7 @@ public void forTypeMirror_typeVariable() {
+             ClassName.fromClass(Runnable.class))));
+     assert_().that(TypeNames.forTypeMirror(typeVariables.get(3).asType()))
+         .isEqualTo(new TypeVariableName("ExtendsTypeVariable", ImmutableList.<TypeName>of(
+-            TypeVariableName.named("Simple"))));
++            TypeVariableName.create("Simple"))));
+   }
+ 
+   @Test
+
+File: src/test/java/com/squareup/javawriter/TypeNamesTest.java
+Patch:
+@@ -77,7 +77,7 @@ public void forTypeMirror_typeVariable() {
+         getElement(Parameterized.class).getTypeParameters();
+ 
+     assert_().that(TypeNames.forTypeMirror(typeVariables.get(0).asType()))
+-        .isEqualTo(TypeVariableName.named("Simple"));
++        .isEqualTo(TypeVariableName.create("Simple"));
+     assert_().that(TypeNames.forTypeMirror(typeVariables.get(1).asType()))
+         .isEqualTo(new TypeVariableName("ExtendsClass", ImmutableList.<TypeName>of(
+             ClassName.fromClass(Number.class))));
+@@ -86,7 +86,7 @@ public void forTypeMirror_typeVariable() {
+             ClassName.fromClass(Runnable.class))));
+     assert_().that(TypeNames.forTypeMirror(typeVariables.get(3).asType()))
+         .isEqualTo(new TypeVariableName("ExtendsTypeVariable", ImmutableList.<TypeName>of(
+-            TypeVariableName.named("Simple"))));
++            TypeVariableName.create("Simple"))));
+   }
+ 
+   @Test
+
+File: src/main/java/com/squareup/javawriter/EnumWriter.java
+Patch:
+@@ -126,8 +126,7 @@ public Set<ClassName> referencedClasses() {
+     @SuppressWarnings("unchecked")
+     Iterable<? extends HasClassReferences> concat =
+         Iterables.concat(nestedTypeWriters, constantWriters.values(), fieldWriters.values(),
+-            constructorWriters,
+-            methodWriters, implementedTypes, supertype.asSet(), annotations);
++            constructorWriters, methodWriters, implementedTypes, annotations);
+     return FluentIterable.from(concat)
+         .transformAndConcat(new Function<HasClassReferences, Set<ClassName>>() {
+           @Override
+
+File: src/main/java/com/squareup/javawriter/TypeWriter.java
+Patch:
+@@ -15,7 +15,6 @@
+  */
+ package com.squareup.javawriter;
+ 
+-import com.google.common.base.Optional;
+ import com.google.common.collect.Lists;
+ import com.google.common.collect.Maps;
+ import java.util.List;
+@@ -29,15 +28,13 @@
+ public abstract class TypeWriter /* ha ha */ extends Modifiable
+     implements Writable, HasTypeName, HasClassReferences {
+   final ClassName name;
+-  Optional<TypeName> supertype;
+   final List<TypeName> implementedTypes;
+   final List<MethodWriter> methodWriters;
+   final List<TypeWriter> nestedTypeWriters;
+   final Map<String, FieldWriter> fieldWriters;
+ 
+   TypeWriter(ClassName name) {
+     this.name = name;
+-    this.supertype = Optional.absent();
+     this.implementedTypes = Lists.newArrayList();
+     this.methodWriters = Lists.newArrayList();
+     this.nestedTypeWriters = Lists.newArrayList();
+
+File: src/main/java/com/squareup/javawriter/ConstructorWriter.java
+Patch:
+@@ -48,7 +48,7 @@ public void addTypeVariable(TypeVariableName typeVariable) {
+   }
+ 
+   public VariableWriter addParameter(Class<?> type, String name) {
+-    return addParameter(ClassName.fromClass(type), name);
++    return addParameter(TypeNames.forClass(type), name);
+   }
+ 
+   public VariableWriter addParameter(TypeElement type, String name) {
+
+File: src/main/java/com/squareup/javawriter/MethodWriter.java
+Patch:
+@@ -55,7 +55,7 @@ public void addTypeVariable(TypeVariableName typeVariable) {
+   }
+ 
+   public VariableWriter addParameter(Class<?> type, String name) {
+-    return addParameter(ClassName.fromClass(type), name);
++    return addParameter(TypeNames.forClass(type), name);
+   }
+ 
+   public VariableWriter addParameter(TypeElement type, String name) {
+
+File: src/main/java/com/squareup/javawriter/TypeWriter.java
+Patch:
+@@ -70,7 +70,7 @@ public MethodWriter addMethod(TypeName returnType, String name) {
+ 
+   public MethodWriter addMethod(Class<?> returnType, String name) {
+     MethodWriter methodWriter =
+-        new MethodWriter(ClassName.fromClass(returnType), name);
++        new MethodWriter(TypeNames.forClass(returnType), name);
+     methodWriters.add(methodWriter);
+     return methodWriter;
+   }
+@@ -90,7 +90,7 @@ public void addImplementedType(TypeElement typeElement) {
+   }
+ 
+   public FieldWriter addField(Class<?> type, String name) {
+-    return addField(ClassName.fromClass(type), name);
++    return addField(TypeNames.forClass(type), name);
+   }
+ 
+   public FieldWriter addField(TypeElement type, String name) {
+
+File: src/main/java/com/squareup/javawriter/ConstructorWriter.java
+Patch:
+@@ -48,7 +48,7 @@ public void addTypeVariable(TypeVariableName typeVariable) {
+   }
+ 
+   public VariableWriter addParameter(Class<?> type, String name) {
+-    return addParameter(ClassName.fromClass(type), name);
++    return addParameter(TypeNames.forClass(type), name);
+   }
+ 
+   public VariableWriter addParameter(TypeElement type, String name) {
+
+File: src/main/java/com/squareup/javawriter/MethodWriter.java
+Patch:
+@@ -55,7 +55,7 @@ public void addTypeVariable(TypeVariableName typeVariable) {
+   }
+ 
+   public VariableWriter addParameter(Class<?> type, String name) {
+-    return addParameter(ClassName.fromClass(type), name);
++    return addParameter(TypeNames.forClass(type), name);
+   }
+ 
+   public VariableWriter addParameter(TypeElement type, String name) {
+
+File: src/main/java/com/squareup/javawriter/TypeWriter.java
+Patch:
+@@ -70,7 +70,7 @@ public MethodWriter addMethod(TypeName returnType, String name) {
+ 
+   public MethodWriter addMethod(Class<?> returnType, String name) {
+     MethodWriter methodWriter =
+-        new MethodWriter(ClassName.fromClass(returnType), name);
++        new MethodWriter(TypeNames.forClass(returnType), name);
+     methodWriters.add(methodWriter);
+     return methodWriter;
+   }
+@@ -90,7 +90,7 @@ public void addImplementedType(TypeElement typeElement) {
+   }
+ 
+   public FieldWriter addField(Class<?> type, String name) {
+-    return addField(ClassName.fromClass(type), name);
++    return addField(TypeNames.forClass(type), name);
+   }
+ 
+   public FieldWriter addField(TypeElement type, String name) {
+
+File: src/main/java/com/squareup/javawriter/EnumWriter.java
+Patch:
+@@ -126,8 +126,7 @@ public Set<ClassName> referencedClasses() {
+     @SuppressWarnings("unchecked")
+     Iterable<? extends HasClassReferences> concat =
+         Iterables.concat(nestedTypeWriters, constantWriters.values(), fieldWriters.values(),
+-            constructorWriters,
+-            methodWriters, implementedTypes, supertype.asSet(), annotations);
++            constructorWriters, methodWriters, implementedTypes, annotations);
+     return FluentIterable.from(concat)
+         .transformAndConcat(new Function<HasClassReferences, Set<ClassName>>() {
+           @Override
+
+File: src/main/java/com/squareup/javawriter/TypeWriter.java
+Patch:
+@@ -15,7 +15,6 @@
+  */
+ package com.squareup.javawriter;
+ 
+-import com.google.common.base.Optional;
+ import com.google.common.collect.Lists;
+ import com.google.common.collect.Maps;
+ import java.util.List;
+@@ -29,15 +28,13 @@
+ public abstract class TypeWriter /* ha ha */ extends Modifiable
+     implements Writable, HasTypeName, HasClassReferences {
+   final ClassName name;
+-  Optional<TypeName> supertype;
+   final List<TypeName> implementedTypes;
+   final List<MethodWriter> methodWriters;
+   final List<TypeWriter> nestedTypeWriters;
+   final Map<String, FieldWriter> fieldWriters;
+ 
+   TypeWriter(ClassName name) {
+     this.name = name;
+-    this.supertype = Optional.absent();
+     this.implementedTypes = Lists.newArrayList();
+     this.methodWriters = Lists.newArrayList();
+     this.nestedTypeWriters = Lists.newArrayList();
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -152,7 +152,7 @@ public Set<ClassName> apply(HasClassReferences input) {
+       }
+     }
+ 
+-    if (importedClassIndex.isEmpty()) {
++    if (!importedClassIndex.isEmpty()) {
+       appendable.append('\n');
+     }
+ 
+
+File: src/main/java/com/squareup/javawriter/ClassName.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package dagger.internal.codegen.writer;
++package com.squareup.javawriter;
+ 
+ import com.google.common.base.Ascii;
+ import com.google.common.base.Joiner;
+@@ -50,7 +50,7 @@
+ public final class ClassName implements TypeName, Comparable<ClassName> {
+   private String fullyQualifiedName = null;
+   private final String packageName;
+-  /* From top to bottom.  E.g.: this field will contian ["A", "B"] for pgk.A.B.C */
++  /* From top to bottom.  E.g.: this field will contain ["A", "B"] for pgk.A.B.C */
+   private final ImmutableList<String> enclosingSimpleNames;
+   private final String simpleName;
+ 
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/InterfaceWriter.java
+Patch:
+@@ -12,12 +12,9 @@
+ 
+ public class InterfaceWriter extends TypeWriter {
+   private final List<TypeVariableName> typeVariables;
+-  private final List<TypeWriter> nestedTypeWriters;
+-
+   InterfaceWriter(ClassName name) {
+     super(name);
+     this.typeVariables = Lists.newArrayList();
+-    this.nestedTypeWriters = Lists.newArrayList();
+   }
+ 
+   public void addTypeVariable(TypeVariableName typeVariable) {
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/Writables.java
+Patch:
+@@ -31,7 +31,7 @@ static String writeToString(Writable writable) {
+     try {
+       writable.write(builder, DEFAULT_CONTEXT);
+     } catch (IOException e) {
+-      throw new AssertionError("StringBuilder doesn't throw IOException", e);
++      throw new AssertionError("StringBuilder doesn't throw IOException" + e);
+     }
+     return builder.toString();
+   }
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/Writable.java
+Patch:
+@@ -6,7 +6,6 @@
+ interface Writable {
+   interface Context {
+     String sourceReferenceForClassName(ClassName className);
+-    String compressTypesWithin(String snippet);
+     Context createSubcontext(Set<ClassName> newTypes);
+   }
+ 
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/TypeWriter.java
+Patch:
+@@ -23,7 +23,7 @@ public abstract class TypeWriter /* ha ha */ extends Modifiable
+   }
+ 
+   @Override
+-  public TypeName name() {
++  public ClassName name() {
+     return name;
+   }
+ 
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/AnnotationWriter.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.google.common.collect.ImmutableSet;
+ import com.google.common.collect.Iterables;
+ import com.google.common.collect.Maps;
+-import dagger.internal.codegen.writer.JavaWriter.CompilationUnitContext;
+ import java.io.IOException;
+ import java.util.Map.Entry;
+ import java.util.Set;
+@@ -32,8 +31,7 @@ public void setMember(String name, String value) {
+   }
+ 
+   @Override
+-  public Appendable write(Appendable appendable, CompilationUnitContext context)
+-      throws IOException {
++  public Appendable write(Appendable appendable, Context context) throws IOException {
+     appendable.append('@');
+     annotationName.write(appendable, context);
+     if (!memberMap.isEmpty()) {
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/BlockWriter.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.google.common.base.Function;
+ import com.google.common.collect.FluentIterable;
+ import com.google.common.collect.Lists;
+-import dagger.internal.codegen.writer.JavaWriter.CompilationUnitContext;
+ import java.io.IOException;
+ import java.util.List;
+ import java.util.Set;
+@@ -30,8 +29,7 @@ boolean isEmpty() {
+   }
+ 
+   @Override
+-  public Appendable write(Appendable appendable, CompilationUnitContext context)
+-      throws IOException {
++  public Appendable write(Appendable appendable, Context context) throws IOException {
+     for (Snippet snippet : snippets) {
+       appendable.append('\n');
+       snippet.write(appendable, context);
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/ConstructorWriter.java
+Patch:
+@@ -5,7 +5,6 @@
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.Iterables;
+ import com.google.common.collect.Maps;
+-import dagger.internal.codegen.writer.JavaWriter.CompilationUnitContext;
+ import java.io.IOException;
+ import java.util.Iterator;
+ import java.util.Map;
+@@ -68,8 +67,7 @@ public Set<ClassName> apply(HasClassReferences input) {
+   }
+ 
+   @Override
+-  public Appendable write(Appendable appendable, CompilationUnitContext context)
+-      throws IOException {
++  public Appendable write(Appendable appendable, Context context) throws IOException {
+     writeModifiers(appendable).append(name).append('(');
+     Iterator<VariableWriter> parameterWritersIterator = parameterWriters.values().iterator();
+     if (parameterWritersIterator.hasNext()) {
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/FieldWriter.java
+Patch:
+@@ -5,7 +5,6 @@
+ import com.google.common.collect.FluentIterable;
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.Iterables;
+-import dagger.internal.codegen.writer.JavaWriter.CompilationUnitContext;
+ import java.io.IOException;
+ import java.util.Set;
+ 
+@@ -22,8 +21,7 @@ public void setInitializer(Snippet initializer) {
+   }
+ 
+   @Override
+-  public Appendable write(Appendable appendable, CompilationUnitContext context)
+-      throws IOException {
++  public Appendable write(Appendable appendable, Context context) throws IOException {
+     super.write(appendable, context);
+     if (initializer.isPresent()) {
+       appendable.append(" = ");
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/InterfaceWriter.java
+Patch:
+@@ -4,7 +4,6 @@
+ import com.google.common.base.Joiner;
+ import com.google.common.collect.FluentIterable;
+ import com.google.common.collect.Lists;
+-import dagger.internal.codegen.writer.JavaWriter.CompilationUnitContext;
+ import java.io.IOException;
+ import java.util.List;
+ import java.util.Set;
+@@ -26,7 +25,7 @@ public void addTypeVariable(TypeVariableName typeVariable) {
+   }
+ 
+   @Override
+-  public Appendable write(Appendable appendable, CompilationUnitContext context) throws IOException {
++  public Appendable write(Appendable appendable, Context context) throws IOException {
+     writeModifiers(appendable).append("class ").append(name.simpleName());
+     if (!typeVariables.isEmpty()) {
+       appendable.append('<');
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/MethodWriter.java
+Patch:
+@@ -6,7 +6,6 @@
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.Iterables;
+ import com.google.common.collect.Maps;
+-import dagger.internal.codegen.writer.JavaWriter.CompilationUnitContext;
+ import java.io.IOException;
+ import java.util.Iterator;
+ import java.util.Map;
+@@ -54,8 +53,7 @@ public BlockWriter body() {
+   }
+ 
+   @Override
+-  public Appendable write(Appendable appendable, CompilationUnitContext context)
+-      throws IOException {
++  public Appendable write(Appendable appendable, Context context) throws IOException {
+     writeAnnotations(appendable, context);
+     writeModifiers(appendable);
+     returnType.write(appendable, context);
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/Modifiable.java
+Patch:
+@@ -1,7 +1,7 @@
+ package dagger.internal.codegen.writer;
+ 
+ import com.google.common.collect.Lists;
+-import dagger.internal.codegen.writer.JavaWriter.CompilationUnitContext;
++import dagger.internal.codegen.writer.Writable.Context;
+ import java.io.IOException;
+ import java.lang.annotation.Annotation;
+ import java.util.EnumSet;
+@@ -36,8 +36,7 @@ Appendable writeModifiers(Appendable appendable) throws IOException {
+     return appendable;
+   }
+ 
+-  Appendable writeAnnotations(Appendable appendable, CompilationUnitContext context)
+-      throws IOException {
++  Appendable writeAnnotations(Appendable appendable, Context context) throws IOException {
+     for (AnnotationWriter annotationWriter : annotations) {
+       annotationWriter.write(appendable, context).append('\n');
+     }
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/Snippet.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.google.common.base.Function;
+ import com.google.common.collect.FluentIterable;
+ import com.google.common.collect.ImmutableSet;
+-import dagger.internal.codegen.writer.JavaWriter.CompilationUnitContext;
+ import java.io.IOException;
+ import java.util.Iterator;
+ import java.util.List;
+@@ -44,8 +43,7 @@ public Set<ClassName> apply(TypeName input) {
+   }
+ 
+   @Override
+-  public Appendable write(Appendable appendable, CompilationUnitContext context)
+-      throws IOException {
++  public Appendable write(Appendable appendable, Context context) throws IOException {
+     return appendable.append(context.compressTypesWithin(value));
+   }
+ 
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/VariableWriter.java
+Patch:
+@@ -1,6 +1,5 @@
+ package dagger.internal.codegen.writer;
+ 
+-import dagger.internal.codegen.writer.JavaWriter.CompilationUnitContext;
+ import java.io.IOException;
+ import java.util.Set;
+ 
+@@ -23,8 +22,7 @@ public String name() {
+   }
+ 
+   @Override
+-  public Appendable write(Appendable appendable, CompilationUnitContext context)
+-      throws IOException {
++  public Appendable write(Appendable appendable, Context context) throws IOException {
+     writeModifiers(appendable);
+     type.write(appendable, context);
+     return appendable.append(' ').append(name);
+
+File: compiler/src/main/java/dagger/internal/codegen/writer/VoidName.java
+Patch:
+@@ -1,7 +1,6 @@
+ package dagger.internal.codegen.writer;
+ 
+ import com.google.common.collect.ImmutableSet;
+-import dagger.internal.codegen.writer.JavaWriter.CompilationUnitContext;
+ import java.io.IOException;
+ import java.util.Set;
+ 
+@@ -19,8 +18,7 @@ public String toString() {
+   }
+ 
+   @Override
+-  public Appendable write(Appendable appendable, CompilationUnitContext context)
+-      throws IOException {
++  public Appendable write(Appendable appendable, Context context) throws IOException {
+     return appendable.append("void");
+   }
+ }
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -95,7 +95,7 @@ public JavaWriter emitImports(String... types) throws IOException {
+   public JavaWriter emitImports(Class<?>... types) throws IOException {
+     List<String> classNames = new ArrayList<String>(types.length);
+     for (Class<?> classToImport : types) {
+-      classNames.add(classToImport.getName());
++      classNames.add(classToImport.getCanonicalName());
+     }
+     return emitImports(classNames);
+   }
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -478,7 +478,7 @@ public JavaWriter emitEnumValue(String name) throws IOException {
+ 
+   /**
+    * A simple switch to emit the proper enum depending if its last causing it to be terminated
+-   *    by a semi-colon ({@code ;}).
++   * by a semi-colon ({@code ;}).
+    */
+   public JavaWriter emitEnumValue(String name, boolean isLast) throws IOException {
+     return isLast ? emitLastEnumValue(name) : emitEnumValue(name);
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -478,7 +478,7 @@ public JavaWriter emitEnumValue(String name) throws IOException {
+ 
+   /**
+    * A simple switch to emit the proper enum depending if its last causing it to be terminated
+-   *    by a semi-colon ({@code ;}).
++   * by a semi-colon ({@code ;}).
+    */
+   public JavaWriter emitEnumValue(String name, boolean isLast) throws IOException {
+     return isLast ? emitLastEnumValue(name) : emitEnumValue(name);
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -187,14 +187,14 @@ public String compressType(String type) {
+       String imported = importedTypes.get(name);
+       if (imported != null) {
+         sb.append(imported);
+-      } else if (isClassInPackage(name)) {
++      } else if (isClassInPackage(name, packagePrefix)) {
+         String compressed = name.substring(packagePrefix.length());
+         if (isAmbiguous(compressed)) {
+           sb.append(name);
+         } else {
+           sb.append(compressed);
+         }
+-      } else if (name.startsWith("java.lang.")) {
++      } else if (isClassInPackage(name, "java.lang.")) {
+         sb.append(name.substring("java.lang.".length()));
+       } else {
+         sb.append(name);
+@@ -204,7 +204,7 @@ public String compressType(String type) {
+     return sb.toString();
+   }
+ 
+-  private boolean isClassInPackage(String name) {
++  private static boolean isClassInPackage(String name, String packagePrefix) {
+     if (name.startsWith(packagePrefix)) {
+       if (name.indexOf('.', packagePrefix.length()) == -1) {
+         return true;
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -187,14 +187,14 @@ public String compressType(String type) {
+       String imported = importedTypes.get(name);
+       if (imported != null) {
+         sb.append(imported);
+-      } else if (isClassInPackage(name)) {
++      } else if (isClassInPackage(name, packagePrefix)) {
+         String compressed = name.substring(packagePrefix.length());
+         if (isAmbiguous(compressed)) {
+           sb.append(name);
+         } else {
+           sb.append(compressed);
+         }
+-      } else if (name.startsWith("java.lang.")) {
++      } else if (isClassInPackage(name, "java.lang.")) {
+         sb.append(name.substring("java.lang.".length()));
+       } else {
+         sb.append(name);
+@@ -204,7 +204,7 @@ public String compressType(String type) {
+     return sb.toString();
+   }
+ 
+-  private boolean isClassInPackage(String name) {
++  private static boolean isClassInPackage(String name, String packagePrefix) {
+     if (name.startsWith(packagePrefix)) {
+       if (name.indexOf('.', packagePrefix.length()) == -1) {
+         return true;
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -8,6 +8,7 @@
+ import java.io.Writer;
+ import java.lang.annotation.Annotation;
+ import java.util.ArrayDeque;
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.Collections;
+@@ -208,8 +209,8 @@ private boolean isClassInPackage(String name) {
+       if (name.indexOf('.', packagePrefix.length()) == -1) {
+         return true;
+       }
+-      int index = name.indexOf('.');
+-      if (name.substring(index + 1, index + 2).matches("[A-Z]")) {
++      // check to see if the part after the package looks like a class
++      if (Character.isUpperCase(name.charAt(packagePrefix.length()))) {
+         return true;
+       }
+     }
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -8,6 +8,7 @@
+ import java.io.Writer;
+ import java.lang.annotation.Annotation;
+ import java.util.ArrayDeque;
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+ import java.util.Collections;
+@@ -208,8 +209,8 @@ private boolean isClassInPackage(String name) {
+       if (name.indexOf('.', packagePrefix.length()) == -1) {
+         return true;
+       }
+-      int index = name.indexOf('.');
+-      if (name.substring(index + 1, index + 2).matches("[A-Z]")) {
++      // check to see if the part after the package looks like a class
++      if (Character.isUpperCase(name.charAt(packagePrefix.length()))) {
+         return true;
+       }
+     }
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -359,7 +359,7 @@ public JavaWriter emitJavadoc(String javadoc, Object... params) throws IOExcepti
+   }
+ 
+   /** Emits a single line comment. */
+-  public JavaWriter emitSingleLineCOmment(String comment, Object... args) throws IOException {
++  public JavaWriter emitSingleLineComment(String comment, Object... args) throws IOException {
+     indent();
+     out.write("// ");
+     out.write(String.format(comment, args));
+
+File: src/test/java/com/squareup/javawriter/JavaWriterTest.java
+Patch:
+@@ -188,7 +188,7 @@ public final class JavaWriterTest {
+     javaWriter.emitPackage("com.squareup");
+     javaWriter.beginType("com.squareup.Foo", "class", 0);
+     javaWriter.beginMethod("int", "foo", 0, "java.lang.String", "s");
+-    javaWriter.emitSingleLineCOmment("foo");
++    javaWriter.emitSingleLineComment("foo");
+     javaWriter.emitStatement("int j = s.length() + %s", 13);
+     javaWriter.endMethod();
+     javaWriter.endType();
+@@ -452,7 +452,7 @@ public final class JavaWriterTest {
+   }
+ 
+   @Test public void eolComment() throws IOException {
+-    javaWriter.emitSingleLineCOmment("foo");
++    javaWriter.emitSingleLineComment("foo");
+     assertCode("// foo\n");
+   }
+ 
+
+File: src/main/java/com/squareup/javawriter/JavaWriter.java
+Patch:
+@@ -359,7 +359,7 @@ public JavaWriter emitJavadoc(String javadoc, Object... params) throws IOExcepti
+   }
+ 
+   /** Emits a single line comment. */
+-  public JavaWriter emitSingleLineCOmment(String comment, Object... args) throws IOException {
++  public JavaWriter emitSingleLineComment(String comment, Object... args) throws IOException {
+     indent();
+     out.write("// ");
+     out.write(String.format(comment, args));
+
+File: src/test/java/com/squareup/javawriter/JavaWriterTest.java
+Patch:
+@@ -188,7 +188,7 @@ public final class JavaWriterTest {
+     javaWriter.emitPackage("com.squareup");
+     javaWriter.beginType("com.squareup.Foo", "class", 0);
+     javaWriter.beginMethod("int", "foo", 0, "java.lang.String", "s");
+-    javaWriter.emitSingleLineCOmment("foo");
++    javaWriter.emitSingleLineComment("foo");
+     javaWriter.emitStatement("int j = s.length() + %s", 13);
+     javaWriter.endMethod();
+     javaWriter.endType();
+@@ -452,7 +452,7 @@ public final class JavaWriterTest {
+   }
+ 
+   @Test public void eolComment() throws IOException {
+-    javaWriter.emitSingleLineCOmment("foo");
++    javaWriter.emitSingleLineComment("foo");
+     assertCode("// foo\n");
+   }
+ 
+
+File: src/main/java/com/squareup/java/JavaWriter.java
+Patch:
+@@ -332,8 +332,9 @@ public JavaWriter emitJavadoc(String javadoc, Object... params) throws IOExcepti
+     return this;
+   }
+ 
+-  /** Emits some Javadoc comments. */
++  /** Emits a single line comment. */
+   public JavaWriter emitEndOfLineComment(String comment, Object... args) throws IOException {
++    indent();
+     out.write("// ");
+     out.write(String.format(comment, args));
+     out.write("\n");
+
+File: src/main/java/com/squareup/java/JavaWriter.java
+Patch:
+@@ -332,8 +332,9 @@ public JavaWriter emitJavadoc(String javadoc, Object... params) throws IOExcepti
+     return this;
+   }
+ 
+-  /** Emits some Javadoc comments. */
++  /** Emits a single line comment. */
+   public JavaWriter emitEndOfLineComment(String comment, Object... args) throws IOException {
++    indent();
+     out.write("// ");
+     out.write(String.format(comment, args));
+     out.write("\n");
+
+File: src/main/java/com/squareup/java/JavaWriter.java
+Patch:
+@@ -172,7 +172,7 @@ private boolean isClassInPackage(String name) {
+    *
+    * @param isStatic true if it should be an static initializer, false for an instance initializer.
+    */
+-  public JavaWriter beginInitializer(Boolean isStatic) throws IOException {
++  public JavaWriter beginInitializer(boolean isStatic) throws IOException {
+     indent();
+     if (isStatic) {
+       out.write("static");
+
+File: src/main/java/com/squareup/java/JavaWriter.java
+Patch:
+@@ -19,7 +19,7 @@
+ 
+ /** A utility class which aids in generating Java source files. */
+ public final class JavaWriter implements Closeable {
+-  private static final Pattern TYPE_PATTERN = Pattern.compile("(?:[\\w$]+\\.)*([\\w$]+)");
++  private static final Pattern TYPE_PATTERN = Pattern.compile("(?:[\\w$]+\\.)*([\\w\\.*$]+)");
+   private static final String INDENT = "  ";
+ 
+   /** Map fully qualified type names to their short names. */
+
+File: src/main/java/com/squareup/java/JavaWriter.java
+Patch:
+@@ -19,7 +19,7 @@
+ 
+ /** A utility class which aids in generating Java source files. */
+ public final class JavaWriter implements Closeable {
+-  private static final Pattern TYPE_PATTERN = Pattern.compile("(?:[\\w$]+\\.)*([\\w$]+)");
++  private static final Pattern TYPE_PATTERN = Pattern.compile("(?:[\\w$]+\\.)*([\\w\\.*$]+)");
+   private static final String INDENT = "  ";
+ 
+   /** Map fully qualified type names to their short names. */
+
+File: src/test/java/com/squareup/java/JavaWriterTest.java
+Patch:
+@@ -12,7 +12,7 @@
+ import org.junit.Test;
+ 
+ import static org.fest.assertions.api.Assertions.assertThat;
+-import static org.fest.assertions.api.Assertions.failBecauseExceptionWasNotThrown;;
++import static org.fest.assertions.api.Assertions.failBecauseExceptionWasNotThrown;
+ 
+ public final class JavaWriterTest {
+   private final StringWriter stringWriter = new StringWriter();
+
+File: src/main/java/com/squareup/java/JavaWriter.java
+Patch:
+@@ -292,7 +292,7 @@ public JavaWriter emitAnnotation(String annotation) throws IOException {
+ 
+   /** Equivalent to {@code annotation(annotationType.getName(), emptyMap())}. */
+   public JavaWriter emitAnnotation(Class<? extends Annotation> annotationType) throws IOException {
+-    return emitAnnotation(annotationType.getName(), Collections.<String, Object>emptyMap());
++    return emitAnnotation(type(annotationType), Collections.<String, Object>emptyMap());
+   }
+ 
+   /**
+@@ -304,7 +304,7 @@ public JavaWriter emitAnnotation(Class<? extends Annotation> annotationType) thr
+    */
+   public JavaWriter emitAnnotation(Class<? extends Annotation> annotationType, Object value)
+       throws IOException {
+-    return emitAnnotation(annotationType.getName(), value);
++    return emitAnnotation(type(annotationType), value);
+   }
+ 
+   /**
+@@ -328,7 +328,7 @@ public JavaWriter emitAnnotation(String annotation, Object value) throws IOExcep
+   /** Equivalent to {@code annotation(annotationType.getName(), attributes)}. */
+   public JavaWriter emitAnnotation(Class<? extends Annotation> annotationType,
+       Map<String, ?> attributes) throws IOException {
+-    return emitAnnotation(annotationType.getName(), attributes);
++    return emitAnnotation(type(annotationType), attributes);
+   }
+ 
+   /**
+
+File: src/main/java/com/squareup/java/JavaWriter.java
+Patch:
+@@ -89,8 +89,9 @@ private JavaWriter emitType(String type) throws IOException {
+     return this;
+   }
+ 
+-  String compressType(String type) {
+-    StringBuffer sb = new StringBuffer();
++  /** Try to compress a fully-qualified class name to only the class name. */
++  public String compressType(String type) {
++    StringBuilder sb = new StringBuilder();
+     if (this.packagePrefix == null) {
+       throw new IllegalStateException();
+     }
+
+File: src/test/java/com/squareup/java/JavaWriterTest.java
+Patch:
+@@ -372,14 +372,14 @@ public final class JavaWriterTest {
+ 
+   @Test public void compressType() throws IOException {
+     javaWriter.emitPackage("blah");
+-    javaWriter.emitImports(Set.class.getName(), Binding.class.getName());
++    javaWriter.emitImports(Set.class.getCanonicalName(), Binding.class.getCanonicalName());
+     String actual = javaWriter.compressType("java.util.Set<com.example.Binding<blah.Foo.Blah>>");
+     assertThat(actual).isEqualTo("Set<Binding<Foo.Blah>>");
+   }
+ 
+   @Test public void compressDeeperType() throws IOException {
+     javaWriter.emitPackage("blah");
+-    javaWriter.emitImports(Binding.class.getName());
++    javaWriter.emitImports(Binding.class.getCanonicalName());
+     String actual = javaWriter.compressType("com.example.Binding<blah.foo.Foo.Blah>");
+     assertThat(actual).isEqualTo("Binding<blah.foo.Foo.Blah>");
+   }
+
+File: src/main/java/com/squareup/java/JavaWriter.java
+Patch:
+@@ -89,8 +89,9 @@ private JavaWriter emitType(String type) throws IOException {
+     return this;
+   }
+ 
+-  String compressType(String type) {
+-    StringBuffer sb = new StringBuffer();
++  /** Try to compress a fully-qualified class name to only the class name. */
++  public String compressType(String type) {
++    StringBuilder sb = new StringBuilder();
+     if (this.packagePrefix == null) {
+       throw new IllegalStateException();
+     }
+
+File: src/test/java/com/squareup/java/JavaWriterTest.java
+Patch:
+@@ -372,14 +372,14 @@ public final class JavaWriterTest {
+ 
+   @Test public void compressType() throws IOException {
+     javaWriter.emitPackage("blah");
+-    javaWriter.emitImports(Set.class.getName(), Binding.class.getName());
++    javaWriter.emitImports(Set.class.getCanonicalName(), Binding.class.getCanonicalName());
+     String actual = javaWriter.compressType("java.util.Set<com.example.Binding<blah.Foo.Blah>>");
+     assertThat(actual).isEqualTo("Set<Binding<Foo.Blah>>");
+   }
+ 
+   @Test public void compressDeeperType() throws IOException {
+     javaWriter.emitPackage("blah");
+-    javaWriter.emitImports(Binding.class.getName());
++    javaWriter.emitImports(Binding.class.getCanonicalName());
+     String actual = javaWriter.compressType("com.example.Binding<blah.foo.Foo.Blah>");
+     assertThat(actual).isEqualTo("Binding<blah.foo.Foo.Blah>");
+   }
+
+File: src/main/java/com/squareup/protoss/schema/JavaWriter.java
+Patch:
+@@ -36,7 +36,7 @@
+  *
+  * @author Jesse Wilson
+  */
+-public final class JavaWriter implements Closeable {
++final class JavaWriter implements Closeable {
+   private static final Pattern TYPE_PATTERN = Pattern.compile("(?:[\\w$]+\\.)*([\\w$]+)");
+   private static final String INDENT = "  ";
+ 
+
+File: src/main/java/com/squareup/protoss/schema/JavaWriter.java
+Patch:
+@@ -36,7 +36,7 @@
+  *
+  * @author Jesse Wilson
+  */
+-public final class JavaWriter implements Closeable {
++final class JavaWriter implements Closeable {
+   private static final Pattern TYPE_PATTERN = Pattern.compile("(?:[\\w$]+\\.)*([\\w$]+)");
+   private static final String INDENT = "  ";
+ 
+

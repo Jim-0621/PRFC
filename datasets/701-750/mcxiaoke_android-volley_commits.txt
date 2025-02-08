@@ -1,0 +1,745 @@
+File: src/main/java/com/android/volley/toolbox/BasicNetwork.java
+Patch:
+@@ -179,7 +179,7 @@ public NetworkResponse performRequest(Request<?> request) throws VolleyError {
+                         throw new ServerError(networkResponse);
+                     }
+                 } else {
+-                    throw new NetworkError(networkResponse);
++                    throw new NetworkError(e);
+                 }
+             }
+         }
+
+File: src/main/java/com/android/volley/toolbox/BasicNetwork.java
+Patch:
+@@ -25,6 +25,7 @@
+ import com.android.volley.NetworkError;
+ import com.android.volley.NetworkResponse;
+ import com.android.volley.NoConnectionError;
++import com.android.volley.RedirectError;
+ import com.android.volley.Request;
+ import com.android.volley.RetryPolicy;
+ import com.android.volley.ServerError;
+@@ -172,7 +173,7 @@ public NetworkResponse performRequest(Request<?> request) throws VolleyError {
+                     } else if (statusCode == HttpStatus.SC_MOVED_PERMANENTLY || 
+                     			statusCode == HttpStatus.SC_MOVED_TEMPORARILY) {
+                         attemptRetryOnException("redirect",
+-                                request, new AuthFailureError(networkResponse));
++                                request, new RedirectError(networkResponse));
+                     } else {
+                         // TODO: Only throw ServerError for 5xx status codes.
+                         throw new ServerError(networkResponse);
+
+File: src/main/java/com/android/volley/Request.java
+Patch:
+@@ -20,9 +20,7 @@
+ import android.net.Uri;
+ import android.os.Handler;
+ import android.os.Looper;
+-import android.os.SystemClock;
+ import android.text.TextUtils;
+-
+ import com.android.volley.VolleyLog.MarkerLog;
+ 
+ import java.io.UnsupportedEncodingException;
+@@ -306,7 +304,7 @@ public void setRedirectUrl(String redirectUrl) {
+      * Returns the cache key for this request.  By default, this is the URL.
+      */
+     public String getCacheKey() {
+-        return getOriginUrl();
++        return mMethod + ":" + mUrl;
+     }
+ 
+     /**
+
+File: src/main/java/com/android/volley/Request.java
+Patch:
+@@ -306,7 +306,7 @@ public void setRedirectUrl(String redirectUrl) {
+      * Returns the cache key for this request.  By default, this is the URL.
+      */
+     public String getCacheKey() {
+-        return getUrl();
++        return getOriginUrl();
+     }
+ 
+     /**
+
+File: src/main/java/com/android/volley/NetworkDispatcher.java
+Patch:
+@@ -82,9 +82,11 @@ private void addTrafficStatsTag(Request<?> request) {
+     @Override
+     public void run() {
+         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
++        Request<?> request;
+         while (true) {
+             long startTimeMs = SystemClock.elapsedRealtime();
+-            Request<?> request;
++            // release previous request object to avoid leaking request object when mQueue is drained.
++            request = null;
+             try {
+                 // Take a request from the queue.
+                 request = mQueue.take();
+
+File: src/main/java/com/android/volley/NetworkDispatcher.java
+Patch:
+@@ -82,9 +82,11 @@ private void addTrafficStatsTag(Request<?> request) {
+     @Override
+     public void run() {
+         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
++        Request<?> request;
+         while (true) {
+             long startTimeMs = SystemClock.elapsedRealtime();
+-            Request<?> request;
++            // release previous request object to avoid leaking request object when mQueue is drained.
++            request = null;
+             try {
+                 // Take a request from the queue.
+                 request = mQueue.take();
+
+File: src/main/java/com/android/volley/toolbox/JsonArrayRequest.java
+Patch:
+@@ -122,7 +122,7 @@ public JsonArrayRequest(String url, JSONObject jsonRequest, Listener<JSONArray>
+         this(jsonRequest == null ? Method.GET : Method.POST, url, jsonRequest,
+                 listener, errorListener);
+     }
+-    
++
+     @Override
+     protected Response<JSONArray> parseNetworkResponse(NetworkResponse response) {
+         try {
+
+File: src/test/java/com/android/volley/toolbox/JsonRequestTest.java
+Patch:
+@@ -17,6 +17,7 @@
+ package com.android.volley.toolbox;
+ 
+ import com.android.volley.Response;
++import org.json.JSONArray;
+ import org.json.JSONObject;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+@@ -37,6 +38,8 @@ public void publicMethods() throws Exception {
+ 
+         assertNotNull(JsonArrayRequest.class.getConstructor(String.class,
+                 Response.Listener.class, Response.ErrorListener.class));
++        assertNotNull(JsonArrayRequest.class.getConstructor(int.class, String.class, JSONArray.class,
++                Response.Listener.class, Response.ErrorListener.class));
+ 
+         assertNotNull(JsonObjectRequest.class.getConstructor(String.class, JSONObject.class,
+                 Response.Listener.class, Response.ErrorListener.class));
+
+File: src/main/java/com/android/volley/DefaultRetryPolicy.java
+Patch:
+@@ -36,11 +36,12 @@ public class DefaultRetryPolicy implements RetryPolicy {
+     public static final int DEFAULT_TIMEOUT_MS = 2500;
+ 
+     /** The default number of retries */
+-    public static final int DEFAULT_MAX_RETRIES = 1;
++    public static final int DEFAULT_MAX_RETRIES = 0;
+ 
+     /** The default backoff multiplier */
+     public static final float DEFAULT_BACKOFF_MULT = 1f;
+ 
++
+     /**
+      * Constructs a new retry policy using the default timeouts.
+      */
+
+File: src/test/java/com/android/volley/toolbox/ImageLoaderTest.java
+Patch:
+@@ -84,6 +84,8 @@ public void publicMethods() throws Exception {
+         assertNotNull(ImageLoader.class.getMethod("getImageListener", ImageView.class,
+                 int.class, int.class));
+         assertNotNull(ImageLoader.class.getMethod("isCached", String.class, int.class, int.class));
++        assertNotNull(ImageLoader.class.getMethod("isCached", String.class, int.class, int.class,
++                ImageView.ScaleType.class));
+         assertNotNull(ImageLoader.class.getMethod("get", String.class,
+                 ImageLoader.ImageListener.class));
+         assertNotNull(ImageLoader.class.getMethod("get", String.class,
+
+File: src/test/java/com/android/volley/toolbox/ImageLoaderTest.java
+Patch:
+@@ -84,6 +84,8 @@ public void publicMethods() throws Exception {
+         assertNotNull(ImageLoader.class.getMethod("getImageListener", ImageView.class,
+                 int.class, int.class));
+         assertNotNull(ImageLoader.class.getMethod("isCached", String.class, int.class, int.class));
++        assertNotNull(ImageLoader.class.getMethod("isCached", String.class, int.class, int.class,
++                ImageView.ScaleType.class));
+         assertNotNull(ImageLoader.class.getMethod("get", String.class,
+                 ImageLoader.ImageListener.class));
+         assertNotNull(ImageLoader.class.getMethod("get", String.class,
+
+File: src/test/java/com/android/volley/toolbox/ImageLoaderTest.java
+Patch:
+@@ -84,6 +84,8 @@ public void publicMethods() throws Exception {
+         assertNotNull(ImageLoader.class.getMethod("getImageListener", ImageView.class,
+                 int.class, int.class));
+         assertNotNull(ImageLoader.class.getMethod("isCached", String.class, int.class, int.class));
++        assertNotNull(ImageLoader.class.getMethod("isCached", String.class, int.class, int.class,
++                ImageView.ScaleType.class));
+         assertNotNull(ImageLoader.class.getMethod("get", String.class,
+                 ImageLoader.ImageListener.class));
+         assertNotNull(ImageLoader.class.getMethod("get", String.class,
+
+File: src/main/java/com/android/volley/toolbox/JsonArrayRequest.java
+Patch:
+@@ -45,8 +45,8 @@ public JsonArrayRequest(String url, Listener<JSONArray> listener, ErrorListener
+     @Override
+     protected Response<JSONArray> parseNetworkResponse(NetworkResponse response) {
+         try {
+-            String jsonString =
+-                new String(response.data, HttpHeaderParser.parseCharset(response.headers));
++            String jsonString = new String(response.data,
++                    HttpHeaderParser.parseCharset(response.headers, PROTOCOL_CHARSET));
+             return Response.success(new JSONArray(jsonString),
+                     HttpHeaderParser.parseCacheHeaders(response));
+         } catch (UnsupportedEncodingException e) {
+
+File: src/main/java/com/android/volley/toolbox/JsonObjectRequest.java
+Patch:
+@@ -63,8 +63,8 @@ public JsonObjectRequest(String url, JSONObject jsonRequest, Listener<JSONObject
+     @Override
+     protected Response<JSONObject> parseNetworkResponse(NetworkResponse response) {
+         try {
+-            String jsonString =
+-                new String(response.data, HttpHeaderParser.parseCharset(response.headers));
++            String jsonString = new String(response.data,
++                    HttpHeaderParser.parseCharset(response.headers, PROTOCOL_CHARSET));
+             return Response.success(new JSONObject(jsonString),
+                     HttpHeaderParser.parseCacheHeaders(response));
+         } catch (UnsupportedEncodingException e) {
+
+File: src/main/java/com/android/volley/toolbox/JsonRequest.java
+Patch:
+@@ -32,8 +32,8 @@
+  * @param <T> JSON type of response expected
+  */
+ public abstract class JsonRequest<T> extends Request<T> {
+-    /** Charset for request. */
+-    private static final String PROTOCOL_CHARSET = "utf-8";
++    /** Default charset for JSON request. */
++    protected static final String PROTOCOL_CHARSET = "utf-8";
+ 
+     /** Content type for request. */
+     private static final String PROTOCOL_CONTENT_TYPE =
+
+File: src/main/java/com/android/volley/toolbox/JsonArrayRequest.java
+Patch:
+@@ -45,8 +45,8 @@ public JsonArrayRequest(String url, Listener<JSONArray> listener, ErrorListener
+     @Override
+     protected Response<JSONArray> parseNetworkResponse(NetworkResponse response) {
+         try {
+-            String jsonString =
+-                new String(response.data, HttpHeaderParser.parseCharset(response.headers));
++            String jsonString = new String(response.data,
++                    HttpHeaderParser.parseCharset(response.headers, PROTOCOL_CHARSET));
+             return Response.success(new JSONArray(jsonString),
+                     HttpHeaderParser.parseCacheHeaders(response));
+         } catch (UnsupportedEncodingException e) {
+
+File: src/main/java/com/android/volley/toolbox/JsonObjectRequest.java
+Patch:
+@@ -63,8 +63,8 @@ public JsonObjectRequest(String url, JSONObject jsonRequest, Listener<JSONObject
+     @Override
+     protected Response<JSONObject> parseNetworkResponse(NetworkResponse response) {
+         try {
+-            String jsonString =
+-                new String(response.data, HttpHeaderParser.parseCharset(response.headers));
++            String jsonString = new String(response.data,
++                    HttpHeaderParser.parseCharset(response.headers, PROTOCOL_CHARSET));
+             return Response.success(new JSONObject(jsonString),
+                     HttpHeaderParser.parseCacheHeaders(response));
+         } catch (UnsupportedEncodingException e) {
+
+File: src/main/java/com/android/volley/toolbox/JsonRequest.java
+Patch:
+@@ -32,8 +32,8 @@
+  * @param <T> JSON type of response expected
+  */
+ public abstract class JsonRequest<T> extends Request<T> {
+-    /** Charset for request. */
+-    private static final String PROTOCOL_CHARSET = "utf-8";
++    /** Default charset for JSON request. */
++    protected static final String PROTOCOL_CHARSET = "utf-8";
+ 
+     /** Content type for request. */
+     private static final String PROTOCOL_CONTENT_TYPE =
+
+File: src/main/java/com/android/volley/toolbox/NetworkImageView.java
+Patch:
+@@ -103,6 +103,7 @@ public void setErrorImageResId(int errorImage) {
+     void loadImageIfNecessary(final boolean isInLayoutPass) {
+         int width = getWidth();
+         int height = getHeight();
++        ScaleType scaleType = getScaleType();
+ 
+         boolean wrapWidth = false, wrapHeight = false;
+         if (getLayoutParams() != null) {
+@@ -177,7 +178,7 @@ public void run() {
+                             setImageResource(mDefaultImageId);
+                         }
+                     }
+-                }, maxWidth, maxHeight);
++                }, maxWidth, maxHeight, scaleType);
+ 
+         // update the ImageContainer to be the new bitmap container.
+         mImageContainer = newContainer;
+
+File: src/test/java/com/android/volley/toolbox/NetworkImageViewTest.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.android.volley.toolbox;
+ 
+ import android.view.ViewGroup.LayoutParams;
++import android.widget.ImageView.ScaleType;
+ 
+ import org.junit.Before;
+ import org.junit.Test;
+@@ -43,7 +44,7 @@ public MockImageLoader() {
+         public int lastMaxHeight;
+ 
+         public ImageContainer get(String requestUrl, ImageListener imageListener, int maxWidth,
+-                int maxHeight) {
++                int maxHeight, ScaleType scaleType) {
+             lastRequestUrl = requestUrl;
+             lastMaxWidth = maxWidth;
+             lastMaxHeight = maxHeight;
+
+File: src/main/java/com/android/volley/toolbox/JsonArrayRequest.java
+Patch:
+@@ -45,8 +45,8 @@ public JsonArrayRequest(String url, Listener<JSONArray> listener, ErrorListener
+     @Override
+     protected Response<JSONArray> parseNetworkResponse(NetworkResponse response) {
+         try {
+-            String jsonString =
+-                new String(response.data, HttpHeaderParser.parseCharset(response.headers));
++            String jsonString = new String(response.data,
++                    HttpHeaderParser.parseCharset(response.headers, PROTOCOL_CHARSET));
+             return Response.success(new JSONArray(jsonString),
+                     HttpHeaderParser.parseCacheHeaders(response));
+         } catch (UnsupportedEncodingException e) {
+
+File: src/main/java/com/android/volley/toolbox/JsonObjectRequest.java
+Patch:
+@@ -63,8 +63,8 @@ public JsonObjectRequest(String url, JSONObject jsonRequest, Listener<JSONObject
+     @Override
+     protected Response<JSONObject> parseNetworkResponse(NetworkResponse response) {
+         try {
+-            String jsonString =
+-                new String(response.data, HttpHeaderParser.parseCharset(response.headers));
++            String jsonString = new String(response.data,
++                    HttpHeaderParser.parseCharset(response.headers, PROTOCOL_CHARSET));
+             return Response.success(new JSONObject(jsonString),
+                     HttpHeaderParser.parseCacheHeaders(response));
+         } catch (UnsupportedEncodingException e) {
+
+File: src/main/java/com/android/volley/toolbox/JsonRequest.java
+Patch:
+@@ -32,8 +32,8 @@
+  * @param <T> JSON type of response expected
+  */
+ public abstract class JsonRequest<T> extends Request<T> {
+-    /** Charset for request. */
+-    private static final String PROTOCOL_CHARSET = "utf-8";
++    /** Default charset for JSON request. */
++    protected static final String PROTOCOL_CHARSET = "utf-8";
+ 
+     /** Content type for request. */
+     private static final String PROTOCOL_CONTENT_TYPE =
+
+File: src/main/java/com/android/volley/toolbox/NetworkImageView.java
+Patch:
+@@ -103,6 +103,7 @@ public void setErrorImageResId(int errorImage) {
+     void loadImageIfNecessary(final boolean isInLayoutPass) {
+         int width = getWidth();
+         int height = getHeight();
++        ScaleType scaleType = getScaleType();
+ 
+         boolean wrapWidth = false, wrapHeight = false;
+         if (getLayoutParams() != null) {
+@@ -177,7 +178,7 @@ public void run() {
+                             setImageResource(mDefaultImageId);
+                         }
+                     }
+-                }, maxWidth, maxHeight);
++                }, maxWidth, maxHeight, scaleType);
+ 
+         // update the ImageContainer to be the new bitmap container.
+         mImageContainer = newContainer;
+
+File: src/test/java/com/android/volley/toolbox/NetworkImageViewTest.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.android.volley.toolbox;
+ 
+ import android.view.ViewGroup.LayoutParams;
++import android.widget.ImageView.ScaleType;
+ 
+ import org.junit.Before;
+ import org.junit.Test;
+@@ -43,7 +44,7 @@ public MockImageLoader() {
+         public int lastMaxHeight;
+ 
+         public ImageContainer get(String requestUrl, ImageListener imageListener, int maxWidth,
+-                int maxHeight) {
++                int maxHeight, ScaleType scaleType) {
+             lastRequestUrl = requestUrl;
+             lastMaxWidth = maxWidth;
+             lastMaxHeight = maxHeight;
+
+File: src/com/android/volley/ServerError.java
+Patch:
+@@ -20,7 +20,7 @@
+ import com.android.volley.VolleyError;
+ 
+ /**
+- * Indicates that the error responded with an error response.
++ * Indicates that the server responded with an error response.
+  */
+ @SuppressWarnings("serial")
+ public class ServerError extends VolleyError {
+
+File: src/com/android/volley/toolbox/HurlStack.java
+Patch:
+@@ -223,8 +223,8 @@ private HttpURLConnection openConnection(URL url, Request<?> request) throws IOE
+                 connection.setRequestMethod("TRACE");
+                 break;
+             case Method.PATCH:
+-                addBodyIfExists(connection, request);
+                 connection.setRequestMethod("PATCH");
++                addBodyIfExists(connection, request);
+                 break;
+             default:
+                 throw new IllegalStateException("Unknown method type.");
+
+File: src/com/android/volley/toolbox/HurlStack.java
+Patch:
+@@ -223,8 +223,8 @@ private HttpURLConnection openConnection(URL url, Request<?> request) throws IOE
+                 connection.setRequestMethod("TRACE");
+                 break;
+             case Method.PATCH:
+-                addBodyIfExists(connection, request);
+                 connection.setRequestMethod("PATCH");
++                addBodyIfExists(connection, request);
+                 break;
+             default:
+                 throw new IllegalStateException("Unknown method type.");
+
+File: src/com/android/volley/toolbox/HurlStack.java
+Patch:
+@@ -223,8 +223,8 @@ private HttpURLConnection openConnection(URL url, Request<?> request) throws IOE
+                 connection.setRequestMethod("TRACE");
+                 break;
+             case Method.PATCH:
+-                addBodyIfExists(connection, request);
+                 connection.setRequestMethod("PATCH");
++                addBodyIfExists(connection, request);
+                 break;
+             default:
+                 throw new IllegalStateException("Unknown method type.");
+
+File: src/com/android/volley/toolbox/HurlStack.java
+Patch:
+@@ -223,8 +223,8 @@ private HttpURLConnection openConnection(URL url, Request<?> request) throws IOE
+                 connection.setRequestMethod("TRACE");
+                 break;
+             case Method.PATCH:
+-                addBodyIfExists(connection, request);
+                 connection.setRequestMethod("PATCH");
++                addBodyIfExists(connection, request);
+                 break;
+             default:
+                 throw new IllegalStateException("Unknown method type.");
+
+File: src/com/android/volley/toolbox/ImageLoader.java
+Patch:
+@@ -275,10 +275,10 @@ private void onGetImageError(String cacheKey, VolleyError error) {
+         // Remove this request from the list of in-flight requests.
+         BatchedImageRequest request = mInFlightRequests.remove(cacheKey);
+ 
+-        // Set the error for this request
+-        request.setError(error);
+-
+         if (request != null) {
++            // Set the error for this request
++            request.setError(error);
++
+             // Send the batched response
+             batchResponse(cacheKey, request);
+         }
+
+File: src/com/android/volley/toolbox/ImageLoader.java
+Patch:
+@@ -275,10 +275,10 @@ private void onGetImageError(String cacheKey, VolleyError error) {
+         // Remove this request from the list of in-flight requests.
+         BatchedImageRequest request = mInFlightRequests.remove(cacheKey);
+ 
+-        // Set the error for this request
+-        request.setError(error);
+-
+         if (request != null) {
++            // Set the error for this request
++            request.setError(error);
++
+             // Send the batched response
+             batchResponse(cacheKey, request);
+         }
+
+File: src/com/android/volley/toolbox/ImageLoader.java
+Patch:
+@@ -275,10 +275,10 @@ private void onGetImageError(String cacheKey, VolleyError error) {
+         // Remove this request from the list of in-flight requests.
+         BatchedImageRequest request = mInFlightRequests.remove(cacheKey);
+ 
+-        // Set the error for this request
+-        request.setError(error);
+-
+         if (request != null) {
++            // Set the error for this request
++            request.setError(error);
++
+             // Send the batched response
+             batchResponse(cacheKey, request);
+         }
+
+File: src/com/android/volley/toolbox/ImageLoader.java
+Patch:
+@@ -275,10 +275,10 @@ private void onGetImageError(String cacheKey, VolleyError error) {
+         // Remove this request from the list of in-flight requests.
+         BatchedImageRequest request = mInFlightRequests.remove(cacheKey);
+ 
+-        // Set the error for this request
+-        request.setError(error);
+-
+         if (request != null) {
++            // Set the error for this request
++            request.setError(error);
++
+             // Send the batched response
+             batchResponse(cacheKey, request);
+         }
+
+File: src/com/android/volley/RequestQueue.java
+Patch:
+@@ -213,7 +213,7 @@ public boolean apply(Request<?> request) {
+      * @param request The request to service
+      * @return The passed-in request
+      */
+-    public Request<?> add(Request<?> request) {
++    public <T> Request<T> add(Request<T> request) {
+         // Tag the request as belonging to this queue and add it to the set of current requests.
+         request.setRequestQueue(this);
+         synchronized (mCurrentRequests) {
+
+File: src/com/android/volley/RequestQueue.java
+Patch:
+@@ -213,7 +213,7 @@ public boolean apply(Request<?> request) {
+      * @param request The request to service
+      * @return The passed-in request
+      */
+-    public Request<?> add(Request<?> request) {
++    public <T> Request<T> add(Request<T> request) {
+         // Tag the request as belonging to this queue and add it to the set of current requests.
+         request.setRequestQueue(this);
+         synchronized (mCurrentRequests) {
+
+File: src/com/android/volley/RequestQueue.java
+Patch:
+@@ -213,7 +213,7 @@ public boolean apply(Request<?> request) {
+      * @param request The request to service
+      * @return The passed-in request
+      */
+-    public Request<?> add(Request<?> request) {
++    public <T> Request<T> add(Request<T> request) {
+         // Tag the request as belonging to this queue and add it to the set of current requests.
+         request.setRequestQueue(this);
+         synchronized (mCurrentRequests) {
+
+File: src/com/android/volley/RequestQueue.java
+Patch:
+@@ -213,7 +213,7 @@ public boolean apply(Request<?> request) {
+      * @param request The request to service
+      * @return The passed-in request
+      */
+-    public Request<?> add(Request<?> request) {
++    public <T> Request<T> add(Request<T> request) {
+         // Tag the request as belonging to this queue and add it to the set of current requests.
+         request.setRequestQueue(this);
+         synchronized (mCurrentRequests) {
+
+File: src/com/android/volley/RequestQueue.java
+Patch:
+@@ -213,7 +213,7 @@ public boolean apply(Request<?> request) {
+      * @param request The request to service
+      * @return The passed-in request
+      */
+-    public Request<?> add(Request<?> request) {
++    public <T> Request<T> add(Request<T> request) {
+         // Tag the request as belonging to this queue and add it to the set of current requests.
+         request.setRequestQueue(this);
+         synchronized (mCurrentRequests) {
+
+File: src/com/android/volley/toolbox/BasicNetwork.java
+Patch:
+@@ -98,7 +98,8 @@ public NetworkResponse performRequest(Request<?> request) throws VolleyError {
+                 // Handle cache validation.
+                 if (statusCode == HttpStatus.SC_NOT_MODIFIED) {
+                     return new NetworkResponse(HttpStatus.SC_NOT_MODIFIED,
+-                            request.getCacheEntry().data, responseHeaders, true);
++                            request.getCacheEntry() == null ? null : request.getCacheEntry().data,
++                            responseHeaders, true);
+                 }
+ 
+                 // Some responses such as 204s do not have content.  We must check.
+
+File: src/com/android/volley/toolbox/ImageRequest.java
+Patch:
+@@ -175,7 +175,7 @@ private Response<Bitmap> doParse(NetworkResponse response) {
+         }
+ 
+         if (bitmap == null) {
+-            return Response.error(new ParseError());
++            return Response.error(new ParseError(response));
+         } else {
+             return Response.success(bitmap, HttpHeaderParser.parseCacheHeaders(response));
+         }
+
+File: src/com/android/volley/toolbox/ImageRequest.java
+Patch:
+@@ -175,7 +175,7 @@ private Response<Bitmap> doParse(NetworkResponse response) {
+         }
+ 
+         if (bitmap == null) {
+-            return Response.error(new ParseError());
++            return Response.error(new ParseError(response));
+         } else {
+             return Response.success(bitmap, HttpHeaderParser.parseCacheHeaders(response));
+         }
+
+File: src/com/android/volley/toolbox/ImageRequest.java
+Patch:
+@@ -175,7 +175,7 @@ private Response<Bitmap> doParse(NetworkResponse response) {
+         }
+ 
+         if (bitmap == null) {
+-            return Response.error(new ParseError());
++            return Response.error(new ParseError(response));
+         } else {
+             return Response.success(bitmap, HttpHeaderParser.parseCacheHeaders(response));
+         }
+
+File: src/com/android/volley/toolbox/NetworkImageView.java
+Patch:
+@@ -18,8 +18,8 @@
+ import android.content.Context;
+ import android.text.TextUtils;
+ import android.util.AttributeSet;
++import android.view.ViewGroup.LayoutParams;
+ import android.widget.ImageView;
+-import android.widget.LinearLayout.LayoutParams;
+ 
+ import com.android.volley.VolleyError;
+ import com.android.volley.toolbox.ImageLoader.ImageContainer;
+@@ -104,7 +104,8 @@ private void loadImageIfNecessary(final boolean isInLayoutPass) {
+         int width = getWidth();
+         int height = getHeight();
+ 
+-        boolean isFullyWrapContent = getLayoutParams().height == LayoutParams.WRAP_CONTENT
++        boolean isFullyWrapContent = getLayoutParams() != null
++                && getLayoutParams().height == LayoutParams.WRAP_CONTENT
+                 && getLayoutParams().width == LayoutParams.WRAP_CONTENT;
+         // if the view's bounds aren't known yet, and this is not a wrap-content/wrap-content
+         // view, hold off on loading the image.
+
+File: src/com/android/volley/toolbox/NetworkImageView.java
+Patch:
+@@ -18,8 +18,8 @@
+ import android.content.Context;
+ import android.text.TextUtils;
+ import android.util.AttributeSet;
++import android.view.ViewGroup.LayoutParams;
+ import android.widget.ImageView;
+-import android.widget.LinearLayout.LayoutParams;
+ 
+ import com.android.volley.VolleyError;
+ import com.android.volley.toolbox.ImageLoader.ImageContainer;
+@@ -104,7 +104,8 @@ private void loadImageIfNecessary(final boolean isInLayoutPass) {
+         int width = getWidth();
+         int height = getHeight();
+ 
+-        boolean isFullyWrapContent = getLayoutParams().height == LayoutParams.WRAP_CONTENT
++        boolean isFullyWrapContent = getLayoutParams() != null
++                && getLayoutParams().height == LayoutParams.WRAP_CONTENT
+                 && getLayoutParams().width == LayoutParams.WRAP_CONTENT;
+         // if the view's bounds aren't known yet, and this is not a wrap-content/wrap-content
+         // view, hold off on loading the image.
+
+File: src/com/android/volley/toolbox/NetworkImageView.java
+Patch:
+@@ -18,8 +18,8 @@
+ import android.content.Context;
+ import android.text.TextUtils;
+ import android.util.AttributeSet;
++import android.view.ViewGroup.LayoutParams;
+ import android.widget.ImageView;
+-import android.widget.LinearLayout.LayoutParams;
+ 
+ import com.android.volley.VolleyError;
+ import com.android.volley.toolbox.ImageLoader.ImageContainer;
+@@ -104,7 +104,8 @@ private void loadImageIfNecessary(final boolean isInLayoutPass) {
+         int width = getWidth();
+         int height = getHeight();
+ 
+-        boolean isFullyWrapContent = getLayoutParams().height == LayoutParams.WRAP_CONTENT
++        boolean isFullyWrapContent = getLayoutParams() != null
++                && getLayoutParams().height == LayoutParams.WRAP_CONTENT
+                 && getLayoutParams().width == LayoutParams.WRAP_CONTENT;
+         // if the view's bounds aren't known yet, and this is not a wrap-content/wrap-content
+         // view, hold off on loading the image.
+
+File: src/com/android/volley/toolbox/NetworkImageView.java
+Patch:
+@@ -18,8 +18,8 @@
+ import android.content.Context;
+ import android.text.TextUtils;
+ import android.util.AttributeSet;
++import android.view.ViewGroup.LayoutParams;
+ import android.widget.ImageView;
+-import android.widget.LinearLayout.LayoutParams;
+ 
+ import com.android.volley.VolleyError;
+ import com.android.volley.toolbox.ImageLoader.ImageContainer;
+@@ -104,7 +104,8 @@ private void loadImageIfNecessary(final boolean isInLayoutPass) {
+         int width = getWidth();
+         int height = getHeight();
+ 
+-        boolean isFullyWrapContent = getLayoutParams().height == LayoutParams.WRAP_CONTENT
++        boolean isFullyWrapContent = getLayoutParams() != null
++                && getLayoutParams().height == LayoutParams.WRAP_CONTENT
+                 && getLayoutParams().width == LayoutParams.WRAP_CONTENT;
+         // if the view's bounds aren't known yet, and this is not a wrap-content/wrap-content
+         // view, hold off on loading the image.
+
+File: src/com/android/volley/toolbox/NetworkImageView.java
+Patch:
+@@ -18,8 +18,8 @@
+ import android.content.Context;
+ import android.text.TextUtils;
+ import android.util.AttributeSet;
++import android.view.ViewGroup.LayoutParams;
+ import android.widget.ImageView;
+-import android.widget.LinearLayout.LayoutParams;
+ 
+ import com.android.volley.VolleyError;
+ import com.android.volley.toolbox.ImageLoader.ImageContainer;
+@@ -104,7 +104,8 @@ private void loadImageIfNecessary(final boolean isInLayoutPass) {
+         int width = getWidth();
+         int height = getHeight();
+ 
+-        boolean isFullyWrapContent = getLayoutParams().height == LayoutParams.WRAP_CONTENT
++        boolean isFullyWrapContent = getLayoutParams() != null
++                && getLayoutParams().height == LayoutParams.WRAP_CONTENT
+                 && getLayoutParams().width == LayoutParams.WRAP_CONTENT;
+         // if the view's bounds aren't known yet, and this is not a wrap-content/wrap-content
+         // view, hold off on loading the image.
+

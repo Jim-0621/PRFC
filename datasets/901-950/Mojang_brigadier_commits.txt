@@ -1,0 +1,733 @@
+File: src/main/java/com/mojang/brigadier/tree/ArgumentCommandNode.java
+Patch:
+@@ -56,7 +56,7 @@ public SuggestionProvider<S> getCustomSuggestions() {
+     @Override
+     public void parse(final StringReader reader, final CommandContextBuilder<S> contextBuilder) throws CommandSyntaxException {
+         final int start = reader.getCursor();
+-        final T result = type.parse(reader);
++        final T result = type.parse(reader, contextBuilder.getSource());
+         final ParsedArgument<S, T> parsed = new ParsedArgument<>(start, reader.getCursor(), result);
+ 
+         contextBuilder.withArgument(name, parsed);
+
+File: src/main/java/com/mojang/brigadier/CommandDispatcher.java
+Patch:
+@@ -231,7 +231,6 @@ public int execute(final ParseResults<S> parse) throws CommandSyntaxException {
+                 if (child != null) {
+                     forked |= context.isForked();
+                     if (child.hasNodes()) {
+-                        foundCommand = true;
+                         final RedirectModifier<S> modifier = context.getRedirectModifier();
+                         if (modifier == null) {
+                             if (next == null) {
+@@ -248,6 +247,8 @@ public int execute(final ParseResults<S> parse) throws CommandSyntaxException {
+                                     for (final S source : results) {
+                                         next.add(child.copyFor(source));
+                                     }
++                                } else {
++                                    foundCommand = true;
+                                 }
+                             } catch (final CommandSyntaxException ex) {
+                                 consumer.onCommandComplete(context, false, 0);
+
+File: src/main/java/com/mojang/brigadier/suggestion/SuggestionsBuilder.java
+Patch:
+@@ -43,8 +43,7 @@ public SuggestionsBuilder suggest(final String text) {
+         if (text.equals(remaining)) {
+             return this;
+         }
+-        final String prefix = Strings.commonPrefix(text, remaining);
+-        result.add(new Suggestion(StringRange.between(start + prefix.length(), input.length()), text.substring(prefix.length())));
++        result.add(new Suggestion(StringRange.between(start, input.length()), text));
+         return this;
+     }
+ 
+
+File: src/test/java/com/mojang/brigadier/suggestion/SuggestionsBuilderTest.java
+Patch:
+@@ -21,8 +21,8 @@ public void setUp() throws Exception {
+     @Test
+     public void suggest_appends() {
+         final Suggestions result = builder.suggest("world!").build();
+-        assertThat(result.getList(), equalTo(Lists.newArrayList("orld!")));
+-        assertThat(result.getRange(), equalTo(StringRange.at(7)));
++        assertThat(result.getList(), equalTo(Lists.newArrayList("world!")));
++        assertThat(result.getRange(), equalTo(StringRange.between(6, 7)));
+         assertThat(result.isEmpty(), is(false));
+     }
+ 
+
+File: src/main/java/com/mojang/brigadier/builder/ArgumentBuilder.java
+Patch:
+@@ -2,13 +2,12 @@
+ 
+ import com.mojang.brigadier.Command;
+ import com.mojang.brigadier.RedirectModifier;
+-import com.mojang.brigadier.context.CommandContext;
++import com.mojang.brigadier.SingleRedirectModifier;
+ import com.mojang.brigadier.tree.CommandNode;
+ import com.mojang.brigadier.tree.RootCommandNode;
+ 
+ import java.util.Collection;
+ import java.util.Collections;
+-import java.util.function.Function;
+ import java.util.function.Predicate;
+ 
+ public abstract class ArgumentBuilder<S, T extends ArgumentBuilder<S, T>> {
+@@ -63,7 +62,7 @@ public T redirect(final CommandNode<S> target) {
+         return forward(target, null, false);
+     }
+ 
+-    public T redirect(final CommandNode<S> target, final Function<CommandContext<S>, S> modifier) {
++    public T redirect(final CommandNode<S> target, final SingleRedirectModifier<S> modifier) {
+         return forward(target, modifier == null ? null : o -> Collections.singleton(modifier.apply(o)), false);
+     }
+ 
+
+File: src/main/java/com/mojang/brigadier/CommandDispatcher.java
+Patch:
+@@ -108,7 +108,7 @@ public int execute(final ParseResults<S> parse) throws CommandSyntaxException {
+                             if (next == null) {
+                                 next = new ArrayList<>(1);
+                             }
+-                            next.add(child);
++                            next.add(child.copyFor(context.getSource()));
+                         } else {
+                             final Collection<S> results = modifier.apply(context);
+                             if (!results.isEmpty()) {
+
+File: src/main/java/com/mojang/brigadier/context/CommandContext.java
+Patch:
+@@ -30,6 +30,9 @@ public CommandContext(final S source, final String input, final Map<String, Pars
+     }
+ 
+     public CommandContext<S> copyFor(final S source) {
++        if (this.source == source) {
++            return this;
++        }
+         return new CommandContext<>(source, input, arguments, command, nodes, range, child, modifier);
+     }
+ 
+
+File: src/main/java/com/mojang/brigadier/tree/LiteralCommandNode.java
+Patch:
+@@ -50,9 +50,9 @@ public void parse(final StringReader reader, final CommandContextBuilder<S> cont
+     }
+ 
+     @Override
+-    public CompletableFuture<Collection<String>> listSuggestions(CommandContext<S> context, final String command) {
++    public CompletableFuture<Collection<String>> listSuggestions(final CommandContext<S> context, final String command) {
+         if (literal.toLowerCase().startsWith(command.toLowerCase())) {
+-            return CompletableFuture.completedFuture(Collections.singleton(literal));
++            return CompletableFuture.completedFuture(Collections.singleton(literal + " "));
+         } else {
+             return CompletableFuture.completedFuture(Collections.emptyList());
+         }
+
+File: src/test/java/com/mojang/brigadier/CommandDispatcherTest.java
+Patch:
+@@ -259,12 +259,12 @@ public void testExecuteRedirectedMultipleTimes() throws Exception {
+ 
+         final CommandContextBuilder<Object> child1 = parse.getContext().getChild();
+         assertThat(child1, is(notNullValue()));
+-        assertThat(child1.getRange().get(input), equalTo("redirected"));
++        assertThat(child1.getRange().get(input), equalTo("redirected redirected"));
+         assertThat(child1.getNodes().size(), is(2));
+ 
+         final CommandContextBuilder<Object> child2 = child1.getChild();
+         assertThat(child2, is(notNullValue()));
+-        assertThat(child2.getRange().get(input), equalTo("actual"));
++        assertThat(child2.getRange().get(input), equalTo("redirected actual"));
+         assertThat(child2.getNodes().size(), is(2));
+ 
+         assertThat(subject.execute(parse), is(42));
+@@ -291,7 +291,7 @@ public void testExecuteRedirected() throws Exception {
+ 
+         final CommandContextBuilder<Object> parent = parse.getContext().getChild();
+         assertThat(parent, is(notNullValue()));
+-        assertThat(parent.getRange().get(input), equalTo("actual"));
++        assertThat(parent.getRange().get(input), equalTo("redirected actual"));
+         assertThat(parent.getNodes().size(), is(2));
+         assertThat(parent.getSource(), is(source));
+ 
+
+File: src/main/java/com/mojang/brigadier/StringReader.java
+Patch:
+@@ -137,7 +137,7 @@ public double readDouble() throws CommandSyntaxException {
+         }
+     }
+ 
+-    private static boolean isAllowedInUnquotedString(final char c) {
++    public static boolean isAllowedInUnquotedString(final char c) {
+         return c >= '0' && c <= '9'
+             || c >= 'A' && c <= 'Z'
+             || c >= 'a' && c <= 'z'
+
+File: src/test/java/com/mojang/brigadier/arguments/StringArgumentTypeTest.java
+Patch:
+@@ -58,7 +58,7 @@ public void testToString() throws Exception {
+ 
+     @Test
+     public void testEscapeIfRequired_notRequired() throws Exception {
+-        assertThat(escapeIfRequired("hello!"), is(equalTo("hello!")));
++        assertThat(escapeIfRequired("hello"), is(equalTo("hello")));
+         assertThat(escapeIfRequired(""), is(equalTo("")));
+     }
+ 
+
+File: src/test/java/com/mojang/brigadier/CommandDispatcherTest.java
+Patch:
+@@ -296,7 +296,7 @@ public void testExecuteRedirected() throws Exception {
+         assertThat(parent.getNodes().size(), is(2));
+         assertThat(parent.getSource(), is(source));
+ 
+-        assertThat(subject.execute(parse), is(84));
++        assertThat(subject.execute(parse), is(2));
+         verify(command).run(argThat(hasProperty("source", is(source1))));
+         verify(command).run(argThat(hasProperty("source", is(source2))));
+     }
+
+File: src/main/java/com/mojang/brigadier/CommandDispatcher.java
+Patch:
+@@ -153,7 +153,9 @@ private ParseResults<S> parseNodes(final CommandNode<S> node, final StringReader
+ 
+             context.withCommand(child.getCommand());
+             if (reader.canRead()) {
+-                reader.skip();
++                if (reader.canRead(2)) {
++                    reader.skip();
++                }
+                 if (child.getRedirect() != null) {
+                     final CommandContextBuilder<S> childContext = new CommandContextBuilder<>(this, source, reader.getCursor());
+                     childContext.withNode(child.getRedirect(), new StringRange(reader.getCursor(), reader.getCursor()));
+
+File: src/main/java/com/mojang/brigadier/tree/ArgumentCommandNode.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.mojang.brigadier.StringReader;
+ import com.mojang.brigadier.arguments.ArgumentType;
+ import com.mojang.brigadier.builder.RequiredArgumentBuilder;
++import com.mojang.brigadier.context.CommandContext;
+ import com.mojang.brigadier.context.CommandContextBuilder;
+ import com.mojang.brigadier.context.ParsedArgument;
+ import com.mojang.brigadier.exceptions.CommandException;
+@@ -20,7 +21,7 @@ public class ArgumentCommandNode<S, T> extends CommandNode<S> {
+     private final String name;
+     private final ArgumentType<T> type;
+ 
+-    public ArgumentCommandNode(final String name, final ArgumentType<T> type, final Command<S> command, final Predicate<S> requirement, final CommandNode<S> redirect, final Function<S, Collection<S>> modifier) {
++    public ArgumentCommandNode(final String name, final ArgumentType<T> type, final Command<S> command, final Predicate<S> requirement, final CommandNode<S> redirect, final Function<CommandContext<S>, Collection<S>> modifier) {
+         super(command, requirement, redirect, modifier);
+         this.name = name;
+         this.type = type;
+
+File: src/main/java/com/mojang/brigadier/tree/LiteralCommandNode.java
+Patch:
+@@ -3,6 +3,7 @@
+ import com.mojang.brigadier.Command;
+ import com.mojang.brigadier.StringReader;
+ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
++import com.mojang.brigadier.context.CommandContext;
+ import com.mojang.brigadier.context.CommandContextBuilder;
+ import com.mojang.brigadier.exceptions.CommandException;
+ import com.mojang.brigadier.exceptions.ParameterizedCommandExceptionType;
+@@ -17,7 +18,7 @@ public class LiteralCommandNode<S> extends CommandNode<S> {
+ 
+     private final String literal;
+ 
+-    public LiteralCommandNode(final String literal, final Command<S> command, final Predicate<S> requirement, final CommandNode<S> redirect, final Function<S, Collection<S>> modifier) {
++    public LiteralCommandNode(final String literal, final Command<S> command, final Predicate<S> requirement, final CommandNode<S> redirect, final Function<CommandContext<S>, Collection<S>> modifier) {
+         super(command, requirement, redirect, modifier);
+         this.literal = literal;
+     }
+
+File: src/main/java/com/mojang/brigadier/tree/RootCommandNode.java
+Patch:
+@@ -11,7 +11,7 @@
+ 
+ public class RootCommandNode<S> extends CommandNode<S> {
+     public RootCommandNode() {
+-        super(null, c -> true, null, Collections::singleton);
++        super(null, c -> true, null, s -> Collections.singleton(s.getSource()));
+     }
+ 
+     @Override
+
+File: src/test/java/com/mojang/brigadier/CommandDispatcherTest.java
+Patch:
+@@ -200,11 +200,11 @@ public void testExecuteRedirected() throws Exception {
+     @SuppressWarnings("unchecked")
+     @Test
+     public void testExecuteRedirectedMultipleTimes() throws Exception {
+-        final Function<Object, Collection<Object>> modifier = mock(Function.class);
++        final Function<CommandContext<Object>, Collection<Object>> modifier = mock(Function.class);
+         final Object source1 = new Object();
+         final Object source2 = new Object();
+ 
+-        when(modifier.apply(source)).thenReturn(Lists.newArrayList(source1, source2));
++        when(modifier.apply(argThat(hasProperty("source", is(source))))).thenReturn(Lists.newArrayList(source1, source2));
+ 
+         subject.register(literal("actual").executes(command));
+         subject.register(literal("redirected").redirect(subject.getRoot(), modifier));
+
+File: src/main/java/com/mojang/brigadier/arguments/ArgumentType.java
+Patch:
+@@ -8,6 +8,7 @@
+ import java.util.Set;
+ 
+ public interface ArgumentType<T> {
++    @Deprecated
+     default <S> ParsedArgument<S, T> parse(String command, CommandContextBuilder<S> contextBuilder) throws CommandException {
+         StringReader reader = new StringReader(command);
+         T result = parse(reader, contextBuilder);
+
+File: src/main/java/com/mojang/brigadier/arguments/BoolArgumentType.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.mojang.brigadier.CommandDispatcher;
+ import com.mojang.brigadier.context.CommandContext;
+ import com.mojang.brigadier.context.CommandContextBuilder;
+-import com.mojang.brigadier.context.FixedParsedArgument;
+ import com.mojang.brigadier.context.ParsedArgument;
+ import com.mojang.brigadier.exceptions.CommandException;
+ import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
+@@ -31,9 +30,9 @@ public <S> ParsedArgument<S, Boolean> parse(String command, CommandContextBuilde
+         }
+ 
+         if (raw.equals("true")) {
+-            return new FixedParsedArgument<>(raw, true);
++            return new ParsedArgument<>(raw, true);
+         } else if (raw.equals("false")) {
+-            return new FixedParsedArgument<>(raw, false);
++            return new ParsedArgument<>(raw, false);
+         } else {
+             throw ERROR_INVALID.create();
+         }
+
+File: src/main/java/com/mojang/brigadier/arguments/CommandArgumentType.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import com.mojang.brigadier.ParseResults;
+ import com.mojang.brigadier.context.CommandContextBuilder;
+-import com.mojang.brigadier.context.FixedParsedArgument;
+ import com.mojang.brigadier.context.ParsedArgument;
+ import com.mojang.brigadier.exceptions.CommandException;
+ 
+@@ -19,7 +18,7 @@ public <S> ParsedArgument<S, ParseResults<T>> parse(String command, CommandConte
+         final ParseResults<S> parse = contextBuilder.getDispatcher().parse(command, contextBuilder.getSource());
+ 
+         //noinspection unchecked
+-        return new FixedParsedArgument<>(command, (ParseResults<T>) parse);
++        return new ParsedArgument<>(command, (ParseResults<T>) parse);
+     }
+ 
+     @Override
+
+File: src/main/java/com/mojang/brigadier/context/CommandContext.java
+Patch:
+@@ -5,14 +5,13 @@
+ import com.google.common.primitives.Primitives;
+ import com.mojang.brigadier.Command;
+ import com.mojang.brigadier.tree.CommandNode;
+-import sun.security.x509.OIDMap;
+ 
+ import java.util.Map;
+ 
+ public class CommandContext<S> {
+     private final S source;
+-    private final Map<String, ParsedArgument<S, ?>> arguments;
+     private final Command<S> command;
++    private final Map<String, ParsedArgument<S, ?>> arguments;
+     private final Map<CommandNode<S>, String> nodes;
+     private final String input;
+ 
+
+File: src/test/java/com/mojang/brigadier/arguments/BoolArgumentTypeTest.java
+Patch:
+@@ -3,8 +3,6 @@
+ import com.mojang.brigadier.context.CommandContextBuilder;
+ import com.mojang.brigadier.context.ParsedArgument;
+ import com.mojang.brigadier.exceptions.CommandException;
+-import org.hamcrest.Matchers;
+-import org.junit.Assert;
+ import org.junit.Before;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+
+File: src/main/java/com/mojang/brigadier/arguments/ArgumentType.java
+Patch:
+@@ -1,12 +1,13 @@
+ package com.mojang.brigadier.arguments;
+ 
++import com.mojang.brigadier.context.CommandContextBuilder;
+ import com.mojang.brigadier.context.ParsedArgument;
+ import com.mojang.brigadier.exceptions.CommandException;
+ 
+ import java.util.Set;
+ 
+ public interface ArgumentType<T> {
+-    <S> ParsedArgument<S, T> parse(String command) throws CommandException;
++    <S> ParsedArgument<S, T> parse(String command, CommandContextBuilder<S> contextBuilder) throws CommandException;
+ 
+-    void listSuggestions(String command, Set<String> output);
++    <S> void listSuggestions(String command, Set<String> output, CommandContextBuilder<S> contextBuilder);
+ }
+
+File: src/main/java/com/mojang/brigadier/arguments/StringArgumentType.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.mojang.brigadier.CommandDispatcher;
+ import com.mojang.brigadier.context.CommandContext;
++import com.mojang.brigadier.context.CommandContextBuilder;
+ import com.mojang.brigadier.context.FixedParsedArgument;
+ import com.mojang.brigadier.context.ParsedArgument;
+ import com.mojang.brigadier.exceptions.CommandException;
+@@ -39,7 +40,7 @@ public static String getString(CommandContext<?> context, String name) {
+     }
+ 
+     @Override
+-    public <S> ParsedArgument<S, String> parse(String command) throws CommandException {
++    public <S> ParsedArgument<S, String> parse(String command, CommandContextBuilder<S> contextBuilder) throws CommandException {
+         if (type == StringType.GREEDY_PHRASE) {
+             return new FixedParsedArgument<>(command, command);
+         } else if (type == StringType.SINGLE_WORLD) {
+@@ -96,7 +97,7 @@ public <S> ParsedArgument<S, String> parse(String command) throws CommandExcepti
+     }
+ 
+     @Override
+-    public void listSuggestions(String command, Set<String> output) {
++    public <S> void listSuggestions(String command, Set<String> output, CommandContextBuilder<S> contextBuilder) {
+     }
+ 
+     @Override
+
+File: src/main/java/com/mojang/brigadier/tree/ArgumentCommandNode.java
+Patch:
+@@ -43,7 +43,7 @@ public String getUsageText() {
+ 
+     @Override
+     public String parse(String command, CommandContextBuilder<S> contextBuilder) throws CommandException {
+-        ParsedArgument<S, T> parsed = type.parse(command);
++        ParsedArgument<S, T> parsed = type.parse(command, contextBuilder);
+         int start = parsed.getRaw().length();
+ 
+         contextBuilder.withArgument(name, parsed);
+@@ -57,8 +57,8 @@ public String parse(String command, CommandContextBuilder<S> contextBuilder) thr
+     }
+ 
+     @Override
+-    public void listSuggestions(String command, Set<String> output) {
+-        type.listSuggestions(command, output);
++    public void listSuggestions(String command, Set<String> output, CommandContextBuilder<S> contextBuilder) {
++        type.listSuggestions(command, output, contextBuilder);
+     }
+ 
+     @Override
+
+File: src/main/java/com/mojang/brigadier/tree/CommandNode.java
+Patch:
+@@ -76,7 +76,7 @@ public Predicate<S> getRequirement() {
+ 
+     public abstract String parse(String command, CommandContextBuilder<S> contextBuilder) throws CommandException;
+ 
+-    public abstract void listSuggestions(String command, Set<String> output);
++    public abstract void listSuggestions(String command, Set<String> output, CommandContextBuilder<S> contextBuilder);
+ 
+     public abstract ArgumentBuilder<S, ?> createBuilder();
+ }
+
+File: src/main/java/com/mojang/brigadier/tree/LiteralCommandNode.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import com.mojang.brigadier.Command;
+ import com.mojang.brigadier.CommandDispatcher;
+-import com.mojang.brigadier.builder.ArgumentBuilder;
+ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+ import com.mojang.brigadier.context.CommandContextBuilder;
+ import com.mojang.brigadier.exceptions.CommandException;
+@@ -44,7 +43,7 @@ public String parse(String command, CommandContextBuilder<S> contextBuilder) thr
+     }
+ 
+     @Override
+-    public void listSuggestions(String command, Set<String> output) {
++    public void listSuggestions(String command, Set<String> output, CommandContextBuilder<S> contextBuilder) {
+         if (literal.startsWith(command)) {
+             output.add(literal);
+         }
+
+File: src/main/java/com/mojang/brigadier/tree/RootCommandNode.java
+Patch:
+@@ -27,7 +27,7 @@ public String parse(String command, CommandContextBuilder<S> contextBuilder) thr
+     }
+ 
+     @Override
+-    public void listSuggestions(String command, Set<String> output) {
++    public void listSuggestions(String command, Set<String> output, CommandContextBuilder<S> contextBuilder) {
+     }
+ 
+     @Override
+
+File: src/main/java/com/mojang/brigadier/arguments/ArgumentType.java
+Patch:
+@@ -5,7 +5,7 @@
+ 
+ import java.util.Set;
+ 
+-public interface CommandArgumentType<T> {
++public interface ArgumentType<T> {
+     <S> ParsedArgument<S, T> parse(String command) throws CommandException;
+ 
+     void listSuggestions(String command, Set<String> output);
+
+File: src/main/java/com/mojang/brigadier/arguments/IntegerArgumentType.java
+Patch:
+@@ -10,7 +10,7 @@
+ 
+ import java.util.Set;
+ 
+-public class IntegerArgumentType implements CommandArgumentType<Integer> {
++public class IntegerArgumentType implements ArgumentType<Integer> {
+     public static final ParameterizedCommandExceptionType ERROR_NOT_A_NUMBER = new ParameterizedCommandExceptionType("argument.integer.invalid", "Expected an integer, found '${found}'", "found");
+     public static final ParameterizedCommandExceptionType ERROR_TOO_SMALL = new ParameterizedCommandExceptionType("argument.integer.low", "Integer must not be less than ${minimum}, found ${found}", "found", "minimum");
+     public static final ParameterizedCommandExceptionType ERROR_TOO_BIG = new ParameterizedCommandExceptionType("argument.integer.big", "Integer must not be more than ${maximum}, found ${found}", "found", "maximum");
+
+File: src/main/java/com/mojang/brigadier/arguments/StringArgumentType.java
+Patch:
+@@ -10,7 +10,7 @@
+ 
+ import java.util.Set;
+ 
+-public class StringArgumentType implements CommandArgumentType<String> {
++public class StringArgumentType implements ArgumentType<String> {
+     public static final ParameterizedCommandExceptionType ERROR_INVALID_ESCAPE = new ParameterizedCommandExceptionType("argument.string.escape.invalid", "Unknown or invalid escape sequence: ${input}", "input");
+     public static final SimpleCommandExceptionType ERROR_UNEXPECTED_ESCAPE = new SimpleCommandExceptionType("argument.string.escape.unexpected", "Unexpected escape sequence, please quote the whole argument");
+     public static final SimpleCommandExceptionType ERROR_UNEXPECTED_START_OF_QUOTE = new SimpleCommandExceptionType("argument.string.quote.unexpected_start", "Unexpected start-of-quote character (\"), please quote the whole argument");
+
+File: src/test/java/com/mojang/brigadier/builder/RequiredArgumentBuilderTest.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.mojang.brigadier.builder;
+ 
+ import com.mojang.brigadier.Command;
+-import com.mojang.brigadier.arguments.CommandArgumentType;
++import com.mojang.brigadier.arguments.ArgumentType;
+ import com.mojang.brigadier.tree.ArgumentCommandNode;
+ import org.junit.Before;
+ import org.junit.Test;
+@@ -15,7 +15,7 @@
+ 
+ public class RequiredArgumentBuilderTest {
+     @Mock
+-    private CommandArgumentType<Integer> type;
++    private ArgumentType<Integer> type;
+     private RequiredArgumentBuilder<Object, Integer> builder;
+     @Mock
+     private
+
+File: src/main/java/com/mojang/brigadier/CommandDispatcher.java
+Patch:
+@@ -89,9 +89,7 @@ private ParseResults<S> parseNodes(CommandNode<S> node, String command, CommandC
+                 continue;
+             }
+ 
+-            if (child.getCommand() != null) {
+-                context.withCommand(child.getCommand());
+-            }
++            context.withCommand(child.getCommand());
+             if (remaining.isEmpty()) {
+                 return new ParseResults<>(context);
+             } else {
+
+File: src/test/java/com/mojang/brigadier/CommandDispatcherTest.java
+Patch:
+@@ -49,8 +49,8 @@ public void testCreateAndExecuteCommand() throws Exception {
+     @SuppressWarnings("unchecked")
+     @Test
+     public void testCreateAndMergeCommands() throws Exception {
+-        subject.register(literal("base").then(literal("foo")).executes(command));
+-        subject.register(literal("base").then(literal("bar")).executes(command));
++        subject.register(literal("base").then(literal("foo").executes(command)));
++        subject.register(literal("base").then(literal("bar").executes(command)));
+ 
+         assertThat(subject.execute("base foo", source), is(42));
+         assertThat(subject.execute("base bar", source), is(42));
+
+File: src/main/java/com/mojang/brigadier/CommandDispatcher.java
+Patch:
+@@ -25,6 +25,7 @@ public class CommandDispatcher<S> {
+     public static final ParameterizedCommandExceptionType ERROR_UNKNOWN_ARGUMENT = new ParameterizedCommandExceptionType("command.unknown.argument", "Incorrect argument for command, couldn't parse: ${argument}", "argument");
+ 
+     public static final String ARGUMENT_SEPARATOR = " ";
++    public static final char ARGUMENT_SEPARATOR_CHAR = ' ';
+     private static final String USAGE_OPTIONAL_OPEN = "[";
+     private static final String USAGE_OPTIONAL_CLOSE = "]";
+     private static final String USAGE_REQUIRED_OPEN = "(";
+
+File: src/main/java/com/mojang/brigadier/arguments/IntegerArgumentType.java
+Patch:
+@@ -3,6 +3,7 @@
+ import com.google.common.base.Splitter;
+ import com.mojang.brigadier.CommandDispatcher;
+ import com.mojang.brigadier.context.CommandContext;
++import com.mojang.brigadier.context.FixedParsedArgument;
+ import com.mojang.brigadier.context.ParsedArgument;
+ import com.mojang.brigadier.exceptions.CommandException;
+ import com.mojang.brigadier.exceptions.ParameterizedCommandExceptionType;
+@@ -54,7 +55,7 @@ public ParsedArgument<Integer> parse(String command) throws CommandException {
+                 throw ERROR_TOO_BIG.create(value, maximum);
+             }
+ 
+-            return new ParsedArgument<>(raw, value);
++            return new FixedParsedArgument<>(raw, value);
+         } catch (NumberFormatException ignored) {
+             throw ERROR_NOT_A_NUMBER.create(raw);
+         }
+
+File: src/main/java/com/mojang/brigadier/Command.java
+Patch:
+@@ -2,6 +2,6 @@
+ 
+ import com.mojang.brigadier.context.CommandContext;
+ 
+-public interface Command {
+-    void run(CommandContext context);
++public interface Command<S> {
++    void run(CommandContext<S> context);
+ }
+
+File: src/main/java/com/mojang/brigadier/tree/ArgumentCommandNode.java
+Patch:
+@@ -8,14 +8,14 @@
+ 
+ import java.util.Set;
+ 
+-public class ArgumentCommandNode<T> extends CommandNode {
++public class ArgumentCommandNode<S, T> extends CommandNode<S> {
+     private static final String USAGE_ARGUMENT_OPEN = "<";
+     private static final String USAGE_ARGUMENT_CLOSE = ">";
+ 
+     private final String name;
+     private final CommandArgumentType<T> type;
+ 
+-    public ArgumentCommandNode(String name, CommandArgumentType<T> type, Command command) {
++    public ArgumentCommandNode(String name, CommandArgumentType<T> type, Command<S> command) {
+         super(command);
+         this.name = name;
+         this.type = type;
+@@ -40,7 +40,7 @@ public String getUsageText() {
+     }
+ 
+     @Override
+-    public String parse(String command, CommandContextBuilder<?> contextBuilder) throws CommandException {
++    public String parse(String command, CommandContextBuilder<S> contextBuilder) throws CommandException {
+         ParsedArgument<T> parsed = type.parse(command);
+         int start = parsed.getRaw().length();
+ 
+
+File: src/main/java/com/mojang/brigadier/tree/LiteralCommandNode.java
+Patch:
+@@ -8,12 +8,12 @@
+ 
+ import java.util.Set;
+ 
+-public class LiteralCommandNode extends CommandNode {
++public class LiteralCommandNode<S> extends CommandNode<S> {
+     public static final ParameterizedCommandExceptionType ERROR_INCORRECT_LITERAL = new ParameterizedCommandExceptionType("argument.literal.incorrect", "Expected literal ${expected}", "expected");
+ 
+     private final String literal;
+ 
+-    public LiteralCommandNode(String literal, Command command) {
++    public LiteralCommandNode(String literal, Command<S> command) {
+         super(command);
+         this.literal = literal;
+     }
+@@ -28,7 +28,7 @@ protected Object getMergeKey() {
+     }
+ 
+     @Override
+-    public String parse(String command, CommandContextBuilder<?> contextBuilder) throws CommandException {
++    public String parse(String command, CommandContextBuilder<S> contextBuilder) throws CommandException {
+         String expected = literal + (command.length() > literal.length() ? CommandDispatcher.ARGUMENT_SEPARATOR : "");
+ 
+         if (!command.startsWith(expected)) {
+
+File: src/main/java/com/mojang/brigadier/tree/RootCommandNode.java
+Patch:
+@@ -5,7 +5,7 @@
+ 
+ import java.util.Set;
+ 
+-public class RootCommandNode extends CommandNode {
++public class RootCommandNode<S> extends CommandNode<S> {
+     public RootCommandNode() {
+         super(null);
+     }
+@@ -21,7 +21,7 @@ public String getUsageText() {
+     }
+ 
+     @Override
+-    public String parse(String command, CommandContextBuilder<?> contextBuilder) throws CommandException {
++    public String parse(String command, CommandContextBuilder<S> contextBuilder) throws CommandException {
+         return command;
+     }
+ 
+
+File: src/test/java/com/mojang/brigadier/CommandDispatcherUsagesTest.java
+Patch:
+@@ -24,7 +24,7 @@ public class CommandDispatcherUsagesTest {
+     @Mock
+     private Object source;
+     @Mock
+-    private Command command;
++    private Command<Object>  command;
+ 
+     @Before
+     public void setUp() throws Exception {
+
+File: src/main/java/com/mojang/brigadier/exceptions/ParameterizedCommandExceptionType.java
+Patch:
+@@ -30,7 +30,7 @@ public String getErrorMessage(CommandException exception) {
+         final Matcher matcher = PATTERN.matcher(message);
+         final StringBuffer result = new StringBuffer();
+         while (matcher.find()) {
+-            matcher.appendReplacement(result, exception.getData().get(matcher.group(1)).toString());
++            matcher.appendReplacement(result, Matcher.quoteReplacement(exception.getData().get(matcher.group(1)).toString()));
+         }
+         matcher.appendTail(result);
+         return result.toString();
+
+File: src/main/java/com/mojang/brigadier/CommandDispatcher.java
+Patch:
+@@ -13,15 +13,14 @@
+ import com.mojang.brigadier.tree.LiteralCommandNode;
+ import com.mojang.brigadier.tree.RootCommandNode;
+ 
+-import javax.annotation.Nullable;
+ import java.util.Collections;
+ import java.util.Comparator;
+ import java.util.List;
+ 
+ public class CommandDispatcher<T> {
+     private static final Predicate<CommandNode> HAS_COMMAND = new Predicate<CommandNode>() {
+         @Override
+-        public boolean apply(@Nullable CommandNode input) {
++        public boolean apply(CommandNode input) {
+             return input != null && (input.getCommand() != null || Iterables.any(input.getChildren(), HAS_COMMAND));
+         }
+     };
+
+File: src/main/java/com/mojang/brigadier/tree/LiteralCommandNode.java
+Patch:
+@@ -30,7 +30,7 @@ public String parse(String command, CommandContextBuilder<?> contextBuilder) thr
+         String expected = literal + (command.length() > literal.length() ? CommandDispatcher.ARGUMENT_SEPARATOR : "");
+ 
+         if (!command.startsWith(expected)) {
+-            throw ERROR_INCORRECT_LITERAL.create(expected);
++            throw ERROR_INCORRECT_LITERAL.create(literal);
+         }
+ 
+         int start = expected.length();
+

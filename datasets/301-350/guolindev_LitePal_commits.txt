@@ -1,0 +1,483 @@
+File: core/src/main/java/org/litepal/crud/DataHandler.java
+Patch:
+@@ -1320,6 +1320,7 @@ private void setAssociatedModel(LitePalSupport baseObj) {
+     private void setToModelByReflection(Object modelInstance, Field field, int columnIndex, String getMethodName, Cursor cursor)
+             throws NoSuchMethodException, InvocationTargetException, IllegalAccessException {
+         Class<?> cursorClass = cursor.getClass();
++        if (cursor.isNull(columnIndex)) return;
+         Method method = cursorClass.getMethod(getMethodName, int.class);
+         Object value = method.invoke(cursor, columnIndex);
+         if (field.getType() == boolean.class || field.getType() == Boolean.class) {
+
+File: core/src/main/java/org/litepal/crud/LitePalSupport.java
+Patch:
+@@ -543,8 +543,9 @@ public void setToDefault(String fieldName) {
+      * Assigns value to baseObjId. This will override the original value. <b>Never call this method
+      * unless you know exactly what you are doing.</b>
+      * @param baseObjId
++     *          Assigns value to baseObjId.
+      */
+-    public void assignBaseObjId(int baseObjId) {
++    public void assignBaseObjId(long baseObjId) {
+         this.baseObjId = baseObjId;
+     }
+ 
+
+File: core/src/main/java/org/litepal/tablemanager/Upgrader.java
+Patch:
+@@ -106,6 +106,7 @@ private void upgradeTable() {
+     private boolean hasNewUniqueOrNotNullColumn() {
+         List<ColumnModel> columnModelList = mTableModel.getColumnModels();
+         for (ColumnModel columnModel : columnModelList) {
++            if (columnModel.isIdColumn()) continue; // id don't check unique or nullable, we never upgrade it.
+             ColumnModel columnModelDB = mTableModelDB.getColumnModelByName(columnModel.getColumnName());
+             if (columnModel.isUnique()) {
+                 if (columnModelDB == null || !columnModelDB.isUnique()) {
+
+File: core/src/main/java/org/litepal/crud/SaveHandler.java
+Patch:
+@@ -96,7 +96,7 @@ void onSave(LitePalSupport baseObj) throws SecurityException, IllegalArgumentExc
+ 	/**
+ 	 * The open interface for other classes in CRUD package to save a model
+ 	 * collection. It is called when developer calls
+-	 * {@link org.litepal.LitePal#saveAll(java.util.Collection)}. Each model in the collection
++	 * {@link org.litepal.Operator#saveAll(java.util.Collection)}. Each model in the collection
+ 	 * will be persisted. If there're associated models detected, each
+ 	 * associated model which is persisted will build association with current
+ 	 * model in database.
+
+File: sample/src/androidTest/java/com/litepaltest/test/crud/query/QueryEagerTest.java
+Patch:
+@@ -155,6 +155,8 @@ public void testEagerFind() {
+ 			}
+ 			fail();
+ 		}
++		Student s3 = LitePal.find(Student.class, student3.getId());
++		assertNull(s3.getBirthday());
+ 	}
+ 
+ 	public void resetData() {
+
+File: sample/src/androidTest/java/com/litepaltest/test/crud/update/UpdateUsingUpdateMethodTest.java
+Patch:
+@@ -251,6 +251,7 @@ public void testUpdateToDefaultValueWithInstanceUpdate() {
+ 		int affectedStudent = s.update(student.getId());
+ 		assertEquals(1, affectedStudent);
+ 		Student newStudent = LitePal.find(Student.class, student.getId());
++		assertNull(newStudent.getBirthday());
+ 		assertNull(newStudent.getName());
+ 		assertEquals(0, newStudent.getAge());
+ 		Teacher t = new Teacher();
+
+File: sample/src/androidTest/java/com/litepaltest/test/crud/query/QueryEagerTest.java
+Patch:
+@@ -155,8 +155,6 @@ public void testEagerFind() {
+ 			}
+ 			fail();
+ 		}
+-		Student s3 = LitePal.find(Student.class, student3.getId());
+-		assertNull(s3.getBirthday());
+ 	}
+ 
+ 	public void resetData() {
+
+File: sample/src/androidTest/java/com/litepaltest/test/crud/update/UpdateUsingUpdateMethodTest.java
+Patch:
+@@ -251,8 +251,7 @@ public void testUpdateToDefaultValueWithInstanceUpdate() {
+ 		int affectedStudent = s.update(student.getId());
+ 		assertEquals(1, affectedStudent);
+ 		Student newStudent = LitePal.find(Student.class, student.getId());
+-		assertNull(newStudent.getBirthday());
+-		assertEquals(null, newStudent.getName());
++		assertNull(newStudent.getName());
+ 		assertEquals(0, newStudent.getAge());
+ 		Teacher t = new Teacher();
+ 		t.setAge(45);
+
+File: litepal/src/main/java/org/litepal/crud/callback/FindCallback.java
+Patch:
+@@ -21,8 +21,8 @@
+  * @author Tony Green
+  * @since 2017/2/22
+  */
+-public interface FindCallback {
++public interface FindCallback<T> {
+ 
+-    <T> void onFinish(T t);
++    void onFinish(T t);
+ 
+ }
+
+File: litepal/src/main/java/org/litepal/crud/callback/FindMultiCallback.java
+Patch:
+@@ -23,8 +23,8 @@
+  * @author Tony Green
+  * @since 2017/2/22
+  */
+-public interface FindMultiCallback {
++public interface FindMultiCallback<T> {
+ 
+-    <T> void onFinish(List<T> t);
++    void onFinish(List<T> t);
+ 
+ }
+\ No newline at end of file
+
+File: litepal/src/main/java/org/litepal/crud/SaveHandler.java
+Patch:
+@@ -498,15 +498,15 @@ private void clearFKValueInAssociatedTable(DataSupport baseObj) {
+ 	 *            The current action is update or not.
+ 	 */
+ 	private void insertIntermediateJoinTableValue(DataSupport baseObj, boolean isUpdate) {
+-		Map<String, Set<Long>> associatedIdsM2M = baseObj.getAssociatedModelsMapForJoinTable();
++		Map<String, List<Long>> associatedIdsM2M = baseObj.getAssociatedModelsMapForJoinTable();
+ 		ContentValues values = new ContentValues();
+ 		for (String associatedTableName : associatedIdsM2M.keySet()) {
+ 			String joinTableName = getIntermediateTableName(baseObj, associatedTableName);
+ 			if (isUpdate) {
+ 				mDatabase.delete(joinTableName, getWhereForJoinTableToDelete(baseObj),
+ 						new String[] { String.valueOf(baseObj.getBaseObjId()) });
+ 			}
+-			Set<Long> associatedIdsM2MSet = associatedIdsM2M.get(associatedTableName);
++			List<Long> associatedIdsM2MSet = associatedIdsM2M.get(associatedTableName);
+ 			for (long associatedId : associatedIdsM2MSet) {
+ 				values.clear();
+ 				values.put(getForeignKeyColumnName(baseObj.getTableName()), baseObj.getBaseObjId());
+
+File: litepal/src/main/java/org/litepal/crud/DataHandler.java
+Patch:
+@@ -655,7 +655,7 @@ protected Constructor<?> findBestSuitConstructor(Class<?> modelClass) {
+ 			for (Class<?> parameterType : types) {
+ 				if (parameterType == modelClass) {
+ 					key = key + 10000; // plus the key for not using this constructor
+-				} else if (parameterType.getName().equals("com.android.tools.fd.runtime.InstantReloadException")) {
++				} else if (parameterType.getName().startsWith("com.android") && parameterType.getName().endsWith("InstantReloadException")) {
+                     key = key + 10000; // plus the key for not using this constructor
+                 }
+ 			}
+
+File: litepal/src/main/java/org/litepal/util/DBUtility.java
+Patch:
+@@ -50,7 +50,7 @@ public class DBUtility {
+ 
+     private static final String REG_FUZZY = "\\s+(not\\s+)?(like|between)\\s+";
+ 
+-    private static final String REG_COLLECTION = "\\s+(not\\s+)?(in|exists)\\s*\\(";
++    private static final String REG_COLLECTION = "\\s+(not\\s+)?(in)\\s*\\(";
+ 
+     /**
+ 	 * Disable to create an instance of DBUtility.
+
+File: litepal/src/main/java/org/litepal/tablemanager/AssociationCreator.java
+Patch:
+@@ -33,6 +33,7 @@
+ import java.util.ArrayList;
+ import java.util.Collection;
+ import java.util.List;
++import java.util.Locale;
+ 
+ /**
+  * When models have associations such as one2one, many2one or many2many, tables
+@@ -172,7 +173,7 @@ protected String generateAddColumnSQL(String tableName, ColumnModel columnModel)
+ 	 */
+ 	protected boolean isForeignKeyColumnFormat(String columnName) {
+ 		if (!TextUtils.isEmpty(columnName)) {
+-			return columnName.toLowerCase().endsWith("_id") && !columnName.equalsIgnoreCase("_id");
++			return columnName.toLowerCase(Locale.US).endsWith("_id") && !columnName.equalsIgnoreCase("_id");
+ 		}
+ 		return false;
+ 	}
+
+File: litepal/src/main/java/org/litepal/crud/SaveHandler.java
+Patch:
+@@ -229,6 +229,9 @@ private void beforeSave(DataSupport baseObj, List<Field> supportedFields, Conten
+ 	 * @return The row ID of the newly inserted row, or -1 if an error occurred.
+ 	 */
+ 	private long saving(DataSupport baseObj, ContentValues values) {
++        if (values.size() == 0) {
++            values.putNull("id");
++        }
+ 		return mDatabase.insert(baseObj.getTableName(), null, values);
+ 	}
+ 
+
+File: litepal/src/main/java/org/litepal/tablemanager/typechange/BlobOrm.java
+Patch:
+@@ -15,7 +15,7 @@ public class BlobOrm extends OrmChange{
+     @Override
+     public String object2Relation(String fieldType) {
+         if (fieldType != null) {
+-            if (fieldType.equals("byte") || fieldType.equals("java.lang.Byte")) {
++            if (fieldType.equals("[B")) {
+                 return "blob";
+             }
+         }
+
+File: litepal/src/main/java/org/litepal/crud/DataHandler.java
+Patch:
+@@ -282,8 +282,6 @@ protected void putContentValuesForSave(DataSupport baseObj, Field field, Content
+      *            The class of base object.
+      * @param field
+      *            Field to put into ContentValues.
+-     * @oaran fieldValue
+-     *            The value of the field.
+      * @param values
+      *            To store data of current model for persisting or updating.
+      * @throws SecurityException
+
+File: litepal/src/main/java/org/litepal/parser/LitePalContentHandler.java
+Patch:
+@@ -36,7 +36,7 @@ public class LitePalContentHandler extends DefaultHandler {
+ 	private LitePalAttr litePalAttr;
+ 
+ 	/**
+-	 * Characters in the <>characters</> tag. Decide to not use this method
++	 * Characters in the characters tag. Decide to not use this method
+ 	 * temporarily. Use value attribute instead.
+ 	 */
+ 	@Override
+
+File: litepal/src/main/java/org/litepal/LitePalBase.java
+Patch:
+@@ -604,7 +604,7 @@ else if (isCollection(reverseFieldTypeClass)) {
+                 }
+                 GenericModel genericModel = new GenericModel();
+                 genericModel.setTableName(DBUtility.getGenericTableName(className, field.getName()));
+-                genericModel.setValueColumnName(field.getName());
++                genericModel.setValueColumnName(DBUtility.convertFieldNameToColumnName(field.getName()));
+                 genericModel.setValueColumnType(getColumnType(genericTypeName));
+                 genericModel.setValueIdColumnName(DBUtility.getGenericValueIdColumnName(className));
+                 mGenericModels.add(genericModel);
+@@ -703,7 +703,7 @@ private ColumnModel convertFieldToColumnModel(Field field) {
+             defaultValue = annotation.defaultValue();
+         }
+         ColumnModel columnModel = new ColumnModel();
+-        columnModel.setColumnName(field.getName());
++        columnModel.setColumnName(DBUtility.convertFieldNameToColumnName(field.getName()));
+         columnModel.setColumnType(columnType);
+         columnModel.setIsNullable(nullable);
+         columnModel.setIsUnique(unique);
+
+File: litepal/src/main/java/org/litepal/crud/SaveHandler.java
+Patch:
+@@ -567,7 +567,7 @@ private void updateGenericTables(DataSupport baseObj, List<Field> supportedGener
+                 for (Object object : collection) {
+                     ContentValues values = new ContentValues();
+                     values.put(genericValueIdColumnName, id);
+-                    Object[] parameters = new Object[] { changeCase(field.getName()), object };
++                    Object[] parameters = new Object[] { changeCase(DBUtility.convertFieldNameToColumnName(field.getName())), object };
+                     Class<?>[] parameterTypes = new Class[] { String.class, getGenericTypeClass(field) };
+                     DynamicExecutor.send(values, "put", parameters, values.getClass(), parameterTypes);
+                     mDatabase.insert(tableName, null, values);
+
+File: litepal/src/main/java/org/litepal/crud/UpdateHandler.java
+Patch:
+@@ -320,7 +320,7 @@ private void updateGenericTables(DataSupport baseObj, List<Field> supportedGener
+                         for (Object object : collection) {
+                             ContentValues values = new ContentValues();
+                             values.put(genericValueIdColumnName, id);
+-                            Object[] parameters = new Object[] { changeCase(field.getName()), object };
++                            Object[] parameters = new Object[] { DBUtility.convertFieldNameToColumnName(changeCase(field.getName())), object };
+                             Class<?>[] parameterTypes = new Class[] { String.class, getGenericTypeClass(field) };
+                             DynamicExecutor.send(values, "put", parameters, values.getClass(), parameterTypes);
+                             mDatabase.insert(tableName, null, values);
+
+File: litepal/src/main/java/org/litepal/crud/UpdateHandler.java
+Patch:
+@@ -190,7 +190,7 @@ private void putFieldsToDefaultValue(DataSupport baseObj, ContentValues values)
+ 				if (!isIdColumn(name)) {
+ 					fieldName = name;
+ 					Field field = emptyModelClass.getDeclaredField(fieldName);
+-					putContentValues(emptyModel, field, null, values);
++					putContentValuesForUpdate(emptyModel, field, values);
+ 				}
+ 			}
+ 		} catch (NoSuchFieldException e) {
+
+File: litepal/src/main/java/org/litepal/util/BaseUtility.java
+Patch:
+@@ -184,6 +184,9 @@ public static boolean isFieldTypeSupported(String fieldType) {
+ 		if ("char".equals(fieldType) || "java.lang.Character".equals(fieldType)) {
+ 			return true;
+ 		}
++		if ("[B".equals(fieldType) || "[Ljava.lang.Byte;".equals(fieldType)) {
++			return true;
++		}
+ 		if ("java.lang.String".equals(fieldType) || "java.util.Date".equals(fieldType)) {
+ 			return true;
+ 		}
+
+File: litepal/src/main/java/org/litepal/crud/DataHandler.java
+Patch:
+@@ -916,6 +916,7 @@ private void putFieldsValueDependsOnSaveOrUpdate(DataSupport baseObj, Field fiel
+ 			}
+ 		} else if (isSaving()) {
+             Object value = takeGetMethodValueByField(baseObj, field);
++            // put content value only when value is not null. this allows to use defaultValue declared in annotation.
+             if (value != null) {
+                 putContentValues(baseObj, field, values);
+             }
+
+File: litepal/src/main/java/org/litepal/tablemanager/AssociationUpdater.java
+Patch:
+@@ -365,7 +365,7 @@ protected String generateDropTempTableSQL(String tableName) {
+ 	 *            The table name use to generate temporary table name.
+ 	 * @return Temporary table name
+ 	 */
+-	private String getTempTableName(String tableName) {
++	protected String getTempTableName(String tableName) {
+ 		return tableName + "_temp";
+ 	}
+ 
+
+File: litepal/src/main/java/org/litepal/annotation/Table.java
+Patch:
+@@ -32,5 +32,5 @@
+ @Retention(RetentionPolicy.RUNTIME)
+ @Target(ElementType.TYPE)
+ public @interface Table {
+-    String name() default "";
++    String name();
+ }
+
+File: litepal/src/main/java/org/litepal/util/SharedUtil.java
+Patch:
+@@ -38,8 +38,7 @@ public class SharedUtil {
+ 	/**
+ 	 * Each time database upgrade, the version of database stored in shared
+ 	 * preference will update.
+-	 * 
+-	 * @param context
++	 *
+ 	 * @param newVersion
+ 	 */
+ 	public static void updateVersion(int newVersion) {
+
+File: library/src/org/litepal/crud/DataSupport.java
+Patch:
+@@ -705,9 +705,6 @@ public static synchronized int delete(Class<?> modelClass, long id) {
+ 	 * This means that all the records which name is Tom and age is 14 will be
+ 	 * removed.<br>
+ 	 * 
+-	 * Note that this method won't delete the referenced data in other tables.
+-	 * You should remove those values by your own.
+-	 * 
+ 	 * @param modelClass
+ 	 *            Which table to delete from by class.
+ 	 * @param conditions
+
+File: library/src/org/litepal/crud/DeleteHandler.java
+Patch:
+@@ -27,7 +27,6 @@
+ import org.litepal.util.BaseUtility;
+ import org.litepal.util.Const;
+ import org.litepal.util.DBUtility;
+-import org.litepal.util.LogUtil;
+ 
+ import android.database.sqlite.SQLiteDatabase;
+ 
+@@ -209,7 +208,6 @@ private int deleteCascade(Class<?> modelClass, long id) {
+ 	}
+ 
+ 	private int deleteAllCascade(Class<?> modelClass, String... conditions) {
+-		LogUtil.d(TAG, "conditions is " + conditions + " length is " + conditions.length);
+ 		int rowsAffected = 0;
+ 		for (String associatedTableName : getForeignKeyTableToDelete()) {
+ 			String tableName = getTableName(modelClass);
+
+File: library/src/org/litepal/util/BaseUtility.java
+Patch:
+@@ -56,9 +56,9 @@ public static String changeCase(String string) {
+ 			if (Const.LitePal.CASES_KEEP.equals(cases)) {
+ 				return string;
+ 			} else if (Const.LitePal.CASES_UPPER.equals(cases)) {
+-				return string.toUpperCase(Locale.getDefault());
++				return string.toUpperCase(Locale.US);
+ 			}
+-			return string.toLowerCase(Locale.getDefault());
++			return string.toLowerCase(Locale.US);
+ 		}
+ 		return null;
+ 	}
+@@ -103,7 +103,7 @@ public static boolean containsIgnoreCases(Collection<String> collection, String
+ 	 */
+ 	public static String capitalize(String string) {
+ 		if (!TextUtils.isEmpty(string)) {
+-			return string.substring(0, 1).toUpperCase(Locale.getDefault()) + string.substring(1);
++			return string.substring(0, 1).toUpperCase(Locale.US) + string.substring(1);
+ 		}
+ 		return string == null ? null : "";
+ 	}
+
+File: library/src/org/litepal/crud/DataHandler.java
+Patch:
+@@ -1022,6 +1022,8 @@ private String genGetColumnMethod(Class<?> fieldType) {
+ 			methodName = "getString";
+ 		} else if ("getDate".equals(methodName)) {
+ 			methodName = "getLong";
++		} else if ("getInteger".equals(methodName)) {
++			methodName = "getInt";
+ 		}
+ 		return methodName;
+ 	}
+
+File: library/src/org/litepal/parser/LitePalContentHandler.java
+Patch:
+@@ -63,6 +63,7 @@ public void endElement(String uri, String localName, String qName) throws SAXExc
+ 	@Override
+ 	public void startDocument() throws SAXException {
+ 		litePalAttr = LitePalAttr.getInstance();
++		litePalAttr.getClassNames().clear();
+ 	}
+ 
+ 	/**
+
+File: library/src/org/litepal/util/BaseUtility.java
+Patch:
+@@ -130,7 +130,7 @@ public static int count(String string, String mark) {
+ 		}
+ 		return 0;
+ 	}
+-	
++
+ 	/**
+ 	 * Check the number of question mark existed in conditions[0] equals the
+ 	 * number of rest conditions elements or not. If not equals, throws
+@@ -184,7 +184,7 @@ public static boolean isFieldTypeSupported(String fieldType) {
+ 		if ("char".equals(fieldType) || "java.lang.Character".equals(fieldType)) {
+ 			return true;
+ 		}
+-		if ("java.lang.String".equals(fieldType)) {
++		if ("java.lang.String".equals(fieldType) || "java.util.Date".equals(fieldType)) {
+ 			return true;
+ 		}
+ 		return false;
+
+File: src/org/litepal/LitePalBase.java
+Patch:
+@@ -157,7 +157,8 @@ protected List<Field> getSupportedFields(String className) {
+ 		}
+ 		Field[] fields = dynamicClass.getDeclaredFields();
+ 		for (Field field : fields) {
+-			if (Modifier.isPrivate(field.getModifiers())) {
++			int modifiers = field.getModifiers();
++			if (Modifier.isPrivate(modifiers) && !Modifier.isStatic(modifiers)) {
+ 				Class<?> fieldTypeClass = field.getType();
+ 				String fieldType = fieldTypeClass.getName();
+ 				if (BaseUtility.isFieldTypeSupported(fieldType)) {
+
+File: src/org/litepal/crud/DataSupport.java
+Patch:
+@@ -67,9 +67,9 @@ public abstract class DataSupport {
+ 	 */
+ 	private List<String> fieldsToSetToDefault;
+ 
+-	public static synchronized void find(Class<?> modelClass, long id) {
++	public static synchronized <T> T find(Class<T> modelClass, long id) {
+ 		QueryHandler queryHandler = new QueryHandler(Connector.getDatabase());
+-		queryHandler.onFind(modelClass, id);
++		return queryHandler.onFind(modelClass, id);
+ 	}
+ 
+ 	/**
+

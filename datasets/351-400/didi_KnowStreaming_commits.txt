@@ -1,0 +1,1821 @@
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/version/metrics/kafka/ClusterMetricVersionItems.java
+Patch:
+@@ -299,7 +299,7 @@ public List<VersionMetricControlItem> init(){
+ 
+         // MessagesIn 指标
+         itemList.add( buildAllVersionsItem()
+-                .name(CLUSTER_METRIC_MESSAGES_IN).unit("条/s").desc("集群每条消息写入条数").category(CATEGORY_CLUSTER)
++                .name(CLUSTER_METRIC_MESSAGES_IN).unit("条/s").desc("集群每秒消息写入条数").category(CATEGORY_CLUSTER)
+                 .extend( buildJMXMethodExtend( CLUSTER_METHOD_GET_METRIC_FROM_KAFKA_BY_TOTAL_BROKERS_JMX )
+                         .jmxObjectName( JMX_SERVER_BROKER_MESSAGES_IN ).jmxAttribute(RATE_MIN_1)));
+ 
+
+File: km-biz/src/main/java/com/xiaojukeji/know/streaming/km/biz/cluster/ClusterBrokersManager.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import com.xiaojukeji.know.streaming.km.common.bean.dto.cluster.ClusterBrokersOverviewDTO;
+ import com.xiaojukeji.know.streaming.km.common.bean.entity.result.PaginationResult;
+-import com.xiaojukeji.know.streaming.km.common.bean.entity.result.Result;
+ import com.xiaojukeji.know.streaming.km.common.bean.vo.cluster.res.ClusterBrokersOverviewVO;
+ import com.xiaojukeji.know.streaming.km.common.bean.vo.cluster.res.ClusterBrokersStateVO;
+ 
+@@ -23,5 +22,5 @@ public interface ClusterBrokersManager {
+      * @param clusterPhyId 物理集群 id
+      * @return 返回根据物理集群id获取到的集群对应broker状态信息
+      */
+-    Result<ClusterBrokersStateVO> getClusterPhyBrokersState(Long clusterPhyId);
++    ClusterBrokersStateVO getClusterPhyBrokersState(Long clusterPhyId);
+ }
+
+File: km-rest/src/main/java/com/xiaojukeji/know/streaming/km/rest/api/v3/cluster/ClusterBrokersController.java
+Patch:
+@@ -52,7 +52,7 @@ public Result<List<BrokerMetadataVO>> getClusterPhyBrokersMetadata(@PathVariable
+     @GetMapping(value = "clusters/{clusterPhyId}/brokers-state")
+     @ResponseBody
+     public Result<ClusterBrokersStateVO> getClusterPhyBrokersState(@PathVariable Long clusterPhyId) {
+-        return clusterBrokersManager.getClusterPhyBrokersState(clusterPhyId);
++        return Result.buildSuc(clusterBrokersManager.getClusterPhyBrokersState(clusterPhyId));
+     }
+ 
+     @ApiOperation(value = "集群brokers信息列表")
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/connect/cluster/ConnectClusterService.java
+Patch:
+@@ -4,14 +4,16 @@
+ import com.xiaojukeji.know.streaming.km.common.bean.dto.connect.cluster.ConnectClusterDTO;
+ import com.xiaojukeji.know.streaming.km.common.bean.entity.connect.ConnectCluster;
+ import com.xiaojukeji.know.streaming.km.common.bean.entity.connect.ConnectClusterMetadata;
++import com.xiaojukeji.know.streaming.km.common.bean.entity.kafka.KSGroupDescription;
+ import com.xiaojukeji.know.streaming.km.common.bean.entity.result.Result;
++import com.xiaojukeji.know.streaming.km.core.service.meta.MetaDataService;
+ 
+ import java.util.List;
+ 
+ /**
+  * Connect-Cluster
+  */
+-public interface ConnectClusterService {
++public interface ConnectClusterService extends MetaDataService<KSGroupDescription> {
+     Long replaceAndReturnIdInDB(ConnectClusterMetadata metadata);
+ 
+     List<ConnectCluster> listByKafkaCluster(Long kafkaClusterPhyId);
+
+File: km-extends/km-account/src/main/java/com/xiaojukeji/know/streaming/km/account/login/ldap/LdapLoginServiceImpl.java
+Patch:
+@@ -79,7 +79,7 @@ public UserBriefVO verifyLogin(AccountLoginDTO loginDTO,
+             userService.addUser(userDTO, ldapAttrsInfo.getSAMAccountName());
+ 
+             // user赋值
+-            user = ConvertUtil.obj2Obj(userDTO, User.class);
++            user = userService.getUserByUserName(ldapAttrsInfo.getSAMAccountName());
+         }
+ 
+         // 记录登录状态
+
+File: km-task/src/main/java/com/xiaojukeji/know/streaming/km/task/kafka/metadata/SyncConnectClusterAndWorkerTask.java
+Patch:
+@@ -18,6 +18,7 @@
+ import com.xiaojukeji.know.streaming.km.common.constant.Constant;
+ import com.xiaojukeji.know.streaming.km.common.enums.group.GroupStateEnum;
+ import com.xiaojukeji.know.streaming.km.common.enums.group.GroupTypeEnum;
++import com.xiaojukeji.know.streaming.km.common.enums.jmx.JmxEnum;
+ import com.xiaojukeji.know.streaming.km.core.service.connect.cluster.ConnectClusterService;
+ import com.xiaojukeji.know.streaming.km.core.service.connect.worker.WorkerConnectorService;
+ import com.xiaojukeji.know.streaming.km.core.service.connect.worker.WorkerService;
+@@ -104,7 +105,7 @@ private Result<Void> handleWorkerMetadata(Long connectClusterId, KSGroupDescript
+                             connectClusterId,
+                             memberDescription.consumerId(),
+                             memberDescription.host().substring(1),
+-                            Constant.INVALID_CODE,
++                            JmxEnum.UNKNOWN.getPort(),
+                             assignment.getWorkerState().url(),
+                             assignment.getAssignment().leaderUrl(),
+                             memberDescription.consumerId().equals(assignment.getAssignment().leader()) ? Constant.YES : Constant.NO
+@@ -115,7 +116,7 @@ private Result<Void> handleWorkerMetadata(Long connectClusterId, KSGroupDescript
+                             connectClusterId,
+                             memberDescription.consumerId(),
+                             memberDescription.host().substring(1),
+-                            Constant.INVALID_CODE,
++                            JmxEnum.UNKNOWN.getPort(),
+                             "",
+                             "",
+                             Constant.NO
+
+File: km-biz/src/main/java/com/xiaojukeji/know/streaming/km/biz/cluster/impl/ClusterZookeepersManagerImpl.java
+Patch:
+@@ -62,7 +62,8 @@ public Result<ClusterZookeepersStateVO> getClusterPhyZookeepersState(Long cluste
+         vo.setTotalObserverCount(0);
+         vo.setAliveServerCount(0);
+         for (ZookeeperInfo info: infoList) {
+-            if (info.getRole().equals(ZKRoleEnum.LEADER.getRole())) {
++            if (info.getRole().equals(ZKRoleEnum.LEADER.getRole()) || info.getRole().equals(ZKRoleEnum.STANDALONE.getRole())) {
++                // leader 或者 standalone
+                 vo.setLeaderNode(info.getHost());
+             }
+ 
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/enums/zookeeper/ZKRoleEnum.java
+Patch:
+@@ -10,6 +10,8 @@ public enum ZKRoleEnum {
+ 
+     OBSERVER("observer"),
+ 
++    STANDALONE("standalone"),
++
+     UNKNOWN("unknown"),
+ 
+     ;
+
+File: km-extends/km-monitor/src/main/java/com/xiaojukeji/know/streaming/km/monitor/component/AbstractMonitorSinkService.java
+Patch:
+@@ -123,6 +123,7 @@ private List<MetricSinkPoint> partitionMetric2SinkPoint(List<PartitionMetrics> p
+             tagsMap.put(CLUSTER_ID.getName(),     p.getClusterPhyId());
+             tagsMap.put(BROKER_ID.getName(),      p.getBrokerId());
+             tagsMap.put(PARTITION_ID.getName(),   p.getPartitionId());
++            tagsMap.put(TOPIC.getName(),          p.getTopic());
+ 
+             pointList.addAll(genSinkPoint("Partition", p.getMetrics(), p.getTimestamp(), tagsMap));
+         }
+
+File: km-persistence/src/main/java/com/xiaojukeji/know/streaming/km/persistence/kafka/zookeeper/service/impl/KafkaZKDAOImpl.java
+Patch:
+@@ -7,6 +7,7 @@
+ import com.xiaojukeji.know.streaming.km.common.bean.entity.kafkacontroller.KafkaController;
+ import com.xiaojukeji.know.streaming.km.common.bean.entity.result.ResultStatus;
+ import com.xiaojukeji.know.streaming.km.common.bean.entity.topic.Topic;
++import com.xiaojukeji.know.streaming.km.common.constant.Constant;
+ import com.xiaojukeji.know.streaming.km.common.enums.topic.TopicTypeEnum;
+ import com.xiaojukeji.know.streaming.km.common.exception.AdminOperateException;
+ import com.xiaojukeji.know.streaming.km.common.exception.NotExistException;
+@@ -78,7 +79,7 @@ public Broker getBrokerMetadata(Long clusterPhyId, Integer brokerId) throws NotE
+ 
+         try {
+             BrokerMetadata metadata = this.getData(kafkaZkClient.currentZooKeeper(), BrokerIdZNode.path(brokerId), false, BrokerMetadata.class);
+-            BrokerMetadata.parseAndUpdateBrokerMetadata(metadata);
++
+             return this.convert2Broker(clusterPhyId, brokerId, metadata);
+         } catch (KeeperException ke) {
+             logger.error("method=getBrokerMetadata||clusterPhyId={}||brokerId={}||errMsg=exception", clusterPhyId, brokerId, ke);
+@@ -279,7 +280,7 @@ private Broker convert2Broker(Long clusterPhyId, Integer brokerId, BrokerMetadat
+         metadata.setJmxPort(brokerMetadata.getJmxPort());
+         metadata.setStartTimestamp(brokerMetadata.getTimestamp());
+         metadata.setRack(brokerMetadata.getRack());
+-        metadata.setStatus(1);
++        metadata.setStatus(Constant.ALIVE);
+         metadata.setEndpointMap(brokerMetadata.getEndpointMap());
+         return metadata;
+     }
+
+File: km-biz/src/main/java/com/xiaojukeji/know/streaming/km/biz/group/impl/GroupManagerImpl.java
+Patch:
+@@ -168,9 +168,10 @@ public PaginationResult<GroupTopicConsumedDetailVO> pagingGroupTopicConsumedMetr
+         // 转换存储格式
+         Map<TopicPartition, KSMemberDescription> tpMemberMap = new HashMap<>();
+ 
+-        //如果不是connect集群
++        // 如果不是connect集群
+         if (!groupDescription.protocolType().equals(CONNECT_CLUSTER_PROTOCOL_TYPE)) {
+             for (KSMemberDescription description : groupDescription.members()) {
++                // 如果是 Consumer 的 Description ，则 Assignment 的类型为 KSMemberConsumerAssignment 的
+                 KSMemberConsumerAssignment assignment = (KSMemberConsumerAssignment) description.assignment();
+                 for (TopicPartition tp : assignment.topicPartitions()) {
+                     tpMemberMap.put(tp, description);
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/utils/kafka/KSPartialKafkaAdminClient.java
+Patch:
+@@ -1338,6 +1338,8 @@ void handleResponse(AbstractResponse abstractResponse) {
+                         if (groupMember.memberAssignment().length > 0) {
+                             final Assignment assignment = ConsumerProtocol.deserializeAssignment(ByteBuffer.wrap(groupMember.memberAssignment()));
+                             memberBaseAssignment = new KSMemberConsumerAssignment(new HashSet<>(assignment.partitions()));
++                        } else {
++                            memberBaseAssignment = new KSMemberConsumerAssignment(new HashSet<>());
+                         }
+                     } else {
+                         ConnectProtocol.Assignment assignment = null;
+
+File: km-biz/src/main/java/com/xiaojukeji/know/streaming/km/biz/cluster/impl/ClusterConnectorsManagerImpl.java
+Patch:
+@@ -136,13 +136,13 @@ private ConnectStateVO convert2ConnectStateVO(List<ConnectCluster> connectCluste
+ 
+     private PaginationResult<ClusterConnectorOverviewVO> pagingConnectorInLocal(List<ClusterConnectorOverviewVO> connectorVOList, ClusterConnectorsOverviewDTO dto) {
+         //模糊匹配
+-        connectorVOList = PaginationUtil.pageByFuzzyFilter(connectorVOList, dto.getSearchKeywords(), Arrays.asList("connectClusterName"));
++        connectorVOList = PaginationUtil.pageByFuzzyFilter(connectorVOList, dto.getSearchKeywords(), Arrays.asList("connectorName"));
+ 
+         //排序
+         if (!dto.getLatestMetricNames().isEmpty()) {
+-            PaginationMetricsUtil.sortMetrics(connectorVOList, "latestMetrics", dto.getSortMetricNameList(), "connectClusterName", dto.getSortType());
++            PaginationMetricsUtil.sortMetrics(connectorVOList, "latestMetrics", dto.getSortMetricNameList(), "connectorName", dto.getSortType());
+         } else {
+-            PaginationUtil.pageBySort(connectorVOList, dto.getSortField(), dto.getSortType(), "connectClusterName", dto.getSortType());
++            PaginationUtil.pageBySort(connectorVOList, dto.getSortField(), dto.getSortType(), "connectorName", dto.getSortType());
+         }
+ 
+         //分页
+
+File: km-biz/src/main/java/com/xiaojukeji/know/streaming/km/biz/connect/mm2/impl/MirrorMakerManagerImpl.java
+Patch:
+@@ -561,13 +561,13 @@ private List<ClusterMirrorMakerOverviewVO> convert2ClusterMirrorMakerOverviewVO(
+     }
+ 
+     PaginationResult<ClusterMirrorMakerOverviewVO> pagingMirrorMakerInLocal(List<ClusterMirrorMakerOverviewVO> mirrorMakerOverviewVOList, ClusterMirrorMakersOverviewDTO dto) {
+-        List<ClusterMirrorMakerOverviewVO> mirrorMakerVOList = PaginationUtil.pageByFuzzyFilter(mirrorMakerOverviewVOList, dto.getSearchKeywords(), Arrays.asList("connectClusterName"));
++        List<ClusterMirrorMakerOverviewVO> mirrorMakerVOList = PaginationUtil.pageByFuzzyFilter(mirrorMakerOverviewVOList, dto.getSearchKeywords(), Arrays.asList("connectorName"));
+ 
+         //排序
+         if (!dto.getLatestMetricNames().isEmpty()) {
+-            PaginationMetricsUtil.sortMetrics(mirrorMakerVOList, "latestMetrics", dto.getSortMetricNameList(), "connectClusterName", dto.getSortType());
++            PaginationMetricsUtil.sortMetrics(mirrorMakerVOList, "latestMetrics", dto.getSortMetricNameList(), "connectorName", dto.getSortType());
+         } else {
+-            PaginationUtil.pageBySort(mirrorMakerVOList, dto.getSortField(), dto.getSortType(), "connectClusterName", dto.getSortType());
++            PaginationUtil.pageBySort(mirrorMakerVOList, dto.getSortField(), dto.getSortType(), "connectorName", dto.getSortType());
+         }
+ 
+         //分页
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/kafkacontroller/KafkaControllerService.java
+Patch:
+@@ -12,7 +12,7 @@
+ public interface KafkaControllerService {
+     Result<KafkaController> getControllerFromKafka(ClusterPhy clusterPhy);
+ 
+-    int insertAndIgnoreDuplicateException(KafkaController kafkaController);
++    int insertAndIgnoreDuplicateException(KafkaController kafkaController, String controllerHost, String controllerRack);
+ 
+     int setNoKafkaController(Long clusterPhyId, Long triggerTime);
+ 
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/bean/entity/zookeeper/fourletterword/MonitorCmdData.java
+Patch:
+@@ -23,8 +23,8 @@
+ public class MonitorCmdData extends BaseFourLetterWordCmdData {
+     private String zkVersion;
+     private Float zkAvgLatency;
+-    private Long zkMaxLatency;
+-    private Long zkMinLatency;
++    private Float zkMaxLatency;
++    private Float zkMinLatency;
+     private Long zkPacketsReceived;
+     private Long zkPacketsSent;
+     private Long zkNumAliveConnections;
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/bean/entity/zookeeper/fourletterword/ServerCmdData.java
+Patch:
+@@ -18,8 +18,8 @@
+ public class ServerCmdData extends BaseFourLetterWordCmdData {
+     private String zkVersion;
+     private Float zkAvgLatency;
+-    private Long zkMaxLatency;
+-    private Long zkMinLatency;
++    private Float zkMaxLatency;
++    private Float zkMinLatency;
+     private Long zkPacketsReceived;
+     private Long zkPacketsSent;
+     private Long zkNumAliveConnections;
+
+File: km-biz/src/main/java/com/xiaojukeji/know/streaming/km/biz/cluster/impl/ClusterBrokersManagerImpl.java
+Patch:
+@@ -140,7 +140,8 @@ public ClusterBrokersStateVO getClusterPhyBrokersState(Long clusterPhyId) {
+             clusterBrokersStateVO.setKafkaControllerAlive(true);
+         }
+ 
+-        clusterBrokersStateVO.setConfigSimilar(brokerConfigService.countBrokerConfigDiffsFromDB(clusterPhyId, Arrays.asList("broker.id", "listeners", "name", "value")) <= 0);
++        clusterBrokersStateVO.setConfigSimilar(brokerConfigService.countBrokerConfigDiffsFromDB(clusterPhyId, KafkaConstant.CONFIG_SIMILAR_IGNORED_CONFIG_KEY_LIST) <= 0
++        );
+ 
+         return clusterBrokersStateVO;
+     }
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/constant/KafkaConstant.java
+Patch:
+@@ -45,6 +45,8 @@ public class KafkaConstant {
+ 
+     public static final String DEFAULT_CONNECT_VERSION = "2.5.0";
+ 
++    public static final List<String> CONFIG_SIMILAR_IGNORED_CONFIG_KEY_LIST = Arrays.asList("broker.id", "listeners", "name", "value", "advertised.listeners", "node.id");
++
+     public static final Map<String, ConfigDef.ConfigKey> KAFKA_ALL_CONFIG_DEF_MAP = new ConcurrentHashMap<>();
+ 
+     static {
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/flusher/DatabaseDataFlusher.java
+Patch:
+@@ -10,7 +10,7 @@
+ import com.xiaojukeji.know.streaming.km.common.bean.entity.topic.Topic;
+ import com.xiaojukeji.know.streaming.km.common.bean.po.health.HealthCheckResultPO;
+ import com.xiaojukeji.know.streaming.km.common.utils.FutureUtil;
+-import com.xiaojukeji.know.streaming.km.core.cache.DataBaseDataLocalCache;
++import com.xiaojukeji.know.streaming.km.persistence.cache.DataBaseDataLocalCache;
+ import com.xiaojukeji.know.streaming.km.core.service.cluster.ClusterMetricService;
+ import com.xiaojukeji.know.streaming.km.core.service.cluster.ClusterPhyService;
+ import com.xiaojukeji.know.streaming.km.core.service.health.checkresult.HealthCheckResultService;
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/cluster/impl/ClusterMetricServiceImpl.java
+Patch:
+@@ -33,7 +33,7 @@
+ import com.xiaojukeji.know.streaming.km.common.exception.VCHandlerNotExistException;
+ import com.xiaojukeji.know.streaming.km.common.jmx.JmxConnectorWrap;
+ import com.xiaojukeji.know.streaming.km.common.utils.*;
+-import com.xiaojukeji.know.streaming.km.core.cache.DataBaseDataLocalCache;
++import com.xiaojukeji.know.streaming.km.persistence.cache.DataBaseDataLocalCache;
+ import com.xiaojukeji.know.streaming.km.core.service.acl.KafkaAclService;
+ import com.xiaojukeji.know.streaming.km.core.service.broker.BrokerMetricService;
+ import com.xiaojukeji.know.streaming.km.core.service.broker.BrokerService;
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/health/checkresult/impl/HealthCheckResultServiceImpl.java
+Patch:
+@@ -13,7 +13,7 @@
+ import com.xiaojukeji.know.streaming.km.common.enums.health.HealthCheckDimensionEnum;
+ import com.xiaojukeji.know.streaming.km.common.enums.health.HealthCheckNameEnum;
+ import com.xiaojukeji.know.streaming.km.common.utils.ConvertUtil;
+-import com.xiaojukeji.know.streaming.km.core.cache.DataBaseDataLocalCache;
++import com.xiaojukeji.know.streaming.km.persistence.cache.DataBaseDataLocalCache;
+ import com.xiaojukeji.know.streaming.km.common.utils.ValidateUtils;
+ import com.xiaojukeji.know.streaming.km.core.service.config.PlatformClusterConfigService;
+ import com.xiaojukeji.know.streaming.km.core.service.health.checkresult.HealthCheckResultService;
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/partition/impl/PartitionServiceImpl.java
+Patch:
+@@ -22,7 +22,7 @@
+ import com.xiaojukeji.know.streaming.km.common.utils.Triple;
+ import com.xiaojukeji.know.streaming.km.common.utils.Tuple;
+ import com.xiaojukeji.know.streaming.km.common.utils.ValidateUtils;
+-import com.xiaojukeji.know.streaming.km.core.cache.DataBaseDataLocalCache;
++import com.xiaojukeji.know.streaming.km.persistence.cache.DataBaseDataLocalCache;
+ import com.xiaojukeji.know.streaming.km.persistence.kafka.zookeeper.znode.brokers.PartitionMap;
+ import com.xiaojukeji.know.streaming.km.persistence.kafka.zookeeper.znode.brokers.PartitionState;
+ import com.xiaojukeji.know.streaming.km.core.service.partition.PartitionService;
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/topic/impl/TopicMetricServiceImpl.java
+Patch:
+@@ -28,7 +28,7 @@
+ import com.xiaojukeji.know.streaming.km.common.utils.ConvertUtil;
+ import com.xiaojukeji.know.streaming.km.common.utils.ValidateUtils;
+ import com.xiaojukeji.know.streaming.km.core.cache.CollectedMetricsLocalCache;
+-import com.xiaojukeji.know.streaming.km.core.cache.DataBaseDataLocalCache;
++import com.xiaojukeji.know.streaming.km.persistence.cache.DataBaseDataLocalCache;
+ import com.xiaojukeji.know.streaming.km.core.service.broker.BrokerService;
+ import com.xiaojukeji.know.streaming.km.core.service.health.state.HealthStateService;
+ import com.xiaojukeji.know.streaming.km.core.service.partition.PartitionMetricService;
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/broker/impl/BrokerMetricServiceImpl.java
+Patch:
+@@ -373,8 +373,8 @@ private Result<BrokerMetrics> getLogSizeFromJmx(VersionItemParam metricParam) {
+                 Result<ReplicationMetrics> metricsResult = replicaMetricService.collectReplicaMetricsFromKafka(
+                         clusterId,
+                         p.getTopicName(),
+-                        brokerId,
+                         p.getPartitionId(),
++                        brokerId,
+                         ReplicaMetricVersionItems.REPLICATION_METRIC_LOG_SIZE
+                 );
+ 
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/connect/connector/impl/ConnectorMetricServiceImpl.java
+Patch:
+@@ -55,7 +55,7 @@
+ public class ConnectorMetricServiceImpl extends BaseConnectorMetricService implements ConnectorMetricService {
+     protected static final ILog LOGGER = LogFactory.getLog(ConnectorMetricServiceImpl.class);
+ 
+-    public static final String CONNECTOR_METHOD_DO_NOTHING                               = "getConnectWorkerMetricSum";
++    public static final String CONNECTOR_METHOD_DO_NOTHING                               = "doNothing";
+ 
+     public static final String CONNECTOR_METHOD_GET_CONNECT_WORKER_METRIC_SUM            = "getConnectWorkerMetricSum";
+ 
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/connect/connector/impl/ConnectorMetricServiceImpl.java
+Patch:
+@@ -312,8 +312,8 @@ private Result<ConnectorMetrics> getConnectorTaskMetricsMax(VersionItemParam met
+             return Result.buildFailure(NOT_EXIST);
+         }
+ 
+-        Float sum = ret.getData().stream().max((a, b) -> a.getMetric(metric).compareTo(b.getMetric(metric))).get().getMetric(metric);
+-        ConnectorMetrics connectorMetrics = ConnectorMetrics.initWithMetric(connectClusterId, connectorName, metric, sum / ret.getData().size());
++        Float max = ret.getData().stream().max((a, b) -> a.getMetric(metric).compareTo(b.getMetric(metric))).get().getMetric(metric);
++        ConnectorMetrics connectorMetrics = ConnectorMetrics.initWithMetric(connectClusterId, connectorName, metric, max);
+         return Result.buildSuc(connectorMetrics);
+     }
+ 
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/reassign/impl/ReassignJobServiceImpl.java
+Patch:
+@@ -508,8 +508,9 @@ public Result<Void> preferredReplicaElection(Long jobId) {
+             }
+         });
+ 
+-        if (!topicPartitions.isEmpty()){
+-            return opPartitionService.preferredReplicaElection(jobPO.getClusterPhyId(), topicPartitions);
++        //无论优先副本选举是否成功，都返回成功，以保证job的数据更新
++        if (!topicPartitions.isEmpty()) {
++            opPartitionService.preferredReplicaElection(jobPO.getClusterPhyId(), topicPartitions);
+         }
+ 
+         return Result.buildSuc();
+
+File: km-collector/src/main/java/com/xiaojukeji/know/streaming/km/collector/metric/kafka/ReplicaMetricCollector.java
+Patch:
+@@ -43,7 +43,7 @@ public class ReplicaMetricCollector extends AbstractMetricCollector<ReplicationM
+     public List<ReplicationMetrics> collectKafkaMetrics(ClusterPhy clusterPhy) {
+         Long        clusterPhyId        =   clusterPhy.getId();
+         List<VersionControlItem> items  =   versionControlService.listVersionControlItem(clusterPhyId, collectorType().getCode());
+-        List<Partition> partitions      =   partitionService.listPartitionFromCacheFirst(clusterPhyId);
++        List<Partition> partitions      =   partitionService.listPartitionByCluster(clusterPhyId);
+ 
+         FutureWaitUtil<Void> future = this.getFutureUtilByClusterPhyId(clusterPhyId);
+ 
+
+File: km-persistence/src/main/java/com/xiaojukeji/know/streaming/km/persistence/kafka/KafkaJMXClient.java
+Patch:
+@@ -25,7 +25,7 @@
+ 
+ @Component
+ public class KafkaJMXClient extends AbstractClusterLoadedChangedHandler {
+-    private static final ILog log = LogFactory.getLog(KafkaAdminZKClient.class);
++    private static final ILog log = LogFactory.getLog(KafkaJMXClient.class);
+ 
+     @Autowired
+     private BrokerDAO brokerDAO;
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/broker/impl/BrokerConfigServiceImpl.java
+Patch:
+@@ -70,8 +70,8 @@ private void init() {
+         registerVCHandler(GET_BROKER_CONFIG,     V_0_10_1_0, V_0_11_0_0, "getBrokerConfigByZKClient",       this::getBrokerConfigByZKClient);
+         registerVCHandler(GET_BROKER_CONFIG,     V_0_11_0_0, V_MAX,      "getBrokerConfigByKafkaClient",    this::getBrokerConfigByKafkaClient);
+ 
+-        registerVCHandler(MODIFY_BROKER_CONFIG,     V_0_10_1_0, V_0_11_0_0, "modifyBrokerConfigByZKClient",       this::modifyBrokerConfigByZKClient);
+-        registerVCHandler(MODIFY_BROKER_CONFIG,     V_0_11_0_0, V_MAX,      "modifyBrokerConfigByKafkaClient",    this::modifyBrokerConfigByKafkaClient);
++        registerVCHandler(MODIFY_BROKER_CONFIG,     V_0_10_1_0, V_2_3_0, "modifyBrokerConfigByZKClient",       this::modifyBrokerConfigByZKClient);
++        registerVCHandler(MODIFY_BROKER_CONFIG,     V_2_3_0, V_MAX,      "modifyBrokerConfigByKafkaClient",    this::modifyBrokerConfigByKafkaClient);
+     }
+ 
+     @Override
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/topic/impl/TopicConfigServiceImpl.java
+Patch:
+@@ -98,9 +98,9 @@ private void init() {
+         registerVCHandler(GET_TOPIC_CONFIG,     V_0_10_0_0, V_0_11_0_0, "getTopicConfigByZKClient",            this::getTopicConfigByZKClient);
+         registerVCHandler(GET_TOPIC_CONFIG,     V_0_11_0_0, V_MAX,      "getTopicConfigByKafkaClient",         this::getTopicConfigByKafkaClient);
+ 
+-        registerVCHandler(MODIFY_TOPIC_CONFIG,     V_0_10_0_0, V_0_10_2_0, "modifyTopicConfigByZKClientAndNodeVersionV1",       this::modifyTopicConfigByZKClientAndNodeVersionV1);
+-        registerVCHandler(MODIFY_TOPIC_CONFIG,     V_0_10_2_0, V_0_11_0_3, "modifyTopicConfigByZKClientAndNodeVersionV2",       this::modifyTopicConfigByZKClientAndNodeVersionV2);
+-        registerVCHandler(MODIFY_TOPIC_CONFIG,     V_0_11_0_3, V_MAX,      "modifyTopicConfigByKafkaClient",                    this::modifyTopicConfigByKafkaClient);
++        registerVCHandler(MODIFY_TOPIC_CONFIG,     V_0_10_0_0, V_0_10_2_0,  "modifyTopicConfigByZKClientAndNodeVersionV1",       this::modifyTopicConfigByZKClientAndNodeVersionV1);
++        registerVCHandler(MODIFY_TOPIC_CONFIG,     V_0_10_2_0, V_2_3_0,     "modifyTopicConfigByZKClientAndNodeVersionV2",       this::modifyTopicConfigByZKClientAndNodeVersionV2);
++        registerVCHandler(MODIFY_TOPIC_CONFIG,     V_2_3_0, V_MAX,          "modifyTopicConfigByKafkaClient",                    this::modifyTopicConfigByKafkaClient);
+     }
+ 
+     @Override
+
+File: km-persistence/src/main/java/com/xiaojukeji/know/streaming/km/persistence/es/dao/ReplicationMetricESDAO.java
+Patch:
+@@ -61,7 +61,7 @@ public ReplicationMetricPO getReplicationLatestMetrics(Long clusterPhyId, Intege
+         String aggDsl   = buildAggsDSL(metrics, aggType);
+ 
+         String dsl = dslLoaderUtil.getFormatDslByFileName(
+-                DslsConstant.GET_REPLICATION_AGG_SINGLE_METRICS, clusterPhyId, topic, brokerId, partitionId, startTime, endTime, aggDsl);
++                DslsConstant.GET_REPLICATION_AGG_SINGLE_METRICS, clusterPhyId, brokerId,topic, partitionId, startTime, endTime, aggDsl);
+ 
+         return esOpClient.performRequestWithRouting(String.valueOf(brokerId), realIndex, dsl,
+                 s -> handleSingleESQueryResponse(s, metrics, aggType), 3);
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/partition/PartitionService.java
+Patch:
+@@ -14,6 +14,8 @@
+ public interface PartitionService {
+     Result<Map<String, List<Partition>>> listPartitionsFromKafka(ClusterPhy clusterPhy);
+ 
++    Result<List<Partition>> listPartitionsFromKafka(ClusterPhy clusterPhy, String topicName);
++
+     List<Partition> listPartitionByCluster(Long clusterPhyId);
+     List<PartitionPO> listPartitionPOByCluster(Long clusterPhyId);
+ 
+
+File: km-persistence/src/main/java/com/xiaojukeji/know/streaming/km/persistence/es/dao/TopicMetricESDAO.java
+Patch:
+@@ -337,12 +337,13 @@ private Map<String, List<MetricPointVO>> handleListESQueryResponse(ESQueryRespon
+                 try {
+                     if (null != esBucket.getUnusedMap().get(KEY)) {
+                         Long    timestamp = Long.valueOf(esBucket.getUnusedMap().get(KEY).toString());
+-                        String  value     = esBucket.getAggrMap().get(metric).getUnusedMap().get(VALUE).toString();
++                        Object  value  = esBucket.getAggrMap().get(metric).getUnusedMap().get(VALUE);
++                        if(value       == null){return;}
+ 
+                         MetricPointVO metricPoint = new MetricPointVO();
+                         metricPoint.setAggType(aggType);
+                         metricPoint.setTimeStamp(timestamp);
+-                        metricPoint.setValue(value);
++                        metricPoint.setValue(value.toString());
+                         metricPoint.setName(metric);
+ 
+                         metricPoints.add(metricPoint);
+
+File: km-biz/src/main/java/com/xiaojukeji/know/streaming/km/biz/group/impl/GroupManagerImpl.java
+Patch:
+@@ -172,7 +172,7 @@ public Result<Void> resetGroupOffsets(GroupOffsetResetDTO dto, String operator)
+         }
+ 
+         if (!ConsumerGroupState.EMPTY.equals(description.state()) && !ConsumerGroupState.DEAD.equals(description.state())) {
+-            return Result.buildFromRSAndMsg(ResultStatus.KAFKA_OPERATE_FAILED, String.format("group处于%s, 重置失败(仅Empty情况可重置)", GroupStateEnum.getByRawState(description.state()).getState()));
++            return Result.buildFromRSAndMsg(ResultStatus.KAFKA_OPERATE_FAILED, String.format("group处于%s, 重置失败(仅Empty | Dead 情况可重置)", GroupStateEnum.getByRawState(description.state()).getState()));
+         }
+ 
+         // 获取offset
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/group/impl/GroupServiceImpl.java
+Patch:
+@@ -104,7 +104,7 @@ public ConsumerGroupDescription getGroupDescription(Long clusterPhyId, String gr
+ 
+         try {
+             DescribeConsumerGroupsResult describeConsumerGroupsResult = adminClient.describeConsumerGroups(
+-                    Arrays.asList(groupName),
++                    Collections.singletonList(groupName),
+                     new DescribeConsumerGroupsOptions().timeoutMs(KafkaConstant.ADMIN_CLIENT_REQUEST_TIME_OUT_UNIT_MS).includeAuthorizedOperations(false)
+             );
+ 
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/constant/Constant.java
+Patch:
+@@ -43,6 +43,7 @@ private Constant() {}
+      */
+     public static final Integer DEFAULT_CLUSTER_HEALTH_SCORE = 90;
+ 
++    public static final Integer PER_BATCH_MAX_VALUE = 100;
+ 
+     public static final String DEFAULT_USER_NAME = "know-streaming-app";
+ 
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/health/checkresult/HealthCheckResultService.java
+Patch:
+@@ -20,4 +20,6 @@ public interface HealthCheckResultService {
+     List<HealthCheckResultPO> getResHealthCheckResult(Long clusterPhyId, Integer dimension, String resNme);
+ 
+     Map<String, BaseClusterHealthConfig> getClusterHealthConfig(Long clusterPhyId);
++
++    void batchReplace(Long clusterPhyId, List<HealthCheckResult> healthCheckResults);
+ }
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/bean/entity/zookeeper/fourletterword/MonitorCmdData.java
+Patch:
+@@ -22,7 +22,7 @@
+ @Data
+ public class MonitorCmdData extends BaseFourLetterWordCmdData {
+     private String zkVersion;
+-    private Long zkAvgLatency;
++    private Float zkAvgLatency;
+     private Long zkMaxLatency;
+     private Long zkMinLatency;
+     private Long zkPacketsReceived;
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/bean/entity/zookeeper/fourletterword/ServerCmdData.java
+Patch:
+@@ -17,7 +17,7 @@
+ @Data
+ public class ServerCmdData extends BaseFourLetterWordCmdData {
+     private String zkVersion;
+-    private Long zkAvgLatency;
++    private Float zkAvgLatency;
+     private Long zkMaxLatency;
+     private Long zkMinLatency;
+     private Long zkPacketsReceived;
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/bean/entity/zookeeper/fourletterword/parser/MonitorCmdDataParser.java
+Patch:
+@@ -57,7 +57,7 @@ public MonitorCmdData parseAndInitData(Long clusterPhyId, String host, int port,
+                         monitorCmdData.setZkVersion(elem.getValue().split("-")[0]);
+                         break;
+                     case "zk_avg_latency":
+-                        monitorCmdData.setZkAvgLatency(Long.valueOf(elem.getValue()));
++                        monitorCmdData.setZkAvgLatency(Float.valueOf(elem.getValue()));
+                         break;
+                     case "zk_max_latency":
+                         monitorCmdData.setZkMaxLatency(Long.valueOf(elem.getValue()));
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/bean/entity/zookeeper/fourletterword/parser/ServerCmdDataParser.java
+Patch:
+@@ -54,7 +54,7 @@ public ServerCmdData parseAndInitData(Long clusterPhyId, String host, int port,
+                     case "Latency min/avg/max":
+                         String[] data = elem.getValue().split("/");
+                         serverCmdData.setZkMinLatency(Long.valueOf(data[0]));
+-                        serverCmdData.setZkAvgLatency(Long.valueOf(data[1]));
++                        serverCmdData.setZkAvgLatency(Float.valueOf(data[1]));
+                         serverCmdData.setZkMaxLatency(Long.valueOf(data[2]));
+                         break;
+                     case "Received":
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/constant/Constant.java
+Patch:
+@@ -43,6 +43,7 @@ private Constant() {}
+      */
+     public static final Integer DEFAULT_CLUSTER_HEALTH_SCORE = 90;
+ 
++    public static final Integer PER_BATCH_MAX_VALUE = 100;
+ 
+     public static final String DEFAULT_USER_NAME = "know-streaming-app";
+ 
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/health/checkresult/HealthCheckResultService.java
+Patch:
+@@ -20,4 +20,6 @@ public interface HealthCheckResultService {
+     List<HealthCheckResultPO> getResHealthCheckResult(Long clusterPhyId, Integer dimension, String resNme);
+ 
+     Map<String, BaseClusterHealthConfig> getClusterHealthConfig(Long clusterPhyId);
++
++    void batchReplace(Long clusterPhyId, List<HealthCheckResult> healthCheckResults);
+ }
+
+File: km-common/src/main/java/com/xiaojukeji/know/streaming/km/common/bean/dto/group/GroupOffsetResetDTO.java
+Patch:
+@@ -3,6 +3,7 @@
+ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+ import com.xiaojukeji.know.streaming.km.common.bean.dto.partition.PartitionOffsetDTO;
+ import com.xiaojukeji.know.streaming.km.common.bean.dto.topic.ClusterTopicDTO;
++import com.xiaojukeji.know.streaming.km.common.enums.OffsetTypeEnum;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -23,7 +24,7 @@ public class GroupOffsetResetDTO extends ClusterTopicDTO {
+     private String groupName;
+ 
+     /**
+-     * @see com.xiaojukeji.know.streaming.km.common.enums.GroupOffsetResetEnum
++     * @see OffsetTypeEnum
+      */
+     @NotNull(message = "resetType不允许为空")
+     @ApiModelProperty(value = "重置方式", example = "1")
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/group/impl/GroupServiceImpl.java
+Patch:
+@@ -151,12 +151,12 @@ public PaginationResult<GroupMemberPO> pagingGroupMembers(Long clusterPhyId,
+         lambdaQueryWrapper.eq(GroupMemberPO::getClusterPhyId, clusterPhyId);
+         lambdaQueryWrapper.eq(!ValidateUtils.isBlank(topicName), GroupMemberPO::getTopicName, topicName);
+         lambdaQueryWrapper.eq(!ValidateUtils.isBlank(groupName), GroupMemberPO::getGroupName, groupName);
+-        lambdaQueryWrapper.eq(GroupMemberPO::getClusterPhyId, clusterPhyId);
+         lambdaQueryWrapper.like(!ValidateUtils.isBlank(searchTopicKeyword), GroupMemberPO::getTopicName, searchTopicKeyword);
+         lambdaQueryWrapper.like(!ValidateUtils.isBlank(searchGroupKeyword), GroupMemberPO::getGroupName, searchGroupKeyword);
++        lambdaQueryWrapper.orderByDesc(GroupMemberPO::getClusterPhyId, GroupMemberPO::getTopicName);
+ 
+         IPage<GroupMemberPO> iPage = new Page<>();
+-        iPage.setPages(dto.getPageNo());
++        iPage.setCurrent(dto.getPageNo());
+         iPage.setSize(dto.getPageSize());
+ 
+         iPage = groupMemberDAO.selectPage(iPage, lambdaQueryWrapper);
+
+File: km-core/src/main/java/com/xiaojukeji/know/streaming/km/core/service/group/impl/GroupServiceImpl.java
+Patch:
+@@ -151,12 +151,12 @@ public PaginationResult<GroupMemberPO> pagingGroupMembers(Long clusterPhyId,
+         lambdaQueryWrapper.eq(GroupMemberPO::getClusterPhyId, clusterPhyId);
+         lambdaQueryWrapper.eq(!ValidateUtils.isBlank(topicName), GroupMemberPO::getTopicName, topicName);
+         lambdaQueryWrapper.eq(!ValidateUtils.isBlank(groupName), GroupMemberPO::getGroupName, groupName);
+-        lambdaQueryWrapper.eq(GroupMemberPO::getClusterPhyId, clusterPhyId);
+         lambdaQueryWrapper.like(!ValidateUtils.isBlank(searchTopicKeyword), GroupMemberPO::getTopicName, searchTopicKeyword);
+         lambdaQueryWrapper.like(!ValidateUtils.isBlank(searchGroupKeyword), GroupMemberPO::getGroupName, searchGroupKeyword);
++        lambdaQueryWrapper.orderByDesc(GroupMemberPO::getClusterPhyId, GroupMemberPO::getTopicName);
+ 
+         IPage<GroupMemberPO> iPage = new Page<>();
+-        iPage.setPages(dto.getPageNo());
++        iPage.setCurrent(dto.getPageNo());
+         iPage.setSize(dto.getPageSize());
+ 
+         iPage = groupMemberDAO.selectPage(iPage, lambdaQueryWrapper);
+
+File: kafka-manager-extends/kafka-manager-account/src/test/java/com/xiaojukeji/kafka/manager/account/AbstractSingleSignOnTest.java
+Patch:
+@@ -25,6 +25,7 @@
+ import javax.servlet.http.HttpServletRequest;
+ import javax.servlet.http.HttpServletResponse;
+ import java.lang.reflect.Field;
++import java.util.HashMap;
+ 
+ /**
+  * @author wyc
+@@ -142,7 +143,7 @@ private void loginAndGetLdap2LdapEnabledReturnFalseTest() throws NoSuchFieldExce
+         Field accountLdapEnabled = abstractSingleSignOn.getClass().getDeclaredField("accountLdapEnabled");
+         FieldSetter.setField(abstractSingleSignOn, accountLdapEnabled, true);
+ 
+-        Mockito.when(ldapAuthentication.authenticate(Mockito.anyString(), Mockito.anyString())).thenReturn(false);
++        Mockito.when(ldapAuthentication.authenticate(Mockito.anyString(), Mockito.anyString())).thenReturn(null);
+         Assert.assertEquals(abstractSingleSignOn.loginAndGetLdap(request, response, dto).toString(), Result.buildFrom(ResultStatus.LDAP_AUTHENTICATION_FAILED).toString());
+     }
+ 
+@@ -158,7 +159,7 @@ private void loginAndGetLdap2LdapEnabledReturnTrueTest() throws NoSuchFieldExcep
+         Field accountLdapEnabled = abstractSingleSignOn.getClass().getDeclaredField("accountLdapEnabled");
+         FieldSetter.setField(abstractSingleSignOn, accountLdapEnabled, true);
+ 
+-        Mockito.when(ldapAuthentication.authenticate(Mockito.anyString(), Mockito.anyString())).thenReturn(true);
++        Mockito.when(ldapAuthentication.authenticate(Mockito.anyString(), Mockito.anyString())).thenReturn(new HashMap<>());
+ 
+         // 通过反射初始化成员变量，防止出现空指针异常
+         Field authUserRegistrationRole = abstractSingleSignOn.getClass().getDeclaredField("authUserRegistrationRole");
+
+File: kafka-manager-extends/kafka-manager-account/src/test/java/com/xiaojukeji/kafka/manager/account/AbstractSingleSignOnTest.java
+Patch:
+@@ -25,6 +25,7 @@
+ import javax.servlet.http.HttpServletRequest;
+ import javax.servlet.http.HttpServletResponse;
+ import java.lang.reflect.Field;
++import java.util.HashMap;
+ 
+ /**
+  * @author wyc
+@@ -142,7 +143,7 @@ private void loginAndGetLdap2LdapEnabledReturnFalseTest() throws NoSuchFieldExce
+         Field accountLdapEnabled = abstractSingleSignOn.getClass().getDeclaredField("accountLdapEnabled");
+         FieldSetter.setField(abstractSingleSignOn, accountLdapEnabled, true);
+ 
+-        Mockito.when(ldapAuthentication.authenticate(Mockito.anyString(), Mockito.anyString())).thenReturn(false);
++        Mockito.when(ldapAuthentication.authenticate(Mockito.anyString(), Mockito.anyString())).thenReturn(null);
+         Assert.assertEquals(abstractSingleSignOn.loginAndGetLdap(request, response, dto).toString(), Result.buildFrom(ResultStatus.LDAP_AUTHENTICATION_FAILED).toString());
+     }
+ 
+@@ -158,7 +159,7 @@ private void loginAndGetLdap2LdapEnabledReturnTrueTest() throws NoSuchFieldExcep
+         Field accountLdapEnabled = abstractSingleSignOn.getClass().getDeclaredField("accountLdapEnabled");
+         FieldSetter.setField(abstractSingleSignOn, accountLdapEnabled, true);
+ 
+-        Mockito.when(ldapAuthentication.authenticate(Mockito.anyString(), Mockito.anyString())).thenReturn(true);
++        Mockito.when(ldapAuthentication.authenticate(Mockito.anyString(), Mockito.anyString())).thenReturn(new HashMap<>());
+ 
+         // 通过反射初始化成员变量，防止出现空指针异常
+         Field authUserRegistrationRole = abstractSingleSignOn.getClass().getDeclaredField("authUserRegistrationRole");
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/rd/RdLogicalClusterController.java
+Patch:
+@@ -57,7 +57,7 @@ public Result updateById(@RequestBody LogicalClusterDTO dto) {
+         );
+     }
+ 
+-    @ApiOperation(value = "查询逻辑集群列表", notes = "")
++    @ApiOperation(value = "根据逻辑集群Id获取逻辑集群", notes = "")
+     @RequestMapping(value = "logical-clusters", method = RequestMethod.GET)
+     @ResponseBody
+     public Result<LogicalClusterVO> getByLogicalClusterId(@RequestParam("id") Long physicalClusterId) {
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/cache/LogicalClusterMetadataManager.java
+Patch:
+@@ -208,7 +208,8 @@ private void flush(LogicalClusterDO logicalClusterDO, Map<Long, RegionDO> region
+         // 计算逻辑集群到Topic名称的映射
+         Set<String> topicNameSet = PhysicalClusterMetadataManager.getBrokerTopicNum(
+                 logicalClusterDO.getClusterId(),
+-                brokerIdSet);
++                brokerIdSet
++        );
+         LOGICAL_CLUSTER_ID_TOPIC_NAME_MAP.put(logicalClusterDO.getId(), topicNameSet);
+ 
+         // 计算Topic名称到逻辑集群的映射
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/cache/LogicalClusterMetadataManager.java
+Patch:
+@@ -208,7 +208,8 @@ private void flush(LogicalClusterDO logicalClusterDO, Map<Long, RegionDO> region
+         // 计算逻辑集群到Topic名称的映射
+         Set<String> topicNameSet = PhysicalClusterMetadataManager.getBrokerTopicNum(
+                 logicalClusterDO.getClusterId(),
+-                brokerIdSet);
++                brokerIdSet
++        );
+         LOGICAL_CLUSTER_ID_TOPIC_NAME_MAP.put(logicalClusterDO.getId(), topicNameSet);
+ 
+         // 计算Topic名称到逻辑集群的映射
+
+File: kafka-manager-extends/kafka-manager-bpm/src/main/java/com/xiaojukeji/kafka/manager/bpm/impl/OrderServiceImpl.java
+Patch:
+@@ -215,7 +215,7 @@ public List<OrderDO> getWaitDealOrder() {
+         } catch (Exception e) {
+             LOGGER.error("get wait deal order failed.", e);
+         }
+-        return null;
++        return Collections.emptyList();
+     }
+ 
+     @Override
+@@ -225,7 +225,7 @@ public List<OrderDO> getPassedOrder(Date startTime) {
+         } catch (Exception e) {
+             LOGGER.error("get passed order failed, startTime:{}.", startTime, e);
+         }
+-        return null;
++        return Collections.emptyList();
+     }
+ 
+     private TopicDO getTopicDOFromCacheOrDB(Long physicalClusterId,
+
+File: kafka-manager-extends/kafka-manager-bpm/src/main/java/com/xiaojukeji/kafka/manager/bpm/order/impl/ApplyAppOrder.java
+Patch:
+@@ -39,6 +39,9 @@ public AbstractOrderDetailData getOrderExtensionDetailData(String extensions) {
+ 
+         }
+         OrderDetailApplyAppDTO orderDetailDTO = new OrderDetailApplyAppDTO();
++        if (ValidateUtils.isNull(orderExtensionDTO)) {
++            return orderDetailDTO;
++        }
+         orderDetailDTO.setName(orderExtensionDTO.getName());
+         orderDetailDTO.setPrincipals(orderExtensionDTO.getPrincipals());
+         AppDO appDO = appService.getByName(orderExtensionDTO.getName());
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/JmxServiceImpl.java
+Patch:
+@@ -164,9 +164,11 @@ public TopicMetrics getTopicMetrics(Long clusterId, Integer brokerId, String top
+         if (ValidateUtils.isNull(jmxConnectorWrap)|| !jmxConnectorWrap.checkJmxConnectionAndInitIfNeed()) {
+             return null;
+         }
++
++        KafkaVersion kafkaVersion = physicalClusterMetadataManager.getKafkaVersion(clusterId, brokerId);
++
+         TopicMetrics metrics = new TopicMetrics(clusterId, topicName);
+         for (MbeanV2 mbeanV2: mbeanV2List) {
+-            KafkaVersion kafkaVersion = physicalClusterMetadataManager.getKafkaVersion(clusterId, brokerId);
+             try {
+                 getAndSupplyAttributes2BaseMetrics(
+                         metrics,
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/TopicServiceImpl.java
+Patch:
+@@ -416,9 +416,6 @@ public List<TopicOverview> getTopicOverviewList(Long clusterId, List<String> top
+                     topicDO,
+                     appDO
+             );
+-            if (ValidateUtils.isNull(overview)) {
+-                continue;
+-            }
+             dtoList.add(overview);
+         }
+ 
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/ZookeeperServiceImpl.java
+Patch:
+@@ -28,7 +28,7 @@ public class ZookeeperServiceImpl implements ZookeeperService {
+ 
+     @Override
+     public Result openTopicJmx(Long clusterId, String topicName, TopicJmxSwitch jmxSwitch) {
+-        if (ValidateUtils.isNull(clusterId) || ValidateUtils.isNull(topicName) || ValidateUtils.isNull(jmxSwitch)) {
++        if (ValidateUtils.isNull(clusterId) || ValidateUtils.isNull(topicName)) {
+             return Result.buildFrom(ResultStatus.PARAM_ILLEGAL);
+         }
+ 
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/strategy/healthscore/DidiHealthScoreStrategy.java
+Patch:
+@@ -114,7 +114,7 @@ public Integer calTopicHealthScore(Long clusterId, String topicName) {
+             return Constant.INVALID_CODE;
+         }
+ 
+-        List<Integer> brokerIdList = new ArrayList<>(metadata.getBrokerIdSet().size());
++        List<Integer> brokerIdList = new ArrayList<>(metadata.getBrokerIdSet());
+ 
+         FutureTask<Integer>[] taskList = new FutureTask[brokerIdList.size()];
+         for (int i = 0; i < brokerIdList.size(); ++i) {
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/zookeeper/znode/config/TopicQuotaData.java
+Patch:
+@@ -29,10 +29,10 @@ public void setProducer_byte_rate(String producer_byte_rate) {
+ 
+     public static TopicQuotaData getClientData(Long producerByteRate, Long consumerByteRate) {
+         TopicQuotaData clientData = new TopicQuotaData();
+-        if (!ValidateUtils.isNull(producerByteRate) && consumerByteRate != -1) {
++        if (!ValidateUtils.isNull(consumerByteRate) && consumerByteRate != -1) {
+             clientData.setConsumer_byte_rate(consumerByteRate.toString());
+         }
+-        if (!ValidateUtils.isNull(consumerByteRate) && producerByteRate != -1) {
++        if (!ValidateUtils.isNull(producerByteRate) && producerByteRate != -1) {
+             clientData.setProducer_byte_rate(producerByteRate.toString());
+         }
+         return clientData;
+
+File: kafka-manager-core/src/test/java/com/xiaojukeji/kafka/manager/service/service/ConfigServiceTest.java
+Patch:
+@@ -7,4 +7,5 @@
+  * @Date 2021/12/6
+  */
+ public class ConfigServiceTest extends BaseTest {
++
+ }
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/utils/jmx/JmxConnectorWrap.java
+Patch:
+@@ -79,7 +79,8 @@ private synchronized boolean createJmxConnector() {
+         try {
+             Map<String, Object> environment = new HashMap<String, Object>();
+             if (!ValidateUtils.isBlank(this.jmxConfig.getUsername()) && !ValidateUtils.isBlank(this.jmxConfig.getPassword())) {
+-                environment.put(JMXConnector.CREDENTIALS, Arrays.asList(this.jmxConfig.getUsername(), this.jmxConfig.getPassword()));
++                // fixed by riyuetianmu
++                environment.put(JMXConnector.CREDENTIALS, new String[]{this.jmxConfig.getUsername(), this.jmxConfig.getPassword()});
+             }
+             if (jmxConfig.isOpenSSL() != null && this.jmxConfig.isOpenSSL()) {
+                 environment.put(Context.SECURITY_PROTOCOL, "ssl");
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/utils/jmx/JmxConnectorWrap.java
+Patch:
+@@ -79,7 +79,8 @@ private synchronized boolean createJmxConnector() {
+         try {
+             Map<String, Object> environment = new HashMap<String, Object>();
+             if (!ValidateUtils.isBlank(this.jmxConfig.getUsername()) && !ValidateUtils.isBlank(this.jmxConfig.getPassword())) {
+-                environment.put(JMXConnector.CREDENTIALS, Arrays.asList(this.jmxConfig.getUsername(), this.jmxConfig.getPassword()));
++                // fixed by riyuetianmu
++                environment.put(JMXConnector.CREDENTIALS, new String[]{this.jmxConfig.getUsername(), this.jmxConfig.getPassword()});
+             }
+             if (jmxConfig.isOpenSSL() != null && this.jmxConfig.isOpenSSL()) {
+                 environment.put(Context.SECURITY_PROTOCOL, "ssl");
+
+File: kafka-manager-extends/kafka-manager-account/src/main/java/com/xiaojukeji/kafka/manager/account/impl/LoginServiceImpl.java
+Patch:
+@@ -67,6 +67,7 @@ public boolean checkLogin(HttpServletRequest request, HttpServletResponse respon
+         if (ValidateUtils.isNull(classRequestMappingValue)) {
+             LOGGER.error("class=LoginServiceImpl||method=checkLogin||msg=uri illegal||uri={}", request.getRequestURI());
+             singleSignOn.setRedirectToLoginPage(response);
++            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+             return false;
+         }
+ 
+@@ -83,6 +84,7 @@ public boolean checkLogin(HttpServletRequest request, HttpServletResponse respon
+         if (ValidateUtils.isBlank(username)) {
+             // 未登录, 则返回false, 同时重定向到登录页面
+             singleSignOn.setRedirectToLoginPage(response);
++            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+             return false;
+         }
+ 
+@@ -113,4 +115,4 @@ private boolean checkAuthority(String classRequestMappingValue, AccountRoleEnum
+         }
+         return true;
+     }
+-}
+\ No newline at end of file
++}
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/entity/pojo/TopicDO.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.xiaojukeji.kafka.manager.common.entity.pojo;
+ 
+ import com.xiaojukeji.kafka.manager.common.entity.dto.op.topic.TopicCreationDTO;
++import com.xiaojukeji.kafka.manager.common.utils.ValidateUtils;
+ 
+ import java.util.Date;
+ 
+@@ -95,6 +96,7 @@ public static TopicDO buildFrom(TopicCreationDTO dto) {
+         topicDO.setClusterId(dto.getClusterId());
+         topicDO.setTopicName(dto.getTopicName());
+         topicDO.setDescription(dto.getDescription());
++        topicDO.setPeakBytesIn(ValidateUtils.isNull(dto.getPeakBytesIn())  ? -1L : dto.getPeakBytesIn());
+         return topicDO;
+     }
+-}
+\ No newline at end of file
++}
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/entity/pojo/TopicDO.java
+Patch:
+@@ -95,6 +95,7 @@ public static TopicDO buildFrom(TopicCreationDTO dto) {
+         topicDO.setClusterId(dto.getClusterId());
+         topicDO.setTopicName(dto.getTopicName());
+         topicDO.setDescription(dto.getDescription());
++        topicDO.setPeakBytesIn(dto.getPeakBytesIn() == null ? -1L : dto.getPeakBytesIn());
+         return topicDO;
+     }
+-}
+\ No newline at end of file
++}
+
+File: kafka-manager-extends/kafka-manager-account/src/main/java/com/xiaojukeji/kafka/manager/account/component/sso/BaseSessionSignOn.java
+Patch:
+@@ -57,7 +57,7 @@ public Result<String> loginAndGetLdap(HttpServletRequest request, HttpServletRes
+                 return null;
+             }
+ 
+-            if(ValidateUtils.isNull(accountResult) && authUserRegistration){
++            if((ValidateUtils.isNull(accountResult) || ValidateUtils.isNull(accountResult.getData())) && authUserRegistration){
+                 //自动注册
+                 AccountDO accountDO = new AccountDO();
+                 accountDO.setUsername(dto.getUsername());
+@@ -105,4 +105,4 @@ public void setRedirectToLoginPage(HttpServletResponse response) {
+         response.setStatus(AbstractSingleSignOn.REDIRECT_CODE);
+         response.addHeader(AbstractSingleSignOn.HEADER_REDIRECT_KEY, "");
+     }
+-}
+\ No newline at end of file
++}
+
+File: kafka-manager-extends/kafka-manager-account/src/main/java/com/xiaojukeji/kafka/manager/account/component/sso/BaseSessionSignOn.java
+Patch:
+@@ -57,7 +57,7 @@ public Result<String> loginAndGetLdap(HttpServletRequest request, HttpServletRes
+                 return null;
+             }
+ 
+-            if(ValidateUtils.isNull(accountResult) && authUserRegistration){
++            if((ValidateUtils.isNull(accountResult) || ValidateUtils.isNull(accountResult.getData())) && authUserRegistration){
+                 //自动注册
+                 AccountDO accountDO = new AccountDO();
+                 accountDO.setUsername(dto.getUsername());
+@@ -105,4 +105,4 @@ public void setRedirectToLoginPage(HttpServletResponse response) {
+         response.setStatus(AbstractSingleSignOn.REDIRECT_CODE);
+         response.addHeader(AbstractSingleSignOn.HEADER_REDIRECT_KEY, "");
+     }
+-}
+\ No newline at end of file
++}
+
+File: kafka-manager-task/src/main/java/com/xiaojukeji/kafka/manager/task/dispatch/op/SyncTopic2DB.java
+Patch:
+@@ -125,7 +125,7 @@ private void syncTopic2DB(Long clusterId, SyncTopic2DBConfig syncTopic2DBConfig)
+ 
+             if (ValidateUtils.isNull(syncTopic2DBConfig.isAddAuthority()) || !syncTopic2DBConfig.isAddAuthority()) {
+                 // 不增加权限信息, 则直接忽略
+-                return;
++                continue;
+             }
+ 
+             // TODO 当前添加 Topic 和 添加 Authority 是非事务的, 中间出现异常之后, 会导致数据错误, 后续还需要优化一下
+
+File: kafka-manager-task/src/main/java/com/xiaojukeji/kafka/manager/task/dispatch/op/SyncTopic2DB.java
+Patch:
+@@ -125,7 +125,7 @@ private void syncTopic2DB(Long clusterId, SyncTopic2DBConfig syncTopic2DBConfig)
+ 
+             if (ValidateUtils.isNull(syncTopic2DBConfig.isAddAuthority()) || !syncTopic2DBConfig.isAddAuthority()) {
+                 // 不增加权限信息, 则直接忽略
+-                return;
++                continue;
+             }
+ 
+             // TODO 当前添加 Topic 和 添加 Authority 是非事务的, 中间出现异常之后, 会导致数据错误, 后续还需要优化一下
+
+File: kafka-manager-extends/kafka-manager-account/src/main/java/com/xiaojukeji/kafka/manager/account/component/sso/BaseSessionSignOn.java
+Patch:
+@@ -56,7 +56,7 @@ public String loginAndGetLdap(HttpServletRequest request, HttpServletResponse re
+                 return null;
+             }
+ 
+-            if(authUserRegistration){
++            if(accountDO==null && authUserRegistration){
+                 //自动注册
+                 accountDO = new AccountDO();
+                 accountDO.setUsername(dto.getUsername());
+@@ -66,6 +66,8 @@ public String loginAndGetLdap(HttpServletRequest request, HttpServletResponse re
+                 return dto.getUsername();
+             }
+ 
++            return dto.getUsername();
++
+         }
+ 
+         if (ValidateUtils.isNull(accountDO)) {
+
+File: kafka-manager-extends/kafka-manager-account/src/main/java/com/xiaojukeji/kafka/manager/account/AccountService.java
+Patch:
+@@ -33,7 +33,7 @@ public interface AccountService {
+      * @param username 用户名
+      * @return
+      */
+-    ResultStatus deleteByName(String username);
++    ResultStatus deleteByName(String username, String operator);
+ 
+     /**
+      * 更新账号
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/rd/RdAccountController.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.xiaojukeji.kafka.manager.common.entity.ResultStatus;
+ import com.xiaojukeji.kafka.manager.common.entity.vo.common.AccountVO;
++import com.xiaojukeji.kafka.manager.common.utils.SpringTool;
+ import com.xiaojukeji.kafka.manager.common.utils.ValidateUtils;
+ import com.xiaojukeji.kafka.manager.common.constant.ApiPrefix;
+ import com.xiaojukeji.kafka.manager.web.converters.AccountConverter;
+@@ -46,7 +47,7 @@ public Result addAccount(@RequestBody AccountDTO dto) {
+     @RequestMapping(value = "accounts", method = RequestMethod.DELETE)
+     @ResponseBody
+     public Result deleteAccount(@RequestParam("username") String username) {
+-        ResultStatus rs = accountService.deleteByName(username);
++        ResultStatus rs = accountService.deleteByName(username, SpringTool.getUserName());
+         return Result.buildFrom(rs);
+     }
+ 
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/gateway/AppService.java
+Patch:
+@@ -17,7 +17,7 @@ public interface AppService {
+      * @param appDO appDO
+      * @return int
+      */
+-    ResultStatus addApp(AppDO appDO);
++    ResultStatus addApp(AppDO appDO, String operator);
+ 
+     /**
+      * 删除数据
+
+File: kafka-manager-extends/kafka-manager-bpm/src/main/java/com/xiaojukeji/kafka/manager/bpm/order/impl/ApplyAppOrder.java
+Patch:
+@@ -87,6 +87,6 @@ public ResultStatus handleOrderDetail(OrderDO orderDO, OrderHandleBaseDTO orderH
+         appDO.setDescription(orderDO.getDescription());
+         appDO.generateAppIdAndPassword(orderDO.getId(), configUtils.getIdc());
+         appDO.setType(0);
+-        return appService.addApp(appDO);
++        return appService.addApp(appDO, userName);
+     }
+ }
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/ClusterService.java
+Patch:
+@@ -43,7 +43,7 @@ public interface ClusterService {
+ 
+     ClusterNameDTO getClusterName(Long logicClusterId);
+ 
+-    ResultStatus deleteById(Long clusterId);
++    ResultStatus deleteById(Long clusterId, String operator);
+ 
+     /**
+      * 获取优先被选举为controller的broker
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/op/OpClusterController.java
+Patch:
+@@ -43,7 +43,7 @@ public Result addNew(@RequestBody ClusterDTO dto) {
+     @RequestMapping(value = "clusters", method = RequestMethod.DELETE)
+     @ResponseBody
+     public Result delete(@RequestParam(value = "clusterId") Long clusterId) {
+-        return Result.buildFrom(clusterService.deleteById(clusterId));
++        return Result.buildFrom(clusterService.deleteById(clusterId, SpringTool.getUserName()));
+     }
+ 
+     @ApiOperation(value = "修改集群信息")
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/ClusterServiceImpl.java
+Patch:
+@@ -203,6 +203,7 @@ private boolean isZookeeperLegal(String zookeeper) {
+                     zk.close();
+                 }
+             } catch (Throwable t) {
++                return false;
+             }
+         }
+         return true;
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/LogicalClusterServiceImpl.java
+Patch:
+@@ -113,6 +113,7 @@ private LogicalCluster convert2LogicalCluster(LogicalClusterDO logicalClusterDO)
+         LogicalCluster logicalCluster = new LogicalCluster();
+         logicalCluster.setLogicalClusterId(logicalClusterDO.getId());
+         logicalCluster.setLogicalClusterName(logicalClusterDO.getName());
++        logicalCluster.setLogicalClusterIdentification(logicalClusterDO.getIdentification());
+         logicalCluster.setClusterVersion(
+                 physicalClusterMetadataManager.getKafkaVersion(
+                         logicalClusterDO.getClusterId(),
+
+File: kafka-manager-task/src/main/java/com/xiaojukeji/kafka/manager/task/listener/SinkCommunityTopicMetrics2Monitor.java
+Patch:
+@@ -73,7 +73,7 @@ private void sink2Monitor(Long clusterId, Long now) throws Exception {
+                 continue;
+             }
+ 
+-            metricSinkPoints.addAll(recordTopics(now, logicalClusterDO.getName(), metrics));
++            metricSinkPoints.addAll(recordTopics(now, logicalClusterDO.getIdentification(), metrics));
+             if (metricSinkPoints.size() > MonitorSinkConstant.MONITOR_SYSTEM_SINK_THRESHOLD) {
+                 abstractMonitor.sinkMetrics(metricSinkPoints);
+                 metricSinkPoints.clear();
+
+File: kafka-manager-task/src/main/java/com/xiaojukeji/kafka/manager/task/listener/SinkConsumerMetrics2Monitor.java
+Patch:
+@@ -64,7 +64,7 @@ private void sinkConsumerGroup(List<ConsumerMetrics> metricsList) {
+                 continue;
+             }
+ 
+-            metricSinkPoints.addAll(recordConsumer(elem.getTimestampUnitMs() / 1000, logicalClusterDO.getName(), elem));
++            metricSinkPoints.addAll(recordConsumer(elem.getTimestampUnitMs() / 1000, logicalClusterDO.getIdentification(), elem));
+             if (metricSinkPoints.size() > MonitorSinkConstant.MONITOR_SYSTEM_SINK_THRESHOLD) {
+                 abstractMonitor.sinkMetrics(metricSinkPoints);
+                 metricSinkPoints.clear();
+
+File: kafka-manager-task/src/main/java/com/xiaojukeji/kafka/manager/task/listener/SinkTopicThrottledMetrics2Monitor.java
+Patch:
+@@ -57,7 +57,7 @@ private void sink2MonitorSystem(Long clusterId,
+                 continue;
+             }
+ 
+-            MetricSinkPoint point = recordTopicThrottled(startTime, logicalClusterDO.getName(), elem);
++            MetricSinkPoint point = recordTopicThrottled(startTime, logicalClusterDO.getIdentification(), elem);
+             if (ValidateUtils.isNull(point)) {
+                 continue;
+             }
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/normal/NormalAccountController.java
+Patch:
+@@ -40,8 +40,7 @@ public class NormalAccountController {
+     public Result<List<AccountSummaryVO>> searchOnJobStaffByKeyWord(@RequestParam("keyWord") String keyWord) {
+         List<EnterpriseStaff> staffList = accountService.searchAccountByPrefix(keyWord);
+         if (ValidateUtils.isEmptyList(staffList)) {
+-            LOGGER.info("class=NormalAccountController||method=searchOnJobStaffByKeyWord||keyWord={}||msg=staffList is empty!"
+-                    ,keyWord);
++            LOGGER.info("class=NormalAccountController||method=searchOnJobStaffByKeyWord||keyWord={}||msg=staffList is empty!", keyWord);
+             return new Result<>();
+         }
+         List<AccountSummaryVO> voList = new ArrayList<>();
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/normal/NormalTopicController.java
+Patch:
+@@ -69,7 +69,8 @@ public Result<TopicBasicVO> getTopicBasic(
+         }
+         return new Result<>(TopicModelConverter.convert2TopicBasicVO(
+                 topicService.getTopicBasicDTO(physicalClusterId, topicName),
+-                clusterService.getById(physicalClusterId)
++                clusterService.getById(physicalClusterId),
++                logicalClusterMetadataManager.getTopicLogicalClusterId(physicalClusterId, topicName)
+         ));
+     }
+ 
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/op/OpUtilsController.java
+Patch:
+@@ -166,7 +166,7 @@ public Result modifyTopic(@RequestBody TopicModificationDTO dto) {
+         if (!ResultStatus.SUCCESS.equals(rs)) {
+             return Result.buildFrom(rs);
+         }
+-        topicManagerService.modifyTopic(dto.getClusterId(), dto.getTopicName(), dto.getDescription(), operator);
++        topicManagerService.modifyTopicByOp(dto.getClusterId(), dto.getTopicName(), dto.getAppId(), dto.getDescription(), operator);
+         return new Result();
+     }
+ 
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/converters/ClusterModelConverter.java
+Patch:
+@@ -55,6 +55,7 @@ public static LogicClusterVO convert2LogicClusterVO(LogicalCluster logicalCluste
+         CopyUtils.copyProperties(vo, logicalCluster);
+         vo.setClusterId(logicalCluster.getLogicalClusterId());
+         vo.setClusterName(logicalCluster.getLogicalClusterName());
++        vo.setClusterIdentification(logicalCluster.getLogicalClusterIdentification());
+         return vo;
+     }
+ 
+@@ -78,9 +79,8 @@ public static ClusterDO convert2ClusterDO(ClusterDTO reqObj) {
+         ClusterDO clusterDO = new ClusterDO();
+         CopyUtils.copyProperties(clusterDO, reqObj);
+         clusterDO.setId(reqObj.getClusterId());
+-        clusterDO.setSecurityProperties(
+-                ValidateUtils.isNull(clusterDO.getSecurityProperties())? "": clusterDO.getSecurityProperties()
+-        );
++        clusterDO.setSecurityProperties(ValidateUtils.isNull(reqObj.getSecurityProperties())? "": reqObj.getSecurityProperties());
++        clusterDO.setJmxProperties(ValidateUtils.isNull(reqObj.getJmxProperties())? "": reqObj.getJmxProperties());
+         return clusterDO;
+     }
+ 
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/converters/LogicalClusterModelConverter.java
+Patch:
+@@ -21,6 +21,7 @@ public static LogicalClusterVO convert2LogicalClusterVO(LogicalClusterDO logical
+         LogicalClusterVO vo = new LogicalClusterVO();
+         vo.setLogicalClusterId(logicalClusterDO.getId());
+         vo.setLogicalClusterName(logicalClusterDO.getName());
++        vo.setLogicalClusterIdentification(logicalClusterDO.getIdentification());
+         vo.setPhysicalClusterId(logicalClusterDO.getClusterId());
+         vo.setMode(logicalClusterDO.getMode());
+         vo.setRegionIdList(ListUtils.string2LongList(logicalClusterDO.getRegionList()));
+@@ -45,6 +46,7 @@ public static List<LogicalClusterVO> convert2LogicalClusterVOList(List<LogicalCl
+     public static LogicalClusterDO convert2LogicalClusterDO(LogicalClusterDTO dto) {
+         LogicalClusterDO logicalClusterDO = new LogicalClusterDO();
+         logicalClusterDO.setName(dto.getName());
++        logicalClusterDO.setIdentification(dto.getIdentification());
+         logicalClusterDO.setClusterId(dto.getClusterId());
+         logicalClusterDO.setRegionList(ListUtils.longList2String(dto.getRegionIdList()));
+         logicalClusterDO.setMode(dto.getMode());
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/converters/TopicModelConverter.java
+Patch:
+@@ -22,9 +22,9 @@
+  * @date 2017/6/1.
+  */
+ public class TopicModelConverter {
+-    public static TopicBasicVO convert2TopicBasicVO(TopicBasicDTO dto, ClusterDO clusterDO) {
++    public static TopicBasicVO convert2TopicBasicVO(TopicBasicDTO dto, ClusterDO clusterDO, Long logicalClusterId) {
+         TopicBasicVO vo = new TopicBasicVO();
+-        vo.setClusterId(dto.getClusterId());
++        vo.setClusterId(logicalClusterId);
+         vo.setAppId(dto.getAppId());
+         vo.setAppName(dto.getAppName());
+         vo.setPartitionNum(dto.getPartitionNum());
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/bizenum/IDCEnum.java
+Patch:
+@@ -6,8 +6,6 @@
+  */
+ public enum IDCEnum {
+     CN("cn", "国内"),
+-    US("us", "美东"),
+-    RU("ru", "俄罗斯"),
+     ;
+ 
+     private String idc;
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/bizenum/ModuleEnum.java
+Patch:
+@@ -21,6 +21,8 @@ public enum  ModuleEnum {
+ 
+     PARTITION(5, "分区"),
+ 
++    GATEWAY_CONFIG(6, "Gateway配置"),
++
+     UNKNOWN(-1, "未知")
+             ;
+     ModuleEnum(int code, String message) {
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/bizenum/RebalanceDimensionEnum.java
+Patch:
+@@ -10,6 +10,7 @@ public enum RebalanceDimensionEnum {
+     REGION(1, "Region维度"),
+     BROKER(2, "Broker维度"),
+     TOPIC(3, "Topic维度"),
++    PARTITION(4, "Partition维度"),
+     ;
+ 
+     private Integer code;
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/constant/KafkaConstant.java
+Patch:
+@@ -7,6 +7,8 @@
+ public class KafkaConstant {
+     public static final String COORDINATOR_TOPIC_NAME = "__consumer_offsets";
+ 
++    public static final String TRANSACTION_TOPIC_NAME = "__transaction_state";
++
+     public static final String BROKER_HOST_NAME_SUFFIX = ".diditaxi.com";
+ 
+     public static final String CLIENT_VERSION_CODE_UNKNOWN = "-1";
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/utils/JsonUtils.java
+Patch:
+@@ -9,6 +9,7 @@
+ 
+ import java.lang.reflect.Method;
+ import java.util.ArrayList;
++import java.util.Date;
+ import java.util.List;
+ 
+ /**
+@@ -52,7 +53,7 @@ public static String toJSONString(Object obj) {
+         return JSON.toJSONString(obj);
+     }
+ 
+-    public static List<TopicConnectionDO> parseTopicConnections(Long clusterId, JSONObject jsonObject) {
++    public static List<TopicConnectionDO> parseTopicConnections(Long clusterId, JSONObject jsonObject, long postTime) {
+         List<TopicConnectionDO> connectionDOList = new ArrayList<>();
+         for (String clientType: jsonObject.keySet()) {
+             JSONObject topicObject = jsonObject.getJSONObject(clientType);
+@@ -73,6 +74,7 @@ public static List<TopicConnectionDO> parseTopicConnections(Long clusterId, JSON
+                     connectionDO.setClusterId(clusterId);
+                     connectionDO.setTopicName(topicName);
+                     connectionDO.setType(clientType);
++                    connectionDO.setCreateTime(new Date(postTime));
+                     connectionDOList.add(connectionDO);
+                 }
+             }
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/gateway/AuthorityService.java
+Patch:
+@@ -60,4 +60,6 @@ public interface AuthorityService {
+     int addAuthorityAndQuota(AuthorityDO authorityDO, TopicQuota quota);
+ 
+     Map<String, Map<Long, Map<String, AuthorityDO>>> getAllAuthority();
++
++    int deleteAuthorityByTopic(Long clusterId, String topicName);
+ }
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/strategy/healthscore/DidiHealthScoreStrategy.java
+Patch:
+@@ -72,8 +72,8 @@ public Integer calBrokerHealthScore(Long clusterId, Integer brokerId, BrokerMetr
+                 // 数据获取失败
+                 return Constant.INVALID_CODE;
+             }
+-            if (((Double) failedFetchRequestsPerSecOneMinuteRate) > 0
+-                    || ((Double) failedProduceRequestsPerSecOneMinuteRate) > 0) {
++            if (((Double) failedFetchRequestsPerSecOneMinuteRate) > 0.01
++                    || ((Double) failedProduceRequestsPerSecOneMinuteRate) > 0.01) {
+                 return HEALTH_SCORE_VERY_BAD;
+             }
+ 
+
+File: kafka-manager-dao/src/main/java/com/xiaojukeji/kafka/manager/dao/TopicDao.java
+Patch:
+@@ -22,4 +22,6 @@ public interface TopicDao {
+     List<TopicDO> listAll();
+ 
+     TopicDO getTopic(Long clusterId, String topicName, String appId);
++
++    TopicDO removeTopicInCache(Long clusterId, String topicName);
+ }
+\ No newline at end of file
+
+File: kafka-manager-extends/kafka-manager-notify/src/main/java/com/xiaojukeji/kafka/manager/notify/OrderApplyNotifyService.java
+Patch:
+@@ -10,6 +10,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.context.ApplicationListener;
++import org.springframework.scheduling.annotation.Async;
+ import org.springframework.stereotype.Service;
+ 
+ /**
+@@ -24,6 +25,7 @@ public class OrderApplyNotifyService implements ApplicationListener<OrderApplyEv
+     @Value("${notify.order.detail-url}")
+     private String orderDetailUrl;
+ 
++    @Async
+     @Override
+     public void onApplicationEvent(OrderApplyEvent orderApplyEvent) {
+         OrderDO orderDO = orderApplyEvent.getOrderDO();
+
+File: kafka-manager-extends/kafka-manager-notify/src/main/java/com/xiaojukeji/kafka/manager/notify/OrderPassedNotifyService.java
+Patch:
+@@ -7,6 +7,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.context.ApplicationListener;
++import org.springframework.scheduling.annotation.Async;
+ import org.springframework.stereotype.Service;
+ 
+ /**
+@@ -21,6 +22,7 @@ public class OrderPassedNotifyService implements ApplicationListener<OrderPassed
+     @Value("${notify.order.detail-url}")
+     private String orderDetailUrl;
+ 
++    @Async
+     @Override
+     public void onApplicationEvent(OrderPassedEvent orderPassEvent) {
+         OrderDO orderDO = orderPassEvent.getOrderDO();
+
+File: kafka-manager-extends/kafka-manager-notify/src/main/java/com/xiaojukeji/kafka/manager/notify/OrderRefusedNotifyService.java
+Patch:
+@@ -7,6 +7,7 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.context.ApplicationListener;
++import org.springframework.scheduling.annotation.Async;
+ import org.springframework.stereotype.Service;
+ 
+ /**
+@@ -21,6 +22,7 @@ public class OrderRefusedNotifyService implements ApplicationListener<OrderRefus
+     @Value("${notify.order.detail-url}")
+     private String orderDetailUrl;
+ 
++    @Async
+     @Override
+     public void onApplicationEvent(OrderRefusedEvent orderRefuseEvent) {
+         OrderDO orderDO = orderRefuseEvent.getOrderDO();
+
+File: kafka-manager-task/src/main/java/com/xiaojukeji/kafka/manager/task/schedule/metadata/FlushZKConsumerGroupMetadata.java
+Patch:
+@@ -55,7 +55,7 @@ private void flush(Long clusterId) {
+                 collectTopicAndConsumerGroupMap(clusterId, new ArrayList<>(consumerGroupSet));
+         ConsumerMetadataCache.putConsumerMetadataInZK(
+                 clusterId,
+-                new ConsumerMetadata(consumerGroupSet, topicNameConsumerGroupMap, new HashMap<>(0), new HashMap<>(0))
++                new ConsumerMetadata(consumerGroupSet, topicNameConsumerGroupMap, new HashMap<>(0))
+         );
+     }
+ 
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/gateway/GatewayHeartbeatController.java
+Patch:
+@@ -47,7 +47,7 @@ public Result receiveTopicConnections(@RequestParam("clusterId") Long clusterId,
+ 
+         List<TopicConnectionDO> doList = null;
+         try {
+-            doList = JsonUtils.parseTopicConnections(clusterId, jsonObject);
++            doList = JsonUtils.parseTopicConnections(clusterId, jsonObject, System.currentTimeMillis());
+         } catch (Exception e) {
+             LOGGER.error("class=GatewayHeartbeatController||method=receiveTopicConnections||clusterId={}||brokerId={}||msg=parse data failed||exception={}", clusterId, brokerId, e.getMessage());
+             return Result.buildFailure("fail");
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/normal/NormalAppController.java
+Patch:
+@@ -76,7 +76,7 @@ public Result<List<AppVO>> getApps() {
+     @RequestMapping(value = "apps/{appId}/basic-info", method = RequestMethod.GET)
+     @ResponseBody
+     public Result<AppVO> getAppBasicInfo(@PathVariable String appId) {
+-        if (accountService.isAdminOrderHandler(SpringTool.getUserName())) {
++        if (accountService.isOpOrRd(SpringTool.getUserName())) {
+             return new Result<>(AppConverter.convert2AppVO(appService.getByAppId(appId)));
+         }
+ 
+@@ -101,7 +101,7 @@ public Result modifyApp(@RequestBody AppDTO dto) {
+     @RequestMapping(value = "apps/{appId}/topics", method = RequestMethod.GET)
+     @ResponseBody
+     public Result<List<AppTopicVO>> getAppTopics(@PathVariable String appId,
+-                                                 @RequestParam(value = "mine") Boolean mine) {
++                                                 @RequestParam(value = "mine", required = false) Boolean mine) {
+         List<AppTopicDTO> dtoList = appService.getAppTopicDTOList(appId, mine);
+ 
+         List<AppTopicVO> voList = new ArrayList<>();
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/converters/TopicModelConverter.java
+Patch:
+@@ -37,6 +37,7 @@ public static TopicBasicVO convert2TopicBasicVO(TopicBasicDTO dto, ClusterDO clu
+         vo.setTopicCodeC(dto.getTopicCodeC());
+         vo.setDescription(dto.getDescription());
+         vo.setBootstrapServers("");
++        vo.setRegionNameList(dto.getRegionNameList());
+         if (!ValidateUtils.isNull(clusterDO)) {
+             vo.setBootstrapServers(clusterDO.getBootstrapServers());
+         }
+
+File: kafka-manager-common/src/main/java/com/xiaojukeji/kafka/manager/common/entity/ResultStatus.java
+Patch:
+@@ -8,7 +8,10 @@
+  * @date 20/4/16
+  */
+ public enum ResultStatus {
++    GATEWAY_INVALID_REQUEST(-1, "invalid request"),
++
+     SUCCESS(Constant.SUCCESS, "success"),
++
+     LOGIN_FAILED(1, "login failed, please check username and password"),
+ 
+ 
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/gateway/impl/GatewayConfigServiceImpl.java
+Patch:
+@@ -38,10 +38,10 @@ public KafkaBootstrapServerConfig getKafkaBootstrapServersConfig(Long requestVer
+             }
+             Long maxVersion = Long.MIN_VALUE;
+ 
+-            Map<Long, List<String>> clusterIdBootstrapServersMap = new HashMap<>(doList.size());
++            Map<String, List<String>> clusterIdBootstrapServersMap = new HashMap<>(doList.size());
+             for (GatewayConfigDO configDO: doList) {
+                 clusterIdBootstrapServersMap.put(
+-                        Long.valueOf(configDO.getName()),
++                        configDO.getName().trim(),
+                         ListUtils.string2StrList(configDO.getValue())
+                 );
+                 if (configDO.getVersion().compareTo(maxVersion) > 0) {
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/ConsumerServiceImpl.java
+Patch:
+@@ -390,7 +390,7 @@ public Map<Long, Integer> getConsumerGroupNumMap(List<ClusterDO> clusterDOList)
+     @Override
+     public boolean checkConsumerGroupExist(OffsetLocationEnum offsetLocation, Long clusterId, String topicName, String consumerGroup) {
+         List<ConsumerGroupDTO>  consumerGroupList = getConsumerGroupList(clusterId, topicName).stream()
+-                .filter(group -> offsetLocation.location.equals(group.getOffsetStoreLocation()) && consumerGroup.equals(group.getConsumerGroup()))
++                .filter(group -> offsetLocation.location.equals(group.getOffsetStoreLocation().location) && consumerGroup.equals(group.getConsumerGroup()))
+                 .collect(Collectors.toList());
+         return !ValidateUtils.isEmptyList(consumerGroupList);
+     }
+
+File: kafka-manager-core/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/ExpertServiceImpl.java
+Patch:
+@@ -186,7 +186,7 @@ private List<TopicInsufficientPartition> getPartitionInsufficientTopics(ClusterD
+                 continue;
+             }
+             Integer suggestedPartitionNum = (int) Math.round(
+-                    bytesIn / topicMetadata.getPartitionNum() / config.getMaxBytesInPerPartitionUnitB()
++                    bytesIn / config.getMaxBytesInPerPartitionUnitB()
+             );
+             if (suggestedPartitionNum - topicMetadata.getPartitionNum() < 1) {
+                 continue;
+
+File: kafka-manager-extends/kafka-manager-account/src/main/java/com/xiaojukeji/kafka/manager/account/component/account/BaseEnterpriseStaffService.java
+Patch:
+@@ -55,4 +55,4 @@ public List<EnterpriseStaff> searchEnterpriseStaffByKeyWord(String keyWord) {
+         }
+         return new ArrayList<>();
+     }
+-}
+\ No newline at end of file
++}
+
+File: kafka-manager-extends/kafka-manager-notify/src/main/java/com/xiaojukeji/kafka/manager/notify/notifyer/KafkaNotifierService.java
+Patch:
+@@ -10,10 +10,10 @@
+  */
+ @Service("notifyService")
+ public class KafkaNotifierService extends AbstractNotifyService {
+-    @Value("${kafka.cluster-id:}")
++    @Value("${notify.kafka.cluster-id:}")
+     private Long clusterId;
+ 
+-    @Value("${notify.topic-name:}")
++    @Value("${notify.kafka.topic-name:}")
+     private String topicName;
+ 
+     @Override
+
+File: kafka-manager-task/src/main/java/com/xiaojukeji/kafka/manager/task/dispatch/metrics/delete/DeleteMetrics.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.xiaojukeji.kafka.manager.task.dispatch.metrics.delete;
+ 
+ import com.xiaojukeji.kafka.manager.common.constant.LogConstant;
+-import com.xiaojukeji.kafka.manager.common.entity.metrics.BrokerMetrics;
+ import com.xiaojukeji.kafka.manager.dao.*;
+ import com.xiaojukeji.kafka.manager.service.utils.ConfigUtils;
+ import com.xiaojukeji.kafka.manager.task.component.AbstractScheduledTask;
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/config/WebMvcConfig.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.xiaojukeji.kafka.manager.web.config;
+ 
++import com.xiaojukeji.kafka.manager.common.constant.ApiPrefix;
+ import com.xiaojukeji.kafka.manager.web.inteceptor.PermissionInterceptor;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.boot.SpringBootConfiguration;
+@@ -31,7 +32,7 @@ public void addViewControllers(ViewControllerRegistry registry) {
+ 
+     @Override
+     public void addInterceptors(InterceptorRegistry registry) {
+-        registry.addInterceptor(permissionInterceptor).addPathPatterns("/api/v1/**");
++        registry.addInterceptor(permissionInterceptor).addPathPatterns(ApiPrefix.API_PREFIX + "**");
+     }
+ 
+     @Override
+
+File: kafka-manager-web/src/main/java/com/xiaojukeji/kafka/manager/web/inteceptor/WebMetricsInterceptor.java
+Patch:
+@@ -3,7 +3,7 @@
+ import com.codahale.metrics.Timer;
+ import com.xiaojukeji.kafka.manager.common.annotations.ApiLevel;
+ import com.xiaojukeji.kafka.manager.common.constant.ApiLevelContent;
+-import com.xiaojukeji.kafka.manager.common.entity.DeprecatedResponseResult;
++import com.xiaojukeji.kafka.manager.common.constant.ApiPrefix;
+ import com.xiaojukeji.kafka.manager.common.entity.Result;
+ import com.xiaojukeji.kafka.manager.common.entity.ResultStatus;
+ import com.xiaojukeji.kafka.manager.common.entity.ao.api.ApiCount;
+@@ -118,8 +118,8 @@ private Object returnErrorDirect(String methodName, ApiCount apiCount) {
+ 
+         ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+         String uri = attributes.getRequest().getRequestURI();
+-        if (uri.contains("gateway/api/v1")) {
+-            return DeprecatedResponseResult.failure("api limited");
++        if (uri.contains(ApiPrefix.GATEWAY_API_V1_PREFIX)) {
++            return Result.buildFailure("api limited");
+         }
+         return new Result<>(ResultStatus.OPERATION_FORBIDDEN);
+     }
+
+File: service/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/TopicServiceImpl.java
+Patch:
+@@ -343,9 +343,9 @@ private TopicOverviewDTO getTopicOverviewDTO(Long clusterId, String topicName, I
+             topicOverviewDTO.setBytesInPerSec(topicMetrics.getBytesInPerSec());
+             topicOverviewDTO.setProduceRequestPerSec(topicMetrics.getTotalProduceRequestsPerSec());
+         } else {
+-//            topicMetrics = jmxService.getSpecifiedTopicMetricsFromJmx(clusterId, topicName, TopicMetrics.getFieldNameList(MetricsType.TOPIC_FLOW_DETAIL), true);
+-            topicOverviewDTO.setBytesInPerSec(0.0);
+-            topicOverviewDTO.setProduceRequestPerSec(0.0);
++            topicMetrics = jmxService.getSpecifiedTopicMetricsFromJmx(clusterId, topicName, TopicMetrics.getFieldNameList(MetricsType.TOPIC_FLOW_DETAIL), true);
++            topicOverviewDTO.setBytesInPerSec(topicMetrics.getBytesInPerSec());
++            topicOverviewDTO.setProduceRequestPerSec(topicMetrics.getBytesOutPerSec());
+         }
+         return topicOverviewDTO;
+     }
+
+File: service/src/main/java/com/xiaojukeji/kafka/manager/service/service/ConsumerService.java
+Patch:
+@@ -7,6 +7,7 @@
+ import com.xiaojukeji.kafka.manager.common.entity.dto.PartitionOffsetDTO;
+ import com.xiaojukeji.kafka.manager.common.entity.dto.consumer.ConsumeDetailDTO;
+ import com.xiaojukeji.kafka.manager.common.entity.po.ClusterDO;
++import org.apache.kafka.common.TopicPartition;
+ 
+ import java.util.List;
+ import java.util.Map;
+@@ -57,7 +58,7 @@ public interface ConsumerService {
+      * @return
+      */
+     List<ConsumerDTO> getMonitoredConsumerList(ClusterDO clusterDO,
+-                                               Map<String, List<PartitionState>> topicNamePartitionStateListMap);
++                                               Map<TopicPartition, Long> partitionOffsetMap);
+ 
+     /**
+      * 重置offset
+
+File: service/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/TopicServiceImpl.java
+Patch:
+@@ -343,9 +343,9 @@ private TopicOverviewDTO getTopicOverviewDTO(Long clusterId, String topicName, I
+             topicOverviewDTO.setBytesInPerSec(topicMetrics.getBytesInPerSec());
+             topicOverviewDTO.setProduceRequestPerSec(topicMetrics.getTotalProduceRequestsPerSec());
+         } else {
+-            topicMetrics = jmxService.getSpecifiedTopicMetricsFromJmx(clusterId, topicName, TopicMetrics.getFieldNameList(MetricsType.TOPIC_FLOW_DETAIL), true);
+-            topicOverviewDTO.setBytesInPerSec(topicMetrics.getBytesInPerSec());
+-            topicOverviewDTO.setProduceRequestPerSec(topicMetrics.getTotalProduceRequestsPerSec());
++//            topicMetrics = jmxService.getSpecifiedTopicMetricsFromJmx(clusterId, topicName, TopicMetrics.getFieldNameList(MetricsType.TOPIC_FLOW_DETAIL), true);
++            topicOverviewDTO.setBytesInPerSec(0.0);
++            topicOverviewDTO.setProduceRequestPerSec(0.0);
+         }
+         return topicOverviewDTO;
+     }
+
+File: service/src/main/java/com/xiaojukeji/kafka/manager/service/service/OrderService.java
+Patch:
+@@ -45,7 +45,7 @@ public interface OrderService {
+      * @date 19/6/23
+      * @return Result
+      */
+-    Result modifyOrderPartition(OrderPartitionDO orderPartitionDO, String operator);
++    Result modifyOrderPartition(OrderPartitionDO orderPartitionDO, String operator, boolean admin);
+ 
+     /**
+      * 查询Topic工单
+
+File: service/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/JmxServiceImpl.java
+Patch:
+@@ -72,6 +72,9 @@ public BrokerMetrics getSpecifiedBrokerMetricsFromJmx(Long clusterId,
+             List<Attribute> attributeValueList = null;
+             try {
+                 attributeValueList = connection.getAttributes(new ObjectName(mbean.getObjectName()), properties).asList();
++            } catch (InstanceNotFoundException e) {
++                logger.warn("getSpecifiedBrokerMetricsFromJmx@JmxServiceImpl, get metrics fail, objectName:{}.", mbean.getObjectName(), e);
++                continue;
+             } catch (Exception e) {
+                 logger.error("getSpecifiedBrokerMetricsFromJmx@JmxServiceImpl, get metrics fail, objectName:{}.", mbean.getObjectName(), e);
+                 continue;
+
+File: service/src/main/java/com/xiaojukeji/kafka/manager/service/service/impl/OrderServiceImpl.java
+Patch:
+@@ -51,7 +51,7 @@ public Result cancelOrder(Long orderId, String operator, OrderTypeEnum orderType
+             if (orderPartitionDO != null) {
+                 orderPartitionDO.setOrderStatus(OrderStatusEnum.CANCELLED.getCode());
+             }
+-            return modifyOrderPartition(orderPartitionDO, operator);
++            return modifyOrderPartition(orderPartitionDO, operator, false);
+         }
+         return new Result(StatusCode.PARAM_ERROR, "order type illegal");
+     }
+@@ -74,10 +74,10 @@ public Result modifyOrderTopic(OrderTopicDO newOrderTopicDO, String operator, bo
+     }
+ 
+     @Override
+-    public Result modifyOrderPartition(OrderPartitionDO newOrderPartitionDO, String operator) {
++    public Result modifyOrderPartition(OrderPartitionDO newOrderPartitionDO, String operator, boolean admin) {
+         if (newOrderPartitionDO == null) {
+             return new Result(StatusCode.PARAM_ERROR, "param illegal, order not exist");
+-        } else if (!newOrderPartitionDO.getApplicant().equals(operator)) {
++        } else if (!admin && !newOrderPartitionDO.getApplicant().equals(operator)) {
+             return new Result(StatusCode.PARAM_ERROR, "without authority to cancel the order");
+         }
+         OrderPartitionDO oldOrderPartitionDO = orderPartitionDao.getById(newOrderPartitionDO.getId());
+
+File: web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/OrderController.java
+Patch:
+@@ -325,9 +325,9 @@ public Result executeApplyPartition(@RequestBody OrderPartitionExecModel reqObj)
+         orderPartitionDO.setApprover(username);
+         orderPartitionDO.setOpinion(reqObj.getApprovalOpinions());
+         orderPartitionDO.setOrderStatus(reqObj.getOrderStatus());
+-        result = orderService.modifyOrderPartition(orderPartitionDO, username);
++        result = orderService.modifyOrderPartition(orderPartitionDO, username, true);
+         if (!StatusCode.SUCCESS.equals(result.getCode())) {
+-            return new Result(StatusCode.OPERATION_ERROR, "create topic success, but update order status failed, err:" + result.getMessage());
++            return new Result(StatusCode.OPERATION_ERROR, "expand topic success, but update order status failed, err:" + result.getMessage());
+         }
+         return new Result();
+     }
+
+File: web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/OrderController.java
+Patch:
+@@ -176,7 +176,7 @@ private Result createTopic(ClusterDO clusterDO, OrderTopicExecModel reqObj, Orde
+         TopicDO topicInfoDO = OrderConverter.convert2TopicInfoDO(orderTopicDO);
+         List<Integer> brokerIdList = regionService.getFullBrokerId(clusterDO.getId(), reqObj.getRegionIdList(), reqObj.getBrokerIdList());
+         Properties topicConfig = new Properties();
+-        topicConfig.setProperty("retention.ms", String.valueOf(reqObj.getRetentionTime()));
++        topicConfig.setProperty("retention.ms", String.valueOf(reqObj.getRetentionTime() * 60 * 60 * 1000));
+         try {
+             TopicMetadata topicMetadata = new TopicMetadata();
+             topicMetadata.setTopic(orderTopicDO.getTopicName());
+
+File: web/src/main/java/com/xiaojukeji/kafka/manager/web/api/versionone/OrderController.java
+Patch:
+@@ -176,7 +176,7 @@ private Result createTopic(ClusterDO clusterDO, OrderTopicExecModel reqObj, Orde
+         TopicDO topicInfoDO = OrderConverter.convert2TopicInfoDO(orderTopicDO);
+         List<Integer> brokerIdList = regionService.getFullBrokerId(clusterDO.getId(), reqObj.getRegionIdList(), reqObj.getBrokerIdList());
+         Properties topicConfig = new Properties();
+-        topicConfig.setProperty("retention.ms", String.valueOf(reqObj.getRetentionTime()));
++        topicConfig.setProperty("retention.ms", String.valueOf(reqObj.getRetentionTime() * 60 * 60 * 1000));
+         try {
+             TopicMetadata topicMetadata = new TopicMetadata();
+             topicMetadata.setTopic(orderTopicDO.getTopicName());
+
+File: web/src/main/java/com/xiaojukeji/kafka/manager/web/converters/BrokerModelConverter.java
+Patch:
+@@ -78,6 +78,7 @@ public static List<BrokerOverallVO> convert2BrokerOverallVOList(Long clusterId,
+                 Double bytesInPerSec = brokerOverallDTO.getBytesInPerSec() / 1024.0 / 1024.0;
+                 brokerOverviewVO.setBytesInPerSec(Math.round(bytesInPerSec * 100) / 100.0);
+             }
++            brokerOverviewVO.setUnderReplicatedPartitionCount(brokerOverallDTO.getUnderReplicatedPartitions());
+             brokerOverviewVO.setLeaderCount(brokerOverallDTO.getLeaderCount());
+             if (brokerOverallDTO.getPartitionCount() != null && brokerOverallDTO.getUnderReplicatedPartitions() != null) {
+                 brokerOverviewVO.setNotUnderReplicatedPartitionCount(brokerOverallDTO.getPartitionCount() - brokerOverallDTO.getUnderReplicatedPartitions());
+
+File: web/src/main/java/com/xiaojukeji/kafka/manager/web/converters/BrokerModelConverter.java
+Patch:
+@@ -78,6 +78,7 @@ public static List<BrokerOverallVO> convert2BrokerOverallVOList(Long clusterId,
+                 Double bytesInPerSec = brokerOverallDTO.getBytesInPerSec() / 1024.0 / 1024.0;
+                 brokerOverviewVO.setBytesInPerSec(Math.round(bytesInPerSec * 100) / 100.0);
+             }
++            brokerOverviewVO.setUnderReplicatedPartitionCount(brokerOverallDTO.getUnderReplicatedPartitions());
+             brokerOverviewVO.setLeaderCount(brokerOverallDTO.getLeaderCount());
+             if (brokerOverallDTO.getPartitionCount() != null && brokerOverallDTO.getUnderReplicatedPartitions() != null) {
+                 brokerOverviewVO.setNotUnderReplicatedPartitionCount(brokerOverallDTO.getPartitionCount() - brokerOverallDTO.getUnderReplicatedPartitions());
+
+File: web/src/main/java/com/xiaojukeji/kafka/manager/web/converters/BrokerModelConverter.java
+Patch:
+@@ -78,6 +78,7 @@ public static List<BrokerOverallVO> convert2BrokerOverallVOList(Long clusterId,
+                 Double bytesInPerSec = brokerOverallDTO.getBytesInPerSec() / 1024.0 / 1024.0;
+                 brokerOverviewVO.setBytesInPerSec(Math.round(bytesInPerSec * 100) / 100.0);
+             }
++            brokerOverviewVO.setUnderReplicatedPartitionCount(brokerOverallDTO.getUnderReplicatedPartitions());
+             brokerOverviewVO.setLeaderCount(brokerOverallDTO.getLeaderCount());
+             if (brokerOverallDTO.getPartitionCount() != null && brokerOverallDTO.getUnderReplicatedPartitions() != null) {
+                 brokerOverviewVO.setNotUnderReplicatedPartitionCount(brokerOverallDTO.getPartitionCount() - brokerOverallDTO.getUnderReplicatedPartitions());
+

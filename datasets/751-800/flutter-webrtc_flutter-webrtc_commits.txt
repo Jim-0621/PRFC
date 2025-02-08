@@ -1,0 +1,1283 @@
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -584,6 +584,7 @@ public void onStop() {
+             track_.putBoolean("remote", false);
+ 
+             videoTracks.pushMap(track_);
++            mediaStream.addTrack(displayTrack);
+         }
+ 
+         String streamId = mediaStream.getId();
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterRTCFrameCryptor.java
+Patch:
+@@ -152,8 +152,6 @@ private FrameCryptorAlgorithm frameCryptorAlgorithmFromInt(int algorithm) {
+         switch (algorithm) {
+             case 0:
+                 return FrameCryptorAlgorithm.AES_GCM;
+-            case 1:
+-                return FrameCryptorAlgorithm.AES_CBC;
+             default:
+                 return FrameCryptorAlgorithm.AES_GCM;
+         }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/StateProvider.java
+Patch:
+@@ -20,9 +20,9 @@ public interface StateProvider {
+ 
+   boolean putLocalStream(String streamId, MediaStream stream);
+ 
+-  boolean putLocalTrack(String trackId, MediaStreamTrack track);
++  boolean putLocalTrack(String trackId, LocalTrack track);
+ 
+-  MediaStreamTrack getLocalTrack(String trackId);
++  LocalTrack getLocalTrack(String trackId);
+ 
+   String getNextStreamUUID();
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -511,6 +511,7 @@ public void onAddTrack(RtpReceiver receiver, MediaStream[] mediaStreams) {
+           String transceiverId = transceiver.getMid();
+           if (null == transceiverId) {
+             transceiverId = stateProvider.getNextStreamUUID();
++            this.transceivers.put(transceiverId,transceiver);
+           }
+           params.putMap("transceiver", transceiverToMap(transceiverId, transceiver));
+         }
+@@ -1106,6 +1107,7 @@ public void getTransceivers(Result result) {
+       String transceiverId = transceiver.getMid();
+       if (null == transceiverId) {
+         transceiverId = stateProvider.getNextStreamUUID();
++        this.transceivers.put(transceiverId,transceiver);
+       }
+       transceiversParams.pushMap(new ConstraintsMap(transceiverToMap(transceiverId, transceiver)));
+     }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/audio/AudioDeviceKind.java
+Patch:
+@@ -6,7 +6,7 @@
+ 
+ public enum AudioDeviceKind {
+     BLUETOOTH("bluetooth", AudioDevice.BluetoothHeadset.class),
+-    WIRED_HEADSET("headset", AudioDevice.WiredHeadset.class),
++    WIRED_HEADSET("wired-headset", AudioDevice.WiredHeadset.class),
+     SPEAKER("speaker", AudioDevice.Speakerphone.class),
+     EARPIECE("earpiece", AudioDevice.Earpiece.class);
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/audio/AudioSwitchManager.java
+Patch:
+@@ -269,6 +269,8 @@ public void enableSpeakerButPreferBluetooth() {
+ 
+         if (audioDevice == null) {
+             selectAudioOutput(AudioDevice.Speakerphone.class);
++        } else {
++            selectAudioOutput(audioDevice.getClass());
+         }
+     }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -82,7 +82,6 @@
+  * complexity and to (somewhat) separate concerns.
+  */
+ class GetUserMediaImpl {
+-
+     private static final int DEFAULT_WIDTH = 1280;
+     private static final int DEFAULT_HEIGHT = 720;
+     private static final int DEFAULT_FPS = 30;
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -34,7 +34,6 @@
+ 
+ import org.webrtc.AudioTrack;
+ import org.webrtc.CryptoOptions;
+-import org.webrtc.DefaultVideoDecoderFactory;
+ import org.webrtc.DtmfSender;
+ import org.webrtc.EglBase;
+ import org.webrtc.IceCandidate;
+@@ -64,6 +63,7 @@
+ import org.webrtc.SessionDescription;
+ import org.webrtc.SessionDescription.Type;
+ import org.webrtc.VideoTrack;
++import org.webrtc.WrappedVideoDecoderFactory;
+ import org.webrtc.audio.AudioDeviceModule;
+ import org.webrtc.audio.JavaAudioDeviceModule;
+ 
+@@ -166,7 +166,7 @@ private void ensureInitialized() {
+     mFactory = PeerConnectionFactory.builder()
+             .setOptions(new Options())
+             .setVideoEncoderFactory(new SimulcastVideoEncoderFactoryWrapper(eglContext, true, true))
+-            .setVideoDecoderFactory(new DefaultVideoDecoderFactory(eglContext))
++            .setVideoDecoderFactory(new WrappedVideoDecoderFactory(eglContext))
+             .setAudioDeviceModule(audioDeviceModule)
+             .createPeerConnectionFactory();
+   }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -22,6 +22,7 @@
+ import java.util.HashMap;
+ import java.util.Iterator;
+ import java.util.Map;
++import java.util.LinkedHashMap;
+ import java.util.List;
+ import java.util.UUID;
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -92,9 +92,7 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
+   private final BinaryMessenger messenger;
+   private final Context context;
+   private final TextureRegistry textures;
+-
+   private PeerConnectionFactory mFactory;
+-
+   private final Map<String, MediaStream> localStreams = new HashMap<>();
+   private final Map<String, MediaStreamTrack> localTracks = new HashMap<>();
+   private final LongSparseArray<FlutterRTCVideoRenderer> renders = new LongSparseArray<>();
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -351,7 +351,7 @@ private ConstraintsMap getUserAudio(ConstraintsMap constraints, MediaStream stre
+         AudioSource audioSource = pcFactory.createAudioSource(audioConstraints);
+ 
+         if(deviceId == null) {
+-            android.media.AudioManager audioManager = ((android.media.AudioManager) stateProvider.getActivity().getApplicationContext()
++            android.media.AudioManager audioManager = ((android.media.AudioManager) stateProvider.getApplicationContext()
+                     .getSystemService(Context.AUDIO_SERVICE));
+             final AudioDeviceInfo[] devices = audioManager.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS);
+             if(devices.length > 0) {
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterRTCVideoRenderer.java
+Patch:
+@@ -21,7 +21,7 @@ public class FlutterRTCVideoRenderer implements EventChannel.StreamHandler {
+ 
+     private static final String TAG = FlutterWebRTCPlugin.TAG;
+     private final SurfaceTexture texture;
+-    private TextureRegistry.SurfaceTextureEntry entry;
++    private final TextureRegistry.SurfaceTextureEntry entry;
+     private int id = -1;
+     private MediaStream mediaStream;
+ 
+@@ -90,7 +90,7 @@ public void onFrameResolutionChanged(
+         };
+     }
+ 
+-    private SurfaceTextureRenderer surfaceTextureRenderer;
++    private final SurfaceTextureRenderer surfaceTextureRenderer;
+ 
+     /**
+      * The {@code VideoTrack}, if any, rendered by this {@code FlutterRTCVideoRenderer}.
+@@ -212,7 +212,7 @@ public void setVideoTrack(VideoTrack videoTrack) {
+                     Log.w(TAG, "FlutterRTCVideoRenderer.setVideoTrack, set video track to " + videoTrack.id());
+                     tryAddRendererToVideoTrack();
+                 } catch (Exception e) {
+-                    Log.e(TAG, "tryAddRendererToVideoTrack " + e.toString());
++                    Log.e(TAG, "tryAddRendererToVideoTrack " + e);
+                 }
+             } else {
+                 Log.w(TAG, "FlutterRTCVideoRenderer.setVideoTrack, set video track to null");
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -97,8 +97,8 @@ public void onDetachedFromActivity() {
+         methodCallHandler.setActivity(null);
+         if (this.observer != null) {
+             this.lifecycle.removeObserver(this.observer);
+-            if (this.application!=null) {
+-                this.application.unregisterActivityLifecycleCallbacks(this.observer);
++            if (application!=null) {
++                application.unregisterActivityLifecycleCallbacks(this.observer);
+             }
+         }
+         this.lifecycle = null;
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -142,7 +142,7 @@ public static class ScreenRequestPermissionsFragment extends Fragment {
+ 
+         private ResultReceiver resultReceiver = null;
+         private int requestCode = 0;
+-        private int resultCode = 0;
++        private final int resultCode = 0;
+ 
+         private void checkSelfPermissions(boolean requestPermissions) {
+             if (resultCode != Activity.RESULT_OK) {
+@@ -990,7 +990,7 @@ void hasTorch(String trackId, Result result) {
+             List<String> supportedModes = params.getSupportedFlashModes();
+ 
+             result.success(
+-                    (supportedModes == null) ? false : supportedModes.contains(Parameters.FLASH_MODE_TORCH));
++                    supportedModes != null && supportedModes.contains(Parameters.FLASH_MODE_TORCH));
+             return;
+         }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/record/FrameCapturer.java
+Patch:
+@@ -23,7 +23,7 @@
+ import io.flutter.plugin.common.MethodChannel;
+ 
+ public class FrameCapturer implements VideoSink {
+-    private VideoTrack videoTrack;
++    private final VideoTrack videoTrack;
+     private File file;
+     private final MethodChannel.Result callback;
+     private boolean gotFrame = false;
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/utils/ConstraintsMap.java
+Patch:
+@@ -72,7 +72,7 @@ public ObjectType getType(String name) {
+         } else if (value instanceof Byte) {
+             return ObjectType.Byte;
+         } else {
+-            throw new IllegalArgumentException("Invalid value " + value.toString() + " for key " + name +
++            throw new IllegalArgumentException("Invalid value " + value + " for key " + name +
+                     "contained in ConstraintsMap");
+         }
+     }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -1230,6 +1230,9 @@ public void getSources(Result result) {
+                 device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADSET) {
+           int type = (device.getType() & 0xFF);
+           String label = Build.VERSION.SDK_INT < Build.VERSION_CODES.P ? String.valueOf(i) : device.getAddress();
++          if(label.equals("")  && device.getType() == AudioDeviceInfo.TYPE_WIRED_HEADSET) {
++            label = "Wired Headset";
++          }
+           ConstraintsMap audio = new ConstraintsMap();
+           audio.putString("label", label);
+           audio.putString("deviceId", String.valueOf(i));
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -684,7 +684,7 @@ private ConstraintsMap getUserVideo(ConstraintsMap constraints, MediaStream medi
+             videoConstraintsMap = constraints.getMap("video");
+             if (videoConstraintsMap.hasKey("mandatory")
+                     && videoConstraintsMap.getType("mandatory") == ObjectType.Map) {
+-                videoConstraintsMandatory.merge(videoConstraintsMap.getMap("mandatory").toMap());
++                videoConstraintsMandatory = videoConstraintsMap.getMap("mandatory");
+             }
+         }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterRTCVideoRenderer.java
+Patch:
+@@ -53,7 +53,9 @@ public void onFirstFrameRendered() {
+                 ConstraintsMap params = new ConstraintsMap();
+                 params.putString("event", "didFirstFrameRendered");
+                 params.putInt("id", id);
+-                eventSink.success(params.toMap());
++                if (eventSink != null) {
++                    eventSink.success(params.toMap());
++                }
+             }
+ 
+             @Override
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -727,7 +727,6 @@ public void onMethodCall(MethodCall call, @NonNull Result notSafeResult) {
+         List<Map<String, Object>> codecs = call.argument("codecs");
+         String transceiverId = call.argument("transceiverId");
+         rtpTransceiverSetCodecPreferences(peerConnectionId, transceiverId, codecs, result);
+-        result.success(null);
+         break;
+       default:
+         result.notImplemented();
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/record/FrameCapturer.java
+Patch:
+@@ -52,7 +52,6 @@ public void onFrame(VideoFrame videoFrame) {
+             i420Buffer.getStrideU(),
+             i420Buffer.getStrideV()
+         };
+-        i420Buffer.release();
+         final int chromaWidth = (width + 1) / 2;
+         final int chromaHeight = (height + 1) / 2;
+         final int minSize = width * height + chromaWidth * chromaHeight * 2;
+@@ -65,6 +64,7 @@ public void onFrame(VideoFrame videoFrame) {
+             height,
+             strides
+         );
++        i420Buffer.release();
+         videoFrame.release();
+         new Handler(Looper.getMainLooper()).post(() -> {
+             videoTrack.removeSink(this);
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -36,6 +36,7 @@
+ import androidx.annotation.Nullable;
+ import androidx.annotation.RequiresApi;
+ 
++import com.cloudwebrtc.webrtc.audio.AudioSwitchManager;
+ import com.cloudwebrtc.webrtc.record.AudioChannel;
+ import com.cloudwebrtc.webrtc.record.AudioSamplesInterceptor;
+ import com.cloudwebrtc.webrtc.record.MediaRecorderImpl;
+@@ -325,6 +326,7 @@ private String getSourceIdConstraint(ConstraintsMap mediaConstraints) {
+     }
+ 
+     private AudioTrack getUserAudio(ConstraintsMap constraints) {
++        AudioSwitchManager.instance.start();
+         MediaConstraints audioConstraints;
+         if (constraints.getType("audio") == ObjectType.Boolean) {
+             audioConstraints = new MediaConstraints();
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/audio/AudioSwitchManager.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.cloudwebrtc.webrtc.audio;
+ 
++import android.annotation.SuppressLint;
+ import android.content.Context;
+ import android.media.AudioManager;
+ import android.os.Handler;
+@@ -19,6 +20,8 @@
+ import kotlin.jvm.functions.Function2;
+ 
+ public class AudioSwitchManager {
++    @SuppressLint("StaticFieldLeak")
++    public static AudioSwitchManager instance;
+     @NonNull
+     private final Context context;
+     @NonNull
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -460,7 +460,7 @@ public void onStop() {
+                         PeerConnectionFactory pcFactory = stateProvider.getPeerConnectionFactory();
+                         VideoSource videoSource = pcFactory.createVideoSource(true);
+ 
+-                        String threadName = Thread.currentThread().getName();
++                        String threadName = Thread.currentThread().getName() + "_texture_screen_thread";
+                         SurfaceTextureHelper surfaceTextureHelper =
+                                 SurfaceTextureHelper.create(threadName, EglUtils.getRootEglBaseContext());
+                         videoCapturer.initialize(
+@@ -680,7 +680,7 @@ private VideoTrack getUserVideo(ConstraintsMap constraints) {
+ 
+         PeerConnectionFactory pcFactory = stateProvider.getPeerConnectionFactory();
+         VideoSource videoSource = pcFactory.createVideoSource(false);
+-        String threadName = Thread.currentThread().getName();
++        String threadName = Thread.currentThread().getName() + "_texture_camera_thread";
+         SurfaceTextureHelper surfaceTextureHelper =
+                 SurfaceTextureHelper.create(threadName, EglUtils.getRootEglBaseContext());
+         videoCapturer.initialize(
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -446,9 +446,9 @@ public void onMethodCall(MethodCall call, @NonNull Result notSafeResult) {
+         } else {
+           stream = getStreamForId(streamId, ownerTag);
+         }
+-        if (!trackId.equals("0")){
+-          render.setStream(stream,trackId);
+-        }else {
++        if (trackId != null && !trackId.equals("0")){
++          render.setStream(stream, trackId);
++        } else {
+           render.setStream(stream);
+         }
+         result.success(null);
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -121,7 +121,6 @@ private void startListening(final Context context, BinaryMessenger messenger,
+             sendEvent(params.toMap());
+             return null;
+         };
+-        audioSwitchManager.start();
+     }
+ 
+     private void stopListening() {
+@@ -131,7 +130,6 @@ private void stopListening() {
+         eventChannel.setStreamHandler(null);
+         if (audioSwitchManager != null) {
+             Log.d(TAG, "Stopping the audio manager...");
+-            audioSwitchManager.stop();
+             audioSwitchManager = null;
+         }
+     }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -984,14 +984,14 @@ public String peerConnectionInit(ConstraintsMap configuration, ConstraintsMap co
+     if (mPeerConnectionObservers.size() == 0) {
+       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+               || context.getApplicationInfo().targetSdkVersion < Build.VERSION_CODES.S) {
+-        //audioSwitchManager.start();
++        audioSwitchManager.start();
+       } else {
+         ArrayList<String> permissions = new ArrayList<>();
+         permissions.add(Manifest.permission.BLUETOOTH_CONNECT);
+         requestPermissions(
+                 permissions,
+                 (args) -> {
+-                  //audioSwitchManager.start();
++                  audioSwitchManager.start();
+                 },
+                 (args) -> {
+                 });
+@@ -1567,7 +1567,7 @@ public void peerConnectionDispose(final String id) {
+       mPeerConnectionObservers.remove(id);
+     }
+     if (mPeerConnectionObservers.size() == 0) {
+-      //audioSwitchManager.stop();
++      audioSwitchManager.stop();
+     }
+   }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -193,7 +193,7 @@ void getStats(String trackId, final Result result) {
+     MediaStreamTrack track = null;
+     if (trackId == null
+         || trackId.isEmpty()
+-        || (track = stateProvider.getLocalTracks().get(trackId)) != null
++        || (track = stateProvider.getLocalTrack(trackId)) != null
+         || (track = remoteTracks.get(trackId)) != null) {
+       peerConnection.getStats(
+           new StatsObserver() {
+@@ -1019,7 +1019,7 @@ public void rtpSenderSetTrack(String rtpSenderId, MediaStreamTrack track, Result
+             resultError("rtpSenderSetTrack", "sender is null", result);
+             return;
+         }
+-        sender.setTrack(track, replace );
++        sender.setTrack(track, false);
+         result.success(null);
+     }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -369,7 +369,7 @@ public void onMethodCall(MethodCall call, @NonNull Result notSafeResult) {
+       }
+       case "trackDispose": {
+         String trackId = call.argument("trackId");
+-        localTracks.remove(trackId);
++        mediaStreamTrackStop(trackId);
+         result.success(null);
+         break;
+       }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterRTCVideoRenderer.java
+Patch:
+@@ -11,7 +11,6 @@
+ 
+ import org.webrtc.EglBase;
+ import org.webrtc.MediaStream;
+-import org.webrtc.MediaStreamTrack;
+ import org.webrtc.RendererCommon.RendererEvents;
+ import org.webrtc.VideoTrack;
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -1065,10 +1065,10 @@ public class VideoCapturerInfo {
+     }
+ 
+     @RequiresApi(api = VERSION_CODES.M)
+-    void setPreferredInputDevice(int i){
++    void setPreferredInputDevice(int i) {
+         android.media.AudioManager audioManager = ((android.media.AudioManager) applicationContext.getSystemService(Context.AUDIO_SERVICE));
+         final AudioDeviceInfo[] devices = audioManager.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS);
+-        if (devices.length>i){
++        if (devices.length > i) {
+             audioDeviceModule.setPreferredInputDevice(devices[i]);
+         }
+     }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.cloudwebrtc.webrtc;
+ 
+ import android.util.Log;
+-import android.util.SparseArray;
+ import androidx.annotation.Nullable;
+ import com.cloudwebrtc.webrtc.utils.AnyThreadSink;
+ import com.cloudwebrtc.webrtc.utils.ConstraintsArray;
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -354,7 +354,7 @@ public void onMethodCall(MethodCall call, @NonNull Result notSafeResult) {
+         String trackId = call.argument("trackId");
+         mediaStreamAddTrack(streamId, trackId, result);
+         for (int i = 0; i < renders.size(); i++) {
+-          FlutterRTCVideoRenderer renderer = renders.get(i);
++          FlutterRTCVideoRenderer renderer = renders.valueAt(i);
+           if (renderer.checkMediaStream(streamId)) {
+             renderer.setVideoTrack((VideoTrack) localTracks.get(trackId));
+           }
+@@ -366,7 +366,7 @@ public void onMethodCall(MethodCall call, @NonNull Result notSafeResult) {
+         String trackId = call.argument("trackId");
+         mediaStreamRemoveTrack(streamId, trackId, result);
+         for (int i = 0; i < renders.size(); i++) {
+-          FlutterRTCVideoRenderer renderer = renders.get(i);
++          FlutterRTCVideoRenderer renderer = renders.valueAt(i);
+           if (renderer.checkVideoTrack(trackId)) {
+             renderer.setVideoTrack(null);
+           }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -53,7 +53,7 @@ class PeerConnectionObserver implements PeerConnection.Observer, EventChannel.St
+     this.messenger = messenger;
+     this.id = id;
+ 
+-    eventChannel = new EventChannel(messenger, "FlutterWebRTC/peerConnectoinEvent" + id);
++    eventChannel = new EventChannel(messenger, "FlutterWebRTC/peerConnectionEvent" + id);
+     eventChannel.setStreamHandler(this);
+   }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -123,7 +123,7 @@ void createDataChannel(String label, ConstraintsMap config, Result result) {
+         registerDataChannelObserver(dataChannelId, dataChannel);
+ 
+         ConstraintsMap params = new ConstraintsMap();
+-        params.putInt("id", dataChannel.id());
++        params.putInt("id", dataChannelId);
+         params.putString("label", dataChannel.label());
+         result.success(params.toMap());
+     } else {
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -1145,7 +1145,7 @@ public void mediaStreamTrackStop(final String id) {
+   }
+ 
+   public void mediaStreamTrackSetEnabled(final String id, final boolean enabled) {
+-    MediaStreamTrack track = localTracks.get(id);
++    MediaStreamTrack track = getTrackForId(id);
+ 
+     if (track == null) {
+       Log.d(TAG, "mediaStreamTrackSetEnabled() track is null");
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -94,7 +94,9 @@ public void onDetachedFromActivity() {
+         methodCallHandler.setActivity(null);
+         if (this.observer != null) {
+             this.lifecycle.removeObserver(this.observer);
+-            this.application.unregisterActivityLifecycleCallbacks(this.observer);
++            if (this.application!=null) {
++                this.application.unregisterActivityLifecycleCallbacks(this.observer);
++            }
+         }
+         this.lifecycle = null;
+     }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -60,7 +60,6 @@
+ import org.webrtc.MediaStream;
+ import org.webrtc.MediaStreamTrack;
+ import org.webrtc.PeerConnectionFactory;
+-import org.webrtc.ScreenCapturerAndroid;
+ import org.webrtc.SurfaceTextureHelper;
+ import org.webrtc.VideoCapturer;
+ import org.webrtc.VideoSource;
+@@ -466,7 +465,7 @@ protected void onReceiveResult(int requestCode, Bundle resultData) {
+                         MediaStreamTrack[] tracks = new MediaStreamTrack[1];
+                         VideoCapturer videoCapturer = null;
+                         videoCapturer =
+-                                new ScreenCapturerAndroid(
++                                new OrientationAwareScreenCapturer(
+                                         mediaProjectionData,
+                                         new MediaProjection.Callback() {
+                                             @Override
+@@ -502,7 +501,7 @@ public void onStop() {
+                         info.capturer = videoCapturer;
+ 
+                         videoCapturer.startCapture(info.width, info.height, info.fps);
+-                        Log.d(TAG, "ScreenCapturerAndroid.startCapture: " + info.width + "x" + info.height + "@" + info.fps);
++                        Log.d(TAG, "OrientationAwareScreenCapturer.startCapture: " + info.width + "x" + info.height + "@" + info.fps);
+ 
+                         String trackId = stateProvider.getNextTrackUUID();
+                         mVideoCapturers.put(trackId, info);
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -999,6 +999,9 @@ public void getTransceivers(Result result) {
+     }
+ 
+     protected MediaStreamTrack getTransceiversTrack(String trackId) {
++        if(this.configuration.sdpSemantics != PeerConnection.SdpSemantics.UNIFIED_PLAN) {
++            return null;
++        }
+         MediaStreamTrack track = null;
+         List<RtpTransceiver> transceivers = peerConnection.getTransceivers();
+         for (RtpTransceiver transceiver : transceivers) {
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -669,7 +669,7 @@ private RtpTransceiver.RtpTransceiverInit mapToRtpTransceiverInit(Map<String, Ob
+       if(encodingsParams != null) {
+           for (int i=0;i< encodingsParams.size();i++){
+               Map<String, Object> params = encodingsParams.get(i);
+-              sendEncodings.add(mapToEncoding(params));
++              sendEncodings.add(0, mapToEncoding(params));
+           }
+           init = new RtpTransceiver.RtpTransceiverInit(stringToTransceiverDirection(direction) ,streamIds, sendEncodings);
+       } else {
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -153,7 +153,7 @@ void dataChannelSend(int dataChannelId, ByteBuffer byteBuffer, Boolean isBinary)
+     RtpTransceiver getRtpTransceiverById(String id) {
+         List<RtpTransceiver> transceivers = peerConnection.getTransceivers();
+         for(RtpTransceiver transceiver : transceivers) {
+-            if (id == transceiver.getMid()){
++            if (id.equals(transceiver.getMid())){
+                 return transceiver;
+             }
+         }
+@@ -173,7 +173,7 @@ RtpSender getRtpSenderById(String id) {
+     RtpReceiver getRtpReceiverById(String id) {
+         List<RtpReceiver> receivers = peerConnection.getReceivers();
+         for(RtpReceiver receiver : receivers) {
+-            if (id == receiver.id()){
++            if (id.equals(receiver.id())){
+                 return receiver;
+             }
+         }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -1129,18 +1129,18 @@ public void mediaStreamTrackSetVolume(final String id, final double volume) {
+   public void mediaStreamAddTrack(final String streaemId, final String trackId, Result result) {
+     MediaStream mediaStream = localStreams.get(streaemId);
+     if (mediaStream != null) {
+-      MediaStreamTrack track = localTracks.get(trackId);
++      MediaStreamTrack track = getTrackForId(trackId);//localTracks.get(trackId);
+       if (track != null) {
+         if (track.kind().equals("audio")) {
+           mediaStream.addTrack((AudioTrack) track);
+         } else if (track.kind().equals("video")) {
+           mediaStream.addTrack((VideoTrack) track);
+         }
+       } else {
+-        resultError("mediaStreamAddTrack", "mediaStreamAddTrack() track [" + trackId + "] is null", result);
++        resultError("mediaStreamAddTrack", "mediaStreamAddTrack() tracking [" + trackId + "] is null", result);
+       }
+     } else {
+-      resultError("mediaStreamAddTrack", "mediaStreamAddTrack() track [" + trackId + "] is null", result);
++      resultError("mediaStreamAddTrack", "mediaStreamAddTrack() streamId [" + streaemId + "] is null", result);
+     }
+     result.success(null);
+   }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -482,7 +482,8 @@ public void onMethodCall(MethodCall call, @NonNull Result notSafeResult) {
+             }
+           }
+           AudioChannel audioChannel = null;
+-          if (call.hasArgument("audioChannel")) {
++          if (call.hasArgument("audioChannel")
++                  && call.argument("audioChannel") != null) {
+             audioChannel = AudioChannel.values()[(Integer) call.argument("audioChannel")];
+           }
+           Integer recorderId = call.argument("recorderId");
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -163,7 +163,7 @@ RtpTransceiver getRtpTransceiverById(String id) {
+     RtpSender getRtpSenderById(String id) {
+         List<RtpSender> senders = peerConnection.getSenders();
+         for(RtpSender sender : senders) {
+-            if (id == sender.id()){
++            if (id.equals(sender.id())){
+                 return sender;
+             }
+         }
+@@ -777,7 +777,7 @@ private Map<String, Object> mediaStreamToMap(MediaStream stream){
+   private Map<String, Object> mediaTrackToMap(MediaStreamTrack track){
+       ConstraintsMap info = new ConstraintsMap();
+       if(track != null){
+-          info.putString("trackId", track.id());
++          info.putString("id", track.id());
+           info.putString("label",track.getClass() == VideoTrack.class? "video": "audio");
+           info.putString("kind",track.kind());
+           info.putBoolean("enabled", track.enabled());
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -101,9 +101,6 @@ void createDataChannel(String label, ConstraintsMap config, Result result) {
+       if (config.hasKey("ordered")) {
+         init.ordered = config.getBoolean("ordered");
+       }
+-      if (config.hasKey("maxRetransmitTime")) {
+-        init.maxRetransmitTimeMs = config.getInt("maxRetransmitTime");
+-      }
+       if (config.hasKey("maxRetransmits")) {
+         init.maxRetransmits = config.getInt("maxRetransmits");
+       }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/MethodCallHandlerImpl.java
+Patch:
+@@ -916,10 +916,11 @@ private RTCConfiguration parseRTCConfiguration(ConstraintsMap map) {
+ 
+   public String peerConnectionInit(ConstraintsMap configuration, ConstraintsMap constraints) {
+     String peerConnectionId = getNextStreamUUID();
+-    PeerConnectionObserver observer = new PeerConnectionObserver(this, messenger, peerConnectionId);
++    RTCConfiguration conf =  parseRTCConfiguration(configuration);
++    PeerConnectionObserver observer = new PeerConnectionObserver(conf,this, messenger, peerConnectionId);
+     PeerConnection peerConnection
+         = mFactory.createPeerConnection(
+-        parseRTCConfiguration(configuration),
++        conf,
+         parseMediaConstraints(constraints),
+         observer);
+     observer.setPeerConnection(peerConnection);
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterRTCVideoRenderer.java
+Patch:
+@@ -170,9 +170,10 @@ private void setVideoTrack(VideoTrack videoTrack) {
+             this.videoTrack = videoTrack;
+ 
+             if (videoTrack != null) {
++                Log.w(TAG, "FlutterRTCVideoRenderer.setVideoTrack, set video track to " + videoTrack.id());
+                 tryAddRendererToVideoTrack();
+             } else {
+-                Log.w(TAG, "VideoTrack is null");
++                Log.w(TAG, "FlutterRTCVideoRenderer.setVideoTrack, set video track to null");
+             }
+         }
+     }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/SurfaceTextureRenderer.java
+Patch:
+@@ -56,7 +56,7 @@ public void init(final EglBase.Context sharedContext,
+       isFirstFrameRendered = false;
+       rotatedFrameWidth = 0;
+       rotatedFrameHeight = 0;
+-      frameRotation = 0;
++      frameRotation = -1;
+     }
+     super.init(sharedContext, configAttributes, drawer);
+   }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -673,15 +673,15 @@ private VideoTrack getUserVideo(ConstraintsMap constraints) {
+ 
+         // Fall back to defaults if keys are missing.
+         int width
+-            = videoConstraintsMandatory.hasKey("minWidth")
++            = videoConstraintsMandatory != null && videoConstraintsMandatory.hasKey("minWidth")
+                 ? videoConstraintsMandatory.getInt("minWidth")
+                 : DEFAULT_WIDTH;
+         int height
+-            = videoConstraintsMandatory.hasKey("minHeight")
++            = videoConstraintsMandatory != null && videoConstraintsMandatory.hasKey("minHeight")
+                 ? videoConstraintsMandatory.getInt("minHeight")
+                 : DEFAULT_HEIGHT;
+         int fps
+-            = videoConstraintsMandatory.hasKey("minFrameRate")
++            = videoConstraintsMandatory != null && videoConstraintsMandatory.hasKey("minFrameRate")
+                 ? videoConstraintsMandatory.getInt("minFrameRate")
+                 : DEFAULT_FPS;
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -673,15 +673,15 @@ private VideoTrack getUserVideo(ConstraintsMap constraints) {
+ 
+         // Fall back to defaults if keys are missing.
+         int width
+-            = videoConstraintsMandatory.hasKey("minWidth")
++            = videoConstraintsMandatory != null && videoConstraintsMandatory.hasKey("minWidth")
+                 ? videoConstraintsMandatory.getInt("minWidth")
+                 : DEFAULT_WIDTH;
+         int height
+-            = videoConstraintsMandatory.hasKey("minHeight")
++            = videoConstraintsMandatory != null && videoConstraintsMandatory.hasKey("minHeight")
+                 ? videoConstraintsMandatory.getInt("minHeight")
+                 : DEFAULT_HEIGHT;
+         int fps
+-            = videoConstraintsMandatory.hasKey("minFrameRate")
++            = videoConstraintsMandatory != null && videoConstraintsMandatory.hasKey("minFrameRate")
+                 ? videoConstraintsMandatory.getInt("minFrameRate")
+                 : DEFAULT_FPS;
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -82,7 +82,8 @@ void close() {
+         remoteTracks.clear();
+         dataChannels.clear();
+     }
+-    void  dispose(){
++
++    void  dispose() {
+         this.close();
+         peerConnection.dispose();
+         eventChannel.setStreamHandler(null);
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -298,7 +298,7 @@ public void onMethodCall(MethodCall call, Result notSafeResult) {
+         } else if (call.method.equals("videoRendererSetSrcObject")) {
+             int textureId = call.argument("textureId");
+             String streamId = call.argument("streamId");
+-            String peerConnectionId = call.argument("peerConnectionId");
++            String peerConnectionId = call.argument("ownerTag");
+             FlutterRTCVideoRenderer render = renders.get(textureId);
+ 
+             if (render == null) {
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -375,9 +375,9 @@ public void onMethodCall(MethodCall call, Result notSafeResult) {
+                 if (track instanceof VideoTrack)
+                     new FrameCapturer((VideoTrack) track, new File(path), result);
+                 else
+-                    result.error("It's not video track", null, null);
++                    result.error(null, "It's not video track", null);
+             } else {
+-                result.error("Track is null", null, null);
++                result.error(null, "Track is null", null);
+             }
+         } else if (call.method.equals("getLocalDescription")) {
+             String peerConnectionId = call.argument("peerConnectionId");
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -234,6 +234,7 @@ public void onMethodCall(MethodCall call, Result notSafeResult) {
+             String peerConnectionId = call.argument("peerConnectionId");
+             int dataChannelId = call.argument("dataChannelId");
+             dataChannelClose(peerConnectionId, dataChannelId);
++            result.success(null);
+         } else if (call.method.equals("streamDispose")) {
+             String streamId = call.argument("streamId");
+             mediaStreamRelease(streamId);
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -77,7 +77,6 @@ void setPeerConnection(PeerConnection peerConnection) {
+     }
+ 
+     void close() {
+-        eventChannel.setStreamHandler(null);
+         peerConnection.close();
+         remoteStreams.clear();
+         remoteTracks.clear();
+@@ -86,6 +85,7 @@ void close() {
+     void  dispose(){
+         this.close();
+         peerConnection.dispose();
++        eventChannel.setStreamHandler(null);
+     }
+ 
+     void createDataChannel(String label, ConstraintsMap config, Result result) {
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -314,7 +314,7 @@ public void onMethodCall(MethodCall call, Result notSafeResult) {
+                 VideoTrack videoTrack = null;
+                 String videoTrackId = call.argument("videoTrackId");
+                 if (videoTrackId != null) {
+-                    MediaStreamTrack track = localTracks.get(videoTrackId);
++                    MediaStreamTrack track = getTrackForId(videoTrackId);
+                     if (track instanceof VideoTrack)
+                         videoTrack = (VideoTrack) track;
+                 }
+@@ -339,7 +339,7 @@ public void onMethodCall(MethodCall call, Result notSafeResult) {
+             String path = call.argument("path");
+             String videoTrackId = call.argument("trackId");
+             if (videoTrackId != null) {
+-                MediaStreamTrack track = localTracks.get(videoTrackId);
++                MediaStreamTrack track = getTrackForId(videoTrackId);
+                 if (track instanceof VideoTrack)
+                     new FrameCapturer((VideoTrack) track, new File(path), result);
+                 else
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/DataChannelObserver.java
+Patch:
+@@ -5,6 +5,7 @@
+ 
+ import org.webrtc.DataChannel;
+ import io.flutter.plugin.common.EventChannel;
++import com.cloudwebrtc.webrtc.utils.AnyThreadSink;
+ import com.cloudwebrtc.webrtc.utils.ConstraintsMap;
+ 
+ class DataChannelObserver implements DataChannel.Observer, EventChannel.StreamHandler {
+@@ -43,7 +44,7 @@ private String dataChannelStateString(DataChannel.State dataChannelState) {
+ 
+     @Override
+     public void onListen(Object o, EventChannel.EventSink sink) {
+-        eventSink = sink;
++        eventSink = new AnyThreadSink(sink);
+     }
+ 
+     @Override
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterRTCVideoRenderer.java
+Patch:
+@@ -3,6 +3,7 @@
+ import android.util.Log;
+ import android.graphics.SurfaceTexture;
+ 
++import com.cloudwebrtc.webrtc.utils.AnyThreadSink;
+ import com.cloudwebrtc.webrtc.utils.ConstraintsMap;
+ import com.cloudwebrtc.webrtc.utils.EglUtils;
+ 
+@@ -111,7 +112,7 @@ public void setId(int id){
+ 
+     @Override
+     public void onListen(Object o, EventChannel.EventSink sink) {
+-        eventSink = sink;
++        eventSink = new AnyThreadSink(sink);
+     }
+ 
+     @Override
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -9,6 +9,7 @@
+ 
+ import com.cloudwebrtc.webrtc.record.AudioChannel;
+ import com.cloudwebrtc.webrtc.record.FrameCapturer;
++import com.cloudwebrtc.webrtc.utils.AnyThreadResult;
+ import com.cloudwebrtc.webrtc.utils.ConstraintsArray;
+ import com.cloudwebrtc.webrtc.utils.ConstraintsMap;
+ import com.cloudwebrtc.webrtc.utils.EglUtils;
+@@ -124,7 +125,8 @@ private FlutterWebRTCPlugin(Registrar registrar, MethodChannel channel) {
+     }
+ 
+     @Override
+-    public void onMethodCall(MethodCall call, Result result) {
++    public void onMethodCall(MethodCall call, Result notSafeResult) {
++        final AnyThreadResult result = new AnyThreadResult(notSafeResult);
+         if (call.method.equals("createPeerConnection")) {
+             Map<String, Object> constraints = call.argument("constraints");
+             Map<String, Object> configuration = call.argument("configuration");
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -11,6 +11,7 @@
+ import android.util.SparseArray;
+ import androidx.annotation.Nullable;
+ 
++import com.cloudwebrtc.webrtc.utils.AnyThreadSink;
+ import com.cloudwebrtc.webrtc.utils.ConstraintsArray;
+ import com.cloudwebrtc.webrtc.utils.ConstraintsMap;
+ 
+@@ -59,7 +60,7 @@ class PeerConnectionObserver implements PeerConnection.Observer, EventChannel.St
+ 
+     @Override
+     public void onListen(Object o, EventChannel.EventSink sink) {
+-        eventSink = sink;
++        eventSink = new AnyThreadSink(sink);
+     }
+ 
+     @Override
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/DataChannelObserver.java
+Patch:
+@@ -79,7 +79,7 @@ public void onMessage(DataChannel.Buffer buffer) {
+ 
+         if (buffer.binary) {
+             params.putString("type", "binary");
+-            params.putString("data", Base64.encodeToString(bytes, Base64.NO_WRAP));
++            params.putByte("data", bytes);
+         } else {
+             params.putString("type", "text");
+             params.putString("data", new String(bytes, Charset.forName("UTF-8")));
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/utils/ObjectType.java
+Patch:
+@@ -7,4 +7,5 @@ public enum ObjectType {
+     String,
+     Map,
+     Array,
++    Byte
+ }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/DataChannelObserver.java
+Patch:
+@@ -79,7 +79,7 @@ public void onMessage(DataChannel.Buffer buffer) {
+ 
+         if (buffer.binary) {
+             params.putString("type", "binary");
+-            params.putString("data", Base64.encodeToString(bytes, Base64.NO_WRAP));
++            params.putByte("data", bytes);
+         } else {
+             params.putString("type", "text");
+             params.putString("data", new String(bytes, Charset.forName("UTF-8")));
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/utils/ObjectType.java
+Patch:
+@@ -7,4 +7,5 @@ public enum ObjectType {
+     String,
+     Map,
+     Array,
++    Byte
+ }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/DataChannelObserver.java
+Patch:
+@@ -23,7 +23,7 @@ class DataChannelObserver implements DataChannel.Observer, EventChannel.StreamHa
+         this.eventChannel =
+                 new EventChannel(
+                         plugin.registrar().messenger(),
+-                        "cloudwebrtc.com/WebRTC/dataChannelEvent" + String.valueOf(id));
++                        "FlutterWebRTC/dataChannelEvent" + String.valueOf(id));
+         eventChannel.setStreamHandler(this);
+     }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -79,7 +79,7 @@ public Context getContext() {
+      * Plugin registration.
+      */
+     public static void registerWith(Registrar registrar) {
+-        final MethodChannel channel = new MethodChannel(registrar.messenger(), "cloudwebrtc.com/WebRTC.Method");
++        final MethodChannel channel = new MethodChannel(registrar.messenger(), "FlutterWebRTC.Method");
+         channel.setMethodCallHandler(new FlutterWebRTCPlugin(registrar, channel));
+     }
+ 
+@@ -243,7 +243,7 @@ public void onMethodCall(MethodCall call, Result result) {
+             EventChannel eventChannel =
+                     new EventChannel(
+                             registrar.messenger(),
+-                            "cloudwebrtc.com/WebRTC/Texture" + entry.id());
++                            "FlutterWebRTC/Texture" + entry.id());
+ 
+             eventChannel.setStreamHandler(render);
+             render.setEventChannel(eventChannel);
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/PeerConnectionObserver.java
+Patch:
+@@ -52,7 +52,7 @@ class PeerConnectionObserver implements PeerConnection.Observer, EventChannel.St
+         this.eventChannel =
+                 new EventChannel(
+                         plugin.registrar().messenger(),
+-                        "cloudwebrtc.com/WebRTC/peerConnectoinEvent" + id);
++                        "FlutterWebRTC/peerConnectoinEvent" + id);
+         eventChannel.setStreamHandler(this);
+         this.eventSink = null;
+     }
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -691,8 +691,10 @@ void removeVideoCapturer(String id) {
+                 videoCapturer.stopCapture();
+             } catch (InterruptedException e) {
+                 Log.e(TAG, "removeVideoCapturer() Failed to stop video capturer");
++            } finally {
++                videoCapturer.dispose();
++                mVideoCapturers.remove(id);
+             }
+-            mVideoCapturers.remove(id);
+         }
+     }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterRTCVideoRenderer.java
+Patch:
+@@ -66,8 +66,8 @@ public void onFrameResolutionChanged(
+                         params.putInt("id", id);
+ 
+                         if(rotation == 90 || rotation == 270){
+-                            params.putDouble("width", (double) videoHeight);
+-                            params.putDouble("height", (double) videoWidth);
++                            params.putDouble("width", (double) videoWidth);
++                            params.putDouble("height", (double) videoHeight);
+                         }else {
+                             params.putDouble("width", (double) videoWidth);
+                             params.putDouble("height", (double) videoHeight);
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -471,13 +471,11 @@ public void onStop() {
+                     int fps = DEFAULT_FPS;
+ 
+                     videoCapturer.startCapture(width, height, fps);
++                    Log.d(TAG, "ScreenCapturerAndroid.startCapture: " + width + "x" + height + "@" + fps);
+ 
+                     String trackId = plugin.getNextTrackUUID();
+                     mVideoCapturers.put(trackId, videoCapturer);
+ 
+-                    Log.d(TAG, "changeCaptureFormat: " + width + "x" + height + "@" + fps);
+-                    videoSource.adaptOutputFormat(width, height, fps);
+-
+                     tracks[0] = pcFactory.createVideoTrack(trackId, videoSource);
+ 
+                     ConstraintsArray audioTracks = new ConstraintsArray();
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -516,7 +516,7 @@ public void onStop() {
+                     plugin.localStreams.put(streamId, mediaStream);
+                     successResult.putString("streamId", streamId);
+                     successResult.putArray("audioTracks", audioTracks.toArrayList());
+-                    successResult.putArray("videoTracks", audioTracks.toArrayList());
++                    successResult.putArray("videoTracks", videoTracks.toArrayList());
+                     result.success(successResult.toMap());
+                 }else{
+                     result.error(
+@@ -602,7 +602,7 @@ private void getUserMedia(
+ 
+         successResult.putString("streamId", streamId);
+         successResult.putArray("audioTracks", audioTracks.toArrayList());
+-        successResult.putArray("videoTracks", audioTracks.toArrayList());
++        successResult.putArray("videoTracks", videoTracks.toArrayList());
+         result.success(successResult.toMap());
+     }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -451,8 +451,9 @@ public void onStop() {
+                     WindowManager wm = (WindowManager) applicationContext
+                             .getSystemService(Context.WINDOW_SERVICE);
+ 
+-                    width = wm.getDefaultDisplay().getWidth();
+-                    height = wm.getDefaultDisplay().getHeight();
++                    int width = wm.getDefaultDisplay().getWidth();
++                    int height = wm.getDefaultDisplay().getHeight();
++                    int fps = DEFAULT_FPS;
+ 
+                     videoCapturer.startCapture(width, height, fps);
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -4,7 +4,6 @@
+ import android.content.Context;
+ import android.hardware.Camera;
+ import android.graphics.SurfaceTexture;
+-import android.os.Process;
+ import android.util.Log;
+ import android.util.LongSparseArray;
+ 
+@@ -232,7 +231,7 @@ public void onMethodCall(MethodCall call, Result result) {
+         } else if (call.method.equals("createVideoRenderer")) {
+             TextureRegistry.SurfaceTextureEntry entry = textures.createSurfaceTexture();
+             SurfaceTexture surfaceTexture = entry.surfaceTexture();
+-            FlutterRTCVideoRenderer render = new FlutterRTCVideoRenderer(surfaceTexture, getContext());
++            FlutterRTCVideoRenderer render = new FlutterRTCVideoRenderer(surfaceTexture);
+             renders.put(entry.id(), render);
+ 
+             EventChannel eventChannel =
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -325,7 +325,8 @@ void getUserMedia(
+             }
+         }
+ 
+-        boolean requestScreenCapturer =  videoConstraintsMandatory.hasKey("chromeMediaSource") &&
++        boolean requestScreenCapturer = videoConstraintsMandatory != null &&
++                videoConstraintsMandatory.hasKey("chromeMediaSource") &&
+                 videoConstraintsMandatory.getString("chromeMediaSource").equals("desktop");
+ 
+         final ArrayList<String> requestPermissions = new ArrayList<>();
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/GetUserMediaImpl.java
+Patch:
+@@ -325,7 +325,8 @@ void getUserMedia(
+             }
+         }
+ 
+-        boolean requestScreenCapturer =  videoConstraintsMandatory.hasKey("chromeMediaSource") &&
++        boolean requestScreenCapturer = videoConstraintsMandatory != null &&
++                videoConstraintsMandatory.hasKey("chromeMediaSource") &&
+                 videoConstraintsMandatory.getString("chromeMediaSource").equals("desktop");
+ 
+         final ArrayList<String> requestPermissions = new ArrayList<>();
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/DataChannelObserver.java
+Patch:
+@@ -23,7 +23,7 @@ class DataChannelObserver implements DataChannel.Observer, EventChannel.StreamHa
+         this.eventChannel =
+                 new EventChannel(
+                         plugin.registrar().messenger(),
+-                        "cloudwebrtc.com/WebRTC/dataChannelEvent" + dataChannel);
++                        "cloudwebrtc.com/WebRTC/dataChannelEvent" + String.valueOf(id));
+         eventChannel.setStreamHandler(this);
+     }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/DataChannelObserver.java
+Patch:
+@@ -23,7 +23,7 @@ class DataChannelObserver implements DataChannel.Observer, EventChannel.StreamHa
+         this.eventChannel =
+                 new EventChannel(
+                         plugin.registrar().messenger(),
+-                        "cloudwebrtc.com/WebRTC/dataChannelEvent" + dataChannel);
++                        "cloudwebrtc.com/WebRTC/dataChannelEvent" + String.valueOf(id));
+         eventChannel.setStreamHandler(this);
+     }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/DataChannelObserver.java
+Patch:
+@@ -23,7 +23,7 @@ class DataChannelObserver implements DataChannel.Observer, EventChannel.StreamHa
+         this.eventChannel =
+                 new EventChannel(
+                         plugin.registrar().messenger(),
+-                        "cloudwebrtc.com/WebRTC/dataChannelEvent" + dataChannel);
++                        "cloudwebrtc.com/WebRTC/dataChannelEvent" + String.valueOf(id));
+         eventChannel.setStreamHandler(this);
+     }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterRTCVideoRenderer.java
+Patch:
+@@ -164,7 +164,7 @@ public void setStream(MediaStream mediaStream) {
+         ConstraintsMap params = new ConstraintsMap();
+         params.putString("event", "videoState");
+         params.putInt("id", id);
+-        params.putInt("enabled", enabled);
++        params.putBoolean("enabled", enabled);
+         eventSink.success(params.toMap());
+     }
+ 
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/FlutterWebRTCPlugin.java
+Patch:
+@@ -192,6 +192,7 @@ public void onMethodCall(MethodCall call, Result result) {
+ 
+             eventChannel.setStreamHandler(render);
+             render.setEventChannel(eventChannel);
++            render.setId((int)entry.id());
+ 
+             ConstraintsMap params = new ConstraintsMap();
+             params.putInt("textureId", (int)entry.id());
+
+File: android/src/main/java/com/cloudwebrtc/webrtc/SurfaceTextureRenderer.java
+Patch:
+@@ -395,6 +395,8 @@ public void surfaceChanged(int width, int height) {
+     synchronized (layoutLock) {
+       surfaceSize.x = width;
+       surfaceSize.y = height;
++      layoutSize.x = width;
++      layoutSize.y = height;
+     }
+     // Might have a pending frame waiting for a surface of correct size.
+     runOnRenderThread(renderFrameRunnable);
+@@ -562,8 +564,8 @@ private void updateFrameDimensionsAndReportEvents(VideoRenderer.I420Frame frame)
+         frameWidth = frame.width;
+         frameHeight = frame.height;
+         frameRotation = frame.rotationDegree;
+-
+         texture.setDefaultBufferSize(frameWidth, frameHeight);
++        surfaceChanged(frameWidth, frameHeight);
+       }
+     }
+   }
+

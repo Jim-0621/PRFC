@@ -1,0 +1,3550 @@
+File: googledatastore/src/main/java/site/ycsb/db/GoogleDatastoreClient.java
+Patch:
+@@ -21,7 +21,6 @@
+ import com.google.api.client.googleapis.auth.oauth2.GoogleCredential;
+ import com.google.cloud.datastore.*;
+ import com.google.cloud.datastore.Entity;
+-import com.google.datastore.v1.Key;
+ import com.google.datastore.v1.ReadOptions.ReadConsistency;
+ import com.google.datastore.v1.client.DatastoreHelper;
+ import com.google.cloud.datastore.Datastore;
+
+File: googlebigtable2/src/main/java/site/ycsb/db/GoogleBigtable2Client.java
+Patch:
+@@ -83,7 +83,7 @@ public class GoogleBigtable2Client extends site.ycsb.DB {
+    * If true, buffer mutations on the client. For measuring insert/update/delete latencies, client
+    * side buffering should be disabled.
+    */
+-  private static boolean clientSideBuffering = false;
++  private static boolean clientSideBuffering = true;
+ 
+   /**
+    * Thread local Bigtable native API objects.
+@@ -135,7 +135,7 @@ private static synchronized void globalInit(Properties props) throws IOException
+     clientSideBuffering =
+         Optional.ofNullable(props.getProperty(CLIENT_SIDE_BUFFERING))
+             .map(Boolean::parseBoolean)
+-            .orElse(false);
++            .orElse(true);
+ 
+     Optional.ofNullable(props.getProperty(MAX_OUTSTANDING_BYTES))
+         .map(Long::parseLong)
+
+File: googledatastore/src/main/java/site/ycsb/db/GoogleDatastoreClient.java
+Patch:
+@@ -221,7 +221,6 @@ public void init() throws DBException {
+ 
+     logger.info("otel sdk class: " + otel.toString());
+     tracer = otel.getTracer("YCSB_Datastore_Test");
+-    logger.info("tracer class: " + tracer.getClass().getName());
+ 
+     try {
+       // Setup the connection to Google Cloud Datastore with the credentials
+@@ -241,7 +240,7 @@ public void init() throws DBException {
+             + ", Service Account Email: " + ((GoogleCredential) credential).getServiceAccountId());
+       }
+ 
+-      logger.info("credential: " + credential);
++      logger.info("credential: " + ((GoogleCredential) credential).toString());
+ 
+       DatastoreOptions datastoreOptions = DatastoreOptions
+           .newBuilder()
+@@ -276,6 +275,7 @@ public Status read(String table, String key, Set<String> fields,
+     KeyFactory keyFactory = datastore.newKeyFactory().setKind(table);
+     Entity entity = null;
+     Span readSpan = tracer.spanBuilder("ycsb-read").startSpan();
++    logger.info("readspan: " + readSpan);
+     try (Scope ignore = readSpan.makeCurrent()) {
+       if (isEventualConsistency) {
+         entity = datastore.get(keyFactory.newKey(key), ReadOption.eventualConsistency());
+
+File: hbase1/src/main/java/site/ycsb/db/hbase1/package-info.java
+Patch:
+@@ -17,7 +17,7 @@
+ 
+ /**
+  * The YCSB binding for <a href="https://hbase.apache.org/">HBase</a> 
+- * using the HBase 1.0.0 API.
++ * using the HBase 1 shaded API.
+  */
+-package site.ycsb.db;
++package site.ycsb.db.hbase1;
+ 
+
+File: hbase2/src/main/java/site/ycsb/db/hbase2/package-info.java
+Patch:
+@@ -17,7 +17,7 @@
+ 
+ /**
+  * The YCSB binding for <a href="https://hbase.apache.org/">HBase</a> 
+- * using the HBase 1.4+ shaded API.
++ * using the HBase 2 shaded API.
+  */
+-package site.ycsb.db.hbase14;
++package site.ycsb.db.hbase2;
+ 
+
+File: maprdb/src/main/java/site/ycsb/db/mapr/MapRDBClient.java
+Patch:
+@@ -21,5 +21,5 @@
+  * MapR-DB(binary) client for YCSB framework.
+  * 
+  */
+-public class MapRDBClient extends site.ycsb.db.HBaseClient10 {
++public class MapRDBClient extends site.ycsb.db.hbase1.HBaseClient1 {
+ }
+
+File: mongodb/src/main/java/site/ycsb/db/MongoDbClient.java
+Patch:
+@@ -194,10 +194,11 @@ public void init() throws DBException {
+ 
+       url = OptionsSupport.updateUrl(url, props);
+ 
+-      if (!url.startsWith("mongodb://")) {
++      if (!url.startsWith("mongodb://") && !url.startsWith("mongodb+srv://")) {
+         System.err.println("ERROR: Invalid URL: '" + url
+             + "'. Must be of the form "
+-            + "'mongodb://<host1>:<port1>,<host2>:<port2>/database?options'. "
++            + "'mongodb://<host1>:<port1>,<host2>:<port2>/database?options' "
++            + "or 'mongodb+srv://<host>/database?options'. "
+             + "http://docs.mongodb.org/manual/reference/connection-string/");
+         System.exit(1);
+       }
+
+File: core/src/main/java/site/ycsb/Client.java
+Patch:
+@@ -418,7 +418,7 @@ private static List<ClientThread> initDb(String dbname, Properties props, int th
+           opcount = Integer.parseInt(props.getProperty(RECORD_COUNT_PROPERTY, DEFAULT_RECORD_COUNT));
+         }
+       }
+-      if (threadcount > opcount){
++      if (threadcount > opcount && opcount > 0){
+         threadcount = opcount;
+         System.out.println("Warning: the threadcount is bigger than recordcount, the threadcount will be recordcount!");
+       }
+
+File: core/src/main/java/com/yahoo/ycsb/ByteIterator.java
+Patch:
+@@ -96,9 +96,8 @@ public byte[] toArray() {
+       throw new ArrayIndexOutOfBoundsException("Too much data to fit in one array!");
+     }
+     byte[] ret = new byte[(int) left];
+-    int off = 0;
+-    while (off < ret.length) {
+-      off = nextBuf(ret, off);
++    for (int i = 0; i < ret.length; i++) {
++      ret[i] = nextByte();
+     }
+     return ret;
+   }
+
+File: memcached/src/main/java/com/yahoo/ycsb/db/MemcachedClient.java
+Patch:
+@@ -277,7 +277,7 @@ protected static void fromJson(
+          /* increment in loop body */) {
+       Map.Entry<String, JsonNode> jsonField = jsonFields.next();
+       String name = jsonField.getKey();
+-      if (checkFields && fields.contains(name)) {
++      if (checkFields && !fields.contains(name)) {
+         continue;
+       }
+       JsonNode jsonValue = jsonField.getValue();
+
+File: orientdb/src/main/java/com/yahoo/ycsb/db/OrientDBClient.java
+Patch:
+@@ -185,10 +185,9 @@ public void cleanup() throws DBException {
+       clientCounter--;
+       if (clientCounter == 0) {
+         databasePool.close();
++        databasePool = null;
++        initialized = false;
+       }
+-
+-      databasePool = null;
+-      initialized = false;
+     } finally {
+       INIT_LOCK.unlock();
+     }
+
+File: cloudspanner/src/main/java/com/yahoo/ycsb/db/cloudspanner/CloudSpannerClient.java
+Patch:
+@@ -135,12 +135,14 @@ private CloudSpannerProperties() {}
+ 
+   private static void constructStandardQueriesAndFields(Properties properties) {
+     String table = properties.getProperty(CoreWorkload.TABLENAME_PROPERTY, CoreWorkload.TABLENAME_PROPERTY_DEFAULT);
++    final String fieldprefix = properties.getProperty(CoreWorkload.FIELD_NAME_PREFIX,
++                                                      CoreWorkload.FIELD_NAME_PREFIX_DEFAULT);
+     standardQuery = new StringBuilder()
+         .append("SELECT * FROM ").append(table).append(" WHERE id=@key").toString();
+     standardScan = new StringBuilder()
+         .append("SELECT * FROM ").append(table).append(" WHERE id>=@startKey LIMIT @count").toString();
+     for (int i = 0; i < fieldCount; i++) {
+-      STANDARD_FIELDS.add("field" + i);
++      STANDARD_FIELDS.add(fieldprefix + i);
+     }
+   }
+ 
+
+File: kudu/src/main/java/com/yahoo/ycsb/db/KuduYCSBClient.java
+Patch:
+@@ -166,6 +166,8 @@ private void setupTable() throws DBException {
+       int blockSize = getIntFromProp(prop, BLOCK_SIZE_OPT, BLOCK_SIZE_DEFAULT);
+       int fieldCount = getIntFromProp(prop, CoreWorkload.FIELD_COUNT_PROPERTY,
+                                       Integer.parseInt(CoreWorkload.FIELD_COUNT_PROPERTY_DEFAULT));
++      final String fieldprefix = prop.getProperty(CoreWorkload.FIELD_NAME_PREFIX,
++                                                  CoreWorkload.FIELD_NAME_PREFIX_DEFAULT);
+ 
+       List<ColumnSchema> columns = new ArrayList<ColumnSchema>(fieldCount + 1);
+ 
+@@ -176,7 +178,7 @@ private void setupTable() throws DBException {
+       columns.add(keyColumn);
+       COLUMN_NAMES.add(KEY);
+       for (int i = 0; i < fieldCount; i++) {
+-        String name = "field" + i;
++        String name = fieldprefix + i;
+         COLUMN_NAMES.add(name);
+         columns.add(new ColumnSchema.ColumnSchemaBuilder(name, STRING)
+                                     .desiredBlockSize(blockSize)
+
+File: ignite/src/test/java/com/yahoo/ycsb/db/ignite/IgniteClientTest.java
+Patch:
+@@ -42,8 +42,7 @@
+ /**
+  * Integration tests for the Ignite client
+  */
+-public class IgniteClientTest extends IgniteClientCommonTest {
+-  private static final String DEFAULT_CACHE_NAME = "usertable";
++public class IgniteClientTest extends IgniteClientTestBase {
+   private final static String HOST = "127.0.0.1";
+   private final static String PORTS = "47500..47509";
+   private final static String SERVER_NODE_NAME = "YCSB Server Node";
+
+File: ignite/src/test/java/com/yahoo/ycsb/db/ignite/IgniteSqlClientTest.java
+Patch:
+@@ -47,8 +47,7 @@
+ /**
+  * Integration tests for the Ignite client
+  */
+-public class IgniteSqlClientTest extends IgniteClientCommonTest {
+-  private static final String DEFAULT_CACHE_NAME = "usertable";
++public class IgniteSqlClientTest extends IgniteClientTestBase {
+   private static final String TABLE_NAME = "usertable";
+   private final static String HOST = "127.0.0.1";
+   private final static String PORTS = "47500..47509";
+
+File: core/src/main/java/com/yahoo/ycsb/Client.java
+Patch:
+@@ -977,6 +977,7 @@ private static Properties parseArguments(String[] args) {
+     for (String arg : args) {
+       System.err.print(" " + arg);
+     }
++    System.err.println();
+ 
+     Properties fileprops = new Properties();
+     int argindex = 0;
+
+File: core/src/test/java/com/yahoo/ycsb/measurements/exporter/TestMeasurementsExporter.java
+Patch:
+@@ -18,6 +18,8 @@
+ 
+ import com.yahoo.ycsb.generator.ZipfianGenerator;
+ import com.yahoo.ycsb.measurements.Measurements;
++import com.yahoo.ycsb.measurements.OneMeasurementHistogram;
++
+ import org.codehaus.jackson.JsonNode;
+ import org.codehaus.jackson.map.ObjectMapper;
+ import org.testng.annotations.Test;
+@@ -34,6 +36,7 @@ public class TestMeasurementsExporter {
+     public void testJSONArrayMeasurementsExporter() throws IOException {
+         Properties props = new Properties();
+         props.put(Measurements.MEASUREMENT_TYPE_PROPERTY, "histogram");
++        props.put(OneMeasurementHistogram.VERBOSE_PROPERTY, "true");
+         Measurements mm = new Measurements(props);
+         ByteArrayOutputStream out = new ByteArrayOutputStream();
+         JSONArrayMeasurementsExporter export = new JSONArrayMeasurementsExporter(out);
+
+File: core/src/main/java/com/yahoo/ycsb/workloads/TimeSeriesWorkload.java
+Patch:
+@@ -1252,7 +1252,7 @@ protected String nextDataPoint(final Map<String, ByteIterator> map, final boolea
+         boolean tagRollover = false;
+         for (int i = tagCardinality.length - 1; i >= 0; --i) {
+           if (tagCardinality[i] <= 1) {
+-            // nothing to increment here
++            tagRollover = true; // Only one tag so needs roll over.
+             continue;
+           }
+           
+
+File: hbase098/src/main/java/com/yahoo/ycsb/db/HBaseClient.java
+Patch:
+@@ -471,7 +471,8 @@ public void run() {
+       try {
+         t.join();
+       } catch (InterruptedException ignored) {
+-        //ignored
++        System.err.println("interrupted");
++        Thread.currentThread().interrupt();
+       }
+     }
+     long en = System.currentTimeMillis();
+
+File: cassandra/src/main/java/com/yahoo/ycsb/db/CassandraCQLClient.java
+Patch:
+@@ -239,7 +239,7 @@ public void cleanup() throws DBException {
+    */
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     try {
+       Statement stmt;
+       Select.Builder selectBuilder;
+@@ -402,7 +402,7 @@ public Status scan(String table, String startkey, int recordcount,
+    */
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++                       Map<String, ByteIterator> values) {
+     // Insert and updates provide the same functionality
+     return insert(table, key, values);
+   }
+@@ -422,7 +422,7 @@ public Status update(String table, String key,
+    */
+   @Override
+   public Status insert(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+ 
+     try {
+       Insert insertStmt = QueryBuilder.insertInto(table);
+
+File: cassandra/src/test/java/com/yahoo/ycsb/db/CassandraCQLClientTest.java
+Patch:
+@@ -157,7 +157,7 @@ public void testReadSingleColumn() throws Exception {
+   @Test
+   public void testUpdate() throws Exception {
+     final String key = "key";
+-    final HashMap<String, String> input = new HashMap<String, String>();
++    final Map<String, String> input = new HashMap<String, String>();
+     input.put("field0", "value1");
+     input.put("field1", "value2");
+ 
+
+File: core/src/main/java/com/yahoo/ycsb/CommandLine.java
+Patch:
+@@ -303,7 +303,7 @@ int record = 0;
+       } else {
+         System.out.println("--------------------------------");
+       }
+-      for (HashMap<String, ByteIterator> result : results) {
++      for (Map<String, ByteIterator> result : results) {
+         System.out.println("Record " + (record++));
+         for (Map.Entry<String, ByteIterator> ent : result.entrySet()) {
+           System.out.println(ent.getKey() + "=" + ent.getValue());
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementTimeSeries.java
+Patch:
+@@ -54,9 +54,9 @@ public class OneMeasurementTimeSeries extends OneMeasurement {
+ 
+   private long start = -1;
+   private long currentunit = -1;
+-  private int count = 0;
+-  private int sum = 0;
+-  private int operations = 0;
++  private long count = 0;
++  private long sum = 0;
++  private long operations = 0;
+   private long totallatency = 0;
+ 
+   //keep a windowed version of these stats for printing status
+
+File: core/src/main/java/com/yahoo/ycsb/workloads/RestWorkload.java
+Patch:
+@@ -1,5 +1,5 @@
+ /**
+- * Copyright (c) 2016 YCSB contributors. All rights reserved.
++ * Copyright (c) 2016-2017 YCSB contributors. All rights reserved.
+  * <p>
+  * Licensed under the Apache License, Version 2.0 (the "License"); you
+  * may not use this file except in compliance with the License. You
+@@ -30,6 +30,7 @@
+ import java.util.Map;
+ import java.util.Properties;
+ 
++import com.yahoo.ycsb.generator.UniformLongGenerator;
+ /**
+  * Typical RESTFul services benchmarking scenario. Represents a set of client
+  * calling REST operations like HTTP DELETE, GET, POST, PUT on a web service.
+@@ -171,7 +172,7 @@ private static NumberGenerator getKeyChooser(String requestDistrib, int recordCo
+       keychooser = new ExponentialGenerator(percentile, recordCount * frac);
+       break;
+     case "uniform":
+-      keychooser = new UniformIntegerGenerator(0, recordCount - 1);
++      keychooser = new UniformLongGenerator(0, recordCount - 1);
+       break;
+     case "zipfian":
+       keychooser = new ZipfianGenerator(recordCount, zipfContant);
+
+File: elasticsearch5/src/main/java/com/yahoo/ycsb/db/elasticsearch5/ElasticsearchRestClient.java
+Patch:
+@@ -110,7 +110,7 @@ public void cleanup() throws DBException {
+   }
+   
+   @Override
+-  public Status insert(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status insert(String table, String key, Map<String, ByteIterator> values) {
+     try {
+       Map<String, String> data = StringByteIterator.getStringMap(values);
+ 
+@@ -142,7 +142,7 @@ public Status delete(String table, String key) {
+   }
+ 
+   @Override
+-  public Status read(String table, String key, Set<String> fields, HashMap<String, ByteIterator> result) {
++  public Status read(String table, String key, Set<String> fields, Map<String, ByteIterator> result) {
+     try {
+       Response response = restClient.performRequest(HttpGet.METHOD_NAME, "/");
+ 
+@@ -178,7 +178,7 @@ public Status read(String table, String key, Set<String> fields, HashMap<String,
+   }
+ 
+   @Override
+-  public Status update(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status update(String table, String key, Map<String, ByteIterator> values) {
+ //    try {
+ //      final GetResponse response = client.prepareGet(indexKey, table, key).execute().actionGet();
+ //
+
+File: hbase10/src/main/java/com/yahoo/ycsb/db/HBaseClient10.java
+Patch:
+@@ -250,7 +250,7 @@ public void getHTable(String table) throws IOException {
+    * @return Zero on success, a non-zero error code on error
+    */
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     // if this is a "new" table, init HTable object. Else, use existing one
+     if (!tableName.equals(table)) {
+       currentTable = null;
+@@ -418,7 +418,7 @@ public Status scan(String table, String startkey, int recordcount,
+    */
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+     // if this is a "new" table, init HTable object. Else, use existing one
+     if (!tableName.equals(table)) {
+       currentTable = null;
+@@ -480,7 +480,7 @@ public Status update(String table, String key,
+    */
+   @Override
+   public Status insert(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++                       Map<String, ByteIterator> values) {
+     return update(table, key, values);
+   }
+ 
+
+File: hbase10/src/test/java/com/yahoo/ycsb/db/HBaseClient10Test.java
+Patch:
+@@ -47,6 +47,7 @@
+ import java.nio.ByteBuffer;
+ import java.util.ArrayList;
+ import java.util.HashMap;
++import java.util.Map;
+ import java.util.List;
+ import java.util.Properties;
+ import java.util.Vector;
+@@ -173,7 +174,7 @@ public void testScan() throws Exception {
+ 
+     assertEquals(5, result.size());
+     for(int i = 0; i < 5; i++) {
+-      final HashMap<String, ByteIterator> row = result.get(i);
++      final Map<String, ByteIterator> row = result.get(i);
+       assertEquals(1, row.size());
+       assertTrue(row.containsKey(colStr));
+       final byte[] bytes = row.get(colStr).toArray();
+@@ -186,7 +187,7 @@ public void testScan() throws Exception {
+   @Test
+   public void testUpdate() throws Exception{
+     final String key = "key";
+-    final HashMap<String, String> input = new HashMap<String, String>();
++    final Map<String, String> input = new HashMap<String, String>();
+     input.put("column1", "value1");
+     input.put("column2", "value2");
+     final Status status = client.insert(tableName, key, StringByteIterator.getByteIteratorMap(input));
+
+File: hypertable/src/main/java/com/yahoo/ycsb/db/HypertableClient.java
+Patch:
+@@ -117,7 +117,7 @@ public void cleanup() throws DBException {
+    */
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++                     Map<String, ByteIterator> result) {
+     // SELECT _column_family:field[i]
+     // FROM table WHERE ROW=key MAX_VERSIONS 1;
+ 
+@@ -252,7 +252,7 @@ public Status scan(String table, String startkey, int recordcount,
+    */
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++                       Map<String, ByteIterator> values) {
+     return insert(table, key, values);
+   }
+ 
+@@ -271,7 +271,7 @@ public Status update(String table, String key,
+    */
+   @Override
+   public Status insert(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++            Map<String, ByteIterator> values) {
+     // INSERT INTO table VALUES
+     // (key, _column_family:entry,getKey(), entry.getValue()), (...);
+ 
+
+File: infinispan/src/main/java/com/yahoo/ycsb/db/InfinispanRemoteClient.java
+Patch:
+@@ -51,7 +51,7 @@ public void cleanup() {
+   }
+ 
+   @Override
+-  public Status insert(String table, String recordKey, HashMap<String, ByteIterator> values) {
++  public Status insert(String table, String recordKey, Map<String, ByteIterator> values) {
+     String compositKey = createKey(table, recordKey);
+     Map<String, String> stringValues = new HashMap<>();
+     StringByteIterator.putAllAsStrings(stringValues, values);
+@@ -65,7 +65,7 @@ public Status insert(String table, String recordKey, HashMap<String, ByteIterato
+   }
+ 
+   @Override
+-  public Status read(String table, String recordKey, Set<String> fields, HashMap<String, ByteIterator> result) {
++  public Status read(String table, String recordKey, Set<String> fields, Map<String, ByteIterator> result) {
+     String compositKey = createKey(table, recordKey);
+     try {
+       Map<String, String> values = cache().get(compositKey);
+@@ -100,7 +100,7 @@ public Status scan(String table, String startkey, int recordcount, Set<String> f
+   }
+ 
+   @Override
+-  public Status update(String table, String recordKey, HashMap<String, ByteIterator> values) {
++  public Status update(String table, String recordKey, Map<String, ByteIterator> values) {
+     String compositKey = createKey(table, recordKey);
+     try {
+       Map<String, String> stringValues = new HashMap<>();
+
+File: mapkeeper/src/main/java/com/yahoo/ycsb/db/MapKeeperClient.java
+Patch:
+@@ -129,7 +129,7 @@ String strResponse(BinaryResponse buf) {
+ 
+     @Override
+     public int read(String table, String key, Set<String> fields,
+-            HashMap<String, ByteIterator> result) {
++            Map<String, ByteIterator> result) {
+         try {
+             ByteBuffer buf = bufStr(key);
+ 
+@@ -177,7 +177,7 @@ public int scan(String table, String startkey, int recordcount,
+ 
+     @Override
+     public int update(String table, String key,
+-            HashMap<String, ByteIterator> values) {
++            Map<String, ByteIterator> values) {
+         try {
+             if(!writeallfields) {
+                 HashMap<String, ByteIterator> oldval = new HashMap<String, ByteIterator>();
+@@ -197,7 +197,7 @@ public int update(String table, String key,
+ 
+     @Override
+     public int insert(String table, String key,
+-            HashMap<String, ByteIterator> values) {
++            Map<String, ByteIterator> values) {
+         try {
+             int ret = ycsbThriftRet(c.insert(table, bufStr(key), encode(values)), ResponseCode.Success, ResponseCode.RecordExists);
+             return ret;
+
+File: mongodb/src/main/java/com/yahoo/ycsb/db/MongoDbClient.java
+Patch:
+@@ -251,7 +251,7 @@ public void init() throws DBException {
+    */
+   @Override
+   public Status insert(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+     try {
+       MongoCollection<Document> collection = database.getCollection(table);
+       Document toInsert = new Document("_id", key);
+@@ -315,7 +315,7 @@ public Status insert(String table, String key,
+    */
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     try {
+       MongoCollection<Document> collection = database.getCollection(table);
+       Document query = new Document("_id", key);
+@@ -428,7 +428,7 @@ public Status scan(String table, String startkey, int recordcount,
+    */
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+     try {
+       MongoCollection<Document> collection = database.getCollection(table);
+ 
+
+File: mongodb/src/test/java/com/yahoo/ycsb/db/AbstractDBTestCases.java
+Patch:
+@@ -37,6 +37,7 @@
+ import java.net.Socket;
+ import java.util.Collections;
+ import java.util.HashMap;
++import java.util.Map;
+ import java.util.Properties;
+ import java.util.Set;
+ import java.util.Vector;
+@@ -281,7 +282,7 @@ public void testScan() {
+     assertThat("Read did not return success (0).", result, is(Status.OK));
+     assertThat(results.size(), is(5));
+     for (int i = 0; i < 5; ++i) {
+-      HashMap<String, ByteIterator> read = results.get(i);
++      Map<String, ByteIterator> read = results.get(i);
+       for (String key : keys) {
+         ByteIterator iter = read.get(key);
+ 
+
+File: solr/src/main/java/com/yahoo/ycsb/db/solr/SolrClient.java
+Patch:
+@@ -116,7 +116,7 @@ public void cleanup() throws DBException {
+    *         discussion of error codes.
+    */
+   @Override
+-  public Status insert(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status insert(String table, String key, Map<String, ByteIterator> values) {
+     try {
+       SolrInputDocument doc = new SolrInputDocument();
+ 
+@@ -182,7 +182,7 @@ public Status delete(String table, String key) {
+    */
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     try {
+       Boolean returnFields = false;
+       String[] fieldList = null;
+@@ -225,7 +225,7 @@ public Status read(String table, String key, Set<String> fields,
+    *         discussion of error codes.
+    */
+   @Override
+-  public Status update(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status update(String table, String key, Map<String, ByteIterator> values) {
+     try {
+       SolrInputDocument updatedDoc = new SolrInputDocument();
+       updatedDoc.addField("id", key);
+
+File: solr6/src/main/java/com/yahoo/ycsb/db/solr6/SolrClient.java
+Patch:
+@@ -115,7 +115,7 @@ public void cleanup() throws DBException {
+    *         discussion of error codes.
+    */
+   @Override
+-  public Status insert(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status insert(String table, String key, Map<String, ByteIterator> values) {
+     try {
+       SolrInputDocument doc = new SolrInputDocument();
+ 
+@@ -181,7 +181,7 @@ public Status delete(String table, String key) {
+    */
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     try {
+       Boolean returnFields = false;
+       String[] fieldList = null;
+@@ -224,7 +224,7 @@ public Status read(String table, String key, Set<String> fields,
+    *         discussion of error codes.
+    */
+   @Override
+-  public Status update(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status update(String table, String key, Map<String, ByteIterator> values) {
+     try {
+       SolrInputDocument updatedDoc = new SolrInputDocument();
+       updatedDoc.addField("id", key);
+
+File: voldemort/src/main/java/com/yahoo/ycsb/db/VoldemortClient.java
+Patch:
+@@ -85,7 +85,7 @@ public Status delete(String table, String key) {
+ 
+   @Override
+   public Status insert(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+     if (checkStore(table) == Status.ERROR) {
+       return Status.ERROR;
+     }
+@@ -96,7 +96,7 @@ public Status insert(String table, String key,
+ 
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     if (checkStore(table) == Status.ERROR) {
+       return Status.ERROR;
+     }
+@@ -130,7 +130,7 @@ public Status scan(String table, String startkey, int recordcount,
+ 
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+     if (checkStore(table) == Status.ERROR) {
+       return Status.ERROR;
+     }
+
+File: accumulo/src/main/java/com/yahoo/ycsb/db/accumulo/AccumuloClient.java
+Patch:
+@@ -192,7 +192,7 @@ private Scanner getRow(String table, Text row, Set<String> fields) throws TableN
+ 
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++                     Map<String, ByteIterator> result) {
+ 
+     Scanner scanner = null;
+     try {
+@@ -280,7 +280,7 @@ public Status scan(String table, String startkey, int recordcount,
+ 
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++                       Map<String, ByteIterator> values) {
+     BatchWriter bw = null;
+     try {
+       bw = getWriter(table);
+@@ -308,7 +308,7 @@ public Status update(String table, String key,
+ 
+   @Override
+   public Status insert(String t, String key,
+-      HashMap<String, ByteIterator> values) {
++                       Map<String, ByteIterator> values) {
+     return update(t, key, values);
+   }
+ 
+
+File: cassandra/src/main/java/com/yahoo/ycsb/db/CassandraCQLClient.java
+Patch:
+@@ -239,7 +239,7 @@ public void cleanup() throws DBException {
+    */
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     try {
+       Statement stmt;
+       Select.Builder selectBuilder;
+@@ -402,7 +402,7 @@ public Status scan(String table, String startkey, int recordcount,
+    */
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++                       Map<String, ByteIterator> values) {
+     // Insert and updates provide the same functionality
+     return insert(table, key, values);
+   }
+@@ -422,7 +422,7 @@ public Status update(String table, String key,
+    */
+   @Override
+   public Status insert(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+ 
+     try {
+       Insert insertStmt = QueryBuilder.insertInto(table);
+
+File: cassandra/src/test/java/com/yahoo/ycsb/db/CassandraCQLClientTest.java
+Patch:
+@@ -157,7 +157,7 @@ public void testReadSingleColumn() throws Exception {
+   @Test
+   public void testUpdate() throws Exception {
+     final String key = "key";
+-    final HashMap<String, String> input = new HashMap<String, String>();
++    final Map<String, String> input = new HashMap<String, String>();
+     input.put("field0", "value1");
+     input.put("field1", "value2");
+ 
+
+File: core/src/main/java/com/yahoo/ycsb/CommandLine.java
+Patch:
+@@ -303,7 +303,7 @@ int record = 0;
+       } else {
+         System.out.println("--------------------------------");
+       }
+-      for (HashMap<String, ByteIterator> result : results) {
++      for (Map<String, ByteIterator> result : results) {
+         System.out.println("Record " + (record++));
+         for (Map.Entry<String, ByteIterator> ent : result.entrySet()) {
+           System.out.println(ent.getKey() + "=" + ent.getValue());
+
+File: core/src/main/java/com/yahoo/ycsb/StringByteIterator.java
+Patch:
+@@ -51,7 +51,7 @@ public static void putAllAsStrings(Map<String, String> out, Map<String, ByteIter
+    * Create a copy of a map, converting the values from Strings to
+    * StringByteIterators.
+    */
+-  public static HashMap<String, ByteIterator> getByteIteratorMap(Map<String, String> m) {
++  public static Map<String, ByteIterator> getByteIteratorMap(Map<String, String> m) {
+     HashMap<String, ByteIterator> ret =
+         new HashMap<String, ByteIterator>();
+ 
+@@ -65,7 +65,7 @@ public static HashMap<String, ByteIterator> getByteIteratorMap(Map<String, Strin
+    * Create a copy of a map, converting the values from
+    * StringByteIterators to Strings.
+    */
+-  public static HashMap<String, String> getStringMap(Map<String, ByteIterator> m) {
++  public static Map<String, String> getStringMap(Map<String, ByteIterator> m) {
+     HashMap<String, String> ret = new HashMap<String, String>();
+ 
+     for (Map.Entry<String, ByteIterator> entry : m.entrySet()) {
+
+File: geode/src/main/java/com/yahoo/ycsb/db/GeodeClient.java
+Patch:
+@@ -136,7 +136,7 @@ public void init() throws DBException {
+ 
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-                     HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     Region<String, PdxInstance> r = getRegion(table);
+     PdxInstance val = r.get(key);
+     if (val != null) {
+@@ -162,13 +162,13 @@ public Status scan(String table, String startkey, int recordcount,
+   }
+ 
+   @Override
+-  public Status update(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status update(String table, String key, Map<String, ByteIterator> values) {
+     getRegion(table).put(key, convertToBytearrayMap(values));
+     return Status.OK;
+   }
+ 
+   @Override
+-  public Status insert(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status insert(String table, String key, Map<String, ByteIterator> values) {
+     getRegion(table).put(key, convertToBytearrayMap(values));
+     return Status.OK;
+   }
+
+File: hbase10/src/main/java/com/yahoo/ycsb/db/HBaseClient10.java
+Patch:
+@@ -250,7 +250,7 @@ public void getHTable(String table) throws IOException {
+    * @return Zero on success, a non-zero error code on error
+    */
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     // if this is a "new" table, init HTable object. Else, use existing one
+     if (!tableName.equals(table)) {
+       currentTable = null;
+@@ -418,7 +418,7 @@ public Status scan(String table, String startkey, int recordcount,
+    */
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+     // if this is a "new" table, init HTable object. Else, use existing one
+     if (!tableName.equals(table)) {
+       currentTable = null;
+@@ -480,7 +480,7 @@ public Status update(String table, String key,
+    */
+   @Override
+   public Status insert(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++                       Map<String, ByteIterator> values) {
+     return update(table, key, values);
+   }
+ 
+
+File: hbase10/src/test/java/com/yahoo/ycsb/db/HBaseClient10Test.java
+Patch:
+@@ -47,6 +47,7 @@
+ import java.nio.ByteBuffer;
+ import java.util.ArrayList;
+ import java.util.HashMap;
++import java.util.Map;
+ import java.util.List;
+ import java.util.Properties;
+ import java.util.Vector;
+@@ -173,7 +174,7 @@ public void testScan() throws Exception {
+ 
+     assertEquals(5, result.size());
+     for(int i = 0; i < 5; i++) {
+-      final HashMap<String, ByteIterator> row = result.get(i);
++      final Map<String, ByteIterator> row = result.get(i);
+       assertEquals(1, row.size());
+       assertTrue(row.containsKey(colStr));
+       final byte[] bytes = row.get(colStr).toArray();
+@@ -186,7 +187,7 @@ public void testScan() throws Exception {
+   @Test
+   public void testUpdate() throws Exception{
+     final String key = "key";
+-    final HashMap<String, String> input = new HashMap<String, String>();
++    final Map<String, String> input = new HashMap<String, String>();
+     input.put("column1", "value1");
+     input.put("column2", "value2");
+     final Status status = client.insert(tableName, key, StringByteIterator.getByteIteratorMap(input));
+
+File: hypertable/src/main/java/com/yahoo/ycsb/db/HypertableClient.java
+Patch:
+@@ -117,7 +117,7 @@ public void cleanup() throws DBException {
+    */
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++                     Map<String, ByteIterator> result) {
+     // SELECT _column_family:field[i]
+     // FROM table WHERE ROW=key MAX_VERSIONS 1;
+ 
+@@ -252,7 +252,7 @@ public Status scan(String table, String startkey, int recordcount,
+    */
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++                       Map<String, ByteIterator> values) {
+     return insert(table, key, values);
+   }
+ 
+@@ -271,7 +271,7 @@ public Status update(String table, String key,
+    */
+   @Override
+   public Status insert(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++            Map<String, ByteIterator> values) {
+     // INSERT INTO table VALUES
+     // (key, _column_family:entry,getKey(), entry.getValue()), (...);
+ 
+
+File: infinispan/src/main/java/com/yahoo/ycsb/db/InfinispanRemoteClient.java
+Patch:
+@@ -51,7 +51,7 @@ public void cleanup() {
+   }
+ 
+   @Override
+-  public Status insert(String table, String recordKey, HashMap<String, ByteIterator> values) {
++  public Status insert(String table, String recordKey, Map<String, ByteIterator> values) {
+     String compositKey = createKey(table, recordKey);
+     Map<String, String> stringValues = new HashMap<>();
+     StringByteIterator.putAllAsStrings(stringValues, values);
+@@ -65,7 +65,7 @@ public Status insert(String table, String recordKey, HashMap<String, ByteIterato
+   }
+ 
+   @Override
+-  public Status read(String table, String recordKey, Set<String> fields, HashMap<String, ByteIterator> result) {
++  public Status read(String table, String recordKey, Set<String> fields, Map<String, ByteIterator> result) {
+     String compositKey = createKey(table, recordKey);
+     try {
+       Map<String, String> values = cache().get(compositKey);
+@@ -100,7 +100,7 @@ public Status scan(String table, String startkey, int recordcount, Set<String> f
+   }
+ 
+   @Override
+-  public Status update(String table, String recordKey, HashMap<String, ByteIterator> values) {
++  public Status update(String table, String recordKey, Map<String, ByteIterator> values) {
+     String compositKey = createKey(table, recordKey);
+     try {
+       Map<String, String> stringValues = new HashMap<>();
+
+File: mapkeeper/src/main/java/com/yahoo/ycsb/db/MapKeeperClient.java
+Patch:
+@@ -129,7 +129,7 @@ String strResponse(BinaryResponse buf) {
+ 
+     @Override
+     public int read(String table, String key, Set<String> fields,
+-            HashMap<String, ByteIterator> result) {
++            Map<String, ByteIterator> result) {
+         try {
+             ByteBuffer buf = bufStr(key);
+ 
+@@ -177,7 +177,7 @@ public int scan(String table, String startkey, int recordcount,
+ 
+     @Override
+     public int update(String table, String key,
+-            HashMap<String, ByteIterator> values) {
++            Map<String, ByteIterator> values) {
+         try {
+             if(!writeallfields) {
+                 HashMap<String, ByteIterator> oldval = new HashMap<String, ByteIterator>();
+@@ -197,7 +197,7 @@ public int update(String table, String key,
+ 
+     @Override
+     public int insert(String table, String key,
+-            HashMap<String, ByteIterator> values) {
++            Map<String, ByteIterator> values) {
+         try {
+             int ret = ycsbThriftRet(c.insert(table, bufStr(key), encode(values)), ResponseCode.Success, ResponseCode.RecordExists);
+             return ret;
+
+File: mongodb/src/main/java/com/yahoo/ycsb/db/MongoDbClient.java
+Patch:
+@@ -251,7 +251,7 @@ public void init() throws DBException {
+    */
+   @Override
+   public Status insert(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+     try {
+       MongoCollection<Document> collection = database.getCollection(table);
+       Document toInsert = new Document("_id", key);
+@@ -315,7 +315,7 @@ public Status insert(String table, String key,
+    */
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     try {
+       MongoCollection<Document> collection = database.getCollection(table);
+       Document query = new Document("_id", key);
+@@ -428,7 +428,7 @@ public Status scan(String table, String startkey, int recordcount,
+    */
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+     try {
+       MongoCollection<Document> collection = database.getCollection(table);
+ 
+
+File: mongodb/src/test/java/com/yahoo/ycsb/db/AbstractDBTestCases.java
+Patch:
+@@ -37,6 +37,7 @@
+ import java.net.Socket;
+ import java.util.Collections;
+ import java.util.HashMap;
++import java.util.Map;
+ import java.util.Properties;
+ import java.util.Set;
+ import java.util.Vector;
+@@ -281,7 +282,7 @@ public void testScan() {
+     assertThat("Read did not return success (0).", result, is(Status.OK));
+     assertThat(results.size(), is(5));
+     for (int i = 0; i < 5; ++i) {
+-      HashMap<String, ByteIterator> read = results.get(i);
++      Map<String, ByteIterator> read = results.get(i);
+       for (String key : keys) {
+         ByteIterator iter = read.get(key);
+ 
+
+File: solr/src/main/java/com/yahoo/ycsb/db/solr/SolrClient.java
+Patch:
+@@ -116,7 +116,7 @@ public void cleanup() throws DBException {
+    *         discussion of error codes.
+    */
+   @Override
+-  public Status insert(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status insert(String table, String key, Map<String, ByteIterator> values) {
+     try {
+       SolrInputDocument doc = new SolrInputDocument();
+ 
+@@ -182,7 +182,7 @@ public Status delete(String table, String key) {
+    */
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     try {
+       Boolean returnFields = false;
+       String[] fieldList = null;
+@@ -225,7 +225,7 @@ public Status read(String table, String key, Set<String> fields,
+    *         discussion of error codes.
+    */
+   @Override
+-  public Status update(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status update(String table, String key, Map<String, ByteIterator> values) {
+     try {
+       SolrInputDocument updatedDoc = new SolrInputDocument();
+       updatedDoc.addField("id", key);
+
+File: solr6/src/main/java/com/yahoo/ycsb/db/solr6/SolrClient.java
+Patch:
+@@ -115,7 +115,7 @@ public void cleanup() throws DBException {
+    *         discussion of error codes.
+    */
+   @Override
+-  public Status insert(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status insert(String table, String key, Map<String, ByteIterator> values) {
+     try {
+       SolrInputDocument doc = new SolrInputDocument();
+ 
+@@ -181,7 +181,7 @@ public Status delete(String table, String key) {
+    */
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     try {
+       Boolean returnFields = false;
+       String[] fieldList = null;
+@@ -224,7 +224,7 @@ public Status read(String table, String key, Set<String> fields,
+    *         discussion of error codes.
+    */
+   @Override
+-  public Status update(String table, String key, HashMap<String, ByteIterator> values) {
++  public Status update(String table, String key, Map<String, ByteIterator> values) {
+     try {
+       SolrInputDocument updatedDoc = new SolrInputDocument();
+       updatedDoc.addField("id", key);
+
+File: voldemort/src/main/java/com/yahoo/ycsb/db/VoldemortClient.java
+Patch:
+@@ -85,7 +85,7 @@ public Status delete(String table, String key) {
+ 
+   @Override
+   public Status insert(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+     if (checkStore(table) == Status.ERROR) {
+       return Status.ERROR;
+     }
+@@ -96,7 +96,7 @@ public Status insert(String table, String key,
+ 
+   @Override
+   public Status read(String table, String key, Set<String> fields,
+-      HashMap<String, ByteIterator> result) {
++      Map<String, ByteIterator> result) {
+     if (checkStore(table) == Status.ERROR) {
+       return Status.ERROR;
+     }
+@@ -130,7 +130,7 @@ public Status scan(String table, String startkey, int recordcount,
+ 
+   @Override
+   public Status update(String table, String key,
+-      HashMap<String, ByteIterator> values) {
++      Map<String, ByteIterator> values) {
+     if (checkStore(table) == Status.ERROR) {
+       return Status.ERROR;
+     }
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementTimeSeries.java
+Patch:
+@@ -54,9 +54,9 @@ public class OneMeasurementTimeSeries extends OneMeasurement {
+ 
+   private long start = -1;
+   private long currentunit = -1;
+-  private int count = 0;
+-  private int sum = 0;
+-  private int operations = 0;
++  private long count = 0;
++  private long sum = 0;
++  private long operations = 0;
+   private long totallatency = 0;
+ 
+   //keep a windowed version of these stats for printing status
+
+File: core/src/main/java/com/yahoo/ycsb/workloads/RestWorkload.java
+Patch:
+@@ -1,5 +1,5 @@
+ /**
+- * Copyright (c) 2016 YCSB contributors. All rights reserved.
++ * Copyright (c) 2016-2017 YCSB contributors. All rights reserved.
+  * <p>
+  * Licensed under the Apache License, Version 2.0 (the "License"); you
+  * may not use this file except in compliance with the License. You
+@@ -30,6 +30,7 @@
+ import java.util.Map;
+ import java.util.Properties;
+ 
++import com.yahoo.ycsb.generator.UniformLongGenerator;
+ /**
+  * Typical RESTFul services benchmarking scenario. Represents a set of client
+  * calling REST operations like HTTP DELETE, GET, POST, PUT on a web service.
+@@ -171,7 +172,7 @@ private static NumberGenerator getKeyChooser(String requestDistrib, int recordCo
+       keychooser = new ExponentialGenerator(percentile, recordCount * frac);
+       break;
+     case "uniform":
+-      keychooser = new UniformIntegerGenerator(0, recordCount - 1);
++      keychooser = new UniformLongGenerator(0, recordCount - 1);
+       break;
+     case "zipfian":
+       keychooser = new ZipfianGenerator(recordCount, zipfContant);
+
+File: cassandra/src/test/java/com/yahoo/ycsb/db/CassandraCQLClientTest.java
+Patch:
+@@ -126,7 +126,7 @@ public void testRead() throws Exception {
+     insertRow();
+ 
+     final HashMap<String, ByteIterator> result = new HashMap<String, ByteIterator>();
+-    final Status status = client.read(CoreWorkload.table, DEFAULT_ROW_KEY, null, result);
++    final Status status = client.read(TABLE, DEFAULT_ROW_KEY, null, result);
+     assertThat(status, is(Status.OK));
+     assertThat(result.entrySet(), hasSize(11));
+     assertThat(result, hasEntry("field2", null));
+@@ -147,7 +147,7 @@ public void testReadSingleColumn() throws Exception {
+     insertRow();
+     final HashMap<String, ByteIterator> result = new HashMap<String, ByteIterator>();
+     final Set<String> fields = Sets.newHashSet("field1");
+-    final Status status = client.read(CoreWorkload.table, DEFAULT_ROW_KEY, fields, result);
++    final Status status = client.read(TABLE, DEFAULT_ROW_KEY, fields, result);
+     assertThat(status, is(Status.OK));
+     assertThat(result.entrySet(), hasSize(1));
+     final Map<String, String> strResult = StringByteIterator.getStringMap(result);
+
+File: core/src/main/java/com/yahoo/ycsb/workloads/RestWorkload.java
+Patch:
+@@ -107,6 +107,8 @@ public class RestWorkload extends CoreWorkload {
+   private NumberGenerator insertKeyChooser;
+   private NumberGenerator deleteKeyChooser;
+   private NumberGenerator updateKeyChooser;
++  private NumberGenerator fieldlengthgenerator;
++  private DiscreteGenerator operationchooser;
+ 
+   @Override
+   public void init(Properties p) throws WorkloadException {
+
+File: kudu/src/main/java/com/yahoo/ycsb/db/KuduYCSBClient.java
+Patch:
+@@ -37,6 +37,8 @@
+ import java.util.Set;
+ import java.util.Vector;
+ 
++import static com.yahoo.ycsb.workloads.CoreWorkload.TABLENAME_PROPERTY;
++import static com.yahoo.ycsb.workloads.CoreWorkload.TABLENAME_PROPERTY_DEFAULT;
+ import static org.apache.kudu.Type.STRING;
+ import static org.apache.kudu.client.KuduPredicate.ComparisonOp.EQUAL;
+ import static org.apache.kudu.client.KuduPredicate.ComparisonOp.GREATER_EQUAL;
+@@ -80,7 +82,7 @@ public class KuduYCSBClient extends com.yahoo.ycsb.DB {
+ 
+   @Override
+   public void init() throws DBException {
+-    String tableName = CoreWorkload.table;
++    String tableName = getProperties().getProperty(TABLENAME_PROPERTY, TABLENAME_PROPERTY_DEFAULT);
+     initClient(tableName, getProperties());
+     this.session = client.newSession();
+     if (getProperties().getProperty(SYNC_OPS_OPT) != null
+
+File: core/src/main/java/com/yahoo/ycsb/generator/ScrambledZipfianGenerator.java
+Patch:
+@@ -101,7 +101,7 @@ public ScrambledZipfianGenerator(long min, long max, double _zipfianconstant)
+   public Long nextValue()
+ 	{
+ 		long ret=gen.nextValue();
+-		ret=_min+Utils.FNVhash64(ret)%_itemcount;
++		ret=_min+Utils.fnvhash64(ret)%_itemcount;
+ 		setLastValue(ret);
+ 		return ret;
+ 	}
+
+File: core/src/main/java/com/yahoo/ycsb/Workload.java
+Patch:
+@@ -1,5 +1,5 @@
+ /**
+- * Copyright (c) 2010 Yahoo! Inc. All rights reserved.
++ * Copyright (c) 2010-2016 Yahoo! Inc., 2017 YCSB contributors All rights reserved.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License"); you
+  * may not use this file except in compliance with the License. You
+
+File: couchbase2/src/main/java/com/yahoo/ycsb/db/couchbase2/Couchbase2Client.java
+Patch:
+@@ -715,7 +715,7 @@ private Status scanSpecificFields(final String table, final String startkey, fin
+    */
+   private void waitForMutationResponse(final Observable<? extends Document<?>> input) {
+     if (!syncMutResponse) {
+-      input.subscribe(new Subscriber<Document<?>>() {
++      ((Observable<Document<?>>)input).subscribe(new Subscriber<Document<?>>() {
+         @Override
+         public void onCompleted() {
+         }
+
+File: core/src/main/java/com/yahoo/ycsb/DBWrapper.java
+Patch:
+@@ -1,5 +1,5 @@
+ /**
+- * Copyright (c) 2010 Yahoo! Inc. All rights reserved.
++ * Copyright (c) 2010 Yahoo! Inc., 2016 YCSB contributors. All rights reserved.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License"); you
+  * may not use this file except in compliance with the License. You
+@@ -184,7 +184,7 @@ public Status scan(String table, String startkey, int recordcount,
+   private void measure(String op, Status result, long intendedStartTimeNanos,
+       long startTimeNanos, long endTimeNanos) {
+     String measurementName = op;
+-    if (result != Status.OK) {
++    if (result == null || !result.isOk()) {
+       if (this.reportLatencyForEachError ||
+           this.latencyTrackedErrors.contains(result.getName())) {
+         measurementName = op + "-" + result.getName();
+
+File: core/src/main/java/com/yahoo/ycsb/workloads/CoreWorkload.java
+Patch:
+@@ -41,6 +41,7 @@
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Map;
++import java.util.Objects;
+ import java.util.Vector;
+ 
+ 
+@@ -590,7 +591,7 @@ public boolean doInsert(DB db, Object threadstate) {
+     int numOfRetries = 0;
+     do {
+       status = db.insert(table, dbkey, values);
+-      if (status == Status.OK) {
++      if (null != status && status.isOk()) {
+         break;
+       }
+       // Retry if configured. Without retrying, the load process will fail
+@@ -614,7 +615,7 @@ public boolean doInsert(DB db, Object threadstate) {
+       }
+     } while (true);
+ 
+-    return (status == Status.OK);
++    return null != status && status.isOk();
+   }
+ 
+   /**
+
+File: jdbc/src/main/java/com/yahoo/ycsb/db/JdbcDBCreateTable.java
+Patch:
+@@ -68,7 +68,7 @@ private static void createTable(Properties props, String tablename) throws SQLEx
+ 
+       sql = new StringBuilder("CREATE TABLE ");
+       sql.append(tablename);
+-      sql.append(" (KEY VARCHAR PRIMARY KEY");
++      sql.append(" (YCSB_KEY VARCHAR PRIMARY KEY");
+ 
+       for (int idx = 0; idx < fieldcount; idx++) {
+         sql.append(", FIELD");
+
+File: jdbc/src/main/java/com/yahoo/ycsb/db/JdbcDBCreateTable.java
+Patch:
+@@ -68,7 +68,7 @@ private static void createTable(Properties props, String tablename) throws SQLEx
+ 
+       sql = new StringBuilder("CREATE TABLE ");
+       sql.append(tablename);
+-      sql.append(" (KEY VARCHAR PRIMARY KEY");
++      sql.append(" (YCSB_KEY VARCHAR PRIMARY KEY");
+ 
+       for (int idx = 0; idx < fieldcount; idx++) {
+         sql.append(", FIELD");
+
+File: couchbase2/src/main/java/com/yahoo/ycsb/db/couchbase2/Couchbase2Client.java
+Patch:
+@@ -608,7 +608,6 @@ public Status scan(final String table, final String startkey, final int recordco
+   private Status scanAllFields(final String table, final String startkey, final int recordcount,
+       final Vector<HashMap<String, ByteIterator>> result) {
+     final List<HashMap<String, ByteIterator>> data = new ArrayList<HashMap<String, ByteIterator>>(recordcount);
+-
+     bucket.async()
+         .query(N1qlQuery.parameterized(
+           scanAllQuery,
+@@ -633,7 +632,8 @@ public Observable<AsyncN1qlQueryRow> call(AsyncN1qlQueryResult result) {
+         .flatMap(new Func1<AsyncN1qlQueryRow, Observable<RawJsonDocument>>() {
+           @Override
+           public Observable<RawJsonDocument> call(AsyncN1qlQueryRow row) {
+-            return bucket.async().get(new String(row.byteValue()), RawJsonDocument.class);
++            String id = new String(row.byteValue()).trim();
++            return bucket.async().get(id.substring(1, id.length()-1), RawJsonDocument.class);
+           }
+         })
+         .map(new Func1<RawJsonDocument, HashMap<String, ByteIterator>>() {
+@@ -856,7 +856,7 @@ private void decode(final String source, final Set<String> fields,
+       for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.fields(); jsonFields.hasNext();) {
+         Map.Entry<String, JsonNode> jsonField = jsonFields.next();
+         String name = jsonField.getKey();
+-        if (!(checkFields && fields.contains(name))) {
++        if (checkFields && !fields.contains(name)) {
+           continue;
+         }
+         JsonNode jsonValue = jsonField.getValue();
+
+File: couchbase2/src/main/java/com/yahoo/ycsb/db/couchbase2/Couchbase2Client.java
+Patch:
+@@ -856,7 +856,7 @@ private void decode(final String source, final Set<String> fields,
+       for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.fields(); jsonFields.hasNext();) {
+         Map.Entry<String, JsonNode> jsonField = jsonFields.next();
+         String name = jsonField.getKey();
+-        if (checkFields && fields.contains(name)) {
++        if (checkFields && !fields.contains(name)) {
+           continue;
+         }
+         JsonNode jsonValue = jsonField.getValue();
+
+File: couchbase2/src/main/java/com/yahoo/ycsb/db/couchbase2/Couchbase2Client.java
+Patch:
+@@ -856,7 +856,7 @@ private void decode(final String source, final Set<String> fields,
+       for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.fields(); jsonFields.hasNext();) {
+         Map.Entry<String, JsonNode> jsonField = jsonFields.next();
+         String name = jsonField.getKey();
+-        if (!(checkFields && fields.contains(name))) {
++        if (checkFields && fields.contains(name)) {
+           continue;
+         }
+         JsonNode jsonValue = jsonField.getValue();
+
+File: couchbase2/src/main/java/com/yahoo/ycsb/db/couchbase2/Couchbase2Client.java
+Patch:
+@@ -608,7 +608,6 @@ public Status scan(final String table, final String startkey, final int recordco
+   private Status scanAllFields(final String table, final String startkey, final int recordcount,
+       final Vector<HashMap<String, ByteIterator>> result) {
+     final List<HashMap<String, ByteIterator>> data = new ArrayList<HashMap<String, ByteIterator>>(recordcount);
+-
+     bucket.async()
+         .query(N1qlQuery.parameterized(
+           scanAllQuery,
+@@ -633,7 +632,8 @@ public Observable<AsyncN1qlQueryRow> call(AsyncN1qlQueryResult result) {
+         .flatMap(new Func1<AsyncN1qlQueryRow, Observable<RawJsonDocument>>() {
+           @Override
+           public Observable<RawJsonDocument> call(AsyncN1qlQueryRow row) {
+-            return bucket.async().get(new String(row.byteValue()), RawJsonDocument.class);
++            String id = new String(row.byteValue()).trim();
++            return bucket.async().get(id.substring(1, id.length()-1), RawJsonDocument.class);
+           }
+         })
+         .map(new Func1<RawJsonDocument, HashMap<String, ByteIterator>>() {
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/Measurements.java
+Patch:
+@@ -151,7 +151,7 @@ OneMeasurement constructOneMeasurement(String name)
+     case HDRHISTOGRAM_AND_RAW:
+       return new TwoInOneMeasurement(name,
+           new OneMeasurementHdrHistogram("Hdr"+name, _props),
+-          new OneMeasurementHistogram("Raw"+name, _props));
++          new OneMeasurementRaw("Raw"+name, _props));
+     case TIMESERIES:
+       return new OneMeasurementTimeSeries(name, _props);
+     case RAW:
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/Measurements.java
+Patch:
+@@ -151,7 +151,7 @@ OneMeasurement constructOneMeasurement(String name)
+     case HDRHISTOGRAM_AND_RAW:
+       return new TwoInOneMeasurement(name,
+           new OneMeasurementHdrHistogram("Hdr"+name, _props),
+-          new OneMeasurementHistogram("Raw"+name, _props));
++          new OneMeasurementRaw("Raw"+name, _props));
+     case TIMESERIES:
+       return new OneMeasurementTimeSeries(name, _props);
+     case RAW:
+
+File: couchbase2/src/main/java/com/yahoo/ycsb/db/couchbase2/Couchbase2Client.java
+Patch:
+@@ -856,7 +856,7 @@ private void decode(final String source, final Set<String> fields,
+       for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.fields(); jsonFields.hasNext();) {
+         Map.Entry<String, JsonNode> jsonField = jsonFields.next();
+         String name = jsonField.getKey();
+-        if (checkFields && fields.contains(name)) {
++        if (!(checkFields && fields.contains(name))) {
+           continue;
+         }
+         JsonNode jsonValue = jsonField.getValue();
+
+File: couchbase2/src/main/java/com/yahoo/ycsb/db/couchbase2/Couchbase2Client.java
+Patch:
+@@ -856,7 +856,7 @@ private void decode(final String source, final Set<String> fields,
+       for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.fields(); jsonFields.hasNext();) {
+         Map.Entry<String, JsonNode> jsonField = jsonFields.next();
+         String name = jsonField.getKey();
+-        if (checkFields && fields.contains(name)) {
++        if (!(checkFields && fields.contains(name))) {
+           continue;
+         }
+         JsonNode jsonValue = jsonField.getValue();
+
+File: core/src/main/java/com/yahoo/ycsb/generator/HistogramGenerator.java
+Patch:
+@@ -83,7 +83,7 @@ public HistogramGenerator(long[] buckets, int block_size) {
+ 	private void init() {
+ 		for(int i = 0; i < buckets.length; i++) {
+ 			area += buckets[i];
+-			weighted_area = i * buckets[i];
++			weighted_area += i * buckets[i];
+ 		}
+ 		// calculate average file size
+ 		mean_size = ((double)block_size) * ((double)weighted_area) / (area);
+
+File: core/src/main/java/com/yahoo/ycsb/generator/HistogramGenerator.java
+Patch:
+@@ -83,7 +83,7 @@ public HistogramGenerator(long[] buckets, int block_size) {
+ 	private void init() {
+ 		for(int i = 0; i < buckets.length; i++) {
+ 			area += buckets[i];
+-			weighted_area = i * buckets[i];
++			weighted_area += i * buckets[i];
+ 		}
+ 		// calculate average file size
+ 		mean_size = ((double)block_size) * ((double)weighted_area) / (area);
+
+File: googlebigtable/src/main/java/com/yahoo/ycsb/db/GoogleBigtableClient.java
+Patch:
+@@ -365,7 +365,9 @@ public Status update(String table, String key,
+       setCellBuilder.setFamilyNameBytes(ByteStringer.wrap(columnFamilyBytes));
+       setCellBuilder.setColumnQualifier(ByteStringer.wrap(entry.getKey().getBytes()));
+       setCellBuilder.setValue(ByteStringer.wrap(entry.getValue().toArray()));
+-      setCellBuilder.setTimestampMicros(System.nanoTime() / 1000);
++
++      // Bigtable uses a 1ms granularity
++      setCellBuilder.setTimestampMicros(System.currentTimeMillis() * 1000);
+     }
+     
+     try {
+
+File: core/src/test/java/com/yahoo/ycsb/TestUtils.java
+Patch:
+@@ -110,6 +110,8 @@ public void jvmUtils() throws Exception {
+     Utils.getSystemLoadAverage();
+     // This will probably be zero but should never be negative.
+     assertTrue(Utils.getGCTotalCollectionCount() >= 0);
++    // Could be zero similar to GC total collection count
++    assertTrue(Utils.getGCTotalTime() >= 0);
+   }
+   
+   /**
+
+File: riak/src/main/java/com/yahoo/ycsb/db/riak/package-info.java
+Patch:
+@@ -17,7 +17,7 @@
+  */
+ 
+ /**
+- * The YCSB binding for <a href="http://basho.com/products/riak-kv/">Riak KV</a> 2.0.x.
++ * The YCSB binding for <a href="http://basho.com/products/riak-kv/">Riak KV</a> 2.x.y.
+  *
+  */
+ package com.yahoo.ycsb.db.riak;
+\ No newline at end of file
+
+File: riak/src/main/java/com/yahoo/ycsb/db/riak/RiakUtils.java
+Patch:
+@@ -16,7 +16,7 @@
+  * LICENSE file.
+  */
+ 
+-package com.yahoo.ycsb.db;
++package com.yahoo.ycsb.db.riak;
+ 
+ import java.io.*;
+ import java.util.Map;
+
+File: riak/src/main/java/com/yahoo/ycsb/db/riak/package-info.java
+Patch:
+@@ -17,7 +17,7 @@
+  */
+ 
+ /**
+- * The YCSB binding for <a href="http://basho.com/products/riak-kv/">Riak KV</a>
+- * 2.0.x.
++ * The YCSB binding for <a href="http://basho.com/products/riak-kv/">Riak KV</a> 2.0.x.
++ *
+  */
+-package com.yahoo.ycsb.db;
+\ No newline at end of file
++package com.yahoo.ycsb.db.riak;
+\ No newline at end of file
+
+File: elasticsearch/src/main/java/com/yahoo/ycsb/db/ElasticsearchClient.java
+Patch:
+@@ -149,8 +149,8 @@ public void init() throws DBException {
+                                       .put("index.number_of_replicas", numberOfReplicas)
+                                       .put("index.mapping._id.indexed", true)
+                       )).actionGet();
+-      client.admin().cluster().health(new ClusterHealthRequest().waitForGreenStatus()).actionGet();
+     }
++    client.admin().cluster().health(new ClusterHealthRequest().waitForGreenStatus()).actionGet();
+   }
+ 
+   private int parseIntegerProperty(Properties properties, String key, int defaultValue) {
+
+File: elasticsearch/src/main/java/com/yahoo/ycsb/db/ElasticsearchClient.java
+Patch:
+@@ -149,8 +149,8 @@ public void init() throws DBException {
+                                       .put("index.number_of_replicas", numberOfReplicas)
+                                       .put("index.mapping._id.indexed", true)
+                       )).actionGet();
+-      client.admin().cluster().health(new ClusterHealthRequest().waitForGreenStatus()).actionGet();
+     }
++    client.admin().cluster().health(new ClusterHealthRequest().waitForGreenStatus()).actionGet();
+   }
+ 
+   private int parseIntegerProperty(Properties properties, String key, int defaultValue) {
+
+File: elasticsearch/src/main/java/com/yahoo/ycsb/db/ElasticsearchClient.java
+Patch:
+@@ -64,9 +64,9 @@
+  */
+ public class ElasticsearchClient extends DB {
+ 
+-  public static final String DEFAULT_CLUSTER_NAME = "es.ycsb.cluster";
+-  public static final String DEFAULT_INDEX_KEY = "es.ycsb";
+-  public static final String DEFAULT_REMOTE_HOST = "localhost:9300";
++  private static final String DEFAULT_CLUSTER_NAME = "es.ycsb.cluster";
++  private static final String DEFAULT_INDEX_KEY = "es.ycsb";
++  private static final String DEFAULT_REMOTE_HOST = "localhost:9300";
+   private Node node;
+   private Client client;
+   private String indexKey;
+
+File: elasticsearch/src/main/java/com/yahoo/ycsb/db/ElasticsearchClient.java
+Patch:
+@@ -93,7 +93,7 @@ public void init() throws DBException {
+     Boolean newdb =
+         Boolean.parseBoolean(props.getProperty("elasticsearch.newdb", "false"));
+     Builder settings = Settings.settingsBuilder()
+-        .put("node.local", "true")
++        .put("node.local", Boolean.toString(!remoteMode))
+         .put("path.data", System.getProperty("java.io.tmpdir") + "/esdata")
+         .put("path.home", System.getProperty("java.io.tmpdir"));
+ 
+
+File: orientdb/src/test/java/com/yahoo/ycsb/db/OrientDBClientTest.java
+Patch:
+@@ -224,7 +224,7 @@ public void scanTest() {
+      * Track the issue here: https://github.com/orientechnologies/orientdb/issues/5541
+      * This fix was implemented for orientechnologies:orientdb-client:2.1.8
+      */
+-    int testIndex = startIndex + 1; // <-- Remove the +1 when the known issue of broken iterator is fixed.
++    int testIndex = startIndex;
+ 
+     // Check each vector row to make sure we have the correct fields
+     for (HashMap<String, ByteIterator> result: resultVector) {
+
+File: orientdb/src/main/java/com/yahoo/ycsb/db/OrientDBClient.java
+Patch:
+@@ -282,8 +282,8 @@ public Status scan(String table, String startkey, int recordcount, Set<String> f
+ 
+       if (fields != null && !fields.isEmpty()) {
+         while (entries.hasNext() && entrycount < recordcount) {
+-          final Entry<Object, OIdentifiable> entry = entries.nextEntry();
+-          final ODocument document = entry.getValue().getRecord();
++          final OIdentifiable entry = entries.next();
++          final ODocument document = entry.getRecord();
+ 
+           final HashMap<String, ByteIterator> map = new HashMap<String, ByteIterator>();
+           result.add(map);
+
+File: orientdb/src/test/java/com/yahoo/ycsb/db/OrientDBClientTest.java
+Patch:
+@@ -224,7 +224,7 @@ public void scanTest() {
+      * Track the issue here: https://github.com/orientechnologies/orientdb/issues/5541
+      * This fix was implemented for orientechnologies:orientdb-client:2.1.8
+      */
+-    int testIndex = startIndex + 1; // <-- Remove the +1 when the known issue of broken iterator is fixed.
++    int testIndex = startIndex;
+ 
+     // Check each vector row to make sure we have the correct fields
+     for (HashMap<String, ByteIterator> result: resultVector) {
+
+File: geode/src/main/java/com/yahoo/ycsb/db/GeodeClient.java
+Patch:
+@@ -1,5 +1,5 @@
+ /**
+- * Copyright (c) 2013 - 2014 YCSB Contributors. All rights reserved.
++ * Copyright (c) 2013 - 2016 YCSB Contributors. All rights reserved.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License"); you
+  * may not use this file except in compliance with the License. You
+@@ -61,8 +61,6 @@
+  * region. A cache.xml defining "usertable" region can be placed in the
+  * working directory to override these region definitions.</p>
+  * 
+- * @author Swapnil Bawaskar (sbawaska at vmware)
+- *
+  */
+ public class GeodeClient extends DB {
+ 
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementTimeSeries.java
+Patch:
+@@ -76,7 +76,7 @@ public OneMeasurementTimeSeries(String name, Properties props)
+     _measurements=new Vector<SeriesUnit>();
+   }
+ 
+-  void checkEndOfUnit(boolean forceend)
++  synchronized void checkEndOfUnit(boolean forceend)
+   {
+     long now=System.currentTimeMillis();
+ 
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementTimeSeries.java
+Patch:
+@@ -76,7 +76,7 @@ public OneMeasurementTimeSeries(String name, Properties props)
+     _measurements=new Vector<SeriesUnit>();
+   }
+ 
+-  void checkEndOfUnit(boolean forceend)
++  synchronized void checkEndOfUnit(boolean forceend)
+   {
+     long now=System.currentTimeMillis();
+ 
+
+File: core/src/main/java/com/yahoo/ycsb/Client.java
+Patch:
+@@ -591,7 +591,7 @@ public static void main(String[] args)
+           System.exit(0);
+         }
+         int tcount=Integer.parseInt(args[argindex]);
+-        props.setProperty(THREAD_COUNT_PROPERTY, tcount+"");
++        props.setProperty(THREAD_COUNT_PROPERTY, String.valueOf(tcount));
+         argindex++;
+       }
+       else if (args[argindex].compareTo("-target")==0)
+@@ -603,7 +603,7 @@ else if (args[argindex].compareTo("-target")==0)
+           System.exit(0);
+         }
+         int ttarget=Integer.parseInt(args[argindex]);
+-        props.setProperty(TARGET_PROPERTY, ttarget+"");
++        props.setProperty(TARGET_PROPERTY, String.valueOf(ttarget));
+         argindex++;
+       }
+       else if (args[argindex].compareTo("-load")==0)
+
+File: core/src/main/java/com/yahoo/ycsb/generator/IntegerGenerator.java
+Patch:
+@@ -46,7 +46,7 @@ protected void setLastInt(int last)
+ 	 */
+ 	public String nextString()
+ 	{
+-		return ""+nextInt();
++		return String.valueOf(nextInt());
+ 	}
+ 	
+ 	/**
+@@ -57,7 +57,7 @@ public String nextString()
+ 	@Override
+ 	public String lastString()
+ 	{
+-		return ""+lastInt();
++		return String.valueOf(lastInt());
+ 	}
+ 	
+ 	/**
+
+File: core/src/main/java/com/yahoo/ycsb/generator/ScrambledZipfianGenerator.java
+Patch:
+@@ -123,7 +123,7 @@ public static void main(String[] args)
+ 		
+ 		for (int i=0; i<1000000; i++)
+ 		{
+-			System.out.println(""+gen.nextInt());
++			System.out.println(gen.nextInt());
+ 		}
+ 	}
+ 
+
+File: accumulo/src/main/java/com/yahoo/ycsb/db/AccumuloClient.java
+Patch:
+@@ -169,11 +169,11 @@ public void getTable(String t) throws TableNotFoundException {
+     bwc.setMaxWriteThreads(Integer.parseInt(
+         getProperties().getProperty("accumulo.batchWriterThreads", "1")));
+ 
+-    bw = connector.createBatchWriter(table, bwc);
++    bw = connector.createBatchWriter(t, bwc);
+ 
+     // Create our scanners
+-    singleScanner = connector.createScanner(table, Authorizations.EMPTY);
+-    scanScanner = connector.createScanner(table, Authorizations.EMPTY);
++    singleScanner = connector.createScanner(t, Authorizations.EMPTY);
++    scanScanner = connector.createScanner(t, Authorizations.EMPTY);
+ 
+     table = t; // Store the name of the table we have open.
+   }
+
+File: cassandra/src/main/java/com/yahoo/ycsb/db/CassandraClient10.java
+Patch:
+@@ -581,8 +581,8 @@ public static void main(String[] args) {
+     fields.add("favoritecolor");
+     res = cli.read("usertable", "BrianFrankCooper", null, result);
+     System.out.println("Result of read: " + res);
+-    for (String s : result.keySet()) {
+-      System.out.println("[" + s + "]=[" + result.get(s) + "]");
++    for (Map.Entry<String, ByteIterator> entry : result.entrySet()) {
++      System.out.println("[" + entry.getKey() + "]=[" + entry.getValue() + "]");
+     }
+ 
+     res = cli.delete("usertable", "BrianFrankCooper");
+
+File: cassandra/src/main/java/com/yahoo/ycsb/db/CassandraClient7.java
+Patch:
+@@ -539,8 +539,8 @@ public static void main(String[] args) {
+     fields.add("favoritecolor");
+     res = cli.read("usertable", "BrianFrankCooper", null, result);
+     System.out.println("Result of read: " + res.getName());
+-    for (String s : result.keySet()) {
+-      System.out.println("[" + s + "]=[" + result.get(s) + "]");
++    for (Map.Entry<String, ByteIterator> entry : result.entrySet()) {
++      System.out.println("[" + entry.getKey() + "]=[" + entry.getValue() + "]");
+     }
+ 
+     res = cli.delete("usertable", "BrianFrankCooper");
+
+File: cassandra/src/main/java/com/yahoo/ycsb/db/CassandraClient8.java
+Patch:
+@@ -518,8 +518,8 @@ public static void main(String[] args) {
+     fields.add("favoritecolor");
+     res = cli.read("usertable", "BrianFrankCooper", null, result);
+     System.out.println("Result of read: " + res);
+-    for (String s : result.keySet()) {
+-      System.out.println("[" + s + "]=[" + result.get(s) + "]");
++    for (Map.Entry<String, ByteIterator> entry : result.entrySet()) {
++      System.out.println("[" + entry.getKey() + "]=[" + entry.getValue() + "]");
+     }
+ 
+     res = cli.delete("usertable", "BrianFrankCooper");
+
+File: cassandra/src/main/java/com/yahoo/ycsb/db/CassandraClient10.java
+Patch:
+@@ -581,8 +581,8 @@ public static void main(String[] args) {
+     fields.add("favoritecolor");
+     res = cli.read("usertable", "BrianFrankCooper", null, result);
+     System.out.println("Result of read: " + res);
+-    for (String s : result.keySet()) {
+-      System.out.println("[" + s + "]=[" + result.get(s) + "]");
++    for (Map.Entry<String, ByteIterator> entry : result.entrySet()) {
++      System.out.println("[" + entry.getKey() + "]=[" + entry.getValue() + "]");
+     }
+ 
+     res = cli.delete("usertable", "BrianFrankCooper");
+
+File: cassandra/src/main/java/com/yahoo/ycsb/db/CassandraClient7.java
+Patch:
+@@ -539,8 +539,8 @@ public static void main(String[] args) {
+     fields.add("favoritecolor");
+     res = cli.read("usertable", "BrianFrankCooper", null, result);
+     System.out.println("Result of read: " + res.getName());
+-    for (String s : result.keySet()) {
+-      System.out.println("[" + s + "]=[" + result.get(s) + "]");
++    for (Map.Entry<String, ByteIterator> entry : result.entrySet()) {
++      System.out.println("[" + entry.getKey() + "]=[" + entry.getValue() + "]");
+     }
+ 
+     res = cli.delete("usertable", "BrianFrankCooper");
+
+File: cassandra/src/main/java/com/yahoo/ycsb/db/CassandraClient8.java
+Patch:
+@@ -518,8 +518,8 @@ public static void main(String[] args) {
+     fields.add("favoritecolor");
+     res = cli.read("usertable", "BrianFrankCooper", null, result);
+     System.out.println("Result of read: " + res);
+-    for (String s : result.keySet()) {
+-      System.out.println("[" + s + "]=[" + result.get(s) + "]");
++    for (Map.Entry<String, ByteIterator> entry : result.entrySet()) {
++      System.out.println("[" + entry.getKey() + "]=[" + entry.getValue() + "]");
+     }
+ 
+     res = cli.delete("usertable", "BrianFrankCooper");
+
+File: accumulo/src/main/java/com/yahoo/ycsb/db/AccumuloClient.java
+Patch:
+@@ -416,7 +416,7 @@ private void keyNotification(String key) throws KeeperException {
+           // If the results are empty, the key is enqueued in
+           // Zookeeper
+           // and tried again, until the results are found.
+-          if (result.size() == 0) {
++          if (result.isEmpty()) {
+             q.produce(strKey);
+             int count = ((Integer) hmKeyNumReads.get(strKey)).intValue();
+             hmKeyNumReads.put(strKey, new Integer(count + 1));
+
+File: accumulo/src/main/java/com/yahoo/ycsb/db/ZKProducerConsumer.java
+Patch:
+@@ -174,7 +174,7 @@ String consume() throws KeeperException, InterruptedException {
+       while (true) {
+         synchronized (mutex) {
+           List<String> list = zk.getChildren(getRoot(), true);
+-          if (list.size() == 0) {
++          if (list.isEmpty()) {
+             System.out.println("Going to wait");
+             mutex.wait();
+           } else {
+
+File: core/src/main/java/com/yahoo/ycsb/CommandLine.java
+Patch:
+@@ -327,7 +327,7 @@ else if (tokens[0].compareTo("scan")==0)
+ 		  Status ret=db.scan(table,tokens[1],Integer.parseInt(tokens[2]),fields,results);
+ 		  System.out.println("Result: "+ret.getName());
+ 		  int record=0;
+-		  if (results.size()==0)
++		  if (results.isEmpty())
+ 		  {
+ 		     System.out.println("0 records");
+ 		  }
+
+File: couchbase/src/main/java/com/yahoo/ycsb/db/CouchbaseClient.java
+Patch:
+@@ -291,7 +291,7 @@ private void decode(final Object source, final Set<String> fields,
+     if (useJson) {
+       try {
+         JsonNode json = JSON_MAPPER.readTree((String) source);
+-        boolean checkFields = fields != null && fields.size() > 0;
++        boolean checkFields = fields != null && !fields.isEmpty();
+         for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.fields(); jsonFields.hasNext();) {
+           Map.Entry<String, JsonNode> jsonField = jsonFields.next();
+           String name = jsonField.getKey();
+
+File: memcached/src/main/java/com/yahoo/ycsb/db/MemcachedClient.java
+Patch:
+@@ -262,7 +262,7 @@ protected static void fromJson(
+       String value, Set<String> fields,
+       Map<String, ByteIterator> result) throws IOException {
+     JsonNode json = MAPPER.readTree(value);
+-    boolean checkFields = fields != null && fields.size() > 0;
++    boolean checkFields = fields != null && !fields.isEmpty();
+     for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.getFields();
+          jsonFields.hasNext();
+          /* increment in loop body */) {
+
+File: core/src/main/java/com/yahoo/ycsb/StringByteIterator.java
+Patch:
+@@ -62,7 +62,7 @@ public static HashMap<String, String> getStringMap(Map<String, ByteIterator> m)
+ 		HashMap<String, String> ret = new HashMap<String,String>();
+ 
+ 		for(String s: m.keySet()) {
+-			ret.put(s, m.get(s).toString());;
++			ret.put(s, m.get(s).toString());
+ 		}
+ 		return ret;
+ 	}
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/Measurements.java
+Patch:
+@@ -174,7 +174,7 @@ long startTime(){
+   ThreadLocal<StartTimeHolder> tlIntendedStartTime = new ThreadLocal<Measurements.StartTimeHolder>() {
+     protected StartTimeHolder initialValue() {
+       return new StartTimeHolder();
+-    };
++    }
+   };
+ 
+   public void setIntendedStartTimeNs(long time) {
+
+File: dynamodb/src/main/java/com/yahoo/ycsb/db/DynamoDBClient.java
+Patch:
+@@ -87,8 +87,6 @@ private enum PrimaryKeyType {
+         "An error occurred on the client.");
+     private static final String DEFAULT_HASH_KEY_VALUE = "YCSB_0";
+ 
+-    public DynamoDBClient() {}
+-
+     /**
+      * Initialize any state for this DB. Called once per DB instance; there is
+      * one DB instance per client thread.
+
+File: googledatastore/src/main/java/com/yahoo/ycsb/db/GoogleDatastoreClient.java
+Patch:
+@@ -83,8 +83,6 @@ private enum EntityGroupingMode {
+ 
+   private Datastore datastore = null;
+ 
+-  public GoogleDatastoreClient() {}
+-
+   /**
+    * Initialize any state for this DB. Called once per DB instance; there is
+    * one DB instance per client thread.
+
+File: core/src/main/java/com/yahoo/ycsb/StringByteIterator.java
+Patch:
+@@ -62,7 +62,7 @@ public static HashMap<String, String> getStringMap(Map<String, ByteIterator> m)
+ 		HashMap<String, String> ret = new HashMap<String,String>();
+ 
+ 		for(String s: m.keySet()) {
+-			ret.put(s, m.get(s).toString());;
++			ret.put(s, m.get(s).toString());
+ 		}
+ 		return ret;
+ 	}
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/Measurements.java
+Patch:
+@@ -174,7 +174,7 @@ long startTime(){
+   ThreadLocal<StartTimeHolder> tlIntendedStartTime = new ThreadLocal<Measurements.StartTimeHolder>() {
+     protected StartTimeHolder initialValue() {
+       return new StartTimeHolder();
+-    };
++    }
+   };
+ 
+   public void setIntendedStartTimeNs(long time) {
+
+File: dynamodb/src/main/java/com/yahoo/ycsb/db/DynamoDBClient.java
+Patch:
+@@ -87,8 +87,6 @@ private enum PrimaryKeyType {
+         "An error occurred on the client.");
+     private static final String DEFAULT_HASH_KEY_VALUE = "YCSB_0";
+ 
+-    public DynamoDBClient() {}
+-
+     /**
+      * Initialize any state for this DB. Called once per DB instance; there is
+      * one DB instance per client thread.
+
+File: googledatastore/src/main/java/com/yahoo/ycsb/db/GoogleDatastoreClient.java
+Patch:
+@@ -83,8 +83,6 @@ private enum EntityGroupingMode {
+ 
+   private Datastore datastore = null;
+ 
+-  public GoogleDatastoreClient() {}
+-
+   /**
+    * Initialize any state for this DB. Called once per DB instance; there is
+    * one DB instance per client thread.
+
+File: accumulo/src/main/java/com/yahoo/ycsb/db/AccumuloClient.java
+Patch:
+@@ -416,7 +416,7 @@ private void keyNotification(String key) throws KeeperException {
+           // If the results are empty, the key is enqueued in
+           // Zookeeper
+           // and tried again, until the results are found.
+-          if (result.size() == 0) {
++          if (result.isEmpty()) {
+             q.produce(strKey);
+             int count = ((Integer) hmKeyNumReads.get(strKey)).intValue();
+             hmKeyNumReads.put(strKey, new Integer(count + 1));
+
+File: accumulo/src/main/java/com/yahoo/ycsb/db/ZKProducerConsumer.java
+Patch:
+@@ -174,7 +174,7 @@ String consume() throws KeeperException, InterruptedException {
+       while (true) {
+         synchronized (mutex) {
+           List<String> list = zk.getChildren(getRoot(), true);
+-          if (list.size() == 0) {
++          if (list.isEmpty()) {
+             System.out.println("Going to wait");
+             mutex.wait();
+           } else {
+
+File: core/src/main/java/com/yahoo/ycsb/CommandLine.java
+Patch:
+@@ -327,7 +327,7 @@ else if (tokens[0].compareTo("scan")==0)
+ 		  Status ret=db.scan(table,tokens[1],Integer.parseInt(tokens[2]),fields,results);
+ 		  System.out.println("Result: "+ret.getName());
+ 		  int record=0;
+-		  if (results.size()==0)
++		  if (results.isEmpty())
+ 		  {
+ 		     System.out.println("0 records");
+ 		  }
+
+File: couchbase/src/main/java/com/yahoo/ycsb/db/CouchbaseClient.java
+Patch:
+@@ -291,7 +291,7 @@ private void decode(final Object source, final Set<String> fields,
+     if (useJson) {
+       try {
+         JsonNode json = JSON_MAPPER.readTree((String) source);
+-        boolean checkFields = fields != null && fields.size() > 0;
++        boolean checkFields = fields != null && !fields.isEmpty();
+         for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.fields(); jsonFields.hasNext();) {
+           Map.Entry<String, JsonNode> jsonField = jsonFields.next();
+           String name = jsonField.getKey();
+
+File: memcached/src/main/java/com/yahoo/ycsb/db/MemcachedClient.java
+Patch:
+@@ -262,7 +262,7 @@ protected static void fromJson(
+       String value, Set<String> fields,
+       Map<String, ByteIterator> result) throws IOException {
+     JsonNode json = MAPPER.readTree(value);
+-    boolean checkFields = fields != null && fields.size() > 0;
++    boolean checkFields = fields != null && !fields.isEmpty();
+     for (Iterator<Map.Entry<String, JsonNode>> jsonFields = json.getFields();
+          jsonFields.hasNext();
+          /* increment in loop body */) {
+
+File: cassandra/src/main/java/com/yahoo/ycsb/db/CassandraCQLClient.java
+Patch:
+@@ -388,7 +388,7 @@ public Status insert(String table, String key,
+         System.out.println(insertStmt.toString());
+       }
+ 
+-      ResultSet rs = session.execute(insertStmt);
++      session.execute(insertStmt);
+ 
+       return Status.OK;
+     } catch (Exception e) {
+
+File: cassandra2/src/main/java/com/yahoo/ycsb/db/CassandraCQLClient.java
+Patch:
+@@ -433,7 +433,7 @@ public Status insert(String table, String key,
+         System.out.println(insertStmt.toString());
+       }
+ 
+-      ResultSet rs = session.execute(insertStmt);
++      session.execute(insertStmt);
+ 
+       return Status.OK;
+     } catch (Exception e) {
+@@ -466,7 +466,7 @@ public Status delete(String table, String key) {
+         System.out.println(stmt.toString());
+       }
+ 
+-      ResultSet rs = session.execute(stmt);
++      session.execute(stmt);
+ 
+       return Status.OK;
+     } catch (Exception e) {
+
+File: hbase098/src/main/java/com/yahoo/ycsb/db/HBaseClient.java
+Patch:
+@@ -110,7 +110,7 @@ public void init() throws DBException
+       try
+ 	  {
+ 	      HTable ht = new HTable(config, table);
+-	      HTableDescriptor dsc = ht.getTableDescriptor();
++	      ht.getTableDescriptor();
+ 	  }
+       catch (IOException e)
+ 	  {
+
+File: hbase10/src/main/java/com/yahoo/ycsb/db/HBaseClient10.java
+Patch:
+@@ -28,7 +28,6 @@
+ import org.apache.hadoop.hbase.Cell;
+ import org.apache.hadoop.hbase.CellUtil;
+ import org.apache.hadoop.hbase.HBaseConfiguration;
+-import org.apache.hadoop.hbase.HTableDescriptor;
+ import org.apache.hadoop.hbase.TableName;
+ import org.apache.hadoop.hbase.client.BufferedMutator;
+ import org.apache.hadoop.hbase.client.BufferedMutatorParams;
+@@ -142,8 +141,7 @@ public void init() throws DBException {
+     String table = com.yahoo.ycsb.workloads.CoreWorkload.table;
+     try {
+       final TableName tName = TableName.valueOf(table);
+-      HTableDescriptor dsc =
+-          connection.getTable(tName).getTableDescriptor();
++      connection.getTable(tName).getTableDescriptor();
+     } catch (IOException e) {
+       throw new DBException(e);
+     }
+
+File: jdbc/src/test/java/com/yahoo/ycsb/db/JdbcDBClientTest.java
+Patch:
+@@ -153,7 +153,7 @@ private HashMap<String, ByteIterator> insertRow(String insertKey) {
+     public void insertTest() {
+         try {
+             String insertKey = "user0";
+-            HashMap<String, ByteIterator> insertMap = insertRow(insertKey);
++            insertRow(insertKey);
+ 
+             ResultSet resultSet = jdbcConnection.prepareStatement(
+                 String.format("SELECT * FROM %s", TABLE_NAME)
+@@ -245,7 +245,7 @@ public void updateTest() {
+     @Test
+     public void readTest() {
+         String insertKey = "user0";
+-        HashMap<String, ByteIterator> insertMap = insertRow(insertKey);
++        insertRow(insertKey);
+         HashSet<String> readFields = new HashSet<String>();
+         HashMap<String, ByteIterator> readResultMap = new HashMap<String, ByteIterator>();
+ 
+
+File: s3/src/main/java/com/yahoo/ycsb/db/S3Client.java
+Patch:
+@@ -361,8 +361,7 @@ protected Status writeToStorage(String bucket, String key,
+           getObjectMetadataRequest = new GetObjectMetadataRequest(bucket,
+               key);
+         }
+-        S3Object object =
+-            s3Client.getObject(getObjectRequest);
++        s3Client.getObject(getObjectRequest);
+         ObjectMetadata objectMetadata =
+             s3Client.getObjectMetadata(getObjectMetadataRequest);
+         int sizeOfFile = (int)objectMetadata.getContentLength();
+
+File: core/src/main/java/com/yahoo/ycsb/Client.java
+Patch:
+@@ -591,7 +591,7 @@ public static void main(String[] args)
+           System.exit(0);
+         }
+         int tcount=Integer.parseInt(args[argindex]);
+-        props.setProperty(THREAD_COUNT_PROPERTY, tcount+"");
++        props.setProperty(THREAD_COUNT_PROPERTY, String.valueOf(tcount));
+         argindex++;
+       }
+       else if (args[argindex].compareTo("-target")==0)
+@@ -603,7 +603,7 @@ else if (args[argindex].compareTo("-target")==0)
+           System.exit(0);
+         }
+         int ttarget=Integer.parseInt(args[argindex]);
+-        props.setProperty(TARGET_PROPERTY, ttarget+"");
++        props.setProperty(TARGET_PROPERTY, String.valueOf(ttarget));
+         argindex++;
+       }
+       else if (args[argindex].compareTo("-load")==0)
+
+File: core/src/main/java/com/yahoo/ycsb/generator/IntegerGenerator.java
+Patch:
+@@ -46,7 +46,7 @@ protected void setLastInt(int last)
+ 	 */
+ 	public String nextString()
+ 	{
+-		return ""+nextInt();
++		return String.valueOf(nextInt());
+ 	}
+ 	
+ 	/**
+@@ -57,7 +57,7 @@ public String nextString()
+ 	@Override
+ 	public String lastString()
+ 	{
+-		return ""+lastInt();
++		return String.valueOf(lastInt());
+ 	}
+ 	
+ 	/**
+
+File: core/src/main/java/com/yahoo/ycsb/generator/ScrambledZipfianGenerator.java
+Patch:
+@@ -123,7 +123,7 @@ public static void main(String[] args)
+ 		
+ 		for (int i=0; i<1000000; i++)
+ 		{
+-			System.out.println(""+gen.nextInt());
++			System.out.println(gen.nextInt());
+ 		}
+ 	}
+ 
+
+File: cassandra/src/main/java/com/yahoo/ycsb/db/CassandraCQLClient.java
+Patch:
+@@ -388,7 +388,7 @@ public Status insert(String table, String key,
+         System.out.println(insertStmt.toString());
+       }
+ 
+-      ResultSet rs = session.execute(insertStmt);
++      session.execute(insertStmt);
+ 
+       return Status.OK;
+     } catch (Exception e) {
+
+File: cassandra2/src/main/java/com/yahoo/ycsb/db/CassandraCQLClient.java
+Patch:
+@@ -433,7 +433,7 @@ public Status insert(String table, String key,
+         System.out.println(insertStmt.toString());
+       }
+ 
+-      ResultSet rs = session.execute(insertStmt);
++      session.execute(insertStmt);
+ 
+       return Status.OK;
+     } catch (Exception e) {
+@@ -466,7 +466,7 @@ public Status delete(String table, String key) {
+         System.out.println(stmt.toString());
+       }
+ 
+-      ResultSet rs = session.execute(stmt);
++      session.execute(stmt);
+ 
+       return Status.OK;
+     } catch (Exception e) {
+
+File: hbase098/src/main/java/com/yahoo/ycsb/db/HBaseClient.java
+Patch:
+@@ -110,7 +110,7 @@ public void init() throws DBException
+       try
+ 	  {
+ 	      HTable ht = new HTable(config, table);
+-	      HTableDescriptor dsc = ht.getTableDescriptor();
++	      ht.getTableDescriptor();
+ 	  }
+       catch (IOException e)
+ 	  {
+
+File: hbase10/src/main/java/com/yahoo/ycsb/db/HBaseClient10.java
+Patch:
+@@ -28,7 +28,6 @@
+ import org.apache.hadoop.hbase.Cell;
+ import org.apache.hadoop.hbase.CellUtil;
+ import org.apache.hadoop.hbase.HBaseConfiguration;
+-import org.apache.hadoop.hbase.HTableDescriptor;
+ import org.apache.hadoop.hbase.TableName;
+ import org.apache.hadoop.hbase.client.BufferedMutator;
+ import org.apache.hadoop.hbase.client.BufferedMutatorParams;
+@@ -142,8 +141,7 @@ public void init() throws DBException {
+     String table = com.yahoo.ycsb.workloads.CoreWorkload.table;
+     try {
+       final TableName tName = TableName.valueOf(table);
+-      HTableDescriptor dsc =
+-          connection.getTable(tName).getTableDescriptor();
++      connection.getTable(tName).getTableDescriptor();
+     } catch (IOException e) {
+       throw new DBException(e);
+     }
+
+File: jdbc/src/test/java/com/yahoo/ycsb/db/JdbcDBClientTest.java
+Patch:
+@@ -153,7 +153,7 @@ private HashMap<String, ByteIterator> insertRow(String insertKey) {
+     public void insertTest() {
+         try {
+             String insertKey = "user0";
+-            HashMap<String, ByteIterator> insertMap = insertRow(insertKey);
++            insertRow(insertKey);
+ 
+             ResultSet resultSet = jdbcConnection.prepareStatement(
+                 String.format("SELECT * FROM %s", TABLE_NAME)
+@@ -245,7 +245,7 @@ public void updateTest() {
+     @Test
+     public void readTest() {
+         String insertKey = "user0";
+-        HashMap<String, ByteIterator> insertMap = insertRow(insertKey);
++        insertRow(insertKey);
+         HashSet<String> readFields = new HashSet<String>();
+         HashMap<String, ByteIterator> readResultMap = new HashMap<String, ByteIterator>();
+ 
+
+File: s3/src/main/java/com/yahoo/ycsb/db/S3Client.java
+Patch:
+@@ -361,8 +361,7 @@ protected Status writeToStorage(String bucket, String key,
+           getObjectMetadataRequest = new GetObjectMetadataRequest(bucket,
+               key);
+         }
+-        S3Object object =
+-            s3Client.getObject(getObjectRequest);
++        s3Client.getObject(getObjectRequest);
+         ObjectMetadata objectMetadata =
+             s3Client.getObjectMetadata(getObjectMetadataRequest);
+         int sizeOfFile = (int)objectMetadata.getContentLength();
+
+File: elasticsearch/src/main/java/com/yahoo/ycsb/db/ElasticSearchClient.java
+Patch:
+@@ -20,7 +20,6 @@
+ import static org.elasticsearch.common.settings.Settings.Builder;
+ import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
+ import static org.elasticsearch.index.query.QueryBuilders.rangeQuery;
+-import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
+ import static org.elasticsearch.node.NodeBuilder.nodeBuilder;
+ 
+ 
+@@ -333,10 +332,10 @@ public Status update(String table, String key,
+   public Status scan(String table, String startkey, int recordcount,
+       Set<String> fields, Vector<HashMap<String, ByteIterator>> result) {
+     try {
+-      final RangeQueryBuilder filter = rangeQuery("_id").gte(startkey);
++      final RangeQueryBuilder rangeQuery = rangeQuery("_id").gte(startkey);
+       final SearchResponse response = client.prepareSearch(indexKey)
+           .setTypes(table)
+-          .setQuery(matchAllQuery())
++          .setQuery(rangeQuery)
+           .setSize(recordcount)
+           .execute()
+           .actionGet();
+
+File: kudu/src/main/java/com/yahoo/ycsb/db/KuduYCSBClient.java
+Patch:
+@@ -134,7 +134,8 @@ private static synchronized void initClient(boolean debug, String tableName,
+ 
+     client = new KuduClient.KuduClientBuilder(masterAddresses)
+         .defaultSocketReadTimeoutMs(DEFAULT_SLEEP)
+-        .defaultOperationTimeoutMs(DEFAULT_SLEEP).build();
++        .defaultOperationTimeoutMs(DEFAULT_SLEEP)
++        .defaultAdminOperationTimeoutMs(DEFAULT_SLEEP).build();
+     if (debug) {
+       System.out.println("Connecting to the masters at " + masterAddresses);
+     }
+
+File: kudu/src/main/java/com/yahoo/ycsb/db/KuduYCSBClient.java
+Patch:
+@@ -134,7 +134,8 @@ private static synchronized void initClient(boolean debug, String tableName,
+ 
+     client = new KuduClient.KuduClientBuilder(masterAddresses)
+         .defaultSocketReadTimeoutMs(DEFAULT_SLEEP)
+-        .defaultOperationTimeoutMs(DEFAULT_SLEEP).build();
++        .defaultOperationTimeoutMs(DEFAULT_SLEEP)
++        .defaultAdminOperationTimeoutMs(DEFAULT_SLEEP).build();
+     if (debug) {
+       System.out.println("Connecting to the masters at " + masterAddresses);
+     }
+
+File: core/src/main/java/com/yahoo/ycsb/generator/ZipfianGenerator.java
+Patch:
+@@ -276,12 +276,12 @@ else if ( (itemcount<countforzeta) && (allowitemcountdecrease) )
+ 
+ 		if (uz<1.0)
+ 		{
+-			return 0;
++			return base;
+ 		}
+ 
+ 		if (uz<1.0+Math.pow(0.5,theta)) 
+ 		{
+-			return 1;
++			return base + 1;
+ 		}
+ 
+ 		long ret=base+(long)((itemcount) * Math.pow(eta*u - eta + 1, alpha));
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/exporter/JSONMeasurementsExporter.java
+Patch:
+@@ -23,7 +23,7 @@
+ 
+ import org.codehaus.jackson.JsonFactory;
+ import org.codehaus.jackson.JsonGenerator;
+-import org.codehaus.jackson.impl.DefaultPrettyPrinter;
++import org.codehaus.jackson.util.DefaultPrettyPrinter;
+ 
+ /**
+  * Export measurements into a machine readable JSON file.
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementRaw.java
+Patch:
+@@ -189,7 +189,7 @@ public void exportMeasurements(MeasurementsExporter exporter)
+           measurements.get((int)(totalOps*0.9999)).value());
+     }
+ 
+-    exportReturnCodes(exporter);
++    exportStatusCounts(exporter);
+   }
+ 
+   @Override
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementRaw.java
+Patch:
+@@ -189,7 +189,7 @@ public void exportMeasurements(MeasurementsExporter exporter)
+           measurements.get((int)(totalOps*0.9999)).value());
+     }
+ 
+-    exportReturnCodes(exporter);
++    exportStatusCounts(exporter);
+   }
+ 
+   @Override
+
+File: jdbc/src/main/java/com/yahoo/ycsb/db/JdbcDBClient.java
+Patch:
+@@ -283,11 +283,11 @@ private PreparedStatement createAndCacheUpdateStatement(StatementType updateType
+     StringBuilder update = new StringBuilder("UPDATE ");
+     update.append(updateType.tableName);
+     update.append(" SET ");
+-    for (int i = 1; i <= updateType.numFields; i++) {
++    for (int i = 0; i < updateType.numFields; i++) {
+       update.append(COLUMN_PREFIX);
+       update.append(i);
+       update.append("=?");
+-      if (i < updateType.numFields) update.append(", ");
++      if (i < updateType.numFields - 1) update.append(", ");
+     }
+     update.append(" WHERE ");
+     update.append(PRIMARY_KEY);
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementHdrHistogram.java
+Patch:
+@@ -118,7 +118,7 @@ public void exportMeasurements(MeasurementsExporter exporter) throws IOException
+       exporter.write(getName(), ordinal(percentile) + "PercentileLatency(us)", totalHistogram.getValueAtPercentile(percentile));
+     }
+     
+-    exportReturnCodes(exporter);
++    exportStatusCounts(exporter);
+   }
+ 
+ 	/**
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementHistogram.java
+Patch:
+@@ -119,7 +119,7 @@ public void exportMeasurements(MeasurementsExporter exporter) throws IOException
+       }
+     }
+ 
+-    exportReturnCodes(exporter);
++    exportStatusCounts(exporter);
+ 
+     for (int i=0; i<_buckets; i++)
+     {
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementTimeSeries.java
+Patch:
+@@ -135,7 +135,7 @@ public void exportMeasurements(MeasurementsExporter exporter) throws IOException
+ 
+     // TODO: 95th and 99th percentile latency
+ 
+-    exportReturnCodes(exporter);
++    exportStatusCounts(exporter);
+     for (SeriesUnit unit : _measurements) {
+       exporter.write(getName(), Long.toString(unit.time), unit.average);
+     }
+
+File: core/src/main/java/com/yahoo/ycsb/workloads/CoreWorkload.java
+Patch:
+@@ -546,7 +546,7 @@ public boolean doInsert(DB db, Object threadstate)
+ 		int keynum=keysequence.nextInt();
+ 		String dbkey = buildKeyName(keynum);
+ 		HashMap<String, ByteIterator> values = buildValues(dbkey);
+-		if (db.insert(table,dbkey,values) == 0)
++		if (db.insert(table,dbkey,values).equals(Status.OK))
+ 			return true;
+ 		else
+ 			return false;
+
+File: jdbc/src/main/java/com/yahoo/ycsb/db/JdbcDBClient.java
+Patch:
+@@ -304,8 +304,8 @@ private PreparedStatement createAndCacheScanStatement(StatementType scanType, St
+     select.append(scanType.tableName);
+     select.append(" WHERE ");
+     select.append(PRIMARY_KEY);
+-    select.append(" >= ");
+-    select.append("?;");
++    select.append(" >= ?");
++    select.append(" LIMIT ?;");
+     PreparedStatement scanStatement = getShardConnectionByKey(key).prepareStatement(select.toString());
+     if (this.jdbcFetchSize != null) scanStatement.setFetchSize(this.jdbcFetchSize);
+     PreparedStatement stmt = cachedStatements.putIfAbsent(scanType, scanStatement);
+@@ -364,6 +364,7 @@ public int scan(String tableName, String startKey, int recordcount,
+         scanStatement = createAndCacheScanStatement(type, startKey);
+       }
+       scanStatement.setString(1, startKey);
++      scanStatement.setInt(2, recordcount);
+       ResultSet resultSet = scanStatement.executeQuery();
+       for (int i = 0; i < recordcount && resultSet.next(); i++) {
+         if (result != null && fields != null) {
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementHdrHistogram.java
+Patch:
+@@ -174,6 +174,7 @@ private List<Integer> getPercentileValues(String percentileString) {
+         // then calculate and return the default set.
+         System.err.println("[WARN] Couldn't read " + PERCENTILES_PROPERTY + " value: '" + percentileString +
+             "', the default of '" + PERCENTILES_PROPERTY_DEFAULT + "' will be used.");
++        e.printStackTrace();
+         return getPercentileValues(PERCENTILES_PROPERTY_DEFAULT);
+       }
+ 
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementHdrHistogram.java
+Patch:
+@@ -101,7 +101,7 @@ public void exportMeasurements(MeasurementsExporter exporter) throws IOException
+     exporter.write(getName(), "AverageLatency(us)", totalHistogram.getMean());
+     exporter.write(getName(), "MinLatency(us)", totalHistogram.getMinValue());
+     exporter.write(getName(), "MaxLatency(us)", totalHistogram.getMaxValue());
+-    exporter.write(getName(), "95thPercentileLatency(us)", totalHistogram.getValueAtPercentile(90));
++    exporter.write(getName(), "95thPercentileLatency(us)", totalHistogram.getValueAtPercentile(95));
+     exporter.write(getName(), "99thPercentileLatency(us)", totalHistogram.getValueAtPercentile(99));
+     
+     exportReturnCodes(exporter);
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementHdrHistogram.java
+Patch:
+@@ -101,7 +101,7 @@ public void exportMeasurements(MeasurementsExporter exporter) throws IOException
+     exporter.write(getName(), "AverageLatency(us)", totalHistogram.getMean());
+     exporter.write(getName(), "MinLatency(us)", totalHistogram.getMinValue());
+     exporter.write(getName(), "MaxLatency(us)", totalHistogram.getMaxValue());
+-    exporter.write(getName(), "95thPercentileLatency(us)", totalHistogram.getValueAtPercentile(90));
++    exporter.write(getName(), "95thPercentileLatency(us)", totalHistogram.getValueAtPercentile(95));
+     exporter.write(getName(), "99thPercentileLatency(us)", totalHistogram.getValueAtPercentile(99));
+     
+     exportReturnCodes(exporter);
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/Measurements.java
+Patch:
+@@ -33,8 +33,8 @@ public class Measurements
+ {
+ 
+   public static final String MEASUREMENT_TYPE_PROPERTY = "measurementtype";
+-
+-  private static final String MEASUREMENT_TYPE_PROPERTY_DEFAULT = "histogram";
++  private static final String MEASUREMENT_TYPE_PROPERTY_DEFAULT = "hdrhistogram";
++  
+   public static final String MEASUREMENT_INTERVAL = "measurement.interval";
+   private static final String MEASUREMENT_INTERVAL_DEFAULT = "op";
+ 
+
+File: core/src/test/java/com/yahoo/ycsb/measurements/exporter/TestMeasurementsExporter.java
+Patch:
+@@ -32,7 +32,9 @@
+ public class TestMeasurementsExporter {
+     @Test
+     public void testJSONArrayMeasurementsExporter() throws IOException {
+-        Measurements mm = new Measurements(new Properties());
++        Properties props = new Properties();
++        props.put(Measurements.MEASUREMENT_TYPE_PROPERTY, "histogram");
++        Measurements mm = new Measurements(props);
+         ByteArrayOutputStream out = new ByteArrayOutputStream();
+         JSONArrayMeasurementsExporter export = new JSONArrayMeasurementsExporter(out);
+ 
+
+File: s3/src/main/java/com/yahoo/ycsb/db/S3Client.java
+Patch:
+@@ -54,6 +54,7 @@ public class S3Client extends DB {
+ 	private static String secretKey;
+ 	private static String endPoint;
+ 	private static String region;
++	private static String maxErrorRetry;
+ 	private static BasicAWSCredentials s3Credentials;
+ 	private static AmazonS3Client s3Client;
+ 	private static ClientConfiguration clientConfig;
+@@ -102,10 +103,11 @@ public void init() throws DBException {
+ 		secretKey = props.getProperty("s3.secretKey","secretKey");
+ 		endPoint = props.getProperty("s3.endPoint","s3.amazonaws.com");
+ 		region = props.getProperty("s3.region","us-east-1");
++		maxErrorRetry = props.getProperty("s3.maxErrorRetry","15");
+ 		System.out.println("Inizializing the S3 connection");
+ 		s3Credentials = new BasicAWSCredentials(accessKeyId,secretKey);
+ 		clientConfig = new ClientConfiguration();
+-		clientConfig.setMaxErrorRetry(15);
++		clientConfig.setMaxErrorRetry(Integer.parseInt(maxErrorRetry));
+ 		try {
+ 		s3Client = new AmazonS3Client(s3Credentials,clientConfig);
+ 		s3Client.setRegion(Region.getRegion(Regions.fromName(region)));
+
+File: core/src/test/java/com/yahoo/ycsb/measurements/exporter/TestMeasurementsExporter.java
+Patch:
+@@ -32,7 +32,9 @@
+ public class TestMeasurementsExporter {
+     @Test
+     public void testJSONArrayMeasurementsExporter() throws IOException {
+-        Measurements mm = new Measurements(new Properties());
++        Properties props = new Properties();
++        props.put(Measurements.MEASUREMENT_TYPE_PROPERTY, "histogram");
++        Measurements mm = new Measurements(props);
+         ByteArrayOutputStream out = new ByteArrayOutputStream();
+         JSONArrayMeasurementsExporter export = new JSONArrayMeasurementsExporter(out);
+ 
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/Measurements.java
+Patch:
+@@ -34,7 +34,7 @@ public class Measurements
+ 
+   public static final String MEASUREMENT_TYPE_PROPERTY = "measurementtype";
+ 
+-  private static final String MEASUREMENT_TYPE_PROPERTY_DEFAULT = "histogram";
++  private static final String MEASUREMENT_TYPE_PROPERTY_DEFAULT = "hdrhistogram";
+   public static final String MEASUREMENT_INTERVAL = "measurement.interval";
+   private static final String MEASUREMENT_INTERVAL_DEFAULT = "op";
+ 
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/exporter/JSONArrayMeasurementsExporter.java
+Patch:
+@@ -36,7 +36,6 @@ public class JSONArrayMeasurementsExporter implements MeasurementsExporter
+ 
+   public JSONArrayMeasurementsExporter(OutputStream os) throws IOException
+   {
+-
+     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(os));
+     g = factory.createJsonGenerator(bw);
+     g.setPrettyPrinter(new DefaultPrettyPrinter());
+
+File: core/src/main/java/com/yahoo/ycsb/TerminatorThread.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.yahoo.ycsb;
+ 
++import java.util.List;
+ import java.util.Vector;
+ 
+ /**
+@@ -29,12 +30,12 @@
+  */
+ public class TerminatorThread extends Thread {
+   
+-  private Vector<Thread> threads;
++  private final List<? extends Thread> threads;
+   private long maxExecutionTime;
+   private Workload workload;
+   private long waitTimeOutInMS;
+   
+-  public TerminatorThread(long maxExecutionTime, Vector<Thread> threads, 
++  public TerminatorThread(long maxExecutionTime, List<? extends Thread> threads, 
+       Workload workload) {
+     this.maxExecutionTime = maxExecutionTime;
+     this.threads = threads;
+
+File: core/src/main/java/com/yahoo/ycsb/TerminatorThread.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.yahoo.ycsb;
+ 
++import java.util.List;
+ import java.util.Vector;
+ 
+ /**
+@@ -29,12 +30,12 @@
+  */
+ public class TerminatorThread extends Thread {
+   
+-  private Vector<Thread> threads;
++  private final List<? extends Thread> threads;
+   private long maxExecutionTime;
+   private Workload workload;
+   private long waitTimeOutInMS;
+   
+-  public TerminatorThread(long maxExecutionTime, Vector<Thread> threads, 
++  public TerminatorThread(long maxExecutionTime, List<? extends Thread> threads, 
+       Workload workload) {
+     this.maxExecutionTime = maxExecutionTime;
+     this.threads = threads;
+
+File: mongodb/src/main/java/com/yahoo/ycsb/db/OptionsSupport.java
+Patch:
+@@ -76,7 +76,7 @@ else if ("acknowledged".equals(writeConcernType)) {
+                 result = addUrlOption(result, "w", "1");
+             }
+             else if ("journaled".equals(writeConcernType)) {
+-                result = addUrlOption(result, "journal", "true");
++                result = addUrlOption(result, "j", "true");
+             }
+             else if ("replica_acknowledged".equals(writeConcernType)) {
+                 result = addUrlOption(result, "w", "2");
+
+File: mongodb/src/test/java/com/yahoo/ycsb/db/OptionsSupportTest.java
+Patch:
+@@ -110,7 +110,7 @@ public void testUpdateUrlWriteConcern() {
+         assertThat(
+                 updateUrl("mongodb://locahost:27017/?foo=bar",
+                         props("mongodb.writeConcern", "journaled")),
+-                is("mongodb://locahost:27017/?foo=bar&journal=true"));
++                is("mongodb://locahost:27017/?foo=bar&j=true"));
+         assertThat(
+                 updateUrl("mongodb://locahost:27017/?foo=bar",
+                         props("mongodb.writeConcern", "replica_acknowledged")),
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/exporter/JSONArrayMeasurementsExporter.java
+Patch:
+@@ -36,7 +36,6 @@ public class JSONArrayMeasurementsExporter implements MeasurementsExporter
+ 
+   public JSONArrayMeasurementsExporter(OutputStream os) throws IOException
+   {
+-
+     BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(os));
+     g = factory.createJsonGenerator(bw);
+     g.setPrettyPrinter(new DefaultPrettyPrinter());
+
+File: aerospike/src/main/java/com/yahoo/ycsb/db/AerospikeClient.java
+Patch:
+@@ -29,7 +29,7 @@ public class AerospikeClient extends com.yahoo.ycsb.DB {
+   private static final String DEFAULT_NAMESPACE = "ycsb";
+ 
+   private static final int RESULT_OK = 0;
+-  private static final int RESULT_ERROR = 1;
++  private static final int RESULT_ERROR = -1;
+ 
+   private static final int WRITE_OVERLOAD_DELAY = 5;
+   private static final int WRITE_OVERLOAD_TRIES = 3;
+
+File: aerospike/src/main/java/com/yahoo/ycsb/db/AerospikeClient.java
+Patch:
+@@ -77,7 +77,7 @@ public void init() throws DBException {
+           new com.aerospike.client.AerospikeClient(clientPolicy, host, port);
+     } catch (AerospikeException e) {
+       throw new DBException(String.format("Error while creating Aerospike " +
+-          "client for %s:%d.", host, port));
++          "client for %s:%d.", host, port), e);
+     }
+   }
+ 
+@@ -150,7 +150,7 @@ private int write(String table, String key, WritePolicy writePolicy,
+         return RESULT_OK;
+       } catch (AerospikeException e) {
+         if (e.getResultCode() != ResultCode.DEVICE_OVERLOAD) {
+-          System.err.println("Error while updating key " + key + ": " + e);
++          System.err.println("Error while writing key " + key + ": " + e);
+           return RESULT_ERROR;
+         }
+ 
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/OneMeasurementHistogram.java
+Patch:
+@@ -61,7 +61,7 @@ public class OneMeasurementHistogram extends OneMeasurement
+ 	 * The sum of each latency measurement over all operations.
+ 	 * Calculated in ms.
+ 	 */
+-	double totallatency;
++	long totallatency;
+ 	
+ 	/**
+ 	 * The sum of each latency measurement squared over all operations. 
+@@ -125,7 +125,7 @@ public synchronized void measure(int latency)
+ 			histogram[latency/1000]++;
+ 		}
+ 		operations++;
+-		totallatency += ((double)latency) / 1000;
++		totallatency += latency/1000;
+ 		totalsquaredlatency += ((double)latency) * ((double)latency) / 1000000;
+ 		windowoperations++;
+ 		windowtotallatency += latency;
+
+File: mongodb/src/main/java/com/yahoo/ycsb/db/AsyncMongoDbClient.java
+Patch:
+@@ -55,7 +55,7 @@
+  * 
+  * Properties to set:
+  * 
+- * mongodb.url=mongodb://localhost:27017 mongodb.database=ycsb
++ * mongodb.url=mongodb://localhost:27017 
+  * mongodb.writeConcern=normal
+  * 
+  * @author rjm
+@@ -180,7 +180,7 @@ public final void init() throws DBException {
+             batchSize = Integer.parseInt(props.getProperty("mongodb.batchsize", "1"));
+ 
+             // Just use the standard connection format URL
+-            // http://docs.mongodatabase.org/manual/reference/connection-string/
++            // http://docs.mongodb.org/manual/reference/connection-string/ 
+             // to configure the client.
+             String url = props.getProperty("mongodb.url",
+                     "mongodb://localhost:27017/ycsb?w=1");
+
+File: hbase/src/main/java/com/yahoo/ycsb/db/HBaseClient.java
+Patch:
+@@ -111,7 +111,7 @@ public void init() throws DBException
+ 	  }
+       catch (IOException e)
+ 	  {
+-	      throw new DBException("Error accessing HBase table: " + table);
++	      throw new DBException(e);
+ 	  }
+     }
+ 
+
+File: hbase/src/main/java/com/yahoo/ycsb/db/HBaseClient10.java
+Patch:
+@@ -147,7 +147,7 @@ public void init() throws DBException
+ 	  }
+       catch (IOException e)
+ 	  {
+-	      throw new DBException("Error accessing HBase table: " + table);
++	      throw new DBException(e);
+ 	  }
+     }
+ 
+
+File: core/src/main/java/com/yahoo/ycsb/workloads/CoreWorkload.java
+Patch:
+@@ -349,7 +349,7 @@ public void init(Properties p) throws WorkloadException
+ 		double insertproportion=Double.parseDouble(p.getProperty(INSERT_PROPORTION_PROPERTY,INSERT_PROPORTION_PROPERTY_DEFAULT));
+ 		double scanproportion=Double.parseDouble(p.getProperty(SCAN_PROPORTION_PROPERTY,SCAN_PROPORTION_PROPERTY_DEFAULT));
+ 		double readmodifywriteproportion=Double.parseDouble(p.getProperty(READMODIFYWRITE_PROPORTION_PROPERTY,READMODIFYWRITE_PROPORTION_PROPERTY_DEFAULT));
+-		recordcount=Integer.parseInt(p.getProperty(Client.RECORD_COUNT_PROPERTY));
++		recordcount=Integer.parseInt(p.getProperty(Client.RECORD_COUNT_PROPERTY, Client.DEFAULT_RECORD_COUNT));
+ 		String requestdistrib=p.getProperty(REQUEST_DISTRIBUTION_PROPERTY,REQUEST_DISTRIBUTION_PROPERTY_DEFAULT);
+ 		int maxscanlength=Integer.parseInt(p.getProperty(MAX_SCAN_LENGTH_PROPERTY,MAX_SCAN_LENGTH_PROPERTY_DEFAULT));
+ 		String scanlengthdistrib=p.getProperty(SCAN_LENGTH_DISTRIBUTION_PROPERTY,SCAN_LENGTH_DISTRIBUTION_PROPERTY_DEFAULT);
+
+File: mongodb/src/main/java/com/yahoo/ycsb/db/AsyncMongoDbClient.java
+Patch:
+@@ -55,7 +55,7 @@
+  * 
+  * Properties to set:
+  * 
+- * mongodb.url=mongodb://localhost:27017 mongodb.database=ycsb
++ * mongodb.url=mongodb://localhost:27017 
+  * mongodb.writeConcern=normal
+  * 
+  * @author rjm
+@@ -180,7 +180,7 @@ public final void init() throws DBException {
+             batchSize = Integer.parseInt(props.getProperty("mongodb.batchsize", "1"));
+ 
+             // Just use the standard connection format URL
+-            // http://docs.mongodatabase.org/manual/reference/connection-string/
++            // http://docs.mongodb.org/manual/reference/connection-string/ 
+             // to configure the client.
+             String url = props.getProperty("mongodb.url",
+                     "mongodb://localhost:27017/ycsb?w=1");
+
+File: core/src/main/java/com/yahoo/ycsb/generator/ZipfianGenerator.java
+Patch:
+@@ -276,12 +276,12 @@ else if ( (itemcount<countforzeta) && (allowitemcountdecrease) )
+ 
+ 		if (uz<1.0)
+ 		{
+-			return 0;
++			return base;
+ 		}
+ 
+ 		if (uz<1.0+Math.pow(0.5,theta)) 
+ 		{
+-			return 1;
++			return base + 1;
+ 		}
+ 
+ 		long ret=base+(long)((itemcount) * Math.pow(eta*u - eta + 1, alpha));
+
+File: hbase/src/main/java/com/yahoo/ycsb/db/HBaseClient.java
+Patch:
+@@ -60,7 +60,7 @@ public class HBaseClient extends com.yahoo.ycsb.DB
+     public HTable _hTable=null;
+     public String _columnFamily="";
+     public byte _columnFamilyBytes[];
+-    public boolean _clientSideBuffering = true;
++    public boolean _clientSideBuffering = false;
+ 
+     public static final int Ok=0;
+     public static final int ServerError=-1;
+
+File: hbase/src/main/java/com/yahoo/ycsb/db/HBaseClient10.java
+Patch:
+@@ -88,7 +88,7 @@ public class HBaseClient10 extends com.yahoo.ycsb.DB
+      * This is the default behavior for HBaseClient. For measuring
+      * insert/update/delete latencies, client side buffering should be disabled.
+      */
+-    public boolean _clientSideBuffering = true;
++    public boolean _clientSideBuffering = false;
+ 
+     public static final int Ok=0;
+     public static final int ServerError=-1;
+@@ -102,8 +102,8 @@ public class HBaseClient10 extends com.yahoo.ycsb.DB
+     @Override
+     public void init() throws DBException
+     {
+-        if ("false".equals(getProperties().getProperty("clientbuffering", "true"))) {
+-            this._clientSideBuffering = false;
++        if ("true".equals(getProperties().getProperty("clientbuffering", "false"))) {
++            this._clientSideBuffering = true;
+         }
+ 
+         if (getProperties().getProperty("durability") != null) {
+
+File: mongodb/src/main/java/com/yahoo/ycsb/db/AsyncMongoDbClient.java
+Patch:
+@@ -124,7 +124,7 @@ public final void init() throws DBException {
+ 
+         final Properties props = getProperties();
+         final String maxConnections = props.getProperty(
+-                "mongodb.maxconnections", "10");
++                "mongodb.maxconnections", "100");
+         final int connections = Integer.parseInt(maxConnections);
+ 
+         synchronized (AsyncMongoDbClient.class) {
+
+File: mongodb/src/main/java/com/yahoo/ycsb/db/MongoDbClient.java
+Patch:
+@@ -194,7 +194,7 @@ public int delete(String table, String key) {
+             DBCollection collection = db.getCollection(table);
+             DBObject q = new BasicDBObject().append("_id", key);
+             WriteResult res = collection.remove(q, writeConcern);
+-            return res.getN() == 1 ? 0 : 1;
++            return 0;
+         }
+         catch (Exception e) {
+             System.err.println(e.toString());
+@@ -236,7 +236,7 @@ public int insert(String table, String key,
+                 r.put(entry.getKey(), entry.getValue().toArray());
+             }
+             WriteResult res = collection.insert(r, writeConcern);
+-            return res.getError() == null ? 0 : 1;
++            return 0;
+         }
+         catch (Exception e) {
+             e.printStackTrace();
+@@ -341,7 +341,7 @@ public int update(String table, String key,
+             u.put("$set", fieldsToSet);
+             WriteResult res = collection.update(q, u, false, false,
+                     writeConcern);
+-            return res.getN() == 1 ? 0 : 1;
++            return 0;
+         }
+         catch (Exception e) {
+             System.err.println(e.toString());
+
+File: hbase/src/main/java/com/yahoo/ycsb/db/HBaseClient.java
+Patch:
+@@ -316,11 +316,12 @@ public int update(String table, String key, HashMap<String,ByteIterator> values)
+         Put p = new Put(Bytes.toBytes(key));
+         for (Map.Entry<String, ByteIterator> entry : values.entrySet())
+         {
++            byte[] value = entry.getValue().toArray();
+             if (_debug) {
+                 System.out.println("Adding field/value " + entry.getKey() + "/"+
+-                  entry.getValue() + " to put request");
++                  Bytes.toStringBinary(value) + " to put request");
+             }
+-            p.add(_columnFamilyBytes,Bytes.toBytes(entry.getKey()),entry.getValue().toArray());
++            p.add(_columnFamilyBytes,Bytes.toBytes(entry.getKey()), value);
+         }
+ 
+         try
+
+File: hbase/src/main/java/com/yahoo/ycsb/db/HBaseClient10.java
+Patch:
+@@ -372,11 +372,12 @@ public int update(String table, String key, HashMap<String,ByteIterator> values)
+         p.setDurability(_durability);
+         for (Map.Entry<String, ByteIterator> entry : values.entrySet())
+         {
++            byte[] value = entry.getValue().toArray();
+             if (_debug) {
+                 System.out.println("Adding field/value " + entry.getKey() + "/"+
+-                        entry.getValue() + " to put request");
++                        Bytes.toStringBinary(value) + " to put request");
+             }
+-            p.add(_columnFamilyBytes,Bytes.toBytes(entry.getKey()),entry.getValue().toArray());
++            p.add(_columnFamilyBytes,Bytes.toBytes(entry.getKey()), value);
+         }
+ 
+         try
+
+File: hbase/src/main/java/com/yahoo/ycsb/db/HBaseClient.java
+Patch:
+@@ -316,11 +316,12 @@ public int update(String table, String key, HashMap<String,ByteIterator> values)
+         Put p = new Put(Bytes.toBytes(key));
+         for (Map.Entry<String, ByteIterator> entry : values.entrySet())
+         {
++            byte[] value = entry.getValue().toArray();
+             if (_debug) {
+                 System.out.println("Adding field/value " + entry.getKey() + "/"+
+-                  entry.getValue() + " to put request");
++                  Bytes.toStringBinary(value) + " to put request");
+             }
+-            p.add(_columnFamilyBytes,Bytes.toBytes(entry.getKey()),entry.getValue().toArray());
++            p.add(_columnFamilyBytes,Bytes.toBytes(entry.getKey()), value);
+         }
+ 
+         try
+
+File: hbase/src/main/java/com/yahoo/ycsb/db/HBaseClient10.java
+Patch:
+@@ -372,11 +372,12 @@ public int update(String table, String key, HashMap<String,ByteIterator> values)
+         p.setDurability(_durability);
+         for (Map.Entry<String, ByteIterator> entry : values.entrySet())
+         {
++            byte[] value = entry.getValue().toArray();
+             if (_debug) {
+                 System.out.println("Adding field/value " + entry.getKey() + "/"+
+-                        entry.getValue() + " to put request");
++                        Bytes.toStringBinary(value) + " to put request");
+             }
+-            p.add(_columnFamilyBytes,Bytes.toBytes(entry.getKey()),entry.getValue().toArray());
++            p.add(_columnFamilyBytes,Bytes.toBytes(entry.getKey()), value);
+         }
+ 
+         try
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/Measurements.java
+Patch:
+@@ -154,7 +154,7 @@ public void exportMeasurements(MeasurementsExporter exporter) throws IOException
+       /**
+        * Return a one line summary of the measurements.
+        */
+-	public String getSummary()
++	public synchronized String getSummary()
+ 	{
+ 		String ret="";
+ 		for (OneMeasurement m : data.values())
+
+File: core/src/main/java/com/yahoo/ycsb/measurements/Measurements.java
+Patch:
+@@ -31,7 +31,7 @@
+  */
+ public class Measurements
+ {
+-	private static final String MEASUREMENT_TYPE_PROPERTY = "measurementtype";
++	public static final String MEASUREMENT_TYPE_PROPERTY = "measurementtype";
+ 
+ 	private static final String MEASUREMENT_TYPE_PROPERTY_DEFAULT = "histogram";
+ 
+
+File: gemfire/src/main/java/com/yahoo/ycsb/db/GemFireClient.java
+Patch:
+@@ -133,7 +133,7 @@ public int read(String table, String key, Set<String> fields,
+     if (val != null) {
+       if (fields == null) {
+         for (String k : val.keySet()) {
+-          result.put(key, new ByteArrayByteIterator(val.get(key)));
++          result.put(k, new ByteArrayByteIterator(val.get(k)));
+         }
+       } else {
+         for (String field : fields) {
+
+File: gemfire/src/main/java/com/yahoo/ycsb/db/GemFireClient.java
+Patch:
+@@ -133,7 +133,7 @@ public int read(String table, String key, Set<String> fields,
+     if (val != null) {
+       if (fields == null) {
+         for (String k : val.keySet()) {
+-          result.put(key, new ByteArrayByteIterator(val.get(key)));
++          result.put(k, new ByteArrayByteIterator(val.get(k)));
+         }
+       } else {
+         for (String field : fields) {
+
+File: core/src/main/java/com/yahoo/ycsb/workloads/CoreWorkload.java
+Patch:
+@@ -58,6 +58,7 @@
+  * <LI><b>maxscanlength</b>: for scans, what is the maximum number of records to scan (default: 1000)
+  * <LI><b>scanlengthdistribution</b>: for scans, what distribution should be used to choose the number of records to scan, for each scan, between 1 and maxscanlength (default: uniform)
+  * <LI><b>insertorder</b>: should records be inserted in order by key ("ordered"), or in hashed order ("hashed") (default: hashed)
++ * <LI><b>fieldnameprefix</b>: what should be a prefix for field names, the shorter may decrease the required storage size (default: "field")
+  * </ul> 
+  */
+ public class CoreWorkload extends Workload
+
+File: hbase/src/main/java/com/yahoo/ycsb/db/HBaseClient.java
+Patch:
+@@ -464,7 +464,7 @@ public void run()
+                             rescode=cli.read("table1", key, s, result);
+                             */
+                             HashSet<String> scanFields = new HashSet<String>();
+-                            scanFields.add("field1");
++                            scanFields.add("field1");   //TODO: remove hardcoded field prefix
+                             scanFields.add("field3");
+                             Vector<HashMap<String,ByteIterator>> scanResults = new Vector<HashMap<String,ByteIterator>>();
+                             rescode = cli.scan("table1","user2",20,null,scanResults);
+
+File: dynamodb/src/main/java/com/yahoo/ycsb/db/DynamoDBClient.java
+Patch:
+@@ -200,7 +200,7 @@ public int scan(String table, String startkey, int recordcount,
+             }
+             startKey = res.getLastEvaluatedKey();
+ 
+-        } 
++        }
+ 
+         return OK;
+     }
+@@ -249,7 +249,7 @@ public int insert(String table, String key,HashMap<String, ByteIterator> values)
+             logger.error(ex.getMessage());
+             return CLIENT_ERROR;
+         }
+-        return res.getConsumedCapacityUnits().intValue();
++        return OK;
+     }
+ 
+     @Override
+@@ -267,7 +267,7 @@ public int delete(String table, String key) {
+             logger.error(ex.getMessage());
+             return CLIENT_ERROR;
+         }
+-        return res.getConsumedCapacityUnits().intValue();
++        return OK;
+     }
+ 
+     private static Map<String, AttributeValue> createAttributes(
+
+File: gemfire/src/main/java/com/yahoo/ycsb/db/GemFireClient.java
+Patch:
+@@ -133,7 +133,7 @@ public int read(String table, String key, Set<String> fields,
+     if (val != null) {
+       if (fields == null) {
+         for (String k : val.keySet()) {
+-          result.put(key, new ByteArrayByteIterator(val.get(key)));
++          result.put(key, new ByteArrayByteIterator(val.get(k)));
+         }
+       } else {
+         for (String field : fields) {
+
+File: core/src/main/java/com/yahoo/ycsb/workloads/CoreWorkload.java
+Patch:
+@@ -570,15 +570,15 @@ public void doTransactionReadModifyWrite(DB db)
+ 
+ 		//do the transaction
+ 		
+-		long st=System.currentTimeMillis();
++		long st=System.nanoTime();
+ 
+ 		db.read(table,keyname,fields,new HashMap<String,ByteIterator>());
+ 		
+ 		db.update(table,keyname,values);
+ 
+-		long en=System.currentTimeMillis();
++		long en=System.nanoTime();
+ 		
+-		Measurements.getMeasurements().measure("READ-MODIFY-WRITE", (int)(en-st));
++		Measurements.getMeasurements().measure("READ-MODIFY-WRITE", (int)((en-st)/1000));
+ 	}
+ 	
+ 	public void doTransactionScan(DB db)
+
+File: core/src/main/java/com/yahoo/ycsb/workloads/CoreWorkload.java
+Patch:
+@@ -570,15 +570,15 @@ public void doTransactionReadModifyWrite(DB db)
+ 
+ 		//do the transaction
+ 		
+-		long st=System.currentTimeMillis();
++		long st=System.nanoTime();
+ 
+ 		db.read(table,keyname,fields,new HashMap<String,ByteIterator>());
+ 		
+ 		db.update(table,keyname,values);
+ 
+-		long en=System.currentTimeMillis();
++		long en=System.nanoTime();
+ 		
+-		Measurements.getMeasurements().measure("READ-MODIFY-WRITE", (int)(en-st));
++		Measurements.getMeasurements().measure("READ-MODIFY-WRITE", (int)((en-st)/1000));
+ 	}
+ 	
+ 	public void doTransactionScan(DB db)
+
+File: db/mongodb/src/com/yahoo/ycsb/db/MongoDbClient.java
+Patch:
+@@ -148,8 +148,9 @@ public int insert(String table, String key, HashMap<String, ByteIterator> values
+ 
+             DBCollection collection = db.getCollection(table);
+             DBObject r = new BasicDBObject().append("_id", key);
+-            r.putAll(values);
+-
++	    for(String k: values.keySet()) {
++		r.put(k, values.get(k).toString());
++	    }
+             collection.setWriteConcern(writeConcern);
+ 
+             collection.insert(r);
+
+File: db/mongodb/src/com/yahoo/ycsb/db/MongoDbClient.java
+Patch:
+@@ -148,8 +148,9 @@ public int insert(String table, String key, HashMap<String, ByteIterator> values
+ 
+             DBCollection collection = db.getCollection(table);
+             DBObject r = new BasicDBObject().append("_id", key);
+-            r.putAll(values);
+-
++	    for(String k: values.keySet()) {
++		r.put(k, values.get(k).toString());
++	    }
+             collection.setWriteConcern(writeConcern);
+ 
+             collection.insert(r);
+
+File: db/cassandra-0.6/src/com/yahoo/ycsb/db/CassandraClient6.java
+Patch:
+@@ -442,9 +442,9 @@ public static void main(String[] args)
+ 		}
+ 
+ 		HashMap<String,ByteIterator> vals=new HashMap<String,ByteIterator>();
+-		vals.put("age","57");
+-		vals.put("middlename","bradley");
+-		vals.put("favoritecolor","blue");
++		vals.put("age",new StringByteIterator("57"));
++		vals.put("middlename",new StringByteIterator("bradley"));
++		vals.put("favoritecolor",new StringByteIterator("blue"));
+ 		int res=cli.insert("usertable","BrianFrankCooper",vals);
+ 		System.out.println("Result of insert: "+res);
+ 
+
+File: db/mongodb/src/com/yahoo/ycsb/db/MongoDbClient.java
+Patch:
+@@ -14,6 +14,7 @@
+ import java.util.Iterator;
+ import java.util.Properties;
+ import java.util.Set;
++import java.util.Map;
+ import java.util.Vector;
+ 
+ import org.bson.types.ObjectId;
+
+File: db/redis/src/com/yahoo/ycsb/db/RedisClient.java
+Patch:
+@@ -73,7 +73,7 @@ private double hash(String key) {
+     public int read(String table, String key, Set<String> fields,
+             HashMap<String, ByteIterator> result) {
+         if (fields == null) {
+-            StringByteIteartor.putAllAsByteIterators(result, jedis.hgetAll(key));
++            StringByteIterator.putAllAsByteIterators(result, jedis.hgetAll(key));
+         }
+         else {
+             String[] fieldArray = (String[])fields.toArray(new String[fields.size()]);
+
+File: src/com/yahoo/ycsb/workloads/ConstantOccupancyWorkload.java
+Patch:
+@@ -74,12 +74,13 @@ public void init(Properties p) throws WorkloadException
+ 			System.err.println("Warning: record, insert or operation count was set prior to initting ConstantOccupancyWorkload.  Overriding old values.");
+ 		}
+ 		IntegerGenerator g = CoreWorkload.getFieldLengthGenerator(p);
+-		System.out.println(g+ " mean " + g.mean());
+ 		double fieldsize = g.mean();
+ 		int fieldcount = Integer.parseInt(p.getProperty(FIELD_COUNT_PROPERTY, FIELD_COUNT_PROPERTY_DEFAULT));
+ 
+ 		object_count = (long)(occupancy * ((double)disksize / (fieldsize * (double)fieldcount)));
+-		System.out.println("occupancy " + occupancy + " object count " + object_count);
++                if(object_count == 0) {
++                    throw new IllegalStateException("Object count was zero.  Perhaps disksize is too low?");
++                }
+ 		p.setProperty(Client.RECORD_COUNT_PROPERTY, object_count+"");
+ 		p.setProperty(Client.OPERATION_COUNT_PROPERTY, (storageages*object_count)+"");
+ 		p.setProperty(Client.INSERT_COUNT_PROPERTY, object_count+"");
+
+File: src/com/yahoo/ycsb/workloads/CoreWorkload.java
+Patch:
+@@ -304,7 +304,7 @@ public void init(Properties p) throws WorkloadException
+ 	{
+ 		table = p.getProperty(TABLENAME_PROPERTY,TABLENAME_PROPERTY_DEFAULT);
+ 		
+-		int fieldcount=Integer.parseInt(p.getProperty(FIELD_COUNT_PROPERTY,FIELD_COUNT_PROPERTY_DEFAULT));
++		fieldcount=Integer.parseInt(p.getProperty(FIELD_COUNT_PROPERTY,FIELD_COUNT_PROPERTY_DEFAULT));
+ 		fieldlengthgenerator = CoreWorkload.getFieldLengthGenerator(p);
+ 		
+ 		double readproportion=Double.parseDouble(p.getProperty(READ_PROPORTION_PROPERTY,READ_PROPORTION_PROPERTY_DEFAULT));
+@@ -426,6 +426,7 @@ public boolean doInsert(DB db, Object threadstate)
+ 		}
+ 		String dbkey="user"+keynum;
+ 		HashMap<String,String> values=new HashMap<String,String>();
++
+ 		for (int i=0; i<fieldcount; i++)
+ 		{
+ 			String fieldkey="field"+i;
+
+File: db/redis/com/yahoo/ycsb/db/RedisClient.java
+Patch:
+@@ -91,9 +91,9 @@ public int read(String table, String key, Set<String> fields,
+     public int insert(String table, String key, HashMap<String, String> values) {
+         if (jedis.hmset(key, values).equals("OK")) {
+             jedis.zadd(INDEX_KEY, hash(key), key);
+-            return 1;
++            return 0;
+         }
+-        return 0;
++        return 1;
+     }
+ 
+     @Override
+
+File: db/jdbc/src/com/yahoo/ycsb/db/JdbcDBClientConstants.java
+Patch:
+@@ -49,7 +49,7 @@ public interface JdbcDBClientConstants {
+   public static final int SUCCESS = 0;
+   
+   /** The primary key in the user table.*/
+-  public static String PRIMARY_KEY = "KEY";
++  public static String PRIMARY_KEY = "YCSB_KEY";
+   
+   /** The field name prefix in the table.*/
+   public static String COLUMN_PREFIX = "FIELD";
+
+File: db/jdbc/src/com/yahoo/ycsb/db/JdbcDBClientConstants.java
+Patch:
+@@ -49,7 +49,7 @@ public interface JdbcDBClientConstants {
+   public static final int SUCCESS = 0;
+   
+   /** The primary key in the user table.*/
+-  public static String PRIMARY_KEY = "KEY";
++  public static String PRIMARY_KEY = "YCSB_KEY";
+   
+   /** The field name prefix in the table.*/
+   public static String COLUMN_PREFIX = "FIELD";
+
+File: db/hbase/src/com/yahoo/ycsb/db/HBaseClient.java
+Patch:
+@@ -47,7 +47,9 @@
+  */
+ public class HBaseClient extends com.yahoo.ycsb.DB
+ {
+-    private static final Configuration config = HBaseConfiguration.create();
++    // BFC: Change to fix broken build (with HBase 0.20.6)
++    //private static final Configuration config = HBaseConfiguration.create();
++    private static final HBaseConfiguration config = new HBaseConfiguration();
+ 
+     public boolean _debug=false;
+ 
+
+File: src/com/yahoo/ycsb/Client.java
+Patch:
+@@ -399,7 +399,7 @@ private static void exportMeasurements(Properties props, int opcount, long runti
+ 			}
+ 
+ 			// if no exporter is provided the default text one will be used
+-			String exporterStr = props.getProperty("exporter");
++			String exporterStr = props.getProperty("exporter", "com.yahoo.ycsb.measurements.exporter.TextMeasurementsExporter");
+ 			try
+ 			{
+ 				exporter = (MeasurementsExporter) Class.forName(exporterStr).getConstructor(OutputStream.class).newInstance(out);
+
+File: src/com/yahoo/ycsb/Client.java
+Patch:
+@@ -311,7 +311,9 @@ public void run()
+ 	}
+ }
+ 
+-
++/**
++ * Main class for executing YCSB.
++ */
+ public class Client
+ {
+ 
+
+File: src/com/yahoo/ycsb/DBException.java
+Patch:
+@@ -17,6 +17,9 @@
+ 
+ package com.yahoo.ycsb;
+ 
++/**
++ * Something bad happened while interacting with the database.
++ */
+ public class DBException extends Exception
+ {
+       /**
+
+File: src/com/yahoo/ycsb/DBFactory.java
+Patch:
+@@ -19,6 +19,9 @@
+ 
+ import java.util.Properties;
+ 
++/**
++ * Creates a DB layer by dynamically classloading the specified DB class.
++ */
+ public class DBFactory
+ {
+       @SuppressWarnings("unchecked")
+
+File: src/com/yahoo/ycsb/DiscreteGenerator.java
+Patch:
+@@ -20,6 +20,9 @@
+ import java.util.Vector;
+ import java.util.Random;
+ 
++/**
++ * Generates a distribution by choosing from a discrete set of values.
++ */
+ public class DiscreteGenerator extends Generator
+ {
+ 	class Pair
+
+File: src/com/yahoo/ycsb/OneMeasurement.java
+Patch:
+@@ -19,6 +19,9 @@
+ 
+ import java.io.PrintStream;
+ 
++/**
++ * A single measured metric (e.g. READ LATENCY)
++ */
+ public abstract class OneMeasurement {
+ 
+ 	String _name;
+
+File: src/com/yahoo/ycsb/OneMeasurementHistogram.java
+Patch:
+@@ -24,7 +24,7 @@
+ 
+ 
+ /**
+- * Take measurements and maintain a histogram of latencies.
++ * Take measurements and maintain a histogram of a given metric, such as READ LATENCY.
+  * 
+  * @author cooperb
+  *
+
+File: src/com/yahoo/ycsb/OneMeasurementTimeSeries.java
+Patch:
+@@ -37,6 +37,9 @@ public SeriesUnit(long time, double average) {
+ 	public double average; 
+ }
+ 
++/**
++ * A time series measurement of a metric, such as READ LATENCY.
++ */
+ public class OneMeasurementTimeSeries extends OneMeasurement 
+ {
+ 	/**
+
+File: src/com/yahoo/ycsb/SkewedLatestGenerator.java
+Patch:
+@@ -17,6 +17,9 @@
+ 
+ package com.yahoo.ycsb;
+ 
++/**
++ * Generate a popularity distribution of items, skewed to favor recent items significantly more than older items.
++ */
+ public class SkewedLatestGenerator extends IntegerGenerator
+ {
+ 	CounterGenerator _basis;
+
+File: src/com/yahoo/ycsb/UniformIntegerGenerator.java
+Patch:
+@@ -19,6 +19,9 @@
+ 
+ import java.util.Random;
+ 
++/**
++ * Generates integers randomly uniform from an interval.
++ */
+ public class UniformIntegerGenerator extends IntegerGenerator 
+ {
+ 	Random _random;
+
+File: src/com/yahoo/ycsb/UnknownDBException.java
+Patch:
+@@ -17,6 +17,9 @@
+ 
+ package com.yahoo.ycsb;
+ 
++/**
++ * Could not create the specified DB.
++ */
+ public class UnknownDBException extends Exception
+ {
+       /**
+
+File: src/com/yahoo/ycsb/WorkloadException.java
+Patch:
+@@ -17,6 +17,9 @@
+ 
+ package com.yahoo.ycsb;
+ 
++/**
++ * The workload tried to do something bad.
++ */
+ public class WorkloadException extends Exception
+ {
+ 	/**
+
+File: src/com/yahoo/ycsb/BasicDB.java
+Patch:
+@@ -164,7 +164,7 @@ public int scan(String table, String startkey, int recordcount, Set<String> fiel
+ 	 *
+ 	 * @param table The name of the table
+ 	 * @param key The record key of the record to write.
+-	 * @param result A HashMap of field/value pairs to update in the record
++	 * @param values A HashMap of field/value pairs to update in the record
+ 	 * @return Zero on success, a non-zero error code on error
+ 	 */
+ 	public int update(String table, String key, HashMap<String,String> values)
+@@ -193,7 +193,7 @@ public int update(String table, String key, HashMap<String,String> values)
+ 	 *
+ 	 * @param table The name of the table
+ 	 * @param key The record key of the record to insert.
+-	 * @param result A HashMap of field/value pairs to insert in the record
++	 * @param values A HashMap of field/value pairs to insert in the record
+ 	 * @return Zero on success, a non-zero error code on error
+ 	 */
+ 	public int insert(String table, String key, HashMap<String,String> values)
+
+File: src/com/yahoo/ycsb/ScrambledZipfianGenerator.java
+Patch:
+@@ -47,8 +47,8 @@ public ScrambledZipfianGenerator(long _items)
+ 
+ 	/**
+ 	 * Create a zipfian generator for items between min and max.
+-	 * @param min The smallest integer to generate in the sequence.
+-	 * @param max The largest integer to generate in the sequence.
++	 * @param _min The smallest integer to generate in the sequence.
++	 * @param _max The largest integer to generate in the sequence.
+ 	 */
+ 	public ScrambledZipfianGenerator(long _min, long _max)
+ 	{
+
+File: src/com/yahoo/ycsb/Utils.java
+Patch:
+@@ -69,7 +69,7 @@ public static int JenkinsHash(int val)
+ 	 * 32 bit FNV hash. Produces more "random" hashes than (say) String.hashCode().
+ 	 * 
+ 	 * @param val The value to hash.
+-	 * @return
++	 * @return The hash value
+ 	 */
+ 	public static int FNVhash32(int val)
+ 	{
+@@ -95,7 +95,7 @@ public static int FNVhash32(int val)
+ 	 * 64 bit FNV hash. Produces more "random" hashes than (say) String.hashCode().
+ 	 * 
+ 	 * @param val The value to hash.
+-	 * @return
++	 * @return The hash value
+ 	 */
+ 	public static long FNVhash64(long val)
+ 	{
+
+File: src/com/yahoo/ycsb/ZipfianGenerator.java
+Patch:
+@@ -89,8 +89,8 @@ public ZipfianGenerator(long _items)
+ 
+ 	/**
+ 	 * Create a zipfian generator for items between min and max.
+-	 * @param min The smallest integer to generate in the sequence.
+-	 * @param max The largest integer to generate in the sequence.
++	 * @param _min The smallest integer to generate in the sequence.
++	 * @param _max The largest integer to generate in the sequence.
+ 	 */
+ 	public ZipfianGenerator(long _min, long _max)
+ 	{
+

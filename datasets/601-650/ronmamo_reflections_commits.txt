@@ -1,0 +1,810 @@
+File: src/main/java/org/reflections/util/ClasspathHelper.java
+Patch:
+@@ -110,7 +110,7 @@ public static Collection<URL> forResource(String resourceName, ClassLoader... cl
+                     final URL url = urls.nextElement();
+                     int index = url.toExternalForm().lastIndexOf(resourceName);
+                     if (index != -1) {
+-                    	// Add old url as contextUrl to support exotic url handlers
++                        // Add old url as contextUrl to support exotic url handlers
+                         result.add(new URL(url, url.toExternalForm().substring(0, index)));
+                     } else {
+                         result.add(url);
+@@ -186,6 +186,7 @@ public static Collection<URL> forClassLoader(ClassLoader... classLoaders) {
+         final ClassLoader[] loaders = classLoaders(classLoaders);
+         for (ClassLoader classLoader : loaders) {
+             while (classLoader != null) {
++
+                 if (classLoader instanceof URLClassLoader) {
+                     URL[] urls = ((URLClassLoader) classLoader).getURLs();
+                     if (urls != null) {
+
+File: src/main/java/org/reflections/util/NameHelper.java
+Patch:
+@@ -108,7 +108,7 @@ default Member forMember(String descriptor, ClassLoader... loaders) throws Refle
+ 		String memberKey = p0 != -1 ? descriptor.substring(0, p0) : descriptor;
+ 		String methodParameters = p0 != -1 ? descriptor.substring(p0 + 1, descriptor.lastIndexOf(')')) : "";
+ 
+-		int p1 = Math.max(memberKey.lastIndexOf('.'), memberKey.lastIndexOf("$"));
++		int p1 = memberKey.lastIndexOf('.');
+ 		String className = memberKey.substring(0, p1);
+ 		String memberName = memberKey.substring(p1 + 1);
+ 
+
+File: src/main/java/org/reflections/vfs/Vfs.java
+Patch:
+@@ -56,7 +56,7 @@ public abstract class Vfs {
+     private static List<UrlType> defaultUrlTypes = new ArrayList<>(Arrays.asList(DefaultUrlTypes.values()));
+ 
+     /** an abstract vfs dir */
+-    public interface Dir {
++    public interface Dir extends AutoCloseable {
+         String getPath();
+         Iterable<File> getFiles();
+         default void close() {}
+@@ -124,8 +124,8 @@ public static Dir fromURL(final URL url, final UrlType... urlTypes) {
+     /** return an iterable of all {@link org.reflections.vfs.Vfs.File} in given urls, starting with given packagePrefix and matching nameFilter */
+     public static Iterable<File> findFiles(final Collection<URL> inUrls, final String packagePrefix, final Predicate<String> nameFilter) {
+         Predicate<File> fileNamePredicate = file -> {
+-            String path = file.getRelativePath();
+-            if (path.startsWith(packagePrefix)) {
++            String path = file.toString().replace('\\','/');
++            if (path.contains(packagePrefix)) {
+                 String filename = path.substring(path.indexOf(packagePrefix) + packagePrefix.length());
+                 return !filename.isEmpty() && nameFilter.test(filename.substring(1));
+             } else {
+
+File: src/main/java/org/reflections/Configuration.java
+Patch:
+@@ -28,6 +28,6 @@ public interface Configuration {
+     ClassLoader[] getClassLoaders();
+ 
+     /** if true (default), expand super types after scanning, for super types that were not scanned.
+-     * <p>see {@link org.reflections.Reflections#expandSuperTypes(Map)}*/
++     * <p>see {@link Reflections#expandSuperTypes(Map, Map)}*/
+     boolean shouldExpandSuperTypes();
+ }
+
+File: src/main/java/org/reflections/scanners/FieldAnnotationsScanner.java
+Patch:
+@@ -1,11 +1,12 @@
+ package org.reflections.scanners;
+ 
+ /** scan field annotations.
+- * <i>{@code Deprecated}, use {@link Scanners#FieldsAnnotated} instead</i>
+- * */
++ * <i>{@code Deprecated}, use {@link Scanners#FieldsAnnotated} instead</i> */
+ @Deprecated
+ public class FieldAnnotationsScanner extends AbstractScanner {
+ 
++    /** <i>{@code Deprecated}, use {@link Scanners#FieldsAnnotated} instead</i> */
++    @Deprecated
+     public FieldAnnotationsScanner() {
+         super(Scanners.FieldsAnnotated);
+     }
+
+File: src/main/java/org/reflections/scanners/ResourcesScanner.java
+Patch:
+@@ -2,11 +2,12 @@
+ 
+ /** collects all resources that are not classes in a collection
+  * <p>key: value - {web.xml: WEB-INF/web.xml}</p>
+- * <i>{@code Deprecated}, use {@link Scanners#Resources} instead</i>
+- * */
++ * <i>{@code Deprecated}, use {@link Scanners#Resources} instead</i> */
+ @Deprecated
+ public class ResourcesScanner extends AbstractScanner {
+ 
++    /** <i>{@code Deprecated}, use {@link Scanners#Resources} instead</i> */
++    @Deprecated
+     public ResourcesScanner() {
+         super(Scanners.Resources);
+     }
+
+File: src/main/java/org/reflections/scanners/Scanners.java
+Patch:
+@@ -115,7 +115,8 @@ public void scan(ClassFile classFile, List<Map.Entry<String, String>> entries) {
+ 
+         @Override
+         public QueryFunction<Store, String> with(String pattern) {
+-            return store -> store.get(index()).entrySet().stream().filter(entry -> entry.getKey().matches(pattern))
++            return store -> store.getOrDefault(index(), Collections.emptyMap())
++                .entrySet().stream().filter(entry -> entry.getKey().matches(pattern))
+                 .flatMap(entry -> entry.getValue().stream()).collect(Collectors.toCollection(LinkedHashSet::new));
+         }
+     },
+
+File: src/main/java/org/reflections/scanners/TypeAnnotationsScanner.java
+Patch:
+@@ -1,11 +1,12 @@
+ package org.reflections.scanners;
+ 
+ /** scan class annotations, where @Retention(RetentionPolicy.RUNTIME).
+- * <i>{@code Deprecated}, use {@link Scanners#TypesAnnotated} instead</i>
+- **/
++ * <i>{@code Deprecated}, use {@link Scanners#TypesAnnotated} instead</i> */
+ @Deprecated
+ public class TypeAnnotationsScanner extends AbstractScanner {
+ 
++    /** <i>{@code Deprecated}, use {@link Scanners#TypesAnnotated} instead</i> */
++    @Deprecated
+      public TypeAnnotationsScanner() {
+         super(Scanners.TypesAnnotated);
+     }
+
+File: src/main/java/org/reflections/util/ConfigurationBuilder.java
+Patch:
+@@ -199,8 +199,9 @@ public boolean isParallel() {
+     }
+ 
+     /** if true, scan urls in parallel. */
+-    public void setParallel(boolean parallel) {
++    public ConfigurationBuilder setParallel(boolean parallel) {
+         isParallel = parallel;
++        return this;
+     }
+ 
+     @Override
+@@ -230,7 +231,7 @@ public boolean shouldExpandSuperTypes() {
+     }
+ 
+     /** if set to true, Reflections will expand super types after scanning.
+-     * <p>see {@link org.reflections.Reflections#expandSuperTypes(Map)} */
++     * <p>see {@link org.reflections.Reflections#expandSuperTypes(Map, Map)} */
+     public ConfigurationBuilder setExpandSuperTypes(boolean expandSuperTypes) {
+         this.expandSuperTypes = expandSuperTypes;
+         return this;
+
+File: src/main/java/org/reflections/util/UtilQueryBuilder.java
+Patch:
+@@ -13,7 +13,7 @@
+  * <pre>{@code UtilQueryBuilder<Annotation> builder =
+  *   element -> store -> element.getDeclaredAnnotations()} </pre>
+  */
+-public interface UtilQueryBuilder<F, E> extends NameHelper {
++public interface UtilQueryBuilder<F, E> {
+ 	/** get direct values of given element */
+ 	QueryFunction<Store, E> get(F element);
+ 
+
+File: src/test/java/org/reflections/ReflectionUtilsTest.java
+Patch:
+@@ -18,22 +18,21 @@
+ import java.util.Collection;
+ import java.util.Collections;
+ import java.util.HashSet;
+-import java.util.List;
+ import java.util.Set;
+ import java.util.stream.Collectors;
+ 
+ import static org.hamcrest.MatcherAssert.assertThat;
+ import static org.junit.jupiter.api.Assertions.*;
+ import static org.reflections.ReflectionUtils.*;
+-import static org.reflections.ReflectionsTest.are;
+ import static org.reflections.ReflectionsTest.equalTo;
+ 
+ @SuppressWarnings("unchecked")
+ public class ReflectionUtilsTest {
+ 
+     @Test
+     public void getAllTest() {
+-        assertThat(getAllSuperTypes(TestModel.C3.class, withAnnotation(TestModel.AI1.class)), are(TestModel.I1.class));
++        assertThat(getAllSuperTypes(TestModel.C3.class, withAnnotation(TestModel.AI1.class)),
++            equalTo(TestModel.I1.class));
+ 
+         Set<Method> allMethods = getAllMethods(TestModel.C4.class, withModifier(Modifier.PUBLIC), withReturnType(void.class));
+         Set<Method> allMethods1 = getAllMethods(TestModel.C4.class, withPattern("public.*.void .*"));
+
+File: src/main/java/org/reflections/scanners/Scanners.java
+Patch:
+@@ -27,10 +27,13 @@
+  *   <li>{@link #SubTypes}</li>
+  *   <li>{@link #TypesAnnotated}</li>
+  *   <li>{@link #MethodsAnnotated}</li>
++ *   <li>{@link #ConstructorsAnnotated}</li>
+  *   <li>{@link #FieldsAnnotated}</li>
+  *   <li>{@link #Resources}</li>
+  *   <li>{@link #MethodsParameter}</li>
++ *   <li>{@link #ConstructorsParameter}</li>
+  *   <li>{@link #MethodsSignature}</li>
++ *   <li>{@link #ConstructorsSignature}</li>
+  *   <li>{@link #MethodsReturn}</li>
+  * </ul>
+  * <i>note that scanners must be configured in {@link org.reflections.Configuration} in order to be queried</i>
+
+File: src/test/java/org/reflections/MyTestModelStore.java
+Patch:
+@@ -36,6 +36,8 @@ interface methods {
+           interface value {}
+         }
+       }
++      interface TestModel$AM2 {
++      }
+       interface TestModel$C1 {
+         interface annotations {
+           interface org_reflections_TestModel$AC1 {}
+
+File: src/test/java/org/reflections/VfsTest.java
+Patch:
+@@ -107,7 +107,7 @@ public void vfsFromDirWithJarInName() throws MalformedURLException {
+         try {
+             Vfs.Dir dir = Vfs.fromURL(new URL(format("file:{0}", dirWithJarInName)));
+ 
+-            assertEquals(dirWithJarInName, dir.getPath());
++            assertEquals(dirWithJarInName.replace("\\", "/"), dir.getPath());
+             assertEquals(SystemDir.class, dir.getClass());
+         } finally {
+             newDir.delete();
+@@ -121,4 +121,4 @@ private void testVfsDir(Vfs.Dir dir) {
+         }
+         assertFalse(files.isEmpty());
+     }
+-}
+\ No newline at end of file
++}
+
+File: src/main/java/org/reflections/scanners/ResourcesScanner.java
+Patch:
+@@ -7,7 +7,7 @@
+  * <p>key: value - {web.xml: WEB-INF/web.xml} */
+ public class ResourcesScanner extends AbstractScanner {
+     public boolean acceptsInput(String file) {
+-        return !file.endsWith(".class"); //not a class
++        return !file.endsWith(".class") && !file.endsWith(".groovy") && !file.endsWith(".scala") && !file.endsWith(".kt"); //not a class
+     }
+ 
+     @Override public Object scan(Vfs.File file, Object classObject, Store store) {
+
+File: src/main/java/org/reflections/util/Utils.java
+Patch:
+@@ -55,7 +55,7 @@ public static Member getMemberFromDescriptor(String descriptor, ClassLoader... c
+         String methodParameters = p0 != -1 ? descriptor.substring(p0 + 1, descriptor.lastIndexOf(')')) : "";
+ 
+         int p1 = Math.max(memberKey.lastIndexOf('.'), memberKey.lastIndexOf("$"));
+-        String className = memberKey.substring(memberKey.lastIndexOf(' ') + 1, p1);
++        String className = memberKey.substring(0, p1);
+         String memberName = memberKey.substring(p1 + 1);
+ 
+         Class<?>[] parameterTypes = null;
+
+File: src/main/java/org/reflections/vfs/UrlTypeVFS.java
+Patch:
+@@ -42,7 +42,6 @@ public Dir createDir(final URL url) {
+             } catch (IOException e1) {
+                 if (Reflections.log != null) {
+                     Reflections.log.warn("Could not get URL", e);
+-                    Reflections.log.warn("Could not get URL", e1);
+                 }
+             }
+         }
+
+File: src/main/java/org/reflections/Reflections.java
+Patch:
+@@ -180,7 +180,7 @@ protected void scan() {
+             return;
+         }
+ 
+-        if (log != null) {
++        if (log != null && log.isDebugEnabled()) {
+             log.debug("going to scan these urls:\n{}", Joiner.on("\n").join(configuration.getUrls()));
+         }
+ 
+
+File: src/main/java/org/reflections/Reflections.java
+Patch:
+@@ -180,7 +180,7 @@ protected void scan() {
+             return;
+         }
+ 
+-        if (log != null) {
++        if (log != null && log.isDebugEnabled()) {
+             log.debug("going to scan these urls:\n{}", Joiner.on("\n").join(configuration.getUrls()));
+         }
+ 
+
+File: src/main/java/org/reflections/Reflections.java
+Patch:
+@@ -249,7 +249,7 @@ protected void scan(URL url) {
+                     Object classObject = null;
+                     for (Scanner scanner : configuration.getScanners()) {
+                         try {
+-                            if (scanner.acceptsInput(path) || scanner.acceptResult(fqn)) {
++                            if (scanner.acceptsInput(path) || scanner.acceptsInput(fqn)) {
+                                 classObject = scanner.scan(file, classObject);
+                             }
+                         } catch (Exception e) {
+
+File: src/main/java/org/reflections/Reflections.java
+Patch:
+@@ -249,7 +249,7 @@ protected void scan(URL url) {
+                     Object classObject = null;
+                     for (Scanner scanner : configuration.getScanners()) {
+                         try {
+-                            if (scanner.acceptsInput(path) || scanner.acceptResult(fqn)) {
++                            if (scanner.acceptsInput(path) || scanner.acceptsInput(fqn)) {
+                                 classObject = scanner.scan(file, classObject);
+                             }
+                         } catch (Exception e) {
+
+File: src/main/java/org/reflections/adapters/JavaReflectionAdapter.java
+Patch:
+@@ -80,11 +80,11 @@ public String getFieldName(Field field) {
+         return field.getName();
+     }
+ 
+-    public Class getOfCreateClassObject(Vfs.File file) throws Exception {
+-        return getOfCreateClassObject(file, null);
++    public Class getOrCreateClassObject(Vfs.File file) throws Exception {
++        return getOrCreateClassObject(file, null);
+     }
+ 
+-    public Class getOfCreateClassObject(Vfs.File file, @Nullable ClassLoader... loaders) throws Exception {
++    public Class getOrCreateClassObject(Vfs.File file, @Nullable ClassLoader... loaders) throws Exception {
+         String name = file.getRelativePath().replace("/", ".").replace(".class", "");
+         return forName(name, loaders);
+     }
+
+File: src/main/java/org/reflections/adapters/JavassistAdapter.java
+Patch:
+@@ -92,7 +92,7 @@ public String getFieldName(final FieldInfo field) {
+         return field.getName();
+     }
+ 
+-    public ClassFile getOfCreateClassObject(final Vfs.File file) {
++    public ClassFile getOrCreateClassObject(final Vfs.File file) {
+         InputStream inputStream = null;
+         try {
+             inputStream = file.openInputStream();
+
+File: src/main/java/org/reflections/adapters/MetadataAdapter.java
+Patch:
+@@ -37,7 +37,7 @@ public interface MetadataAdapter<C,F,M> {
+ 
+     String getFieldName(final F field);
+ 
+-    C getOfCreateClassObject(Vfs.File file) throws Exception;
++    C getOrCreateClassObject(Vfs.File file) throws Exception;
+ 
+     String getMethodModifier(M method);
+ 
+
+File: src/main/java/org/reflections/scanners/AbstractScanner.java
+Patch:
+@@ -8,8 +8,6 @@
+ import org.reflections.adapters.MetadataAdapter;
+ import org.reflections.vfs.Vfs;
+ 
+-import static org.reflections.Reflections.log;
+-
+ /**
+  *
+  */
+@@ -27,7 +25,7 @@ public boolean acceptsInput(String file) {
+     public Object scan(Vfs.File file, Object classObject) {
+         if (classObject == null) {
+             try {
+-                classObject = configuration.getMetadataAdapter().getOfCreateClassObject(file);
++                classObject = configuration.getMetadataAdapter().getOrCreateClassObject(file);
+             } catch (Exception e) {
+                 throw new ReflectionsException("could not create class object from file " + file.getRelativePath(), e);
+             }
+
+File: src/main/java/org/reflections/adapters/JavaReflectionAdapter.java
+Patch:
+@@ -80,11 +80,11 @@ public String getFieldName(Field field) {
+         return field.getName();
+     }
+ 
+-    public Class getOfCreateClassObject(Vfs.File file) throws Exception {
+-        return getOfCreateClassObject(file, null);
++    public Class getOrCreateClassObject(Vfs.File file) throws Exception {
++        return getOrCreateClassObject(file, null);
+     }
+ 
+-    public Class getOfCreateClassObject(Vfs.File file, @Nullable ClassLoader... loaders) throws Exception {
++    public Class getOrCreateClassObject(Vfs.File file, @Nullable ClassLoader... loaders) throws Exception {
+         String name = file.getRelativePath().replace("/", ".").replace(".class", "");
+         return forName(name, loaders);
+     }
+
+File: src/main/java/org/reflections/adapters/JavassistAdapter.java
+Patch:
+@@ -92,7 +92,7 @@ public String getFieldName(final FieldInfo field) {
+         return field.getName();
+     }
+ 
+-    public ClassFile getOfCreateClassObject(final Vfs.File file) {
++    public ClassFile getOrCreateClassObject(final Vfs.File file) {
+         InputStream inputStream = null;
+         try {
+             inputStream = file.openInputStream();
+
+File: src/main/java/org/reflections/adapters/MetadataAdapter.java
+Patch:
+@@ -37,7 +37,7 @@ public interface MetadataAdapter<C,F,M> {
+ 
+     String getFieldName(final F field);
+ 
+-    C getOfCreateClassObject(Vfs.File file) throws Exception;
++    C getOrCreateClassObject(Vfs.File file) throws Exception;
+ 
+     String getMethodModifier(M method);
+ 
+
+File: src/main/java/org/reflections/scanners/AbstractScanner.java
+Patch:
+@@ -8,8 +8,6 @@
+ import org.reflections.adapters.MetadataAdapter;
+ import org.reflections.vfs.Vfs;
+ 
+-import static org.reflections.Reflections.log;
+-
+ /**
+  *
+  */
+@@ -27,7 +25,7 @@ public boolean acceptsInput(String file) {
+     public Object scan(Vfs.File file, Object classObject) {
+         if (classObject == null) {
+             try {
+-                classObject = configuration.getMetadataAdapter().getOfCreateClassObject(file);
++                classObject = configuration.getMetadataAdapter().getOrCreateClassObject(file);
+             } catch (Exception e) {
+                 throw new ReflectionsException("could not create class object from file " + file.getRelativePath(), e);
+             }
+
+File: src/main/java/org/reflections/vfs/Vfs.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.google.common.base.Predicate;
+ import com.google.common.collect.Iterables;
+ import com.google.common.collect.Lists;
+-import org.apache.commons.vfs2.*;
+ import org.reflections.Reflections;
+ import org.reflections.ReflectionsException;
+ import org.reflections.util.ClasspathHelper;
+
+File: src/main/java/org/reflections/util/Utils.java
+Patch:
+@@ -187,7 +187,7 @@ public static List<String> names(Class<?>... types) {
+     }
+ 
+     public static String name(Constructor constructor) {
+-        return constructor.getName() + "." + "<init>" + "(" + Joiner.on(",").join(names(constructor.getParameterTypes())) + ")";
++        return constructor.getName() + "." + "<init>" + "(" + Joiner.on(", ").join(names(constructor.getParameterTypes())) + ")";
+     }
+ 
+     public static String name(Method method) {
+
+File: src/main/java/org/reflections/util/Utils.java
+Patch:
+@@ -187,7 +187,7 @@ public static List<String> names(Class<?>... types) {
+     }
+ 
+     public static String name(Constructor constructor) {
+-        return constructor.getName() + "." + "<init>" + "(" + Joiner.on(",").join(names(constructor.getParameterTypes())) + ")";
++        return constructor.getName() + "." + "<init>" + "(" + Joiner.on(", ").join(names(constructor.getParameterTypes())) + ")";
+     }
+ 
+     public static String name(Method method) {
+
+File: src/main/java/org/reflections/Reflections.java
+Patch:
+@@ -251,7 +251,7 @@ protected void scan(URL url) {
+                             }
+                         } catch (Exception e) {
+                             if (log != null && log.isDebugEnabled())
+-                                log.debug("could not scan file " + file.getRelativePath() + " in url " + url.toExternalForm() + " with scanner " + scanner.getClass().getSimpleName(), e.getMessage());
++                                log.debug("could not scan file " + file.getRelativePath() + " in url " + url.toExternalForm() + " with scanner " + scanner.getClass().getSimpleName(), e);
+                         }
+                     }
+                 }
+
+File: src/main/java/org/reflections/scanners/AbstractScanner.java
+Patch:
+@@ -29,7 +29,7 @@ public Object scan(Vfs.File file, Object classObject) {
+             try {
+                 classObject = configuration.getMetadataAdapter().getOfCreateClassObject(file);
+             } catch (Exception e) {
+-                throw new ReflectionsException("could not create class object from file " + file.getRelativePath());
++                throw new ReflectionsException("could not create class object from file " + file.getRelativePath(), e);
+             }
+         }
+         scan(classObject);
+
+File: src/main/java/org/reflections/Reflections.java
+Patch:
+@@ -251,7 +251,7 @@ protected void scan(URL url) {
+                             }
+                         } catch (Exception e) {
+                             if (log != null && log.isDebugEnabled())
+-                                log.debug("could not scan file " + file.getRelativePath() + " in url " + url.toExternalForm() + " with scanner " + scanner.getClass().getSimpleName(), e.getMessage());
++                                log.debug("could not scan file " + file.getRelativePath() + " in url " + url.toExternalForm() + " with scanner " + scanner.getClass().getSimpleName(), e);
+                         }
+                     }
+                 }
+
+File: src/main/java/org/reflections/scanners/AbstractScanner.java
+Patch:
+@@ -29,7 +29,7 @@ public Object scan(Vfs.File file, Object classObject) {
+             try {
+                 classObject = configuration.getMetadataAdapter().getOfCreateClassObject(file);
+             } catch (Exception e) {
+-                throw new ReflectionsException("could not create class object from file " + file.getRelativePath());
++                throw new ReflectionsException("could not create class object from file " + file.getRelativePath(), e);
+             }
+         }
+         scan(classObject);
+
+File: src/main/java/org/reflections/util/FilterBuilder.java
+Patch:
+@@ -42,7 +42,7 @@ public class FilterBuilder implements Predicate<String> {
+     /** include packages of given prefixes */
+     public FilterBuilder includePackage(final String... prefixes) {
+         for (String prefix : prefixes) {
+-            return add(new Include(prefix(prefix)));
++            add(new Include(prefix(prefix)));
+         }
+         return this;
+     }
+
+File: src/main/java/org/reflections/util/FilterBuilder.java
+Patch:
+@@ -42,7 +42,7 @@ public class FilterBuilder implements Predicate<String> {
+     /** include packages of given prefixes */
+     public FilterBuilder includePackage(final String... prefixes) {
+         for (String prefix : prefixes) {
+-            return add(new Include(prefix(prefix)));
++            add(new Include(prefix(prefix)));
+         }
+         return this;
+     }
+
+File: src/main/java/org/reflections/util/ClasspathHelper.java
+Patch:
+@@ -112,7 +112,9 @@ public static Collection<URL> forResource(String resourceName, ClassLoader... cl
+                     if (index != -1) {
+                         result.add(new URL(url.toExternalForm().substring(0, index)));
+                     } else {
+-                        result.add(url); //whatever
++						result.add(new URL(
++								url.getProtocol().replaceFirst("^wsjar", "jar"), url.getHost(), url.getFile())
++						); //whatever
+                     }
+                 }
+             } catch (IOException e) {
+
+File: src/test/java/org/reflections/MyTestModelStore.java
+Patch:
+@@ -1,4 +1,4 @@
+-//generated using Reflections JavaCodeSerializer [Fri Jun 13 17:34:35 IDT 2014]
++//generated using Reflections JavaCodeSerializer [Tue Nov 11 12:45:43 CET 2014]
+ package org.reflections;
+ 
+ public interface MyTestModelStore {
+
+File: src/main/java/org/reflections/util/ClasspathHelper.java
+Patch:
+@@ -112,7 +112,9 @@ public static Collection<URL> forResource(String resourceName, ClassLoader... cl
+                     if (index != -1) {
+                         result.add(new URL(url.toExternalForm().substring(0, index)));
+                     } else {
+-                        result.add(url); //whatever
++						result.add(new URL(
++								url.getProtocol().replaceFirst("^wsjar", "jar"), url.getHost(), url.getFile())
++						); //whatever
+                     }
+                 }
+             } catch (IOException e) {
+
+File: src/test/java/org/reflections/MyTestModelStore.java
+Patch:
+@@ -1,4 +1,4 @@
+-//generated using Reflections JavaCodeSerializer [Fri Jun 13 17:34:35 IDT 2014]
++//generated using Reflections JavaCodeSerializer [Tue Nov 11 12:45:43 CET 2014]
+ package org.reflections;
+ 
+ public interface MyTestModelStore {
+
+File: src/main/java/org/reflections/vfs/Vfs.java
+Patch:
+@@ -177,8 +177,8 @@ public Iterator<File> iterator() {
+         try {
+             path = url.toExternalForm();
+             if (path.startsWith("jar:")) path = path.substring("jar:".length());
+-            if (path.startsWith("file:")) path = path.substring("file:".length());
+             if (path.startsWith("wsjar:")) path = path.substring("wsjar:".length());
++            if (path.startsWith("file:")) path = path.substring("file:".length());
+             if (path.contains(".jar!")) path = path.substring(0, path.indexOf(".jar!") + ".jar".length());
+             if ((file = new java.io.File(path)).exists()) return file;
+ 
+
+File: src/test/java/org/reflections/ReflectionsTest.java
+Patch:
+@@ -214,7 +214,7 @@ public void testConstructorParameter() throws NoSuchMethodException {
+ 
+     @Test
+     public void testResourcesScanner() {
+-        Predicate<String> filter = new FilterBuilder().include(".*\\.xml");
++        Predicate<String> filter = new FilterBuilder().include(".*\\.xml").exclude(".*testModel-reflections\\.xml");
+         Reflections reflections = new Reflections(new ConfigurationBuilder()
+                 .filterInputsBy(filter)
+                 .setScanners(new ResourcesScanner())
+@@ -224,8 +224,7 @@ public void testResourcesScanner() {
+         assertThat(resolved, are("META-INF/reflections/resource1-reflections.xml"));
+ 
+         Set<String> resources = reflections.getStore().get(ResourcesScanner.class.getSimpleName()).keySet();
+-        assertThat(resources, are("resource1-reflections.xml", "resource2-reflections.xml",
+-                "testModel-reflections.xml"));
++        assertThat(resources, are("resource1-reflections.xml", "resource2-reflections.xml"));
+     }
+ 
+     @Test
+
+File: src/test/java/org/reflections/ReflectionsTest.java
+Patch:
+@@ -214,7 +214,7 @@ public void testConstructorParameter() throws NoSuchMethodException {
+ 
+     @Test
+     public void testResourcesScanner() {
+-        Predicate<String> filter = new FilterBuilder().include(".*\\.xml");
++        Predicate<String> filter = new FilterBuilder().include(".*\\.xml").exclude(".*testModel-reflections\\.xml");
+         Reflections reflections = new Reflections(new ConfigurationBuilder()
+                 .filterInputsBy(filter)
+                 .setScanners(new ResourcesScanner())
+@@ -224,8 +224,7 @@ public void testResourcesScanner() {
+         assertThat(resolved, are("META-INF/reflections/resource1-reflections.xml"));
+ 
+         Set<String> resources = reflections.getStore().get(ResourcesScanner.class.getSimpleName()).keySet();
+-        assertThat(resources, are("resource1-reflections.xml", "resource2-reflections.xml",
+-                "testModel-reflections.xml"));
++        assertThat(resources, are("resource1-reflections.xml", "resource2-reflections.xml"));
+     }
+ 
+     @Test
+
+File: reflections/src/test/java/org/reflections/ReflectionsTest.java
+Patch:
+@@ -224,9 +224,7 @@ public void testResourcesScanner() {
+         assertThat(resolved, are("META-INF/reflections/resource1-reflections.xml"));
+ 
+         Set<String> resources = reflections.getStore().get(ResourcesScanner.class.getSimpleName()).keySet();
+-        assertThat(resources, are(
+-                "resource1-reflections.xml", "resource2-reflections.xml", "testModel-reflections.xml"
+-        ));
++        assertThat(resources, are("resource1-reflections.xml", "resource2-reflections.xml"));
+     }
+ 
+     @Test
+
+File: reflections/src/main/java/org/reflections/Reflections.java
+Patch:
+@@ -256,7 +256,7 @@ public void scan(URL url) {
+      * and includes files matching the pattern .*-reflections.xml
+      * */
+     public static Reflections collect() {
+-        return collect("META-INF/reflections", new FilterBuilder().include(".*-reflections.xml"));
++        return collect("META-INF/reflections/", new FilterBuilder().include(".*-reflections.xml"));
+     }
+ 
+     /**
+@@ -403,7 +403,7 @@ public Set<Class<?>> getTypesAnnotatedWith(final Annotation annotation, boolean
+         Iterable<String> annotated = store.get(index(TypeAnnotationsScanner.class), annotation.annotationType().getName());
+         Iterable<Class<?>> filter = filter(forNames(annotated, loaders()), withAnnotation(annotation));
+         Iterable<String> classes = getAllAnnotated(names(filter), annotation.annotationType().isAnnotationPresent(Inherited.class), honorInherited);
+-        return Sets.newHashSet(concat(filter, forNames(filter(classes, not(in(Sets.newHashSet(annotated)))))));
++        return Sets.newHashSet(concat(filter, forNames(filter(classes, not(in(Sets.newHashSet(annotated)))), loaders())));
+     }
+ 
+     protected Iterable<String> getAllAnnotated(Iterable<String> annotated, boolean inherited, boolean honorInherited) {
+
+File: reflections/src/main/java/org/reflections/ReflectionUtils.java
+Patch:
+@@ -243,7 +243,8 @@ public boolean apply(@Nullable Member input) {
+                     Class<?>[] parameterTypes = parameterTypes(input);
+                     if (parameterTypes.length == types.length) {
+                         for (int i = 0; i < parameterTypes.length; i++) {
+-                            if (!types[i].isAssignableFrom(parameterTypes[i])) {
++                            if (!parameterTypes[i].isAssignableFrom(types[i]) ||
++                                    (parameterTypes[i] == Object.class && types[i] != Object.class)) {
+                                 return false;
+                             }
+                         }
+
+File: reflections/src/main/java/org/reflections/scanners/TypeElementsScanner.java
+Patch:
+@@ -44,6 +44,8 @@ public void scan(Object cls) {
+     public TypeElementsScanner includeFields(boolean include) { includeFields = include; return this; }
+     public TypeElementsScanner includeMethods() { return includeMethods(true); }
+     public TypeElementsScanner includeMethods(boolean include) { includeMethods = include; return this; }
++    public TypeElementsScanner includeAnnotations() { return includeAnnotations(true); }
++    public TypeElementsScanner includeAnnotations(boolean include) { includeAnnotations = include; return this; }
+     public TypeElementsScanner publicOnly(boolean only) { publicOnly = only; return this; }
+     public TypeElementsScanner publicOnly() { return publicOnly(true); }
+ }
+
+File: reflections/src/main/java/org/reflections/util/Utils.java
+Patch:
+@@ -70,15 +70,15 @@ public static Member getMemberFromDescriptor(String descriptor, ClassLoader... c
+             String[] parameterNames = methodParameters.split(",");
+             List<Class<?>> result = new ArrayList<Class<?>>(parameterNames.length);
+             for (String name : parameterNames) {
+-                result.add(forName(name.trim()));
++                result.add(forName(name.trim(), classLoaders));
+             }
+             parameterTypes = result.toArray(new Class<?>[result.size()]);
+         }
+ 
+         Class<?> aClass = forName(className, classLoaders);
+         try {
+             if (isConstructor(descriptor)) {
+-                return aClass.getConstructor(parameterTypes);
++                return aClass.getDeclaredConstructor(parameterTypes);
+             } else {
+                 return aClass.getDeclaredMethod(methodName, parameterTypes);
+             }
+
+File: reflections/src/test/java/org/reflections/VfsTest.java
+Patch:
+@@ -21,7 +21,6 @@
+ import java.net.MalformedURLException;
+ import java.net.URL;
+ import java.util.Collection;
+-import java.util.Set;
+ import java.util.jar.JarFile;
+ 
+ import static org.junit.Assert.assertFalse;
+@@ -117,7 +116,7 @@ public boolean apply(@Nullable URL input) {
+     }
+ 
+     @Test public void dirWithSpaces() {
+-        Set<URL> urls = ClasspathHelper.forPackage("dir+with spaces");
++        Collection<URL> urls = ClasspathHelper.forPackage("dir+with spaces");
+         assertFalse(urls.isEmpty());
+         for (URL url : urls) {
+             testVfsDir(url);
+
+File: reflections/src/main/java/org/reflections/adapters/MetadataAdapter.java
+Patch:
+@@ -48,4 +48,7 @@ public interface MetadataAdapter<C,F,M> {
+     String getMethodFullKey(C cls, M method);
+ 
+     boolean isPublic(Object o);
++    
++    boolean acceptsInput(String file);
++    
+ }
+
+File: reflections/src/main/java/org/reflections/scanners/AbstractScanner.java
+Patch:
+@@ -21,7 +21,7 @@ public abstract class AbstractScanner implements Scanner {
+ 	private Predicate<String> resultFilter = Predicates.alwaysTrue(); //accept all by default
+ 
+     public boolean acceptsInput(String file) {
+-        return file.endsWith(".class"); //is a class file
++        return getMetadataAdapter().acceptsInput(file);
+     }
+ 
+     public Object scan(Vfs.File file, Object classObject) {
+
+File: reflections/src/main/java/org/reflections/adapters/MetadataAdapter.java
+Patch:
+@@ -48,4 +48,7 @@ public interface MetadataAdapter<C,F,M> {
+     String getMethodFullKey(C cls, M method);
+ 
+     boolean isPublic(Object o);
++    
++    boolean acceptsInput(String file);
++    
+ }
+
+File: reflections/src/main/java/org/reflections/scanners/AbstractScanner.java
+Patch:
+@@ -21,7 +21,7 @@ public abstract class AbstractScanner implements Scanner {
+ 	private Predicate<String> resultFilter = Predicates.alwaysTrue(); //accept all by default
+ 
+     public boolean acceptsInput(String file) {
+-        return file.endsWith(".class"); //is a class file
++        return getMetadataAdapter().acceptsInput(file);
+     }
+ 
+     public Object scan(Vfs.File file, Object classObject) {
+

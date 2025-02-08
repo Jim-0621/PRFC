@@ -1,0 +1,1196 @@
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/MalmoEnvServer.java
+Patch:
+@@ -605,7 +605,7 @@ public void observation(String info) {
+         }
+         lock.lock();
+         try {
+-            if (envState.turnKey != turnKey) {
++            if (envState.turnKey.equals(turnKey)) {
+                 System.out.println("Update TK: " + turnKey);
+             }
+             envState.turnKey = turnKey;
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/TCPInputPoller.java
+Patch:
+@@ -273,7 +273,7 @@ public void run()
+         }
+     }
+ 
+-    protected void commandReceived(String command, String ipOriginator, DataOutputStream dos)
++    public void commandReceived(String command, String ipOriginator, DataOutputStream dos)
+     {
+         synchronized(this)
+         {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/TCPSocketChannel.java
+Patch:
+@@ -22,7 +22,7 @@ public class TCPSocketChannel
+     /**
+      * Create a TCPSocketChannel that is blocking but times out connects and writes.
+      * @param address The address to connect to.
+-     * @param port The port to connect to.
++     * @param port The port to connect to. 0 value means don't open.
+      * @param logname A name to use for logging.
+      */
+     public TCPSocketChannel(String address, int port, String logname) {
+@@ -62,6 +62,8 @@ private void SysLog(Level level, String message)
+     }
+ 
+     private void connectWithTimeout() throws  IOException, ExecutionException, InterruptedException, TimeoutException {
++        if (port == 0)
++            return;
+         InetSocketAddress inetSocketAddress = new InetSocketAddress(address, port);
+         Log(Level.INFO, "Attempting to open SocketChannel with InetSocketAddress: " + inetSocketAddress);
+         this.channel = AsynchronousSocketChannel.open();
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/TCPInputPoller.java
+Patch:
+@@ -33,7 +33,7 @@
+ /** Class which polls for TCP commands in the background, and makes them available via a thread-safe queue.<br>
+  * Used for receiving control commands from the Malmo code. By default a client connection is used to service
+  * multiple request / reply interaction which can lead to connections remaining open. Use constructor with
+- * singleRequestRerply set to false if only one interaction is to be served.
++ * singleRequestReply set to false if only one interaction is to be served.
+  */
+ public class TCPInputPoller extends Thread
+ {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/TCPUtils.java
+Patch:
+@@ -70,7 +70,7 @@ public String getTail(Handler h)
+         }
+     }
+ 
+-    public static final int DEFAULT_SOCKET_TIMEOUT_MS = 60000;
++    public static final int DEFAULT_SOCKET_TIMEOUT_MS = 30000;
+ 
+     private static Logger logger = Logger.getLogger("com.microsoft.Malmo.TCPUtils");
+     private static FileHandler filehandler = null;
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/TCPUtils.java
+Patch:
+@@ -70,7 +70,8 @@ public String getTail(Handler h)
+         }
+     }
+ 
+-    public static final int DEFAULT_SOCKET_TIMEOUT_MS = 10000;
++    public static final int DEFAULT_SOCKET_TIMEOUT_MS = 60000;
++
+     private static Logger logger = Logger.getLogger("com.microsoft.Malmo.TCPUtils");
+     private static FileHandler filehandler = null;
+     private static boolean logging = false;
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/ClientStateMachine.java
+Patch:
+@@ -521,7 +521,7 @@ else if (command.startsWith(findServerPrefix))
+                         if (msc == null)
+                             reply("MALMONOSERVERYET", dos); // Mission might be starting up.
+                         else
+-                            reply("MALMOS" + msc.getAddress() + ":" + msc.getPort(), dos);
++                            reply("MALMOS" + msc.getAddress().trim() + ":" + msc.getPort(), dos);
+                     }
+                     else
+                     {
+@@ -1053,7 +1053,7 @@ protected void execute() throws Exception
+             {
+                 // Multi-agent mission, we should be joining a server.
+                 // (Unless we are already on the correct server.)
+-                String address = currentMissionInit().getMinecraftServerConnection().getAddress();
++                String address = currentMissionInit().getMinecraftServerConnection().getAddress().trim();
+                 int port = currentMissionInit().getMinecraftServerConnection().getPort();
+                 String targetIP = address + ":" + port;
+                 System.out.println("We should be joining " + targetIP);
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/MazeDecoratorImplementation.java
+Patch:
+@@ -495,7 +495,7 @@ private void findSubgoals(Cell[] grid, Cell start, Cell end)
+                     int cellindex = cellx + cellz * width;
+                     if (cellindex < 0 || cellindex >= grid.length || grid[cellindex] == null)
+                         walkable = false;
+-                    if (walkable && gapHeight > optimalPathHeight && !gapBlock.equals(Blocks.AIR.getDefaultState()))
++                    if (walkable && gapHeight > optimalPathHeight && !gapBlock.getBlock().getDefaultState().equals(Blocks.AIR.getDefaultState()))
+                     {
+                         // The "gaps" are in fact walls, so we need to be a bit more conservative with our path, since the
+                         // player has a width of 0.4 cells. We do this in a very unsophisticated, brute-force manor by testing
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/TextureHelper.java
+Patch:
+@@ -297,6 +297,8 @@ public static void glBindTexture(int target, int texture)
+                         {
+                             // Provide a default mapping from entity to colour
+                             String ent = EntityList.getEntityString(currentEntity);
++                            if (ent == null)    // Happens if, for example, currentEntity is of type EntityOtherPlayerMP.
++                                ent = currentEntity.getClass().getName();
+                             col = (ent.hashCode()) % 0xffffff;
+                         }
+                         texturesToColours.put(texture, col);
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/VideoProducerImplementation.java
+Patch:
+@@ -30,6 +30,7 @@
+ import java.nio.FloatBuffer;
+ 
+ import net.minecraft.client.Minecraft;
++import net.minecraft.client.renderer.GlStateManager;
+ import net.minecraft.client.shader.Framebuffer;
+ 
+ import org.lwjgl.BufferUtils;
+@@ -169,6 +170,8 @@ private void getRGBFrame(ByteBuffer buffer)
+         // buffer);
+         glReadPixels(0, 0, width, height, format, GL_UNSIGNED_BYTE, buffer);
+         this.fbo.unbindFramebuffer();
++        GlStateManager.enableDepth();
++        Minecraft.getMinecraft().getFramebuffer().bindFramebuffer(true);
+     }
+ 
+     @Override
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/DepthProducerImplementation.java
+Patch:
+@@ -83,7 +83,6 @@ public void getFrame(MissionInit missionInit, ByteBuffer buffer)
+             float zLinear = 2.0f * zNear * zFar / (zFar + zNear - f * (zFar - zNear));
+             fluffer.put(i, zLinear);
+         }
+-        System.out.println("Range: " + minval + " - " + maxval);
+         this.fbo.unbindFramebuffer();
+     }
+ 
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MalmoMod.java
+Patch:
+@@ -131,7 +131,8 @@ public void preInit(FMLPreInitializationEvent event)
+         network.registerMessage(DiscreteMovementCommandsImplementation.UseActionMessageHandler.class, DiscreteMovementCommandsImplementation.UseActionMessage.class, 8, Side.SERVER);
+         network.registerMessage(DiscreteMovementCommandsImplementation.AttackActionMessageHandler.class, DiscreteMovementCommandsImplementation.AttackActionMessage.class, 9, Side.SERVER);
+         network.registerMessage(ObservationFromFullInventoryImplementation.InventoryRequestMessageHandler.class, ObservationFromFullInventoryImplementation.InventoryRequestMessage.class, 10, Side.SERVER);
+-    }
++        network.registerMessage(InventoryCommandsImplementation.InventoryChangeMessageHandler.class, InventoryCommandsImplementation.InventoryChangeMessage.class, 11, Side.CLIENT);
++        }
+ 
+     @EventHandler
+     public void onMissingMappingsEvent(FMLMissingMappingsEvent event)
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/BlockDrawingHelper.java
+Patch:
+@@ -548,7 +548,7 @@ public void setBlockState(World w, BlockPos pos, XMLBlockState state)
+         if (state.type == BlockType.NOTEBLOCK)
+         {
+             TileEntity te = w.getTileEntity(pos);
+-            if (te != null && te instanceof TileEntityNote)
++            if (te != null && te instanceof TileEntityNote && state.variant != null)
+             {
+                 try
+                 {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/CraftingHelper.java
+Patch:
+@@ -444,6 +444,8 @@ public static void dumpRecipes(String filename) throws IOException
+                     continue;
+                 String s = is.getCount() + "x" + is.getUnlocalizedName() + " = ";
+                 List<ItemStack> ingredients = getIngredients((IRecipe)obj);
++                if (ingredients == null)
++                    continue;
+                 boolean first = true;
+                 for (ItemStack isIngredient : ingredients)
+                 {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/ClientState.java
+Patch:
+@@ -36,7 +36,6 @@ public enum ClientState implements IState
+ 	CLOSING_OLD_SERVER,
+ 	CREATING_NEW_WORLD,
+ 	WAITING_FOR_SERVER_READY,
+-	WAITING_FOR_MINECRAFT_READY,
+ 	RUNNING,
+ 	IDLING,
+ 	MISSION_ENDED,
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/AuthenticationHelper.java
+Patch:
+@@ -34,6 +34,7 @@ public static boolean setPlayerName(Session currentSession, String newPlayerName
+ 
+         // Create new session object:
+         Session newSession = new Session(newPlayerName, currentSession.getPlayerID(), currentSession.getToken(), "mojang"/*currentSession.getSessionType().toString()*/);
++        newSession.setProperties(new com.mojang.authlib.properties.PropertyMap());  // Prevents calls to the session service to get profile properties
+         return setSession(newSession);
+     }
+ 
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/ClientStateMachine.java
+Patch:
+@@ -1906,7 +1906,7 @@ else if (messageType == MalmoMessageType.SERVER_GO)
+                         ((EntityLivingBase)entity).renderYawOffset = entity.rotationYaw;
+                         ((EntityLivingBase)entity).prevRenderYawOffset = entity.rotationYaw;
+                     }
+-                    if (entity instanceof EntityPlayer)
++                    if (entity instanceof EntityPlayerSP)
+                     {
+                         // Although the following call takes place on the server, and should have taken effect already,
+                         // there is some discontinuity which is causing the effects to get lost, so we call it here too:
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/CommandForKey.java
+Patch:
+@@ -249,6 +249,7 @@ public void install(MissionInit missionInit)
+                 {
+                     this.originalBinding = settings.keyBindings[i];
+                     this.keyHook = create(this.originalBinding);
++                    createdHook = true;
+                 }
+                 settings.keyBindings[i] = this.keyHook;
+             }
+@@ -263,6 +264,7 @@ public void install(MissionInit missionInit)
+                 {
+                     this.originalBinding = settings.keyBindsHotbar[i];
+                     this.keyHook = create(this.originalBinding);
++                    createdHook = true;
+                 }
+                 settings.keyBindsHotbar[i] = this.keyHook;
+             }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/ScreenHelper.java
+Patch:
+@@ -206,6 +206,8 @@ public void onRenderTick(TickEvent.RenderTickEvent ev)
+         purgeExpiredFragments(null);
+         if (Minecraft.getMinecraft().currentScreen != null && !(Minecraft.getMinecraft().currentScreen instanceof GuiMainMenu))
+             return;
++        if (Minecraft.getMinecraft().gameSettings.showDebugInfo)    // Don't obscure MC debug info with our debug info
++            return;
+ 
+         ScaledResolution res = new ScaledResolution(Minecraft.getMinecraft());
+         int width = res.getScaledWidth();
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/ObservationFromNearbyEntitiesImplementation.java
+Patch:
+@@ -24,7 +24,9 @@
+ import net.minecraft.client.Minecraft;
+ import net.minecraft.client.entity.EntityPlayerSP;
+ import net.minecraft.entity.Entity;
++import net.minecraft.entity.EntityList;
+ import net.minecraft.entity.item.EntityItem;
++import net.minecraft.entity.player.EntityPlayer;
+ import net.minecraft.entity.EntityLivingBase;
+ import net.minecraft.item.ItemStack;
+ 
+@@ -118,7 +120,7 @@ public void writeObservationsToJSON(JsonObject json, MissionInit missionInit)
+                     jsent.addProperty("y", e.posY);
+                     jsent.addProperty("z", e.posZ);
+                     jsent.addProperty("pitch", e.rotationPitch);
+-                    String name = e.getName();
++                    String name = MinecraftTypeHelper.getUnlocalisedEntityName(e);
+                     if (e instanceof EntityItem)
+                     {
+                         ItemStack is = ((EntityItem)e).getEntityItem();
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/ObservationFromRayImplementation.java
+Patch:
+@@ -130,7 +130,7 @@ else if (mop.typeOfHit == RayTraceResult.Type.ENTITY)
+                 jsonMop.addProperty("z", entity.posZ);
+                 jsonMop.addProperty("yaw",  entity.rotationYaw);
+                 jsonMop.addProperty("pitch",  entity.rotationPitch);
+-                String name = entity.getName();
++                String name = MinecraftTypeHelper.getUnlocalisedEntityName(entity);
+                 String hitType = "entity";
+                 if (entity instanceof EntityItem)
+                 {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/KeyManager.java
+Patch:
+@@ -23,6 +23,7 @@
+ 
+ import net.minecraft.client.settings.GameSettings;
+ import net.minecraft.client.settings.KeyBinding;
++import net.minecraftforge.common.MinecraftForge;
+ import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
+ import net.minecraftforge.fml.common.gameevent.TickEvent;
+ import net.minecraftforge.fml.common.gameevent.TickEvent.Phase;
+@@ -46,6 +47,7 @@ public KeyManager(GameSettings settings, ArrayList<InternalKey> additionalKeys)
+         if (additionalKeys != null)
+         {
+             fixAdditionalKeyBindings(settings);
++            MinecraftForge.EVENT_BUS.register(this);
+         }
+     }
+ 
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/TCPInputPoller.java
+Patch:
+@@ -197,7 +197,7 @@ public void run()
+             if (this.requestedPortNumber == 0 && this.portRangeMax != -1 && this.portRangeMin != -1)
+                 this.serverSocket = TCPSocket.getSocketInRange(this.portRangeMin, this.portRangeMax, this.choosePortRandomly);
+             else	// Attempt to use the requested port - if it's 0, the system will allocate one dynamically.
+-                this.serverSocket = new ServerSocket(this.requestedPortNumber, 5);	// Use the specified port number
++                this.serverSocket = new ServerSocket(this.requestedPortNumber);	// Use the specified port number
+         }
+         catch (Exception e)
+         {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/TCPSocket.java
+Patch:
+@@ -187,7 +187,7 @@ public static ServerSocket getSocketInRange(int minPort, int maxPort, boolean ra
+             try
+             {
+                 TCPUtils.Log(Level.INFO, "    - trying " + port + "...");
+-                s = new ServerSocket(port, 5);
++                s = new ServerSocket(port);
+                 TCPUtils.Log(Level.INFO, "Succeeded!");
+                 return s; // Created okay, so this port is available.
+             }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/TCPUtils.java
+Patch:
+@@ -73,7 +73,7 @@ private static String getIndented(String message)
+ 
+     public static void update(Configuration config)
+     {
+-        setLogging(config.getBoolean("generateSocketLogs", MalmoMod.DIAGNOSTIC_CONFIGS, false, "Log all socket activity to aid troubleshooting."));
++        setLogging(config.getBoolean("generateSocketLogs", MalmoMod.DIAGNOSTIC_CONFIGS, true, "Log all socket activity to aid troubleshooting."));
+     }
+ 
+     private static void indent()
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/RewardForCatchingMobImplementation.java
+Patch:
+@@ -97,7 +97,7 @@ public void getReward(MissionInit missionInit, MultidimensionalReward reward)
+                 String mobName = et.value();
+                 for (Entity e : trappedEntities)
+                 {
+-                    if (e.getName() == mobName)
++                    if (e.getName().equals(mobName))
+                     {
+                         // Potential match... check other options.
+                         if (!mob.isGlobal())
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/ClientStateMachine.java
+Patch:
+@@ -523,7 +523,7 @@ else if (missionInitResult.wasMissionInit && missionInitResult.missionInit != nu
+                         String ourVersion = Loader.instance().activeModContainer().getVersion();
+                         if (platformVersion == null || !platformVersion.equals(ourVersion))
+                         {
+-                            reply("MALMOERRORVERSIONMISMATCH (Got " + platformVersion + ", expected " + ourVersion + ")", dos);
++                            reply("MALMOERRORVERSIONMISMATCH (Got " + platformVersion + ", expected " + ourVersion + " - check your path for old versions of MalmoPython/MalmoJava/Malmo.lib etc)", dos);
+                         }
+                         else
+                         {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Server/ServerStateMachine.java
+Patch:
+@@ -861,7 +861,7 @@ protected void onError(Map<String, String> errorData)
+             // Do some tidying:
+             resetPlayerGameTypes();
+             // And tell all the clients to abort:
+-            MalmoMod.safeSendToAll(MalmoMessageType.SERVER_ABORT);
++            MalmoMod.safeSendToAll(MalmoMessageType.SERVER_ABORT, errorData);
+             // And abort ourselves:
+             episodeHasCompleted(ServerState.ERROR);
+         }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/ClientStateMachine.java
+Patch:
+@@ -447,7 +447,7 @@ && areMissionsEqual(currentMissionInit().getMission(), missionInit.getMission())
+                     }
+                     else if (missionInit.getMinecraftServerConnection() != null && missionInit.getClientRole() != 0)
+                     {
+-                        // We have server details filled in - this is a equest for US to run the mission.
++                        // We have server details filled in - this is a request for US to run the mission.
+                         IState currentState = getStableState();
+                         if (currentState != null && currentState.equals(ClientState.DORMANT))
+                         {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/RewardForMissionEndImplementation.java
+Patch:
+@@ -78,7 +78,7 @@ private float parseQuitCode(String qc) {
+                     if (merc.getDescription().equalsIgnoreCase(s))
+                     {
+                         float this_reward = merc.getReward().floatValue();
+-                        float adjusted_reward = adjustAndDistributeReward(this_reward, this.params.getDimension(), merc.getDescription());
++                        float adjusted_reward = adjustAndDistributeReward(this_reward, this.params.getDimension(), merc.getDistribution());
+                         reward += adjusted_reward;
+                     }
+                 }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/CommandForAttackAndUseImplementation.java
+Patch:
+@@ -28,4 +28,7 @@ public CommandForAttackAndUseImplementation()
+         addCommandHandler(new CommandForKey("key.attack"));
+         addCommandHandler(new CommandForKey("key.use"));
+     }
++
++    @Override
++    public boolean isFixed() { return true; }
+ }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/CommandForHotBarKeysImplementation.java
+Patch:
+@@ -29,4 +29,7 @@ public CommandForHotBarKeysImplementation()
+             addCommandHandler(new CommandForKey("key.hotbar." + i));
+         }        
+     }
++
++    @Override
++    public boolean isFixed() { return true; }
+ }
+\ No newline at end of file
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/ContinuousMovementCommandsImplementation.java
+Patch:
+@@ -45,4 +45,7 @@ public boolean parseParameters(Object params)
+         setUpAllowAndDenyLists(cmparams.getModifierList());
+         return true;
+     }
++
++    @Override
++    public boolean isFixed() { return true; }
+ }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/InventoryCommandsImplementation.java
+Patch:
+@@ -237,4 +237,7 @@ private boolean getParameters(String parameter, List<Integer> parsedParams)
+         parsedParams.add(rhs);
+         return true;
+     }
++
++    @Override
++    public boolean isFixed() { return true; }
+ }
+\ No newline at end of file
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/RewardForStructureCopyingImplementation.java
+Patch:
+@@ -78,8 +78,8 @@ public boolean parseParameters(Object params)
+         DrawBlockBasedObjectType tickBlock = rscparams.getBlockTypeOnCorrectPlacement();
+         DrawBlockBasedObjectType crossBlock = rscparams.getBlockTypeOnIncorrectPlacement();
+ 
+-        this.blockTypeOnCorrectPlacement = new XMLBlockState(tickBlock.getType(), tickBlock.getColour(), tickBlock.getFace(), tickBlock.getVariant());
+-        this.blockTypeOnIncorrectPlacement = new XMLBlockState(crossBlock.getType(), crossBlock.getColour(), crossBlock.getFace(), crossBlock.getVariant());
++        this.blockTypeOnCorrectPlacement = (tickBlock != null) ? new XMLBlockState(tickBlock.getType(), tickBlock.getColour(), tickBlock.getFace(), tickBlock.getVariant()) : null;
++        this.blockTypeOnIncorrectPlacement = (crossBlock != null) ? new XMLBlockState(crossBlock.getType(), crossBlock.getColour(), crossBlock.getFace(), crossBlock.getVariant()) : null;
+ 
+         this.dimension = rscparams.getDimension();
+         return true;
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/JSONWorldDataHelper.java
+Patch:
+@@ -162,7 +162,7 @@ public static void buildGridData(JsonObject json, GridDimensions environmentDime
+             return;
+ 
+         JsonArray arr = new JsonArray();
+-        BlockPos pos = player.getPosition();
++        BlockPos pos = new BlockPos(player.posX, player.posY, player.posZ);
+         for (int y = environmentDimensions.yMin; y <= environmentDimensions.yMax; y++)
+         {
+             for (int z = environmentDimensions.zMin; z <= environmentDimensions.zMax; z++)
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MalmoMod.java
+Patch:
+@@ -176,7 +176,7 @@ public enum MalmoMessageType
+         SERVER_TEXT,
+         SERVER_ABORT,
+         SERVER_COLLECTITEM,
+-        SERVER_PLACEBLOCK,
++        SERVER_DISCARDITEM,
+         SERVER_SOMEOTHERMESSAGE,
+         CLIENT_AGENTREADY,			// Client response to server's ready request
+         CLIENT_AGENTRUNNING,		// Client has just started running
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/MinecraftTypeHelper.java
+Patch:
+@@ -313,7 +313,7 @@ public static Variation attemptToGetAsVariant(String part)
+      * @param state the IBlockState to be examined
+      * @return A DrawBlock object
+      */
+-    public static DrawBlock getDrawBlockFromBlockState(IBlockState state, Map<String,String> extraProperties)
++    public static DrawBlock getDrawBlockFromBlockState(IBlockState state, List<IProperty> extraProperties)
+     {
+         if (state == null)
+             return null;
+@@ -360,7 +360,7 @@ public static DrawBlock getDrawBlockFromBlockState(IBlockState state, Map<String
+             if (!matched)
+             {
+                 if (extraProperties != null)
+-                    extraProperties.put(prop.getName(), propVal);
++                    extraProperties.add(prop);
+             }
+         }
+         if (col != null)
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MalmoMod.java
+Patch:
+@@ -176,7 +176,7 @@ public enum MalmoMessageType
+         SERVER_TEXT,
+         SERVER_ABORT,
+         SERVER_COLLECTITEM,
+-        SERVER_PLACEBLOCK,
++        SERVER_DISCARDITEM,
+         SERVER_SOMEOTHERMESSAGE,
+         CLIENT_AGENTREADY,			// Client response to server's ready request
+         CLIENT_AGENTRUNNING,		// Client has just started running
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/FileWorldGeneratorImplementation.java
+Patch:
+@@ -82,7 +82,7 @@ public boolean createWorld(MissionInit missionInit)
+         net.minecraftforge.fml.client.FMLClientHandler.instance().tryLoadExistingWorld(null, mapCopy.getName(), mapSource.getName());
+         IntegratedServer server = Minecraft.getMinecraft().getIntegratedServer();
+         String worldName = (server != null) ? server.getWorldName() : null;
+-        if (worldName == null || !worldName.equals(mapCopy.getName()))
++        if (worldName == null || !worldName.equals(mapSource.getName()))
+         {
+             this.errorDetails = "Minecraft could not load " + this.mapFilename + " - is it a valid saved world?";
+             return false;
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/BlockDrawingHelper.java
+Patch:
+@@ -86,6 +86,7 @@ public XMLBlockState(IBlockState state)
+ 
+         public XMLBlockState(BlockType type, Colour colour, Facing face, Variation variant)
+         {
++            this.type = type;
+             IBlockState blockType = MinecraftTypeHelper.ParseBlockType(type.value());
+             if (blockType != null)
+             {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MalmoMod.java
+Patch:
+@@ -176,6 +176,7 @@ public enum MalmoMessageType
+         SERVER_TEXT,
+         SERVER_ABORT,
+         SERVER_COLLECTITEM,
++        SERVER_PLACEBLOCK,
+         SERVER_SOMEOTHERMESSAGE,
+         CLIENT_AGENTREADY,			// Client response to server's ready request
+         CLIENT_AGENTRUNNING,		// Client has just started running
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/RewardForCollectingItemImplementation.java
+Patch:
+@@ -88,6 +88,7 @@ public void onGainItem(GainItemEvent event)
+     public void onPickupItem(EntityItemPickupEvent event)
+     {
+         if (event.item != null && event.entityPlayer instanceof EntityPlayerMP ) {
++            // This event is received on the server side, so we need to pass it to the client.
+             ByteBuf buf = Unpooled.buffer();
+             ByteBufUtils.writeItemStack(buf, event.item.getEntityItem());
+             MalmoMod.MalmoMessage msg = new MalmoMod.MalmoMessage(
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MalmoMod.java
+Patch:
+@@ -175,9 +175,10 @@ public enum MalmoMessageType
+         SERVER_OBSERVATIONSREADY,
+         SERVER_TEXT,
+         SERVER_ABORT,
++        SERVER_COLLECTITEM,
+         SERVER_SOMEOTHERMESSAGE,
+         CLIENT_AGENTREADY,			// Client response to server's ready request
+-        CLIENT_AGENTRUNNING,				// Client has just started running
++        CLIENT_AGENTRUNNING,		// Client has just started running
+         CLIENT_AGENTSTOPPED,		// Client response to server's stop request
+         CLIENT_AGENTFINISHEDMISSION,// Individual agent has finished a mission
+         CLIENT_BAILED,				// Client has hit an error and been forced to enter error state
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/DefaultWorldGeneratorImplementation.java
+Patch:
+@@ -77,7 +77,7 @@ public boolean createWorld(MissionInit missionInit)
+         worldsettings.enableCommands();
+         // Create a filename for this map - we use the time stamp to make sure it is different from other worlds, otherwise no new world
+         // will be created, it will simply load the old one.
+-        return MapFileHelper.createAndLaunchWorld(worldsettings, this.dwparams.isDestroyAfterMission());
++        return MapFileHelper.createAndLaunchWorld(worldsettings, this.dwparams.isDestroyAfterUse());
+     }
+ 
+     @Override
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/FlatWorldGeneratorImplementation.java
+Patch:
+@@ -56,7 +56,7 @@ public boolean createWorld(MissionInit missionInit)
+         worldsettings.enableCommands(); // Enables cheat commands.
+         // Create a filename for this map - we use the time stamp to make sure it is different from other worlds, otherwise no new world
+         // will be created, it will simply load the old one.
+-        return MapFileHelper.createAndLaunchWorld(worldsettings, this.fwparams.isDestroyAfterMission());
++        return MapFileHelper.createAndLaunchWorld(worldsettings, this.fwparams.isDestroyAfterUse());
+     }
+ 
+     @Override
+
+File: Malmo/test/JavaTests/test_ALE_built.java
+Patch:
+@@ -17,6 +17,8 @@
+ //  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ // --------------------------------------------------------------------------------------------------
+ 
++import com.microsoft.msr.malmo.*;
++
+ public class test_ALE_built
+ {
+     static 
+
+File: Malmo/test/JavaTests/test_agent_host.java
+Patch:
+@@ -17,6 +17,8 @@
+ //  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ // --------------------------------------------------------------------------------------------------
+ 
++import com.microsoft.msr.malmo.*;
++
+ public class test_agent_host
+ {
+     static 
+
+File: Malmo/test/JavaTests/test_argument_parser.java
+Patch:
+@@ -17,6 +17,8 @@
+ //  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ // --------------------------------------------------------------------------------------------------
+ 
++import com.microsoft.msr.malmo.*;
++
+ public class test_argument_parser
+ {
+     static 
+
+File: Malmo/test/JavaTests/test_mission.java
+Patch:
+@@ -17,6 +17,8 @@
+ //  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ // --------------------------------------------------------------------------------------------------
+ 
++import com.microsoft.msr.malmo.*;
++
+ public class test_mission
+ {
+     static 
+
+File: Malmo/test/JavaTests/test_parameter_set.java
+Patch:
+@@ -17,6 +17,8 @@
+ //  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ // --------------------------------------------------------------------------------------------------
+ 
++import com.microsoft.msr.malmo.*;
++
+ public class test_parameter_set
+ {
+     static 
+
+File: Malmo/test/JavaTests/test_wrapping.java
+Patch:
+@@ -17,6 +17,8 @@
+ //  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ // --------------------------------------------------------------------------------------------------
+ 
++import com.microsoft.msr.malmo.*;
++
+ public class test_wrapping 
+ {
+     static 
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/MinecraftTypeHelper.java
+Patch:
+@@ -38,7 +38,6 @@
+ import net.minecraft.util.EnumFacing;
+ import net.minecraft.util.ResourceLocation;
+ 
+-import com.microsoft.Malmo.Schemas.BlockSpec;
+ import com.microsoft.Malmo.Schemas.BlockType;
+ import com.microsoft.Malmo.Schemas.Colour;
+ import com.microsoft.Malmo.Schemas.DrawBlock;
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/FileWorldGeneratorImplementation.java
+Patch:
+@@ -22,12 +22,9 @@
+ import java.io.File;
+ 
+ import net.minecraft.client.Minecraft;
+-import net.minecraft.nbt.NBTTagCompound;
+ import net.minecraft.server.MinecraftServer;
+ import net.minecraft.server.integrated.IntegratedServer;
+ import net.minecraft.world.World;
+-import net.minecraft.world.WorldSettings;
+-import net.minecraft.world.WorldSettings.GameType;
+ 
+ import com.microsoft.Malmo.MissionHandlerInterfaces.IWorldGenerator;
+ import com.microsoft.Malmo.Schemas.FileWorldGenerator;
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/AgentQuitFromCollectingItemImplementation.java
+Patch:
+@@ -99,6 +99,7 @@ private void checkForMatch(ItemStack is)
+                 if (matcher.matches(is))
+                 {
+                     this.quitCode = matcher.description();
++                    this.wantToQuit = true;
+                 }
+             }
+         }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/AgentQuitFromCollectingItemImplementation.java
+Patch:
+@@ -45,7 +45,7 @@ public boolean parseParameters(Object params)
+         
+         this.params = (AgentQuitFromCollectingItem)params;
+         this.matchers = new ArrayList<ItemQuitMatcher>();
+-        for (BlockOrItemSpecWithDescription bs : this.params.getBlock())
++        for (BlockOrItemSpecWithDescription bs : this.params.getItem())
+             this.matchers.add(new ItemQuitMatcher(bs));
+         return true;
+     }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/MinecraftTypeHelper.java
+Patch:
+@@ -385,7 +385,7 @@ public static ItemStack getItemStackFromDrawItem(DrawItem i)
+                     String fullName = is.getUnlocalizedName();
+                     if (is.getItem() instanceof ItemMonsterPlacer)
+                     {
+-                        fullName += "." + ((ItemMonsterPlacer)is.getItem()).getEntityName(is);  // Special handling for eggs
++                        fullName += "." + ItemMonsterPlacer.getEntityName(is);  // Special handling for eggs
+                     }
+                     String[] parts = fullName.split("\\.");
+                     for (int p = 0; p < parts.length; p++)
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Server/ServerStateMachine.java
+Patch:
+@@ -822,7 +822,7 @@ private void initialiseInventory(EntityPlayerMP player, Inventory inventory)
+                     di.setColour(obj.getColour());
+                     di.setVariant(obj.getVariant());
+                     di.setType(obj.getType());
+-                    ItemStack item = BlockDrawingHelper.getItem(di);
++                    ItemStack item = MinecraftTypeHelper.getItemStackFromDrawItem(di);
+                     if( item != null )
+                     {
+                         item.stackSize = obj.getQuantity();
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/MazeDecoratorImplementation.java
+Patch:
+@@ -160,8 +160,8 @@ private void initBlocksAndHeights()
+                 this.waypointBlock = getBlock(this.mazeParams.getWaypoints().getWaypointBlock(), this.blockrand);
+             else
+             {
+-                List<ItemType> items = this.mazeParams.getWaypoints().getWaypointItem();
+-                String item = items.get(this.blockrand.nextInt(items.size())).value();
++                List<String> items = this.mazeParams.getWaypoints().getWaypointItem();
++                String item = items.get(this.blockrand.nextInt(items.size()));
+                 this.waypointItem = MinecraftTypeHelper.ParseItemType(item);
+             }
+         }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/RewardForItemBase.java
+Patch:
+@@ -25,16 +25,15 @@
+ import net.minecraft.item.ItemStack;
+ 
+ import com.microsoft.Malmo.Schemas.ItemSpec;
+-import com.microsoft.Malmo.Schemas.ItemType;
+ import com.microsoft.Malmo.Utils.MinecraftTypeHelper;
+ 
+ public abstract class RewardForItemBase extends HandlerBase {
+     protected MultidimensionalReward accumulatedRewards = new MultidimensionalReward();
+     protected HashMap<String, Float> rewardMap = new HashMap<String, Float>();
+ 
+     protected void addItemSpecToRewardStructure(ItemSpec is) {
+-        for (ItemType it : is.getType()) {
+-            Item item = MinecraftTypeHelper.ParseItemType(it.value());
++        for (String it : is.getType()) {
++            Item item = MinecraftTypeHelper.ParseItemType(it);
+             if (item != null) {
+                 String itemName = item.getUnlocalizedName();
+                 if (!this.rewardMap.containsKey(itemName))
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/BlockDrawingHelper.java
+Patch:
+@@ -298,9 +298,9 @@ else if(prop.getValueClass() == EnumOrientation.class)
+      */
+     private static void DrawPrimitive( DrawItem i, World w ) throws Exception
+     {
+-        Item item = MinecraftTypeHelper.ParseItemType(i.getType().value());
++        Item item = MinecraftTypeHelper.ParseItemType(i.getType());
+         if (item == null)
+-            throw new Exception("Unrecognised item type: "+i.getType().value());
++            throw new Exception("Unrecognised item type: "+i.getType());
+         BlockPos pos = new BlockPos( i.getX(), i.getY(), i.getZ() );
+         placeItem(item, pos, w, true);
+     }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/ClientStateMachine.java
+Patch:
+@@ -1320,7 +1320,7 @@ protected void onMissionStarted()
+             ModSettings modsettings = currentMissionInit().getMission().getModSettings();
+             if (modsettings != null && modsettings.getMsPerTick() != null)
+                 TimeHelper.setMinecraftClientClockSpeed(1000 / modsettings.getMsPerTick());
+-            if (modsettings != null && modsettings.isPrioritiseOffscreenRendering())
++            if (modsettings != null && modsettings.isPrioritiseOffscreenRendering() == Boolean.TRUE)
+                 TimeHelper.displayGranularityMs = 1000;
+         }
+ 
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/CommandForWheeledRobotNavigationImplementation.java
+Patch:
+@@ -175,7 +175,7 @@ public void updateYawAndPitch()
+ 
+     	// And update them:
+         mYaw += deltaYaw;
+-        mCameraPitch -= deltaPitch;
++        mCameraPitch += deltaPitch;
+         mCameraPitch = (mCameraPitch < -90) ? -90 : (mCameraPitch > 90 ? 90 : mCameraPitch);    // Clamp to [-90, 90]
+     }
+     
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/DiscreteMovementCommandsImplementation.java
+Patch:
+@@ -106,7 +106,7 @@ else if (verb.equalsIgnoreCase(DiscreteMovementCommand.TURN.value()))
+                 if (parameter != null && parameter.length() != 0)
+                 {
+                     float yawDelta = Float.valueOf(parameter);
+-                    this.direction += (yawDelta > 0) ? 1 : -1;
++                    this.direction += (yawDelta > 0) ? 1 : ((yawDelta < 0) ? -1 : 0);
+                     this.direction = (this.direction + 4) % 4;
+                     player.rotationYaw = this.direction * 90;
+                     player.onUpdate();
+@@ -117,7 +117,7 @@ else if (verb.equalsIgnoreCase(DiscreteMovementCommand.LOOK.value()))
+             	if (parameter != null && parameter.length() != 0)
+             	{
+             		float pitchDelta = Float.valueOf(parameter);
+-            		player.rotationPitch += (pitchDelta < 0) ? -45 : 45;
++                    player.rotationPitch += (pitchDelta < 0) ? -45 : ((pitchDelta > 0) ? 45 : 0);
+                     player.onUpdate();
+             	}
+             }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Server/ServerStateMachine.java
+Patch:
+@@ -744,7 +744,7 @@ private void onCastAssembled()
+             MissionBehaviour handlers = getHandlers();
+             AgentHandlers extraHandlers = new AgentHandlers();
+             Map<String, String> data = new HashMap<String, String>();
+-            if (handlers.worldDecorator.getExtraAgentHandlers(extraHandlers))
++            if (handlers.worldDecorator != null && handlers.worldDecorator.getExtraAgentHandlers(extraHandlers))
+             {
+                 String xml;
+                 try
+
+File: Malmo/test/JavaTests/test_mission.java
+Patch:
+@@ -80,7 +80,6 @@ public static void main(String argv[])
+             +"</ServerHandlers></ServerSection>"
+             +"<AgentSection><Name>Jason Bourne</Name><AgentStart><Placement x=\"-204\" y=\"81\" z=\"217\"/></AgentStart><AgentHandlers>"
+             +"<VideoProducer want_depth=\"true\"><Width>320</Width><Height>240</Height></VideoProducer>"
+-            +"<ObservationFromMazeOptimalPath />"
+             +"<RewardForReachingPosition><Marker reward=\"100\" tolerance=\"1.1\" x=\"-104\" y=\"81\" z=\"217\"/></RewardForReachingPosition>"
+             +"<ContinuousMovementCommands />"
+             +"<AgentQuitFromReachingPosition><Marker x=\"-104\" y=\"81\" z=\"217\"/></AgentQuitFromReachingPosition>"
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/MazeDecoratorImplementation.java
+Patch:
+@@ -626,7 +626,7 @@ private void recordStartAndEndPoints(Cell start, Cell end, MissionInit missionIn
+             this.quitter = new AgentQuitFromReachingPosition();
+             PointWithToleranceAndDescription endpoint = new PointWithToleranceAndDescription();
+             endpoint.setDescription(desc);
+-            endpoint.setTolerance(new BigDecimal(1.0));
++            endpoint.setTolerance(new BigDecimal(0.5 + scale/2.0));
+ 
+             double endX = scale * (end.x + 0.5) + this.xOrg;
+             double endY = 1 + this.optimalPathHeight + this.yOrg;   // Assuming we approach on the optimal path, need the height of the goal to be reachable.
+@@ -637,7 +637,7 @@ private void recordStartAndEndPoints(Cell start, Cell end, MissionInit missionIn
+             this.quitter.getMarker().add(endpoint);
+         }
+     }
+-    
++
+     @Override
+     public void buildOnWorld(MissionInit missionInit)
+     {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/RewardForItemBase.java
+Patch:
+@@ -48,7 +48,8 @@ protected void addItemSpecToRewardStructure(ItemSpec is) {
+     protected void accumulateReward(int dimension, ItemStack stack) {
+         String item = stack.getItem().getUnlocalizedName();
+         Float f = this.rewardMap.get(item);
+-        if (f != null)
++        if (f != null) {
+             this.accumulatedRewards.add(dimension, f * stack.stackSize);
++        }
+     }
+ }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Utils/AuthenticationHelper.java
+Patch:
+@@ -123,7 +123,7 @@ public static void update(Configuration config)
+         }
+ 
+         String username = getUserForPort(AddressHelper.getMissionControlPort(), portToUserMappings);
+-        String password = getPasswordForUsername(AuthenticationHelper.username, usernameToPasswordMappings);
++        String password = getPasswordForUsername(username, usernameToPasswordMappings);
+         // If we can't find login details for this port, don't try to log in.
+         // This means the user can login via the commandline/launcher, without us overriding that.
+         if (!username.equals(UNAUTH))
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MalmoMod.java
+Patch:
+@@ -164,6 +164,7 @@ public enum MalmoMessageType
+     {
+         SERVER_NULLMESSASGE,
+         SERVER_ALLPLAYERSJOINED,
++        SERVER_GO,                  // All clients are running, server is running - GO!
+         SERVER_STOPAGENTS,			// Server request for all agents to stop what they are doing (mission is over)
+         SERVER_MISSIONOVER,			// Server informing that all agents have stopped, and the mission is now over.
+         SERVER_OBSERVATIONSREADY,
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Server/ServerStateMachine.java
+Patch:
+@@ -803,6 +803,9 @@ protected void execute()
+                 
+             if (getHandlers().quitProducer != null)
+                 getHandlers().quitProducer.prepare(currentMissionInit());
++            
++            // Fire the starting pistol:
++            MalmoMod.safeSendToAll(MalmoMessageType.SERVER_GO);
+         }
+ 
+         @Override
+
+File: Malmo/samples/Java_examples/JavaExamples_run_mission.java
+Patch:
+@@ -57,7 +57,7 @@ public static void main(String argv[])
+         MissionSpec my_mission = new MissionSpec();
+         my_mission.timeLimitInSeconds(10);
+         my_mission.requestVideo( 320, 240 );
+-        my_mission.rewardForReachingPosition(19,0,19,100.0f,1.1f);
++        my_mission.rewardForReachingPosition(19.5f,0.0f,19.5f,100.0f,1.1f);
+ 
+         MissionRecordSpec my_mission_record = new MissionRecordSpec("./saved_data.tgz");
+         my_mission_record.recordCommands();
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/MazeDecoratorImplementation.java
+Patch:
+@@ -611,9 +611,9 @@ private void recordStartAndEndPoints(Cell start, Cell end, MissionInit missionIn
+ 
+         // Position the start point:
+         PosAndDirection p2 = new PosAndDirection();
+-        p2.setX(new BigDecimal(scale * (start.x + 0.5) + this.xOrg - 0.5));	// TODO - server adds the 0.5 for us to centre the player within the block.
++        p2.setX(new BigDecimal(scale * (start.x + 0.5) + this.xOrg));
+         p2.setY(new BigDecimal(1 + this.yOrg + this.startHeight));
+-        p2.setZ(new BigDecimal(scale * (start.z + 0.5) + this.zOrg - 0.5));
++        p2.setZ(new BigDecimal(scale * (start.z + 0.5) + this.zOrg));
+         // TODO - for the moment, force all players to being at the maze start point - but this needs to be optional.
+         for (AgentSection as : missionInit.getMission().getAgentSection())
+         {
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/ClassroomDecoratorImplementation.java
+Patch:
+@@ -198,7 +198,7 @@ public void buildOnWorld(MissionInit missionInit) throws DecoratorException {
+         
+         // set the agent positions
+         PosAndDirection p2 = new PosAndDirection();
+-        p2.setX(new BigDecimal(startRoom.x + this.rand.nextInt(goalRoom.width-2) + 0.5));	// TODO - server adds the 0.5 for us to centre the player within the block.
++        p2.setX(new BigDecimal(startRoom.x + this.rand.nextInt(goalRoom.width-2) + 0.5));
+         p2.setY(new BigDecimal(1 + startRoom.y));
+         p2.setZ(new BigDecimal(startRoom.z + 0.5));
+ 
+
+File: Malmo/samples/Java_examples/JavaExamples_run_mission.java
+Patch:
+@@ -44,7 +44,7 @@ public static void main(String argv[])
+         }
+         catch( Exception e )
+         {
+-            System.out.println( "ERROR: " + e );
++            System.out.println( "ERROR: " + e.getMessage() );
+             System.out.println( agent_host.getUsage() );
+             System.exit(1);
+         }
+@@ -69,7 +69,7 @@ public static void main(String argv[])
+             agent_host.startMission( my_mission, my_mission_record );
+         }
+         catch (Exception e) {
+-            System.out.println( "Error starting mission: " + e );
++            System.out.println( "Error starting mission: " + e.getMessage() );
+             System.exit(1);
+         }
+ 
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/DiscreteMovementCommandsImplementation.java
+Patch:
+@@ -112,8 +112,8 @@ else if (verb.equalsIgnoreCase(DiscreteMovementCommand.LOOK.value()))
+                 double newX = player.posX;
+                 double newZ = player.posZ;
+                 // Are we still in the centre of a square, or did we get shunted?
+-                double desiredX = ((int)(Math.abs(newX)) + 0.5) * (newX >= 0 ? 1 : -1);
+-                double desiredZ = ((int)(Math.abs(newZ)) + 0.5) * (newZ >= 0 ? 1 : -1);
++                double desiredX = Math.floor(newX) + 0.5;
++                double desiredZ = Math.floor(newZ) + 0.5;
+                 double deltaX = desiredX - newX;
+                 double deltaZ = desiredZ - newZ;
+                 if (deltaX * deltaX + deltaZ * deltaZ > 0.001)
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/DiscreteMovementCommandsImplementation.java
+Patch:
+@@ -112,8 +112,8 @@ else if (verb.equalsIgnoreCase(DiscreteMovementCommand.LOOK.value()))
+                 double newX = player.posX;
+                 double newZ = player.posZ;
+                 // Are we still in the centre of a square, or did we get shunted?
+-                double desiredX = (int)newX + 0.5;
+-                double desiredZ = (int)newZ + 0.5;
++                double desiredX = ((int)(Math.abs(newX)) + 0.5) * (newX >= 0 ? 1 : -1);
++                double desiredZ = ((int)(Math.abs(newZ)) + 0.5) * (newZ >= 0 ? 1 : -1);
+                 double deltaX = desiredX - newX;
+                 double deltaZ = desiredZ - newZ;
+                 if (deltaX * deltaX + deltaZ * deltaZ > 0.001)
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/ClientStateMachine.java
+Patch:
+@@ -968,7 +968,7 @@ protected void execute()
+                     if (!killPublicFlag(Minecraft.getMinecraft().getIntegratedServer()))
+                     {
+                         // Can't pause, don't want to risk the hang - so bail.
+-                        episodeHasCompleted(ClientState.ERROR_CANNOT_CREATE_WORLD);
++                        episodeHasCompletedWithErrors(ClientState.ERROR_CANNOT_CREATE_WORLD, "Can not pause the old server since it's open to LAN; no way to safely create new world.");
+                     }
+                 }
+ 
+@@ -1109,7 +1109,7 @@ protected void execute()
+                     if (!serverHandlers.worldGenerator.createWorld(currentMissionInit()))
+                     {
+                         // World has not been created.
+-                        episodeHasCompletedWithErrors(ClientState.ERROR_CANNOT_CREATE_WORLD, "Server world-creation handler failed to create a world.");
++                        episodeHasCompletedWithErrors(ClientState.ERROR_CANNOT_CREATE_WORLD, "Server world-creation handler failed to create a world: " + serverHandlers.worldGenerator.getErrorDetails());
+                     }
+                 }
+             }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlerInterfaces/IWorldGenerator.java
+Patch:
+@@ -20,4 +20,6 @@ public interface IWorldGenerator
+      * @return true if the world should be created, false otherwise.
+      */
+     public boolean shouldCreateWorld(MissionInit missionInit);
++    
++    public String getErrorDetails();
+ }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/ClientStateMachine.java
+Patch:
+@@ -1502,9 +1502,10 @@ protected void execute()
+ 
+             if (this.informServer)
+             {
+-                // Inform the server of what has happened:
++                // Inform the server of what has happened.
+                 HashMap<String, String> map = new HashMap<String, String>();
+-                map.put("username", Minecraft.getMinecraft().thePlayer.getName());
++                if (Minecraft.getMinecraft().thePlayer != null) // Might not be a player yet.
++                    map.put("username", Minecraft.getMinecraft().thePlayer.getName());
+                 map.put("error", ClientStateMachine.this.getErrorDetails());
+                 MalmoMod.network.sendToServer(new MalmoMod.MalmoMessage(MalmoMessageType.CLIENT_BAILED, 0, map));
+             }
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/AbsoluteMovementCommandsImplementation.java
+Patch:
+@@ -40,6 +40,8 @@ public class AbsoluteMovementCommandsImplementation extends CommandBase
+     @Override
+     public boolean parseParameters(Object params)
+     {
++        super.parseParameters(params);
++        
+     	if (params == null || !(params instanceof AbsoluteMovementCommands))
+     		return false;
+ 
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/ContinuousMovementCommandsImplementation.java
+Patch:
+@@ -18,6 +18,8 @@ public ContinuousMovementCommandsImplementation()
+     @Override
+     public boolean parseParameters(Object params)
+     {
++        super.parseParameters(params);
++        
+         if (params == null || !(params instanceof ContinuousMovementCommands))
+             return false;
+ 
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/CommandBase.java
+Patch:
+@@ -4,7 +4,6 @@
+ import java.util.List;
+ 
+ import com.microsoft.Malmo.MissionHandlerInterfaces.ICommandHandler;
+-import com.microsoft.Malmo.Schemas.ChatCommand;
+ import com.microsoft.Malmo.Schemas.CommandListModifier;
+ import com.microsoft.Malmo.Schemas.MissionInit;
+ 
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/ObservationFromGridImplementation.java
+Patch:
+@@ -1,9 +1,10 @@
+ package com.microsoft.Malmo.MissionHandlers;
+ 
++import io.netty.buffer.ByteBuf;
++
+ import java.util.ArrayList;
+ import java.util.List;
+ 
+-import io.netty.buffer.ByteBuf;
+ import net.minecraft.entity.player.EntityPlayerMP;
+ import net.minecraftforge.fml.common.network.ByteBufUtils;
+ import net.minecraftforge.fml.common.network.simpleimpl.IMessage;
+@@ -12,7 +13,6 @@
+ 
+ import com.google.gson.JsonObject;
+ import com.microsoft.Malmo.Schemas.GridDefinition;
+-import com.microsoft.Malmo.Schemas.MissionInit;
+ import com.microsoft.Malmo.Schemas.ObservationFromGrid;
+ import com.microsoft.Malmo.Utils.JSONWorldDataHelper;
+ import com.microsoft.Malmo.Utils.JSONWorldDataHelper.ImmediateEnvironmentDimensions;
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/ObservationFromServer.java
+Patch:
+@@ -112,6 +112,8 @@ public void onMessage(MalmoMessageType messageType, Map<String, String> data)
+ 	    	synchronized (this.latestJsonStats)
+ 	    	{
+ 	    		this.latestJsonStats = data.get("json");
++                if (this.latestJsonStats == null)   // Shouldn't happen, but if it does
++                    this.latestJsonStats = "";      // we don't want to allow a null value.
+ 	    		onReturnedData(data);
+ 			}
+     	}
+
+File: Malmo/samples/Java_examples/JavaExamples_run_mission.java
+Patch:
+@@ -22,6 +22,7 @@ public static void main(String argv[])
+         try
+         {
+             StringVector args = new StringVector();
++            args.add("JavaExamples_run_mission");
+             for( String arg : argv )
+                 args.add( arg );
+             agent_host.parse( args );
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/ObservationFromServer.java
+Patch:
+@@ -112,6 +112,8 @@ public void onMessage(MalmoMessageType messageType, Map<String, String> data)
+ 	    	synchronized (this.latestJsonStats)
+ 	    	{
+ 	    		this.latestJsonStats = data.get("json");
++                if (this.latestJsonStats == null)   // Shouldn't happen, but if it does
++                    this.latestJsonStats = "";      // we don't want to allow a null value.
+ 	    		onReturnedData(data);
+ 			}
+     	}
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/MissionHandlers/ObservationFromServer.java
+Patch:
+@@ -112,6 +112,8 @@ public void onMessage(MalmoMessageType messageType, Map<String, String> data)
+ 	    	synchronized (this.latestJsonStats)
+ 	    	{
+ 	    		this.latestJsonStats = data.get("json");
++                if (this.latestJsonStats == null)   // Shouldn't happen, but if it does
++                    this.latestJsonStats = "";      // we don't want to allow a null value.
+ 	    		onReturnedData(data);
+ 			}
+     	}
+
+File: Minecraft/src/main/java/com/microsoft/Malmo/Client/ClientStateMachine.java
+Patch:
+@@ -1135,6 +1135,7 @@ protected void onMissionStarted()
+ 
+             // Make sure we have mouse control:
+             ClientStateMachine.this.inputController.setInputType(InputType.AI);
++            Minecraft.getMinecraft().inGameHasFocus = true; // Otherwise auto-repeat won't work for mouse clicks.
+         }
+ 
+         protected void onMissionEnded(IState nextState)
+

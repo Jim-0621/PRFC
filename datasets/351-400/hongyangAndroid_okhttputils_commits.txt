@@ -1,0 +1,372 @@
+File: okhttputils/src/main/java/com/zhy/http/okhttp/request/PostFormRequest.java
+Patch:
+@@ -38,7 +38,8 @@ protected RequestBody buildRequestBody()
+         {
+             FormBody.Builder builder = new FormBody.Builder();
+             addParams(builder);
+-            return builder.build();
++            FormBody formBody = builder.build();
++            return formBody;
+         } else
+         {
+             MultipartBody.Builder builder = new MultipartBody.Builder()
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/utils/L.java
+Patch:
+@@ -7,7 +7,7 @@
+  */
+ public class L
+ {
+-    private static boolean debug = true;
++    private static boolean debug = false;
+ 
+     public static void e(String msg)
+     {
+
+File: sample-okhttp/src/main/java/com/zhy/sample_okhttp/MainActivity.java
+Patch:
+@@ -96,7 +96,7 @@ protected void onCreate(Bundle savedInstanceState)
+ 
+     public void getHtml(View view)
+     {
+-        String url = "http://sec.mobile.tiancity.com/server/mobilesecurity/version.xml";
++        String url = "http://www.baidu.com";
+ //        url="http://www.391k.com/api/xapi.ashx/info.json?key=bd_hyrzjjfb4modhj&size=10&page=1";
+         OkHttpUtils
+                 .get()
+
+File: sample-okhttp/src/main/java/com/zhy/sample_okhttp/MyApplication.java
+Patch:
+@@ -6,6 +6,7 @@
+ import com.zhy.http.okhttp.cookie.CookieJarImpl;
+ import com.zhy.http.okhttp.cookie.store.PersistentCookieStore;
+ import com.zhy.http.okhttp.https.HttpsUtils;
++import com.zhy.http.okhttp.log.LoggerInterceptor;
+ 
+ import java.util.concurrent.TimeUnit;
+ 
+@@ -44,8 +45,8 @@ public void onCreate()
+         OkHttpClient okHttpClient = new OkHttpClient.Builder()
+                 .connectTimeout(10000L, TimeUnit.MILLISECONDS)
+                 .readTimeout(10000L, TimeUnit.MILLISECONDS)
+-//                .addInterceptor(new LoggerInterceptor("TAG"))
+-                .cookieJar(cookieJar1)
++                .addInterceptor(new LoggerInterceptor("TAG"))
++//                .cookieJar(cookieJar1)
+                 .sslSocketFactory(HttpsUtils.getSslSocketFactory(null, null, null))
+                 .build();
+         OkHttpUtils.initClient(okHttpClient);
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/cookie/CookieJarImpl.java
+Patch:
+@@ -24,13 +24,13 @@ public CookieJarImpl(CookieStore cookieStore)
+     }
+ 
+     @Override
+-    public void saveFromResponse(HttpUrl url, List<Cookie> cookies)
++    public synchronized void saveFromResponse(HttpUrl url, List<Cookie> cookies)
+     {
+         cookieStore.add(url, cookies);
+     }
+ 
+     @Override
+-    public List<Cookie> loadForRequest(HttpUrl url)
++    public synchronized List<Cookie> loadForRequest(HttpUrl url)
+     {
+         return cookieStore.get(url);
+     }
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/log/LoggerInterceptor.java
+Patch:
+@@ -44,8 +44,6 @@ public Response intercept(Chain chain) throws IOException
+         Request request = chain.request();
+         logForRequest(request);
+         Response response = chain.proceed(request);
+-
+-
+         return logForResponse(response);
+     }
+ 
+
+File: sample-okhttp/src/main/java/com/zhy/sample_okhttp/MainActivity.java
+Patch:
+@@ -58,6 +58,7 @@ public void onAfter()
+         @Override
+         public void onError(Call call, Exception e)
+         {
++            e.printStackTrace();
+             mTv.setText("onError:" + e.getMessage());
+         }
+ 
+@@ -91,9 +92,11 @@ protected void onCreate(Bundle savedInstanceState)
+     public void getHtml(View view)
+     {
+         String url = "http://sec.mobile.tiancity.com/server/mobilesecurity/version.xml";
++//        url="http://www.391k.com/api/xapi.ashx/info.json?key=bd_hyrzjjfb4modhj&size=10&page=1";
+         OkHttpUtils
+                 .get()
+                 .url(url)
++//                .addHeader("Accept-Encoding","")
+                 .build()
+                 .execute(new MyStringCallback());
+ 
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/cookie/SimpleCookieJar.java
+Patch:
+@@ -43,6 +43,7 @@ public synchronized List<Cookie> loadForRequest(HttpUrl url)
+             if (cookie.matches(url))
+             {
+ //                Log.e("===loadForRequest", cookie.name() + " , " + cookie.value());
++//                Log.e("===loadForRequest", cookie.expiresAt() + " . " + System.currentTimeMillis());
+                 result.add(cookie);
+             }
+         }
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/callback/FileCallBack.java
+Patch:
+@@ -23,7 +23,7 @@ public abstract class FileCallBack extends Callback<File>
+      */
+     private String destFileName;
+ 
+-    public abstract void inProgress(float progress);
++    public abstract void inProgress(float progress,long total);
+ 
+     public FileCallBack(String destFileDir, String destFileName)
+     {
+@@ -71,7 +71,7 @@ public File saveFile(Response response) throws IOException
+                     public void run()
+                     {
+ 
+-                        inProgress(finalSum * 1.0f / total);
++                        inProgress(finalSum * 1.0f / total,total);
+                     }
+                 });
+             }
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/OkHttpUtils.java
+Patch:
+@@ -5,6 +5,7 @@
+ import android.util.Log;
+ 
+ import com.zhy.http.okhttp.builder.GetBuilder;
++import com.zhy.http.okhttp.builder.HeadBuilder;
+ import com.zhy.http.okhttp.builder.OtherRequestBuilder;
+ import com.zhy.http.okhttp.builder.PostFileBuilder;
+ import com.zhy.http.okhttp.builder.PostFormBuilder;
+@@ -135,9 +136,9 @@ public static OtherRequestBuilder put()
+         return new OtherRequestBuilder(METHOD.PUT);
+     }
+ 
+-    public static OtherRequestBuilder head()
++    public static HeadBuilder head()
+     {
+-        return new OtherRequestBuilder(METHOD.HEAD);
++        return new HeadBuilder();
+     }
+ 
+     public static OtherRequestBuilder delete()
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/builder/GetBuilder.java
+Patch:
+@@ -22,7 +22,7 @@ public RequestCall build()
+         return new GetRequest(url, tag, params, headers).build();
+     }
+ 
+-    private String appendParams(String url, Map<String, String> params)
++    protected String appendParams(String url, Map<String, String> params)
+     {
+         StringBuilder sb = new StringBuilder();
+         sb.append(url + "?");
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/builder/GetBuilder.java
+Patch:
+@@ -9,7 +9,7 @@
+ /**
+  * Created by zhy on 15/12/14.
+  */
+-public class GetBuilder extends OkHttpRequestBuilder
++public class GetBuilder extends OkHttpRequestBuilder implements HasParamsable
+ {
+     @Override
+     public RequestCall build()
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/builder/OtherRequestBuilder.java
+Patch:
+@@ -12,7 +12,7 @@
+ /**
+  * for HEAD、DELETE、PUT等其他方法
+  */
+-public class OtherRequestBuilder extends OkHttpRequestBuilder
++public class OtherRequestBuilder extends OkHttpRequestBuilder implements HasParamsable
+ {
+     private RequestBody requestBody;
+     private String method;
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/builder/PostFormBuilder.java
+Patch:
+@@ -12,7 +12,7 @@
+ /**
+  * Created by zhy on 15/12/14.
+  */
+-public class PostFormBuilder extends OkHttpRequestBuilder
++public class PostFormBuilder extends OkHttpRequestBuilder implements HasParamsable
+ {
+     private List<FileInput> files = new ArrayList<>();
+ 
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/https/HttpsUtils.java
+Patch:
+@@ -82,7 +82,7 @@ public void checkServerTrusted(X509Certificate[] chain, String authType)
+         @Override
+         public X509Certificate[] getAcceptedIssuers()
+         {
+-            return null;
++            return new java.security.cert.X509Certificate[]{};
+         }
+     }
+ 
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/utils/Exceptions.java
+Patch:
+@@ -5,9 +5,10 @@
+  */
+ public class Exceptions
+ {
+-    public static void illegalArgument(String msg)
++    public static void illegalArgument(String msg, Object... params)
+     {
+-        throw new IllegalArgumentException(msg);
++        throw new IllegalArgumentException(String.format(msg, params));
+     }
+ 
++
+ }
+
+File: sample-okhttp/src/main/java/com/zhy/sample_okhttp/MyApplication.java
+Patch:
+@@ -37,7 +37,7 @@ public void onCreate()
+                 new Buffer()
+                         .writeUtf8(CER_12306)
+                         .inputStream()});
+-        OkHttpUtils.getInstance().getOkHttpClient().setConnectTimeout(100000, TimeUnit.MILLISECONDS);
++        OkHttpUtils.getInstance().debug("testDebug").getOkHttpClient().setConnectTimeout(100000, TimeUnit.MILLISECONDS);
+ 
+ 
+     }
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/utils/L.java
+Patch:
+@@ -7,7 +7,7 @@
+  */
+ public class L
+ {
+-    private static boolean debug = true;
++    private static boolean debug = false;
+ 
+     public static void e(String msg)
+     {
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/request/OkHttpUploadRequest.java
+Patch:
+@@ -1,6 +1,5 @@
+ package com.zhy.http.okhttp.request;
+ 
+-import android.util.Log;
+ import android.util.Pair;
+ 
+ import com.squareup.okhttp.Headers;
+@@ -23,7 +22,7 @@ public class OkHttpUploadRequest extends OkHttpPostRequest
+ 
+     protected OkHttpUploadRequest(String url, String tag, Map<String, String> params, Map<String, String> headers, Pair<String, File>[] files)
+     {
+-        super(url, tag, params, headers, null, null, null);
++        super(url, tag, params, headers, null, null, null, null);
+         this.files = files;
+     }
+ 
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/request/OkHttpPostRequest.java
+Patch:
+@@ -36,8 +36,6 @@ protected OkHttpPostRequest(String url, String tag, Map<String, String> params,
+         this.content = content;
+         this.bytes = bytes;
+         this.file = file;
+-        validParams();
+-
+     }
+ 
+     protected void validParams()
+@@ -86,6 +84,7 @@ protected Request buildRequest()
+     @Override
+     protected RequestBody buildRequestBody()
+     {
++        validParams();
+         RequestBody requestBody = null;
+         switch (type)
+         {
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/request/OkHttpUploadRequest.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.zhy.http.okhttp.request;
+ 
++import android.util.Log;
+ import android.util.Pair;
+ 
+ import com.squareup.okhttp.Headers;
+
+File: sample-okhttp/src/main/java/com/zhy/sample_okhttp/MainActivity.java
+Patch:
+@@ -167,7 +167,6 @@ public void onResponse(String response)
+                     }
+                 });
+ 
+-
+     }
+ 
+     public void getHtml(View view)
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/request/OkHttpPostRequest.java
+Patch:
+@@ -40,7 +40,7 @@ protected OkHttpPostRequest(String url, String tag, Map<String, String> params,
+ 
+     }
+ 
+-    private void validParams()
++    protected void validParams()
+     {
+         int count = 0;
+         if (params != null && !params.isEmpty())
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/OkHttpClientManager.java
+Patch:
+@@ -105,6 +105,7 @@ public void execute(Request request, ResultCallback callback)
+             @Override
+             public void onFailure(final Request request, final IOException e)
+             {
++                //TODO when cancel , should do?
+                 sendFailResultCallback(request, e, resCallBack);
+             }
+ 
+
+File: okhttputils/src/main/java/com/zhy/http/okhttp/request/OkHttpRequest.java
+Patch:
+@@ -21,9 +21,7 @@
+  */
+ public abstract class OkHttpRequest
+ {
+-
+     protected OkHttpClientManager mOkHttpClientManager = OkHttpClientManager.getInstance();
+-
+     protected OkHttpClient mOkHttpClient;
+ 
+     protected RequestBody requestBody;
+@@ -70,6 +68,7 @@ protected RequestBody wrapRequestBody(RequestBody requestBody, final ResultCallb
+ 
+     public <T> T invoke(Class<T> clazz) throws IOException
+     {
++        requestBody = buildRequestBody();
+         Request request = buildRequest();
+         return mOkHttpClientManager.execute(request, clazz);
+     }
+

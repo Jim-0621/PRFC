@@ -1,0 +1,152 @@
+File: lib/src/main/java/com/github/kevinsawicki/http/HttpRequest.java
+Patch:
+@@ -3129,7 +3129,7 @@ public HttpRequest useProxy(final String proxyHost, final int proxyPort) {
+    * @return this request
+    */
+   public HttpRequest followRedirects(final boolean followRedirects) {
+-    getConnection().setFollowRedirects(followRedirects);
++    getConnection().setInstanceFollowRedirects(followRedirects);
+     return this;
+   }
+ }
+
+File: lib/src/main/java/com/github/kevinsawicki/http/HttpRequest.java
+Patch:
+@@ -27,6 +27,7 @@
+ import static java.net.HttpURLConnection.HTTP_NOT_FOUND;
+ import static java.net.HttpURLConnection.HTTP_NOT_MODIFIED;
+ import static java.net.HttpURLConnection.HTTP_OK;
++import static java.net.Proxy.Type.HTTP;
+ 
+ import java.io.BufferedInputStream;
+ import java.io.BufferedOutputStream;
+@@ -1354,8 +1355,7 @@ public HttpRequest(final URL url, final String method)
+   }
+ 
+   private Proxy createProxy() {
+-    InetSocketAddress addr = new InetSocketAddress( httpProxyHost, httpProxyPort );
+-    return new Proxy( Proxy.Type.HTTP, addr );
++    return new Proxy(HTTP, new InetSocketAddress(httpProxyHost, httpProxyPort));
+   }
+ 
+   private HttpURLConnection createConnection() {
+
+File: lib/src/main/java/com/github/kevinsawicki/http/HttpRequest.java
+Patch:
+@@ -2801,13 +2801,14 @@ public HttpRequest form(final Object name, final Object value)
+    * @return this request
+    * @throws HttpRequestException
+    */
+-  public HttpRequest form(final Object name, final Object value,
+-      final String charset) throws HttpRequestException {
++  public HttpRequest form(final Object name, final Object value, String charset)
++      throws HttpRequestException {
+     final boolean first = !form;
+     if (first) {
+       contentType(CONTENT_TYPE_FORM, charset);
+       form = true;
+     }
++    charset = getValidCharset(charset);
+     try {
+       openOutput();
+       if (!first)
+
+File: lib/src/main/java/com/github/kevinsawicki/http/HttpRequest.java
+Patch:
+@@ -2017,7 +2017,7 @@ public HttpRequest send(final String value) throws HttpRequestException {
+ 	/**
+ 	 * Write the values in the map as form data to the request body
+ 	 * <p>
+-	 * The pairs specified will be URL-encoded and sent with the
++	 * The pairs specified will be URL-encoded in UTF-8 and sent with the
+ 	 * 'application/x-www-form-urlencoded' content-type
+ 	 *
+ 	 * @param values
+@@ -2031,7 +2031,7 @@ public HttpRequest form(final Map<?, ?> values) throws HttpRequestException {
+ 	/**
+ 	 * Write the name/value pair as form data to the request body
+ 	 * <p>
+-	 * The pair specified will be URL-encoded and sent with the
++	 * The pair specified will be URL-encoded in UTF-8 and sent with the
+ 	 * 'application/x-www-form-urlencoded' content-type
+ 	 *
+ 	 * @param name
+
+File: lib/src/test/java/com/github/kevinsawicki/http/HttpRequestTest.java
+Patch:
+@@ -1277,7 +1277,7 @@ public void close() throws IOException {
+ 			}
+ 		};
+ 		try {
+-			HttpRequest.post(url).send(stream);
++			HttpRequest.post(url).ignoreCloseExceptions(false).send(stream);
+ 			fail("Exception not thrown");
+ 		} catch (HttpRequestException e) {
+ 			assertEquals(closeCause, e.getCause());
+
+File: lib/src/test/java/com/github/kevinsawicki/http/RequestTest.java
+Patch:
+@@ -346,7 +346,7 @@ public void handle(Request request, HttpServletResponse response) {
+ 		});
+ 		HttpRequest request = get(url);
+ 		assertTrue(request.notFound());
+-		assertEquals("error", request.errorBody());
++		assertEquals("error", request.body());
+ 	}
+ 
+ 	/**
+@@ -364,7 +364,7 @@ public void handle(Request request, HttpServletResponse response) {
+ 		});
+ 		HttpRequest request = get(url);
+ 		assertTrue(request.ok());
+-		assertEquals("", request.errorBody());
++		assertEquals("", request.body());
+ 	}
+ 
+ 	/**
+
+File: lib/src/main/java/com/github/kevinsawicki/http/HttpRequest.java
+Patch:
+@@ -983,7 +983,7 @@ public InputStream errorStream() {
+ 	 * @return error string
+ 	 * @throws RequestException
+ 	 */
+-	public String errorString() throws RequestException {
++	public String errorBody() throws RequestException {
+ 		final InputStream stream = errorStream();
+ 		if (stream == null)
+ 			return "";
+
+File: lib/src/test/java/com/github/kevinsawicki/http/RequestTest.java
+Patch:
+@@ -345,7 +345,7 @@ public void handle(Request request, HttpServletResponse response) {
+ 		});
+ 		HttpRequest request = get(url);
+ 		assertTrue(request.notFound());
+-		assertEquals("error", request.errorString());
++		assertEquals("error", request.errorBody());
+ 	}
+ 
+ 	/**
+@@ -363,7 +363,7 @@ public void handle(Request request, HttpServletResponse response) {
+ 		});
+ 		HttpRequest request = get(url);
+ 		assertTrue(request.ok());
+-		assertEquals("", request.errorString());
++		assertEquals("", request.errorBody());
+ 	}
+ 
+ 	/**
+
+File: lib/src/main/java/com/github/kevinsawicki/http/HttpRequest.java
+Patch:
+@@ -989,7 +989,7 @@ public String errorString() throws RequestException {
+ 			return "";
+ 		final ByteArrayOutputStream output = new ByteArrayOutputStream(
+ 				contentLength());
+-		copy(buffer(), output);
++		copy(new BufferedInputStream(stream, bufferSize), output);
+ 		final String charset = charset();
+ 		if (charset == null)
+ 			return output.toString();
+

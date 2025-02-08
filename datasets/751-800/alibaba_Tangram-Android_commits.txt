@@ -1,0 +1,2046 @@
+File: tangram/src/main/java/com/tmall/wireless/tangram3/ComponentRenderManager.java
+Patch:
+@@ -132,6 +132,9 @@ public void destroyRenderService() {
+     }
+ 
+     public void putComponentInfo(ComponentInfo info) {
++        if (info == null) {
++            return;
++        }
+         renderServiceMap.get(info.getType()).onParseComponentInfo(info);
+         componentInfoMap.put(info.getId(), info);
+     }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/structure/card/BannerCard.java
+Patch:
+@@ -50,7 +50,6 @@ public void setCells(@Nullable List<BaseCell> cells) {
+             super.setCells(Collections.<BaseCell>singletonList(cell));
+         }
+ 
+-        notifyDataChange();
+     }
+ 
+     @Nullable
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/structure/cell/LinearScrollCell.java
+Patch:
+@@ -80,8 +80,8 @@ public class LinearScrollCell extends BaseCell {
+     public static final String KEY_MAX_ROWS = "maxRows";
+     public static final String KEY_MAX_COLS = "maxCols";
+ 
+-    public static final int DEFAULT_DEFAULT_INDICATOR_COLOR = Color.parseColor("#80ffffff");
+-    public static final int DEFAULT_INDICATOR_COLOR = Color.parseColor("#ffffff");
++    public static final int DEFAULT_DEFAULT_INDICATOR_COLOR = -2130706433;  //#80ffffff
++    public static final int DEFAULT_INDICATOR_COLOR = -1;   //#ffffff
+     public static final int DEFAULT_MAX_ROWS = 1;
+     public static final int DEFAULT_INDICATOR_WIDTH = Style.parseSize("40rp", 0);
+     public static final int DEFAULT_DEFAULT_INDICATOR_WIDTH = Style.parseSize("80rp", 0);
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/ComponentRenderManager.java
+Patch:
+@@ -17,12 +17,13 @@
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Set;
++import java.util.concurrent.ConcurrentHashMap;
+ 
+ public class ComponentRenderManager {
+ 
+     private Map<String, ElementRenderService> renderServiceMap = new HashMap<>(5);
+ 
+-    private Map<String, ComponentInfo> componentInfoMap = new HashMap<>(128);
++    private Map<String, ComponentInfo> componentInfoMap = new ConcurrentHashMap<>(128);
+ 
+     public ElementRenderService getRenderService(String sdkName) {
+         return renderServiceMap.get(sdkName);
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/dataparser/concrete/PojoGroupBasicAdapter.java
+Patch:
+@@ -42,7 +42,6 @@
+ import com.tmall.wireless.tangram3.core.adapter.BinderViewHolder;
+ import com.tmall.wireless.tangram3.core.adapter.GroupBasicAdapter;
+ import com.tmall.wireless.tangram3.core.protocol.ControlBinder;
+-import com.tmall.wireless.tangram3.core.protocol.ViewCreator;
+ import com.tmall.wireless.tangram3.structure.BaseCell;
+ import com.tmall.wireless.tangram3.support.CellSupport;
+ import com.tmall.wireless.tangram3.support.PageDetectorSupport;
+@@ -185,7 +184,7 @@ public int getItemType(BaseCell item) {
+             }
+         }
+ 
+-        if (!mStrKeys.containsKey(stringType)) {
++        if (!mStrKeys.containsKey(stringType) && mLayoutManager.getRecyclerView().getRecycledViewPool() != null) {
+             int newType = mTypeId.getAndIncrement();
+             mStrKeys.put(stringType, newType);
+             mId2Types.put(newType, item.stringType);
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/dataparser/concrete/PojoGroupBasicAdapter.java
+Patch:
+@@ -573,7 +573,7 @@ public void replaceComponent(List<BaseCell> oldComponent, List<BaseCell> newComp
+                         Pair<Range<Integer>, Card> pair = mCards.get(i);
+                         int start = pair.first.getLower();
+                         int end = pair.first.getUpper();
+-                        if (end < index) {
++                        if (end <= index) {
+                             //do nothing
+                             newCards.add(pair);
+                         } else if (start <= index && index < end) {
+@@ -623,7 +623,7 @@ public void replaceComponent(Card oldGroup, Card newGroup) {
+                         Pair<Range<Integer>, Card> pair = mCards.get(i);
+                         int start = pair.first.getLower();
+                         int end = pair.first.getUpper();
+-                        if (end < index) {
++                        if (end <= index) {
+                             //do nothing
+                             newCards.add(pair);
+                         } else if (start <= index && index < end) {
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/support/InternalErrorSupport.java
+Patch:
+@@ -5,6 +5,8 @@
+ public class InternalErrorSupport {
+     public static final int ERROR_CREATE_VIEWHOLDER_NOT_FOUND_TYPE = 0;
+ 
++    public static final int ERROR_PARSE_CARDS_ERROR = 1;
++
+     public void onError(int code, String msg, Map<String, Object> relativeInfoMap) {
+ 
+     }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/dataparser/concrete/PojoGroupBasicAdapter.java
+Patch:
+@@ -182,6 +182,7 @@ public int getItemType(BaseCell item) {
+             int newType = mTypeId.getAndIncrement();
+             mStrKeys.put(stringType, newType);
+             mId2Types.put(newType, item.stringType);
++            mLayoutManager.getRecyclerView().getRecycledViewPool().setMaxRecycledViews(newType, 20);
+         }
+         return mStrKeys.get(stringType);
+     }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/structure/cell/BannerCell.java
+Patch:
+@@ -198,8 +198,8 @@ public void setBgColor(int bgColor) {
+         this.mBgColor = bgColor;
+     }
+ 
+-    public void setPageWidth(double pageWidth) {
+-        this.pageWidth = (float) pageWidth;
++    public void setPageWidth(float pageWidth) {
++        this.pageWidth = pageWidth;
+     }
+ 
+     public void sethGap(int hGap) {
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/view/BannerView.java
+Patch:
+@@ -307,9 +307,8 @@ public void postBindView(BaseCell cell) {
+         if (bannerCell.mCells.size() <= bannerCell.mInfiniteMinCount) {
+             setInfiniteLoop(false);
+         } else {
+-//            setInfiniteLoop(bannerCell.mInfinite);
++            setInfiniteLoop(bannerCell.mInfinite);
+         }
+-        mUltraViewPager.setRatio(1);
+         setIndicatorGravity(getIndicatorGravity(bannerCell.mIndicatorGravity));
+         setIndicatorPos(bannerCell.mIndicatorPos);
+         int indicatorGap = bannerCell.mIndicatorGap;
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/view/LinearScrollView.java
+Patch:
+@@ -338,7 +338,7 @@ private int getScreenWidth() {
+     }
+ 
+     private void bindHeaderView(BaseCell cell) {
+-        if (cell.isValid()) {
++        if (cell != null && cell.isValid()) {
+             View header = getViewFromRecycler(cell);
+             if (header != null) {
+                 header.setId(R.id.TANGRAM_BANNER_HEADER_ID);
+@@ -355,7 +355,7 @@ private void bindHeaderView(BaseCell cell) {
+     }
+ 
+     private void bindFooterView(BaseCell cell) {
+-        if (cell.isValid()) {
++        if (cell != null && cell.isValid()) {
+             View footer = getViewFromRecycler(cell);
+             if (footer != null) {
+                 footer.setId(R.id.TANGRAM_BANNER_FOOTER_ID);
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/Card.java
+Patch:
+@@ -63,6 +63,7 @@
+ import java.util.ArrayList;
+ import java.util.Collections;
+ import java.util.Comparator;
++import java.util.HashMap;
+ import java.util.Iterator;
+ import java.util.List;
+ import java.util.Map;
+@@ -121,7 +122,7 @@ public abstract class Card extends ComponentLifecycle {
+     protected BaseCell mFooter;
+ 
+     @NonNull
+-    protected ArrayMap<Range<Integer>, Card> mChildren = new ArrayMap<>();
++    protected Map<Range<Integer>, Card> mChildren = new HashMap<>();
+ 
+     @NonNull
+     protected List<BaseCell> mCells = new ArrayList<>();
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/cell/LinearScrollCell.java
+Patch:
+@@ -108,6 +108,7 @@ public class LinearScrollCell extends BaseCell {
+     public int bgColor = Color.TRANSPARENT;
+     public int scrollMarginLeft;
+     public int scrollMarginRight;
++
+     public double hGap;
+     public double vGap;
+     public double indicatorMargin;
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/structure/TemplateInfo.java
+Patch:
+@@ -22,7 +22,7 @@
+  * SOFTWARE.
+  */
+ 
+-package com.tmall.wireless.tangram.structure;
++package com.tmall.wireless.tangram3.structure;
+ 
+ import android.util.Base64;
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/ComponentRenderManager.java
+Patch:
+@@ -127,8 +127,6 @@ public void destroyRenderService() {
+     }
+ 
+     public void setComponentInfoList(List<ComponentInfo> componentInfoList) {
+-        componentInfoMap.clear();
+-
+         if (componentInfoList == null) {
+             return;
+         }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/structure/BaseCell.java
+Patch:
+@@ -120,9 +120,9 @@ public enum GridDisplayType {
+      */
+     public JSONObject extras = new JSONObject();
+ 
+-    public GridDisplayType gridDisplayType;
++    public GridDisplayType gridDisplayType = GridDisplayType.inline;
+ 
+-    public int colSpan;
++    public int colSpan = 1;
+ 
+     private ArrayMap<String, Object> userParams;
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/dataparser/concrete/PojoDataParser.java
+Patch:
+@@ -328,6 +328,7 @@ public Card parseSingleGroup(@Nullable JSONObject data, @NonNull final ServiceMa
+                         gridCard.mColumn = style.column;
+                     }
+                     card = gridCard;
++                    card.style = style;
+                 } else if (card instanceof BannerCard) {
+                     BannerCard bannerCard = (BannerCard) card;
+                     if (bannerCard.cell == null)
+
+File: tangram/src/main/java/com/tmall/wireless/tangram3/dataparser/concrete/PojoDataParser.java
+Patch:
+@@ -701,9 +701,9 @@ private BaseCell createCell(@Nullable Card parent, @NonNull MVHelper resolver, @
+                                 @NonNull ServiceManager serviceManager) {
+         BaseCell cell = null;
+         String cellType = parseCellType(cellData);
+-        if ((resolver.resolver().getViewClass(cellType) != null) || Utils.isCard(cellData)) {
++        if ((resolver.resolver().getViewClass(cellType) != null) || Utils.isCard(cellType)) {
+ 
+-            if (Utils.isCard(cellData)) {
++            if (Utils.isCard(cellType)) {
+                 switch (cellType) {
+                     case TangramBuilder.TYPE_CONTAINER_FLOW:
+                     case TangramBuilder.TYPE_CONTAINER_1C_FLOW:
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/BaseTangramEngine.java
+Patch:
+@@ -60,6 +60,7 @@
+ import com.tmall.wireless.tangram.structure.card.VVCard;
+ import com.tmall.wireless.tangram.support.BannerSupport;
+ import com.tmall.wireless.tangram.support.ExposureSupport;
++import com.tmall.wireless.tangram.support.InternalErrorSupport;
+ import com.tmall.wireless.tangram.support.SimpleClickSupport;
+ import com.tmall.wireless.tangram.support.TimerSupport;
+ import com.tmall.wireless.tangram.util.ImageUtils;
+@@ -185,6 +186,7 @@ public void bindView(@NonNull final RecyclerView view) {
+         if (mGroupBasicAdapter == null) {
+             this.mGroupBasicAdapter = mAdapterBuilder.newAdapter(mContext, mLayoutManager, this);
+             mGroupBasicAdapter.setPerformanceMonitor(mPerformanceMonitor);
++            mGroupBasicAdapter.setErrorSupport(getService(InternalErrorSupport.class));
+         }
+ 
+         if (mContentView.getRecycledViewPool() != null) {
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/Card.java
+Patch:
+@@ -289,7 +289,7 @@ public static BaseCell createCell(@Nullable Card parent, @NonNull MVHelper resol
+ 
+                     cell.serviceManager = serviceManager; // ensure service manager
+                 } else {
+-                    if (Utils.isCard(cellData) && parent != null) {
++                    if (Utils.isCard(cellData)) {
+                         switch (cellType) {
+                             case TangramBuilder.TYPE_CONTAINER_FLOW:
+                             case TangramBuilder.TYPE_CONTAINER_1C_FLOW:
+
+File: examples/src/androidTest/java/com/tmall/wireless/tangram/ApplicationTest.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/data/FloatView.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/data/RatioImageView.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/data/RatioTextView.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/data/SimpleImgView.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/data/TestView.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+@@ -73,8 +73,6 @@ public void postBindView(BaseCell cell) {
+         String parent = "";
+         if (cell.parent != null) {
+             parent = cell.parent.getClass().getSimpleName();
+-        } else if (cell.nestedParent != null) {
+-            parent = cell.nestedParent.getClass().getSimpleName();
+         }
+         textView.setText(
+                 cell.id + " pos: " + pos + " " + parent + " " + cell
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/data/TestViewHolder.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/data/TestViewHolderCell.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/support/SampleClickSupport.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/DefaultResolverRegistry.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+@@ -93,7 +93,7 @@ public <V extends View> void registerCell(String type, final @NonNull Class<V> v
+         if (viewHolderMap.get(type) == null) {
+             mDefaultCellBinderResolver.register(type, new BaseCellBinder<>(viewClz, mMVHelper));
+         } else {
+-            mDefaultCellBinderResolver.register(type, new BaseCellBinder<>(viewHolderMap.get(type),
++            mDefaultCellBinderResolver.register(type, new BaseCellBinder<ViewHolderCreator.ViewHolder, V>(viewHolderMap.get(type),
+                 mMVHelper));
+         }
+         mMVHelper.resolver().register(type, viewClz);
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/Engine.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/MVResolver.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+@@ -73,6 +73,7 @@ public class MVResolver {
+ 
+     private ArrayMap<View, BaseCell> vmMap = new ArrayMap<>(128);
+ 
++    @Deprecated
+     private ArrayMap<String, View> idViewMap = new ArrayMap<>(128);
+ 
+     private ServiceManager mServiceManager;
+@@ -126,6 +127,7 @@ public View getView(BaseCell cell) {
+         return mvMap.get(cell);
+     }
+ 
++    @Deprecated
+     public View getView(String uniqueId) {
+         return idViewMap.get(uniqueId);
+     }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/TangramBuilder.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+@@ -30,7 +30,6 @@
+ import com.tmall.wireless.tangram.dataparser.concrete.BaseCellBinderResolver;
+ import com.tmall.wireless.tangram.dataparser.concrete.Card;
+ import com.tmall.wireless.tangram.dataparser.concrete.CardResolver;
+-import com.tmall.wireless.tangram.dataparser.concrete.Cell;
+ import com.tmall.wireless.tangram.dataparser.concrete.PojoAdapterBuilder;
+ import com.tmall.wireless.tangram.dataparser.concrete.PojoDataParser;
+ import com.tmall.wireless.tangram.eventbus.BusSupport;
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/adapter/BinderViewHolder.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/adapter/CacheItem.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/adapter/GroupBasicAdapter.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/adapter/WrapAdapter.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/protocol/ControlBinder.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/protocol/ControlBinderResolver.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/protocol/LayoutBinder.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/protocol/LayoutBinderResolver.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/protocol/ViewCreator.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/protocol/ViewMounter.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/resolver/BaseResolver.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/resolver/ClassResolver.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/resolver/InstanceResolver.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/core/resolver/Resolver.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/IAdapterBuilder.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/BaseCardBinderResolver.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/BaseCellBinder.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+@@ -89,8 +89,6 @@ public V createView(Context context, ViewGroup parent) {
+ 
+     @Override
+     public void mountView(@NonNull BaseCell data, @NonNull V view) {
+-        // TODO: generate mounter like properties setter
+-        // delegate to cell
+         mMvHelper.mountView(data, view);
+     }
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/BaseCellBinderResolver.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/BaseLayoutBinder.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/CardResolver.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/Cell.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/ComponentLifecycle.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/IDelegateCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/PojoAdapterBuilder.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/WrapperCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/eventbus/Dispatcher.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/eventbus/EventContext.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/eventbus/EventHandlerWrapper.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/eventbus/EventPool.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+@@ -30,7 +30,7 @@
+ /**
+  * Created by longerian on 16/4/26.
+  *
+- * Event pool to recycle consumed event.
++ * TangramOp1 pool to recycle consumed event.
+  */
+ class EventPool {
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/eventbus/IDispatcher.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/eventbus/IDispatcherDelegate.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/eventbus/ReflectedActionFinder.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/ext/HorizontalOverScrollBounceEffectDecoratorExt.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/ext/PullFromEndListener.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/ext/SwipeItemTouchListener.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/CellRender.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/ViewCreator.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/ColumnCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/DoubleColumnCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/FiveColumnCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/FixCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/FixLinearScrollCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/FloatCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/FlowCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/FourColumnCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/LinearCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/OneItemCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/PinBottomCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/PinTopCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/ScrollFixCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/SingleColumnCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/SlideCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/StaggeredCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/StickyEndCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/SwipeCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/TripleColumnCard.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/cell/BannerCell.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/cell/LinearScrollCell.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+@@ -88,7 +88,7 @@ public class LinearScrollCell extends BaseCell {
+     public boolean retainScrollState = true;
+ 
+     @Override
+-    protected void onAdded() {
++    public void onAdded() {
+         super.onAdded();
+         adapter = new Adapter(getAdapter());
+     }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/style/ColumnStyle.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/style/DelegateStyle.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/view/ITangramViewLifeCycle.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/view/SimpleEmptyView.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/viewcreator/ViewHolderCreator.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/support/CardSupport.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/support/CellSupport.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/support/async/AsyncLoader.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/support/async/AsyncPageLoader.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/util/IInnerImageSetter.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/util/ImageUtils.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/util/LogUtils.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/util/Predicate.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/util/TangramViewMetrics.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/HorizontalScrollViewExt.java
+Patch:
+@@ -1,7 +1,7 @@
+ /*
+  * MIT License
+  *
+- * Copyright (c) 2017 Alibaba Group
++ * Copyright (c) 2018 Alibaba Group
+  *
+  * Permission is hereby granted, free of charge, to any person obtaining a copy
+  * of this software and associated documentation files (the "Software"), to deal
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/MVHelper.java
+Patch:
+@@ -163,8 +163,7 @@ public void mountView(BaseCell cell, View view) {
+     public String getCellUniqueId(BaseCell cell) {
+         String flareId = cellFlareIdMap.get(cell);
+         if (flareId == null) {
+-            String parentId = cell.parent.id;
+-            flareId = String.format("%s_%s", cell.parent == null ? "null" : parentId, cell.pos);
++            flareId = String.format("%s_%s", cell.parent == null ? "null" : cell.parent.id, cell.pos);
+             cellFlareIdMap.put(cell, flareId);
+         }
+         return flareId;
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/StickyCard.java
+Patch:
+@@ -53,6 +53,7 @@ public LayoutHelper convertLayoutHelper(@Nullable LayoutHelper oldHelper) {
+             }
+ 
+         if (style instanceof StickyStyle) {
++            helper.setOffset(((StickyStyle) style).offset);
+             helper.setStickyStart(((StickyStyle) style).stickyStart);
+             helper.setMargin(style.margin[Style.MARGIN_LEFT_INDEX], style.margin[Style.MARGIN_TOP_INDEX],
+                     style.margin[Style.MARGIN_RIGHT_INDEX], style.margin[Style.MARGIN_BOTTOM_INDEX]);
+@@ -83,6 +84,7 @@ public static class StickyStyle extends Style {
+         public static final String STICKY_END = "end";
+ 
+         public boolean stickyStart = true;
++        public int offset = 0;
+ 
+ 
+         public StickyStyle(boolean defaultSticky) {
+@@ -95,6 +97,7 @@ public void parseWith(JSONObject data) {
+             if (data != null) {
+                 String sticky = data.optString(KEY_STICKY, stickyStart ? STICKY_START : STICKY_END);
+                 this.stickyStart = STICKY_START.equalsIgnoreCase(sticky);
++                this.offset = Style.parseSize(data.optString("offset"), 0);
+             }
+         }
+     }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/support/async/CardLoadSupport.java
+Patch:
+@@ -117,7 +117,7 @@ public void finish() {
+                 @Override
+                 public void finish(List<BaseCell> cells) {
+                     finish();
+-                    card.setCells(cells);
++                    card.addCells(cells);
+                     card.notifyDataChange();
+                 }
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/support/async/CardLoadSupport.java
+Patch:
+@@ -106,7 +106,7 @@ public void finish() {
+                 @Override
+                 public void finish(List<BaseCell> cells) {
+                     finish();
+-                    card.setCells(cells);
++                    card.addCells(cells);
+                     card.notifyDataChange();
+                 }
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/BannerView.java
+Patch:
+@@ -616,7 +616,9 @@ public void setCurrItem(int position) {
+                     }
+                 }
+                 mImageViews[currentItemPos].setTag(R.id.TANGRAM_BANNER_INDICATOR_POS, currentItemPos);
+-                ImageUtils.doLoadImageUrl(mImageViews[currentItemPos], focusUrl);
++                if (style == STYLE_IMG) {
++                    ImageUtils.doLoadImageUrl(mImageViews[currentItemPos], focusUrl);
++                }
+             }
+         }
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/BannerView.java
+Patch:
+@@ -643,7 +643,9 @@ public void setCurrItem(int position) {
+                     }
+                 }
+                 mImageViews[currentItemPos].setTag(R.id.TANGRAM_BANNER_INDICATOR_POS, currentItemPos);
+-                ImageUtils.doLoadImageUrl(mImageViews[currentItemPos], focusUrl);
++                if (style == STYLE_IMG) {
++                    ImageUtils.doLoadImageUrl(mImageViews[currentItemPos], focusUrl);
++                }
+             }
+         }
+ 
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/data/SingleImageView.java
+Patch:
+@@ -102,7 +102,7 @@ public void cellInited(BaseCell cell) {
+ 
+     @Override
+     public void postBindView(BaseCell cell) {
+-        if (cell.serviceManager.supportRx()) {
++        if (cell.serviceManager != null && cell.serviceManager.supportRx()) {
+             LifeCycleProviderImpl<BDE> lifeCycleProvider = cell.getLifeCycleProvider();
+             Observable.just(cell).map(new Function<BaseCell, String>() {
+                 @Override
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/MVHelper.java
+Patch:
+@@ -34,13 +34,12 @@
+ import android.view.View;
+ import android.view.ViewGroup;
+ import com.tmall.wireless.tangram.core.service.ServiceManager;
+-import com.tmall.wireless.tangram.dataparser.concrete.Card;
+ import com.tmall.wireless.tangram.structure.BaseCell;
+-import com.tmall.wireless.tangram.structure.BaseCell.BDE;
+ import com.tmall.wireless.tangram.structure.CellRender;
+ import com.tmall.wireless.tangram.structure.view.ITangramViewLifeCycle;
+ import com.tmall.wireless.tangram.support.CellSupport;
+ import com.tmall.wireless.tangram.support.ExposureSupport;
++import com.tmall.wireless.tangram.util.BDE;
+ import com.tmall.wireless.vaf.framework.VafContext;
+ import com.tmall.wireless.vaf.virtualview.core.IContainer;
+ import com.tmall.wireless.vaf.virtualview.core.ViewBase;
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/PojoDataParser.java
+Patch:
+@@ -171,7 +171,7 @@ public Card parseSingleGroup(@Nullable JSONObject data, final ServiceManager ser
+                     cellCard.parseWith(data, cellResolver);
+                     cellCard.setStringType(TangramBuilder.TYPE_CONTAINER_1C_FLOW);
+                     if (cellCard.isValid()) {
+-                        return card;
++                        return cellCard;
+                     }
+                 }
+             }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/BannerCard.java
+Patch:
+@@ -120,7 +120,7 @@ protected void parseFooterCell(@NonNull MVHelper resolver, @Nullable JSONObject
+         if (cell.mFooter.isValid()) {
+             cell.mFooter.parent = this;
+             cell.mFooter.parentId = id;
+-            cell.mFooter.pos = cell.mHeader != null ? getCells().size() + 1: getCells().size();
++            cell.mFooter.pos = cell.mHeader.isValid() ? getCells().size() + 1: getCells().size();
+             try {
+                 cell.mFooter.extras.put(MVResolver.KEY_INDEX, cell.mFooter.pos);
+             } catch (JSONException e) {
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/LinearScrollCard.java
+Patch:
+@@ -94,7 +94,7 @@ protected void parseFooterCell(@NonNull MVHelper resolver, @Nullable JSONObject
+         if (cell.mFooter.isValid()) {
+             cell.mFooter.parent = this;
+             cell.mFooter.parentId = id;
+-            cell.mFooter.pos = cell.mHeader != null ? getCells().size() + 1: getCells().size();
++            cell.mFooter.pos = cell.mHeader.isValid() ? getCells().size() + 1: getCells().size();
+             try {
+                 cell.mFooter.extras.put(MVResolver.KEY_INDEX, cell.mFooter.pos);
+             } catch (JSONException e) {
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/BannerView.java
+Patch:
+@@ -706,7 +706,7 @@ public void callBack() {
+     }
+ 
+     private void bindHeaderView(BaseCell cell) {
+-        if (cell != null) {
++        if (cell.isValid()) {
+             View header = getHeaderViewFromRecycler(cell);
+             if (header != null) {
+                 ViewGroup.LayoutParams lp = header.getLayoutParams();
+@@ -724,7 +724,7 @@ private void bindHeaderView(BaseCell cell) {
+     }
+ 
+     private void bindFooterView(BaseCell cell) {
+-        if (cell != null) {
++        if (cell.isValid()) {
+             View footer = getFooterViewFromRecycler(cell);
+             if (footer != null) {
+                 ViewGroup.LayoutParams lp = footer.getLayoutParams();
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/LinearScrollView.java
+Patch:
+@@ -327,7 +327,7 @@ public void onOverScroll(View view, float offset) {
+     }
+ 
+     private void bindHeaderView(BaseCell cell) {
+-        if (cell != null) {
++        if (cell.isValid()) {
+             View header = getViewFromRecycler(cell);
+             if (header != null) {
+                 header.setId(R.id.TANGRAM_BANNER_HEADER_ID);
+@@ -344,7 +344,7 @@ private void bindHeaderView(BaseCell cell) {
+     }
+ 
+     private void bindFooterView(BaseCell cell) {
+-        if (cell != null) {
++        if (cell.isValid()) {
+             View footer = getViewFromRecycler(cell);
+             if (footer != null) {
+                 footer.setId(R.id.TANGRAM_BANNER_FOOTER_ID);
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/BaseCellBinder.java
+Patch:
+@@ -89,8 +89,6 @@ public V createView(Context context, ViewGroup parent) {
+ 
+     @Override
+     public void mountView(@NonNull BaseCell data, @NonNull V view) {
+-        // TODO: generate mounter like properties setter
+-        // delegate to cell
+         mMvHelper.mountView(data, view);
+     }
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/BaseCell.java
+Patch:
+@@ -42,6 +42,7 @@
+ import com.tmall.wireless.tangram.util.IInnerImageSetter;
+ import com.tmall.wireless.tangram.util.ImageUtils;
+ 
++import com.tmall.wireless.vaf.virtualview.core.ViewCache;
+ import io.reactivex.Observable;
+ import io.reactivex.ObservableTransformer;
+ import io.reactivex.disposables.Disposable;
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/support/RxTangramSupport.java
+Patch:
+@@ -23,7 +23,7 @@ public RxTangramSupport(TangramEngine tangramEngine) {
+     }
+ 
+     public void observeCell(Observable<UpdateCellOp> observable) {
+-        observable.subscribe(mTangramEngine.asUpdateCellConsumer());
++        mCompositeDisposable.add(observable.subscribe(mTangramEngine.asUpdateCellConsumer()));
+     }
+ 
+     public void destroy() {
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/BannerView.java
+Patch:
+@@ -219,7 +219,6 @@ public void onPageScrolled(int position, float positionOffset, int positionOffse
+ 
+     @Override
+     public void onPageSelected(int position) {
+-        direction = 1;
+         currentItemPos = mUltraViewPager.getCurrentItem();
+         mIndicator.setCurrItem(currentItemPos);
+ 
+@@ -818,6 +817,7 @@ private int getNextItemIndex() {
+     }
+ 
+     private boolean scrollNextPage() {
++        direction = 1;
+         boolean isChange = false;
+         if (mUltraViewPager != null && mUltraViewPager.getAdapter() != null && mUltraViewPager.getAdapter().getCount() > 0) {
+             final int curr = mUltraViewPager.getCurrentItemFake();
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/TangramEngine.java
+Patch:
+@@ -488,7 +488,7 @@ public void insertWith(int insertPosition, BaseCell data) {
+ 
+ 
+     /**
+-     * A high performance method to insert cells. TODO handle nested card
++     * A high performance method to insert cells. Do not allowed to insert to an empty Tangram. TODO handle nested card
+      * @param insertPosition the position to be inserted
+      * @param list new cell data list
+      * @since 2.1.0
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/PojoDataParser.java
+Patch:
+@@ -144,7 +144,7 @@ public List<BaseCell> parseComponent(JSONArray data, ServiceManager serviceManag
+ 
+         final int size = data.length();
+         final List<BaseCell> result = new ArrayList<>(size);
+-        //解析 body 组件
++        //parse body
+         JSONArray componentArray = data;
+         if (componentArray != null) {
+             final int cellLength = componentArray.length();
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/BannerView.java
+Patch:
+@@ -219,6 +219,7 @@ public void onPageScrolled(int position, float positionOffset, int positionOffse
+ 
+     @Override
+     public void onPageSelected(int position) {
++        direction = 1;
+         currentItemPos = mUltraViewPager.getCurrentItem();
+         mIndicator.setCurrItem(currentItemPos);
+ 
+@@ -639,7 +640,6 @@ public boolean dispatchTouchEvent(MotionEvent ev) {
+             }
+             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                 startTimer();
+-                direction = 1;
+             }
+         }
+         return super.dispatchTouchEvent(ev);
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/support/ExposureSupport.java
+Patch:
+@@ -269,7 +269,7 @@ public void attachUtInfoToView(View targetView, BaseCell baseCell) {
+ 
+     }
+ 
+-    private ExposureCancellable mCancellable;
++    protected ExposureCancellable mCancellable;
+ 
+     public void setRxExposureCancellable(ExposureCancellable cancellable) {
+         this.mCancellable = cancellable;
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/BannerCard.java
+Patch:
+@@ -168,6 +168,7 @@ public void parseStyle(@Nullable JSONObject data) {
+         if (style != null) {
+             cell.setRatio(style.aspectRatio);
+             cell.margin = style.margin;
++            cell.height = style.height;
+         }
+     }
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/entitycard/BannerEntityCard.java
+Patch:
+@@ -223,6 +223,7 @@ public void parseStyle(@Nullable JSONObject data) {
+                 }
+             }
+         }
++        height = style.height;
+         if (data != null) {
+             setIndicatorRadius(Style.parseSize(data.optString(BannerCard.ATTR_INDICATOR_RADIUS), 0));
+             setIndicatorColor(Style.parseColor(data.optString(BannerCard.ATTR_INDICATOR_COLOR, "#00000000")));
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/LinearScrollView.java
+Patch:
+@@ -274,7 +274,6 @@ public void postUnBindView(BaseCell cell) {
+         }
+ 
+         totalDistance = 0;
+-        totalDistanceOfIndicator = 0;
+ 
+         if (lSCell.hasIndicator) {
+             indicator.setTranslationX(0);
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/LinearScrollView.java
+Patch:
+@@ -120,9 +120,7 @@ private void init() {
+ 
+         LinearLayoutManager layoutManager = new LinearLayoutManager(getContext());
+         layoutManager.setOrientation(HORIZONTAL);
+-        layoutManager.setRecycleChildrenOnDetach(true);
+         recyclerView.setLayoutManager(layoutManager);
+-
+         totalDistanceOfIndicator = Style.dp2px(34);
+ 
+         touchSlop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/FixCard.java
+Patch:
+@@ -138,8 +138,8 @@ public void parseWith(JSONObject data) {
+                     alignType = ALIGN_MAP.get(align);
+                 }
+ 
+-                x = Style.dp2px(data.optDouble(KEY_X, 0));
+-                y = Style.dp2px(data.optDouble(KEY_Y, 0));
++                x = Style.parseSize(data.optString(KEY_X), 0);
++                y = Style.parseSize(data.optString(KEY_Y), 0);
+             }
+         }
+     }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/GridCard.java
+Patch:
+@@ -311,8 +311,8 @@ public void parseWith(JSONObject data) {
+                     cols = new float[0];
+                 }
+ 
+-                hGap = Style.dp2px(data.optDouble(KEY_H_GAP, 0.0f));
+-                vGap = Style.dp2px(data.optDouble(KEY_V_GAP, 0.0f));
++                hGap = Style.parseSize(data.optString(KEY_H_GAP), 0);
++                vGap = Style.parseSize(data.optString(KEY_V_GAP), 0);
+             }
+         }
+     }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/LinearCard.java
+Patch:
+@@ -59,7 +59,7 @@ public LayoutHelper convertLayoutHelper(@Nullable LayoutHelper oldHelper) {
+             }
+ 
+             if (style.extras != null && style.extras.has(KEY_DIVIDE_HEIGHT)) {
+-                helper.setDividerHeight(Style.dp2px(style.extras.optInt(KEY_DIVIDE_HEIGHT, 0)));
++                helper.setDividerHeight(Style.parseSize(style.extras.optString(KEY_DIVIDE_HEIGHT), 0));
+             }
+ 
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/StaggeredCard.java
+Patch:
+@@ -100,10 +100,10 @@ public void parseWith(JSONObject data) {
+ 
+                 column = data.optInt(KEY_COLUMN, 2);
+ 
+-                vGap = hGap = Style.dp2px(data.optDouble(KEY_GAP, 0f));
++                vGap = hGap = Style.parseSize(data.optString(KEY_GAP), 0);
+ 
+-                hGap = Style.dp2px(data.optDouble(KEY_H_GAP, hGap));
+-                vGap = Style.dp2px(data.optDouble(KEY_V_GAP, vGap));
++                hGap = Style.parseSize(data.optString(KEY_H_GAP), 0);
++                vGap = Style.parseSize(data.optString(KEY_V_GAP), 0);
+             }
+         }
+     }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/cell/LinearScrollCell.java
+Patch:
+@@ -145,8 +145,8 @@ public void onBindViewHolder(BinderViewHolder binderViewHolder, int position) {
+             }
+             lp.setMargins(margins[3], margins[0], margins[1], margins[2]);
+             //chils cell's pageWidth override pageWidth in style
+-            if (!Double.isNaN(cell.extras.optDouble("pageWidth"))) {
+-                lp.width = Style.dp2px(cell.extras.optDouble("pageWidth"));
++            if (cell.extras.has("pageWidth")) {
++                lp.width = Style.parseSize(cell.extras.optString("pageWidth"), 0);
+             }
+             binderViewHolder.itemView.setLayoutParams(lp);
+         }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/LinearScrollView.java
+Patch:
+@@ -197,8 +197,8 @@ public void postBindView(BaseCell cell) {
+                     totalDistance = totalDistance + bc.style.margin[1] + bc.style.margin[3];
+                 }
+                 if (!Double.isNaN(lSCell.pageWidth)) {
+-                    if (!Double.isNaN(bc.extras.optDouble("pageWidth"))) {
+-                        totalDistance += Style.dp2px(bc.extras.optDouble("pageWidth"));
++                    if (bc.extras.has("pageWidth")) {
++                        totalDistance += Style.parseSize(bc.extras.optString("pageWidth"), 0);
+                     } else {
+                         totalDistance += lSCell.pageWidth;
+                     }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/Card.java
+Patch:
+@@ -243,7 +243,7 @@ public void parseWith(@NonNull JSONObject data, @NonNull final MVHelper resolver
+ 
+         maxChildren = data.optInt(KEY_MAX_CHILDREN, maxChildren);
+         // parsing header
+-        if (Utils.isSupportHeaderFooter(stringType) && isParseCell) {
++        if (isParseCell) {
+             JSONObject header = data.optJSONObject(KEY_HEADER);
+             parseHeaderCell(resolver, header);
+         }
+@@ -258,7 +258,7 @@ public void parseWith(@NonNull JSONObject data, @NonNull final MVHelper resolver
+             }
+         }
+         // parsing footer
+-        if (Utils.isSupportHeaderFooter(stringType) && isParseCell) {
++        if (isParseCell) {
+             JSONObject footer = data.optJSONObject(KEY_FOOTER);
+             parseFooterCell(resolver, footer);
+         }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/structure/card/BannerCard.java
+Patch:
+@@ -143,8 +143,9 @@ public void setCells(@Nullable List<BaseCell> cells) {
+     @Override
+     public void parseStyle(@Nullable JSONObject data) {
+         super.parseStyle(data);
+-        if (data == null)
++        if (data == null) {
+             return;
++        }
+         cell.setIndicatorRadius(Style.dp2px(data.optDouble(ATTR_INDICATOR_RADIUS)));
+         cell.setIndicatorColor(Style.parseColor(data.optString(ATTR_INDICATOR_COLOR, "#00000000")));
+         cell.setIndicatorDefaultColor(Style.parseColor(data.optString(ATTR_INDICATOR_DEFAULT_INDICATOR_COLOR, "#00000000")));
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/BannerView.java
+Patch:
+@@ -222,7 +222,7 @@ public void onPageSelected(int position) {
+         if (bannerSupport != null) {
+             for (int j = 0; j < bannerSupport.getListeners().size(); j++) {
+                 BannerListener listener = bannerSupport.getListeners().get(j);
+-                listener.onPageSelected(position);
++                listener.onPageSelected(currentItemPos);
+             }
+         }
+         if (cell != null && cell.serviceManager != null) {
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/PojoGroupBasicAdapter.java
+Patch:
+@@ -472,7 +472,7 @@ public void insertComponents(int pos, List<BaseCell> components) {
+                     } else if (start <= pos && pos < end) {
+                         Pair<Range<Integer>, Card> newPair = new Pair<>(Range.create(start, end + newItemSize), pair.second);
+                         newCards.add(newPair);
+-                    } else if (pos < start) {
++                    } else if (pos <= start) {
+                         Pair<Range<Integer>, Card> newPair = new Pair<>(Range.create(start + newItemSize, end + newItemSize), pair.second);
+                         newCards.add(newPair);
+                     }
+@@ -570,7 +570,7 @@ public void replaceComponent(List<BaseCell> oldComponent, List<BaseCell> newComp
+                             diff = newComponent.size() - oldComponent.size();
+                             Pair<Range<Integer>, Card> newPair = new Pair<>(Range.create(start, end + diff), pair.second);
+                             newCards.add(newPair);
+-                        } else if (index < start) {
++                        } else if (index <= start) {
+                             Pair<Range<Integer>, Card> newPair = new Pair<>(Range.create(start + diff, end + diff), pair.second);
+                             newCards.add(newPair);
+                         }
+@@ -608,7 +608,7 @@ public void replaceComponent(Card oldGroup, Card newGroup) {
+                             diff = newComponent.size() - oldComponent.size();
+                             Pair<Range<Integer>, Card> newPair = new Pair<>(Range.create(start, end + diff), newGroup);
+                             newCards.add(newPair);
+-                        } else if (index < start) {
++                        } else if (index <= start) {
+                             Pair<Range<Integer>, Card> newPair = new Pair<>(Range.create(start + diff, end + diff), pair.second);
+                             newCards.add(newPair);
+                         }
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/TangramDataParserActivity.java
+Patch:
+@@ -109,7 +109,6 @@ public <IMAGE extends ImageView> void doLoadImageUrl(@NonNull IMAGE view,
+         engine = builder.build();
+         engine.setVirtualViewTemplate(VVTEST.BIN);
+         Utils.setUedScreenWidth(720);
+-        VafContext.loadImageLoader(getApplicationContext());
+ 
+         //Step 5: add card load support if you have card that loading cells async
+         engine.addCardLoadSupport(new CardLoadSupport(
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/BaseTangramEngine.java
+Patch:
+@@ -205,6 +205,7 @@ public void registerVirtualViewTemplate(String type, byte[] data) {
+             CardResolver cardResolver = baseCardBinderResolver.getDelegate();
+             MVHelper mMVHelper = getService(MVHelper.class);
+             if (cardResolver != null && mMVHelper != null) {
++                baseCellBinderResolver.register(type, new BaseCellBinder(type, mMVHelper));
+                 cardResolver.register(type, VVCard.class);
+                 setVirtualViewTemplate(data);
+             }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/util/Utils.java
+Patch:
+@@ -234,6 +234,7 @@ public static boolean isCard(JSONObject cellData) {
+         supportHeaderFooterTable.put(TangramBuilder.TYPE_CONTAINER_5C_FLOW, Boolean.TRUE);
+         supportHeaderFooterTable.put(TangramBuilder.TYPE_CONTAINER_ON_PLUSN, Boolean.TRUE);
+         supportHeaderFooterTable.put(TangramBuilder.TYPE_CONTAINER_BANNER, Boolean.TRUE);
++        supportHeaderFooterTable.put(TangramBuilder.TYPE_CONTAINER_SCROLL, Boolean.TRUE);
+     }
+ 
+     /**
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/BannerView.java
+Patch:
+@@ -124,6 +124,7 @@ private void init() {
+ 
+     public void setAdapter(PagerAdapter adapter) {
+         mUltraViewPager.setAdapter(adapter);
++        mUltraViewPager.disableAutoScroll();//reset timer when reuse
+         mUltraViewPager.setOnPageChangeListener(this);
+     }
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/view/BannerView.java
+Patch:
+@@ -124,6 +124,7 @@ private void init() {
+ 
+     public void setAdapter(PagerAdapter adapter) {
+         mUltraViewPager.setAdapter(adapter);
++        mUltraViewPager.disableAutoScroll();//reset timer when reuse
+         mUltraViewPager.setOnPageChangeListener(this);
+     }
+ 
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/PojoGroupBasicAdapter.java
+Patch:
+@@ -84,7 +84,8 @@ public class PojoGroupBasicAdapter extends GroupBasicAdapter<Card, BaseCell> {
+         super(context, layoutManager, componentBinderResolver, cardBinderResolver);
+         this.mMvHelper = mvHelper;
+         this.mViewManager = viewManager;
+-        setHasStableIds(true);
++        //if true, this adapter's items have stable IDs, but BaseCell.objectId return 0. So not use.
++        //setHasStableIds(true);
+     }
+ 
+     /**
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/PojoGroupBasicAdapter.java
+Patch:
+@@ -84,7 +84,8 @@ public class PojoGroupBasicAdapter extends GroupBasicAdapter<Card, BaseCell> {
+         super(context, layoutManager, componentBinderResolver, cardBinderResolver);
+         this.mMvHelper = mvHelper;
+         this.mViewManager = viewManager;
+-        setHasStableIds(true);
++        //if true, this adapter's items have stable IDs, but BaseCell.objectId return 0. So not use.
++        //setHasStableIds(true);
+     }
+ 
+     /**
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/support/SampleClickSupport.java
+Patch:
+@@ -41,8 +41,8 @@ public SampleClickSupport() {
+     }
+ 
+     @Override
+-    public void defaultClick(View targetView, BaseCell cell, int type) {
+-        super.defaultClick(targetView, cell, type);
++    public void defaultClick(View targetView, BaseCell cell, int eventType) {
++        super.defaultClick(targetView, cell, eventType);
+         Toast.makeText(targetView.getContext(), " 您点击了组件  type:"+cell.type, Toast.LENGTH_SHORT).show();
+     }
+ }
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/PojoGroupBasicAdapter.java
+Patch:
+@@ -47,6 +47,7 @@
+ import com.tmall.wireless.tangram.support.PageDetectorSupport;
+ import com.tmall.wireless.vaf.framework.ViewManager;
+ import java.lang.annotation.Inherited;
++import java.util.ArrayList;
+ import java.util.Collections;
+ import java.util.LinkedList;
+ import java.util.List;
+
+File: tangram/src/main/java/com/tmall/wireless/tangram/dataparser/concrete/BaseCellBinder.java
+Patch:
+@@ -78,7 +78,7 @@ public V createView(Context context, ViewGroup parent) {
+         } else if (mViewCreator != null) {
+             v = mViewCreator.create(context, parent);
+         } else {
+-            v = (V) mMvHelper.getVafContext().getContainerService().getContainer(type, false);
++            v = (V) mMvHelper.getVafContext().getContainerService().getContainer(type, true);
+         }
+         if (v.getId() <= 0) {
+             v.setId(R.id.TANGRAM_VIEW_CONTAINER_ID);
+
+File: examples/src/main/java/com/tmall/wireless/tangram/example/support/SampleClickSupport.java
+Patch:
+@@ -41,8 +41,8 @@ public SampleClickSupport() {
+     }
+ 
+     @Override
+-    public void defaultClick(View targetView, BaseCell cell, int type) {
+-        super.defaultClick(targetView, cell, type);
++    public void defaultClick(View targetView, BaseCell cell, int eventType) {
++        super.defaultClick(targetView, cell, eventType);
+         Toast.makeText(targetView.getContext(), " 您点击了组件  type:"+cell.type, Toast.LENGTH_SHORT).show();
+     }
+ }
+

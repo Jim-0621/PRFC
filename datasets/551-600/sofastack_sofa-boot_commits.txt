@@ -1,0 +1,2323 @@
+File: sofa-boot-project/sofa-boot/src/main/java/com/alipay/sofa/boot/util/ModuleUtil.java
+Patch:
+@@ -63,7 +63,7 @@ public static void exportAllJDKModulePackageToAll() {
+         try {
+             if (isExported.compareAndSet(false,true) && nameToModules != null) {
+                 nameToModules.forEach((name, module) -> module.getPackages().forEach(pkgName -> {
+-                    if (isJDKModulePackage(pkgName)) {
++                    if (isJDKModulePackage(module.getName())) {
+                         addOpensToAll(module, pkgName);
+                         addExportsToAll(module, pkgName);
+                     }
+
+File: sofa-boot-project/sofa-boot-core/ark-sofa-boot/src/test/java/com/alipay/sofa/boot/ark/SofaRuntimeContainerTests.java
+Patch:
+@@ -93,7 +93,7 @@ public void destroy() throws Exception {
+ 
+         assertThat(SofaRuntimeContainer.getApplicationContext(classLoaderA)).isEqualTo(
+             genericApplicationContext);
+-        sofaRuntimeContainer.destroy();
++        sofaRuntimeContainer.destroy(classLoaderA);
+         assertThat(SofaRuntimeContainer.getApplicationContext(classLoaderA)).isNull();
+     }
+ 
+
+File: sofa-boot-project/sofa-boot-actuator/src/main/java/com/alipay/sofa/boot/actuator/health/ReadinessCheckCallbackProcessor.java
+Patch:
+@@ -112,7 +112,7 @@ private boolean doHealthCheckCallback(String beanId,
+ 
+         BaseStat baseStat = new BaseStat();
+         baseStat.setName(beanId);
+-        baseStat.putAttribute("type", "readinessCheckCallbacn");
++        baseStat.putAttribute("type", "readinessCheckCallback");
+         baseStat.setStartTime(System.currentTimeMillis());
+ 
+         try {
+
+File: sofa-boot-project/sofa-boot-actuator/src/main/java/com/alipay/sofa/boot/actuator/health/HealthCheckerProcessor.java
+Patch:
+@@ -106,12 +106,12 @@ public boolean readinessHealthCheck(Map<String, Health> healthMap) {
+         String checkComponentNames = readinessHealthCheckers.values().stream()
+                 .map(HealthChecker::getComponentName).collect(Collectors.joining(","));
+         logger.info("SOFABoot HealthChecker readiness check {} item: {}.",
+-                healthCheckers.size(), checkComponentNames);
++                readinessHealthCheckers.size(), checkComponentNames);
+         boolean result;
+         if (isParallelCheck()) {
+-            CountDownLatch countDownLatch = new CountDownLatch(healthCheckers.size());
++            CountDownLatch countDownLatch = new CountDownLatch(readinessHealthCheckers.size());
+             AtomicBoolean parallelResult = new AtomicBoolean(true);
+-            healthCheckers.forEach((String key, HealthChecker value) -> healthCheckExecutor.execute(() -> {
++            readinessHealthCheckers.forEach((String key, HealthChecker value) -> healthCheckExecutor.execute(() -> {
+                 try {
+                     if (!doHealthCheck(key, value, false, healthMap, true, false)) {
+                         parallelResult.set(false);
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/boot/isle/loader/DynamicSpringContextLoader.java
+Patch:
+@@ -87,6 +87,7 @@ public void loadSpringContext(DeploymentDescriptor deployment,
+         ClassLoader classLoader = deployment.getClassLoader();
+ 
+         SofaDefaultListableBeanFactory beanFactory = SofaSpringContextSupport.createBeanFactory(classLoader, this::createBeanFactory);
++        beanFactory.setId(deployment.getModuleName());
+ 
+         SofaGenericApplicationContext context = SofaSpringContextSupport.createApplicationContext(beanFactory, this::createApplicationContext);
+         if (startupReporter != null) {
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/test/java/com/alipay/sofa/boot/isle/loader/DynamicSpringContextLoaderTests.java
+Patch:
+@@ -28,7 +28,6 @@
+ import org.mockito.junit.jupiter.MockitoExtension;
+ import org.springframework.beans.factory.config.BeanDefinition;
+ import org.springframework.beans.factory.support.BeanDefinitionReader;
+-import org.springframework.beans.factory.support.DefaultListableBeanFactory;
+ import org.springframework.beans.factory.support.RootBeanDefinition;
+ import org.springframework.context.ApplicationContext;
+ import org.springframework.context.ConfigurableApplicationContext;
+@@ -103,10 +102,11 @@ void loadSpringContext() {
+         assertThat(applicationContext.getEnvironment().getActiveProfiles()).containsOnly("test");
+ 
+         applicationContext.refresh();
+-        DefaultListableBeanFactory autowireCapableBeanFactory = (DefaultListableBeanFactory) applicationContext
++        SofaDefaultListableBeanFactory autowireCapableBeanFactory = (SofaDefaultListableBeanFactory) applicationContext
+             .getAutowireCapableBeanFactory();
+         assertThat(autowireCapableBeanFactory.isAllowBeanDefinitionOverriding()).isTrue();
+         assertThat(autowireCapableBeanFactory).isInstanceOf(SofaDefaultListableBeanFactory.class);
++        assertThat(autowireCapableBeanFactory.getId()).isEqualTo("test");
+     }
+ 
+     @Test
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/spring/ServiceBeanFactoryPostProcessor.java
+Patch:
+@@ -35,7 +35,7 @@
+ import com.alipay.sofa.runtime.spi.service.BindingConverter;
+ import com.alipay.sofa.runtime.spi.service.BindingConverterContext;
+ import com.alipay.sofa.runtime.spi.service.BindingConverterFactory;
+-import com.alipay.sofa.runtime.spring.bean.LocalVariableTableParameterNameDiscoverer;
++import com.alipay.sofa.boot.spring.parameter.LocalVariableTableParameterNameDiscoverer;
+ import com.alipay.sofa.runtime.spring.bean.SofaBeanNameGenerator;
+ import com.alipay.sofa.runtime.spring.bean.SofaParameterNameDiscoverer;
+ import com.alipay.sofa.runtime.spring.factory.ReferenceFactoryBean;
+
+File: sofa-boot-tests/sofa-boot-smoke-tests/sofa-boot-smoke-tests-isle/src/test/java/com/alipay/sofa/smoke/tests/isle/ParallelSpringContextInstallStageTests.java
+Patch:
+@@ -17,6 +17,8 @@
+ package com.alipay.sofa.smoke.tests.isle;
+ 
+ import com.alipay.sofa.boot.isle.stage.SpringContextInstallStage;
++import org.junit.jupiter.api.condition.EnabledOnJre;
++import org.junit.jupiter.api.condition.JRE;
+ import org.springframework.test.context.TestPropertySource;
+ 
+ /**
+@@ -26,6 +28,7 @@
+  * @version ParallelSpringContextInstallStageTests.java, v 0.1 2023年02月21日 8:06 PM huzijie Exp $
+  */
+ @TestPropertySource(properties = "sofa.boot.isle.moduleStartUpParallel=true")
++@EnabledOnJre(JRE.JAVA_17)
+ public class ParallelSpringContextInstallStageTests extends
+                                                    SpringContextInstallStageIntegrationTestBase {
+ }
+
+File: sofa-boot-tests/sofa-boot-smoke-tests/sofa-boot-smoke-tests-runtime/src/test/java/com/alipay/sofa/smoke/tests/runtime/async/AsyncInitTests.java
+Patch:
+@@ -20,6 +20,8 @@
+ import com.alipay.sofa.runtime.async.AsyncInitMethodManager;
+ import com.alipay.sofa.smoke.tests.runtime.RuntimeSofaBootApplication;
+ import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.condition.EnabledOnJre;
++import org.junit.jupiter.api.condition.JRE;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.boot.test.context.TestConfiguration;
+@@ -41,6 +43,7 @@
+ @Import(AsyncInitTests.AsyncInitTestConfiguration.class)
+ @TestPropertySource(properties = { "sofa.boot.runtime.asyncInitExecutorCoreSize=20",
+                                   "sofa.boot.runtime.asyncInitExecutorMaxSize=20" })
++@EnabledOnJre(JRE.JAVA_17)
+ public class AsyncInitTests {
+ 
+     @Autowired
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/boot/isle/stage/SpringContextInstallStage.java
+Patch:
+@@ -154,7 +154,7 @@ private void doRefreshSpringContextParallel() {
+             if (rootDescriptors == null || rootDescriptors.size() == 0) {
+                 return;
+             }
+-            final CountDownLatch latch = new CountDownLatch(rootDescriptors.size());
++            final CountDownLatch latch = new CountDownLatch(application.getResolvedDeployments().size());
+             List<Future<?>> futures = new CopyOnWriteArrayList<>();
+ 
+             for (final DeploymentDescriptor deployment : rootDescriptors) {
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/main/java/com/alipay/sofa/rpc/boot/runtime/converter/RpcBindingConverter.java
+Patch:
+@@ -455,7 +455,7 @@ protected void convertServiceAnnotation(RpcBindingParam bindingParam,
+ 
+             UserThreadPool threadPoolObj = (UserThreadPool) applicationContext.getBean(threadPool);
+ 
+-            String interfaceName = sofaServiceAnnotation.interfaceType().getCanonicalName();
++            String interfaceName = bindingConverterContext.getInterfaceType().getCanonicalName();
+             String uniqId = sofaServiceAnnotation.uniqueId();
+             String uniqueName = interfaceName + ":1.0"
+                                 + (StringUtils.isEmpty(uniqId) ? "" : ":" + uniqId);
+
+File: sofa-boot-project/sofa-boot-core/test-sofa-boot/src/main/java/com/alipay/sofa/test/mock/injector/InjectorMockTestExecutionListener.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.alipay.sofa.test.mock.injector;
+ 
++import com.alipay.sofa.boot.log.ErrorCode;
+ import com.alipay.sofa.test.mock.injector.annotation.MockBeanInjector;
+ import com.alipay.sofa.test.mock.injector.annotation.SpyBeanInjector;
+ import com.alipay.sofa.test.mock.injector.definition.Definition;
+@@ -85,8 +86,7 @@ private void injectTestClass(DefinitionParser parser, TestContext testContext) {
+                 if (existingValue == injectValue) {
+                     return;
+                 }
+-                Assert.state(existingValue == null, () -> "The existing value '" + existingValue + "' of field '" + field
+-                        + "' is not the same as the new value '" + injectValue + "'");
++                Assert.state(existingValue == null, () -> ErrorCode.convert("01-30000", existingValue, field, injectValue));
+                 ReflectionUtils.setField(field, target, injectValue);
+             }
+         });
+
+File: sofa-boot-project/sofa-boot-core/test-sofa-boot/src/main/java/com/alipay/sofa/test/mock/injector/resolver/BeanInjectorStub.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.alipay.sofa.test.mock.injector.resolver;
+ 
++import com.alipay.sofa.boot.log.ErrorCode;
+ import com.alipay.sofa.test.mock.injector.definition.Definition;
+ import com.alipay.sofa.test.mock.injector.definition.MockDefinition;
+ import com.alipay.sofa.test.mock.injector.definition.SpyDefinition;
+@@ -58,8 +59,7 @@ public BeanInjectorStub(Definition definition, Field field, Object bean) {
+         ReflectionUtils.makeAccessible(field);
+         this.originalValue = ReflectionUtils.getField(field, bean);
+         if (definition instanceof SpyDefinition && this.originalValue == null) {
+-            throw new IllegalStateException("Unable to create spy to inject target field " + field
+-                                            + " when origin value is null");
++            throw new IllegalStateException(ErrorCode.convert("01-30001", field));
+         }
+     }
+ 
+
+File: sofa-boot-project/sofa-boot-core/ark-sofa-boot/src/main/java/com/alipay/sofa/boot/ark/invoke/DynamicJvmServiceProxyFinder.java
+Patch:
+@@ -84,7 +84,7 @@ public ServiceComponent findServiceComponent(ClassLoader clientClassloader, Cont
+             }
+         }
+ 
+-        String interfaceType = contract.getInterfaceType().getCanonicalName();
++        String interfaceType = contract.getInterfaceTypeCanonicalName();
+         String uniqueId = contract.getUniqueId();
+         for (SofaRuntimeManager sofaRuntimeManager : SofaRuntimeContainer.sofaRuntimeManagerSet()) {
+             if (sofaRuntimeManager.getAppClassLoader().equals(clientClassloader)) {
+@@ -233,7 +233,7 @@ private ServiceComponent findServiceComponent(String uniqueId, String interfaceT
+         for (ComponentInfo c : components) {
+             ServiceComponent component = (ServiceComponent) c;
+             Contract serviceContract = component.getService();
+-            if (serviceContract.getInterfaceType().getCanonicalName().equals(interfaceType)
++            if (serviceContract.getInterfaceTypeCanonicalName().equals(interfaceType)
+                 && uniqueId.equals(serviceContract.getUniqueId())) {
+                 return component;
+             }
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/test/java/com/alipay/sofa/runtime/spring/bean/SofaParameterNameDiscovererTests.java
+Patch:
+@@ -21,6 +21,7 @@
+ import com.alipay.sofa.runtime.api.annotation.SofaReference;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
++import org.springframework.core.DefaultParameterNameDiscoverer;
+ import org.springframework.mock.env.MockEnvironment;
+ import org.springframework.util.ReflectionUtils;
+ 
+@@ -48,7 +49,8 @@ public void setUp() {
+         mockEnvironment = new MockEnvironment();
+         annotationWrapper = AnnotationWrapper.create(SofaReference.class)
+             .withEnvironment(mockEnvironment).withBinder(DefaultPlaceHolderBinder.INSTANCE);
+-        parameterNameDiscoverer = new SofaParameterNameDiscoverer(annotationWrapper);
++        parameterNameDiscoverer = new SofaParameterNameDiscoverer(
++            new DefaultParameterNameDiscoverer(), annotationWrapper);
+     }
+ 
+     @Test
+
+File: sofa-boot-project/sofa-boot/src/main/java/com/alipay/sofa/boot/context/SofaSpringContextSupport.java
+Patch:
+@@ -20,7 +20,7 @@
+ import org.springframework.beans.factory.annotation.QualifierAnnotationAutowireCandidateResolver;
+ import org.springframework.beans.propertyeditors.ClassArrayEditor;
+ import org.springframework.beans.propertyeditors.ClassEditor;
+-import org.springframework.core.StandardReflectionParameterNameDiscoverer;
++import org.springframework.core.DefaultParameterNameDiscoverer;
+ 
+ import java.util.function.Function;
+ import java.util.function.Supplier;
+@@ -40,7 +40,7 @@ public static SofaDefaultListableBeanFactory createBeanFactory(ClassLoader beanC
+         if (!(beanFactory.getAutowireCandidateResolver() instanceof QualifierAnnotationAutowireCandidateResolver)) {
+             beanFactory.setAutowireCandidateResolver(new QualifierAnnotationAutowireCandidateResolver());
+         }
+-        beanFactory.setParameterNameDiscoverer(new StandardReflectionParameterNameDiscoverer());
++        beanFactory.setParameterNameDiscoverer(new DefaultParameterNameDiscoverer());
+         beanFactory.setBeanClassLoader(beanClassLoader);
+         beanFactory.addPropertyEditorRegistrar(registry -> {
+             registry.registerCustomEditor(Class.class, new ClassEditor(beanClassLoader));
+
+File: sofa-boot-project/sofa-boot/src/test/java/com/alipay/sofa/boot/context/SofaSpringContextSupportTests.java
+Patch:
+@@ -18,7 +18,7 @@
+ 
+ import org.junit.jupiter.api.Test;
+ import org.springframework.beans.factory.annotation.QualifierAnnotationAutowireCandidateResolver;
+-import org.springframework.core.StandardReflectionParameterNameDiscoverer;
++import org.springframework.core.DefaultParameterNameDiscoverer;
+ 
+ import static org.assertj.core.api.Assertions.assertThat;
+ 
+@@ -39,7 +39,7 @@ public void createBeanFactory() {
+         assertThat(beanFactory).isNotNull();
+         assertThat(beanFactory.getAutowireCandidateResolver()).isInstanceOf(QualifierAnnotationAutowireCandidateResolver.class);
+         assertThat(beanFactory.getBeanClassLoader()).isEqualTo(classLoader);
+-        assertThat(beanFactory.getParameterNameDiscoverer()).isInstanceOf(StandardReflectionParameterNameDiscoverer.class);
++        assertThat(beanFactory.getParameterNameDiscoverer()).isInstanceOf(DefaultParameterNameDiscoverer.class);
+         assertThat(beanFactory.getPropertyEditorRegistrars().size() >= 1).isTrue();
+     }
+ 
+
+File: sofa-boot-project/sofa-boot-actuator-autoconfigure/src/main/java/com/alipay/sofa/boot/actuator/autoconfigure/health/ReadinessAutoConfiguration.java
+Patch:
+@@ -30,7 +30,6 @@
+ import org.springframework.boot.autoconfigure.AutoConfiguration;
+ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+-import org.springframework.boot.autoconfigure.condition.SearchStrategy;
+ import org.springframework.boot.context.properties.EnableConfigurationProperties;
+ import org.springframework.context.annotation.Bean;
+ 
+@@ -54,7 +53,7 @@ public class ReadinessAutoConfiguration {
+                                            .getLogger(ReadinessAutoConfiguration.class);
+ 
+     @Bean
+-    @ConditionalOnMissingBean(value = ReadinessCheckListener.class, search = SearchStrategy.CURRENT)
++    @ConditionalOnMissingBean(value = ReadinessCheckListener.class)
+     public ReadinessCheckListener readinessCheckListener(HealthCheckerProcessor healthCheckerProcessor,
+                                                          HealthIndicatorProcessor healthIndicatorProcessor,
+                                                          ReadinessCheckCallbackProcessor afterReadinessCheckCallbackProcessor,
+
+File: sofa-boot-project/sofa-boot-autoconfigure/src/main/java/com/alipay/sofa/boot/autoconfigure/rpc/SofaRpcAutoConfiguration.java
+Patch:
+@@ -49,7 +49,6 @@
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Import;
+ import org.springframework.context.annotation.ImportSelector;
+-import org.springframework.context.annotation.Lazy;
+ import org.springframework.core.env.Environment;
+ import org.springframework.core.type.AnnotationMetadata;
+ 
+@@ -202,7 +201,7 @@ public RegistryConfigContainer registryConfigContainer(SofaBootRpcProperties sof
+     @Bean
+     @ConditionalOnMissingBean
+     public ConsumerConfigHelper consumerConfigHelper(SofaBootRpcProperties sofaBootRpcProperties,
+-                                                     @Lazy RegistryConfigContainer registryConfigContainer,
++                                                     RegistryConfigContainer registryConfigContainer,
+                                                      Environment environment) {
+         String appName = environment.getProperty(SofaBootConstants.APP_NAME_KEY);
+         ConsumerConfigHelper configHelper = new ConsumerConfigHelper(registryConfigContainer,
+
+File: sofa-boot-project/sofa-boot-autoconfigure/src/test/java/com/alipay/sofa/boot/autoconfigure/runtime/SofaRuntimeAutoConfigurationTests.java
+Patch:
+@@ -96,6 +96,7 @@ public void customSofaRuntimeContextProperties() {
+                 .withPropertyValues("sofa.boot.runtime.serviceInterfaceTypeCheck=true")
+                 .withPropertyValues("sofa.boot.runtime.skipJvmReferenceHealthCheckList=com.alipay.sofa.isle.sample.facade.SampleJvmService:annotationImpl,com.alipay.sofa.isle.sample.facade.SampleJvmService")
+                 .withPropertyValues("sofa.boot.runtime.referenceHealthCheckMoreDetailEnable=true")
++                .withPropertyValues("sofa.boot.runtime.serviceCanBeDuplicate=false")
+                 .run((context) -> {
+                     SofaRuntimeContext.Properties properties= context.getBean(SofaRuntimeContext.class).getProperties();
+                     assertThat(properties.isSkipJvmReferenceHealthCheck()).isTrue();
+@@ -108,6 +109,7 @@ public void customSofaRuntimeContextProperties() {
+                     assertThat(properties.isServiceInterfaceTypeCheck()).isTrue();
+                     assertThat(properties.getSkipJvmReferenceHealthCheckList()).containsExactly("com.alipay.sofa.isle.sample.facade.SampleJvmService:annotationImpl", "com.alipay.sofa.isle.sample.facade.SampleJvmService");
+                     assertThat(properties.isReferenceHealthCheckMoreDetailEnable()).isTrue();
++                    assertThat(properties.isServiceCanBeDuplicate()).isFalse();
+                 });
+     }
+ 
+
+File: sofa-boot-project/sofa-boot-actuator/src/main/java/com/alipay/sofa/boot/actuator/health/NonReadinessCheck.java
+Patch:
+@@ -14,7 +14,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.alipay.sofa.boot.health;
++package com.alipay.sofa.boot.actuator.health;
+ 
+ /**
+  * Mark a Health Indicator which would be not invoked during readiness check.
+
+File: sofa-boot-project/sofa-boot/src/main/java/com/alipay/sofa/boot/util/ApplicationListenerOrderConstants.java
+Patch:
+@@ -43,7 +43,7 @@ public class ApplicationListenerOrderConstants {
+      */
+     public static final int SOFA_CONFIG_SOURCE_SUPPORT_LISTENER_ORDER = LOG_ENVIRONMENT_PREPARING_LISTENER_ORDER + 3;
+ 
+-    public static final int SOFA_TRACER_CONFIGURATION_LISTENER_ORDER  = Ordered.HIGHEST_PRECEDENCE + 50;
++    public static final int SOFA_TRACER_CONFIGURATION_LISTENER_ORDER  = Ordered.HIGHEST_PRECEDENCE + 30;
+ 
+     static {
+         Assert
+
+File: sofa-boot-project/sofa-boot-core/log-sofa-boot/src/main/java/com/alipay/sofa/boot/logging/LogEnvironmentPreparingListener.java
+Patch:
+@@ -46,8 +46,8 @@ public void onApplicationEvent(ApplicationEnvironmentPreparedEvent event) {
+ 
+     @Override
+     public int getOrder() {
+-        // Must be invoked after ConfigFileApplicationListener
+-        return Ordered.HIGHEST_PRECEDENCE + 20;
++        // Must be invoked after ConfigFileApplicationListener, and before SofaConfigSourceSupportListener
++        return Ordered.HIGHEST_PRECEDENCE + 12;
+     }
+ 
+     private void prepare(ConfigurableEnvironment environment) {
+
+File: sofa-boot-project/sofa-boot/src/main/java/com/alipay/sofa/boot/listener/SofaConfigSourceSupportListener.java
+Patch:
+@@ -19,6 +19,7 @@
+ import com.alipay.sofa.common.config.SofaConfigs;
+ import com.alipay.sofa.common.config.source.AbstractConfigSource;
+ import org.springframework.boot.context.event.ApplicationEnvironmentPreparedEvent;
++import org.springframework.boot.context.logging.LoggingApplicationListener;
+ import org.springframework.context.ApplicationListener;
+ import org.springframework.core.Ordered;
+ import org.springframework.core.env.ConfigurableEnvironment;
+@@ -33,7 +34,7 @@ public class SofaConfigSourceSupportListener
+                                             implements
+                                             ApplicationListener<ApplicationEnvironmentPreparedEvent>,
+                                             Ordered {
+-    private static final int SOFA_BOOT_CONFIG_SOURCE_ORDER = LOWEST_PRECEDENCE;
++    private static final int SOFA_BOOT_CONFIG_SOURCE_ORDER = LoggingApplicationListener.DEFAULT_ORDER - 5;
+ 
+     @Override
+     public void onApplicationEvent(ApplicationEnvironmentPreparedEvent event) {
+@@ -63,6 +64,6 @@ public boolean hasKey(String key) {
+ 
+     @Override
+     public int getOrder() {
+-        return LOWEST_PRECEDENCE;
++        return LoggingApplicationListener.DEFAULT_ORDER - 5;
+     }
+ }
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/spring/factory/AbstractContractFactoryBean.java
+Patch:
+@@ -149,7 +149,8 @@ public void setApplicationContext(ApplicationContext applicationContext) throws
+     public Class<?> getInterfaceClass() {
+         if (interfaceClass == null) {
+             try {
+-                interfaceClass = this.getClass().getClassLoader().loadClass(interfaceType);
++                interfaceClass = Thread.currentThread().getContextClassLoader()
++                    .loadClass(interfaceType);
+             } catch (ClassNotFoundException e) {
+                 throw new RuntimeException(e);
+             } catch (NullPointerException e) {
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/spring/ServiceBeanFactoryPostProcessor.java
+Patch:
+@@ -40,6 +40,7 @@
+ import com.alipay.sofa.runtime.spring.parser.ServiceDefinitionParser;
+ import org.springframework.beans.BeansException;
+ import org.springframework.beans.FatalBeanException;
++import org.springframework.beans.factory.FactoryBean;
+ import org.springframework.beans.factory.InitializingBean;
+ import org.springframework.beans.factory.annotation.AnnotatedBeanDefinition;
+ import org.springframework.beans.factory.annotation.AnnotatedGenericBeanDefinition;
+@@ -260,6 +261,8 @@ private void doGenerateSofaReferenceDefinition(BeanDefinition beanDefinition,
+                 getSofaReferenceBinding(sofaReference, sofaReference.binding()));
+             builder.addPropertyValue(AbstractContractDefinitionParser.DEFINITION_BUILDING_API_TYPE,
+                 true);
++            builder.getBeanDefinition().setAttribute(FactoryBean.OBJECT_TYPE_ATTRIBUTE,
++                interfaceType);
+             registry.registerBeanDefinition(referenceId, builder.getBeanDefinition());
+         }
+ 
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/test/java/com/alipay/sofa/runtime/test/BeanPostProcessorOrderTest.java
+Patch:
+@@ -80,8 +80,8 @@ public void testShutDownHookReordered() throws Exception {
+             }
+         }
+         Assert.assertNotNull(testBeanAware);
+-        Assert.assertEquals(testBeanAware, beanPostProcessorOrderBean);
+-        Assert.assertTrue(testBeanAware.isEnhancedByLowOrderPostProcessor());
++        Assert.assertNotEquals(testBeanAware, beanPostProcessorOrderBean);
++        Assert.assertFalse(testBeanAware.isEnhancedByLowOrderPostProcessor());
+     }
+ 
+     @Test
+@@ -121,4 +121,4 @@ public BeanPostProcessorOrderBean beanPostProcessorOrderBean() {
+             return new BeanPostProcessorOrderBean();
+         }
+     }
+-}
+\ No newline at end of file
++}
+
+File: sofa-boot-project/sofa-boot-starters/log-sofa-boot-starter/src/test/java/com/alipay/sofa/common/boot/logging/test/DefaultLevelTest.java
+Patch:
+@@ -49,5 +49,6 @@ public void testDefaultLevel() throws IOException {
+             environment.getProperty(Constants.LOG_ENCODING_PROP_KEY));
+         Assert.assertEquals(1, contents.size());
+         Assert.assertTrue(contents.get(0).contains("info level"));
++        applicationContext.close();
+     }
+ }
+
+File: sofa-boot-project/sofa-boot-core/healthcheck-sofa-boot/src/main/java/com/alipay/sofa/healthcheck/HealthCheckerProcessor.java
+Patch:
+@@ -176,6 +176,9 @@ public boolean readinessHealthCheck(Map<String, Health> healthMap) {
+             } catch (InterruptedException e) {
+                 logger.error(ErrorCode.convert("01-22005"), e);
+             }
++            if (!finished) {
++                healthMap.put(SofaBootConstants.SOFABOOT_HEALTH_CHECK_TIMEOUT_KEY, Health.unknown().withDetail(SofaBootConstants.SOFABOOT_HEALTH_CHECK_TIMEOUT_KEY,SofaBootConstants.SOFABOOT_HEALTH_CHECK_TIMEOUT_MSG).build());
++            }
+             result = finished && parallelResult.get();
+         } else {
+             result = readinessHealthCheckers.entrySet().stream()
+
+File: sofa-boot-project/sofa-boot-core/healthcheck-sofa-boot/src/main/java/com/alipay/sofa/healthcheck/HealthIndicatorProcessor.java
+Patch:
+@@ -181,6 +181,9 @@ public boolean readinessHealthCheck(Map<String, Health> healthMap) {
+             } catch (InterruptedException e) {
+                 logger.error(ErrorCode.convert("01-21004"), e);
+             }
++            if (!finished) {
++                healthMap.put(SofaBootConstants.SOFABOOT_HEALTH_CHECK_TIMEOUT_KEY, Health.unknown().withDetail(SofaBootConstants.SOFABOOT_HEALTH_CHECK_TIMEOUT_KEY,SofaBootConstants.SOFABOOT_HEALTH_CHECK_TIMEOUT_MSG).build());
++            }
+             result = finished && parallelResult.get();
+         } else {
+             result = healthIndicators.entrySet().stream()
+
+File: sofa-boot-project/sofa-boot-autoconfigure/src/main/java/com/alipay/sofa/boot/autoconfigure/runtime/SofaRuntimeAutoConfiguration.java
+Patch:
+@@ -159,7 +159,7 @@ public static ServiceBeanFactoryPostProcessor serviceBeanFactoryPostProcessor()
+     }
+ 
+     @Bean
+-    @ConditionalOnProperty(prefix = "com.alipay.sofa.proxy.bean", name = "enabled", havingValue = "true")
++    @ConditionalOnProperty(prefix = "com.alipay.sofa.proxy.bean", name = "enabled", havingValue = "true", matchIfMissing = true)
+     public static ProxyBeanFactoryPostProcessor proxyBeanFactoryPostProcessor() {
+         return new ProxyBeanFactoryPostProcessor();
+     }
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/spring/AsyncInitBeanFactoryPostProcessor.java
+Patch:
+@@ -22,9 +22,9 @@
+ import com.alipay.sofa.boot.error.ErrorCode;
+ import com.alipay.sofa.boot.util.BeanDefinitionUtil;
+ import com.alipay.sofa.runtime.api.annotation.SofaAsyncInit;
++import com.alipay.sofa.runtime.factory.BeanLoadCostBeanFactory;
+ import com.alipay.sofa.runtime.log.SofaLogger;
+ import com.alipay.sofa.runtime.spring.async.AsyncInitBeanHolder;
+-import com.alipay.sofa.runtime.spring.parser.AsyncInitBeanDefinitionDecorator;
+ import org.springframework.beans.BeansException;
+ import org.springframework.beans.FatalBeanException;
+ import org.springframework.beans.factory.BeanFactory;
+@@ -198,8 +198,8 @@ public void setEnvironment(Environment environment) {
+     private String getModuleName(ApplicationContext applicationContext) {
+         BeanFactory beanFactory = ((AbstractApplicationContext) applicationContext)
+             .getBeanFactory();
+-        if (AsyncInitBeanDefinitionDecorator.isBeanLoadCostBeanFactory(beanFactory.getClass())) {
+-            return AsyncInitBeanDefinitionDecorator.getModuleNameFromBeanFactory(beanFactory);
++        if (beanFactory instanceof BeanLoadCostBeanFactory) {
++            return ((BeanLoadCostBeanFactory) beanFactory).getId();
+         }
+         return SofaBootConstants.ROOT_APPLICATION_CONTEXT;
+     }
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/spring/AsyncProxyBeanPostProcessor.java
+Patch:
+@@ -19,6 +19,7 @@
+ import java.lang.reflect.Method;
+ import java.util.concurrent.CountDownLatch;
+ 
++import com.alipay.sofa.runtime.factory.BeanLoadCostBeanFactory;
+ import org.aopalliance.intercept.MethodInterceptor;
+ import org.aopalliance.intercept.MethodInvocation;
+ import org.springframework.aop.framework.ProxyFactory;
+@@ -34,7 +35,6 @@
+ import com.alipay.sofa.runtime.log.SofaLogger;
+ import com.alipay.sofa.runtime.spring.async.AsyncInitBeanHolder;
+ import com.alipay.sofa.runtime.spring.async.AsyncTaskExecutor;
+-import com.alipay.sofa.runtime.spring.parser.AsyncInitBeanDefinitionDecorator;
+ import org.springframework.core.PriorityOrdered;
+ 
+ /**
+@@ -76,8 +76,8 @@ public Object postProcessAfterInitialization(Object bean, String beanName)
+     public void afterPropertiesSet() {
+         ConfigurableBeanFactory beanFactory = ((AbstractApplicationContext) applicationContext)
+             .getBeanFactory();
+-        if (AsyncInitBeanDefinitionDecorator.isBeanLoadCostBeanFactory(beanFactory.getClass())) {
+-            moduleName = AsyncInitBeanDefinitionDecorator.getModuleNameFromBeanFactory(beanFactory);
++        if (beanFactory instanceof BeanLoadCostBeanFactory) {
++            moduleName = ((BeanLoadCostBeanFactory) beanFactory).getId();
+         } else {
+             moduleName = SofaBootConstants.ROOT_APPLICATION_CONTEXT;
+         }
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/isle/spring/factory/BeanLoadCostBeanFactory.java
+Patch:
+@@ -168,6 +168,9 @@ public String outputBeanStats(String indent) {
+             } else if (o1 == null) {
+                 return -1;
+             }
++            if (o2.getRealRefreshElapsedTime() == o1.getRealRefreshElapsedTime()) {
++                return 0;
++            }
+             return o2.getRealRefreshElapsedTime() > o1.getRealRefreshElapsedTime() ? 1 : -1;
+         });
+         int size = beanStats.size();
+
+File: sofa-boot-project/sofa-boot-actuator-autoconfigure/src/test/java/com/alipay/sofa/actuator/autoconfigure/test/IsleBeanEndpointAutoConfiguration.java
+Patch:
+@@ -49,7 +49,6 @@ public void test() throws JsonProcessingException {
+         JsonNode rootNode = objectMapper.readTree(response.getBody());
+         JsonNode contextNode = rootNode.get("contexts");
+         Assert.assertNotNull(contextNode);
+-        Assert.assertEquals(2, contextNode.size());
+-        Assert.assertNotNull(contextNode.get("bootstrap"));
++        Assert.assertEquals(1, contextNode.size());
+     }
+ }
+
+File: sofa-boot-project/sofa-boot-actuator/src/test/java/com/alipay/sofa/boot/actuator/beans/IsleBeanEndpointTest.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.alipay.sofa.boot.actuator.beans;
+ 
++import com.alipay.sofa.boot.constant.SofaBootConstants;
+ import com.alipay.sofa.isle.ApplicationRuntimeModel;
+ import com.alipay.sofa.isle.deployment.DeploymentDescriptor;
+ import org.junit.Assert;
+@@ -47,7 +48,8 @@ public void testBeans() {
+         ApplicationRuntimeModel model = new ApplicationRuntimeModel();
+         model.addInstalled(new MockDeploymentDescriptor("A"));
+         model.addInstalled(new MockDeploymentDescriptor("B"));
+-        IsleBeansEndpoint isleBeansEndpoint = new IsleBeansEndpoint(context, model);
++        context.getBeanFactory().registerSingleton(SofaBootConstants.APPLICATION, model);
++        IsleBeansEndpoint isleBeansEndpoint = new IsleBeansEndpoint(context);
+         BeansEndpoint.ApplicationBeans applicationBeans = isleBeansEndpoint.beans();
+         Assert.assertNotNull(applicationBeans);
+         Map<String, BeansEndpoint.ContextBeans> beansMap = applicationBeans.getContexts();
+
+File: sofa-boot-project/sofa-boot-actuator/src/test/java/com/alipay/sofa/boot/actuator/components/SofaBootComponentsEndpointTest.java
+Patch:
+@@ -92,13 +92,13 @@ public void testComponents() {
+         SofaBootComponentsEndPoint.ApplicationComponents applicationComponents = sofaBootComponentsEndPoint
+             .components();
+         Assert.assertNotNull(applicationComponents);
+-        Map<ComponentType, Collection<SofaBootComponentsEndPoint.ComponentDisplayInfo>> componentTypeCollectionMap = applicationComponents
++        Map<String, Collection<SofaBootComponentsEndPoint.ComponentDisplayInfo>> componentTypeCollectionMap = applicationComponents
+             .getComponentsInfoMap();
+         Assert.assertNotNull(componentTypeCollectionMap);
+         Assert.assertEquals(2, componentTypeCollectionMap.size());
+ 
+         Collection<SofaBootComponentsEndPoint.ComponentDisplayInfo> serviceComponentCollection = componentTypeCollectionMap
+-            .get(ServiceComponent.SERVICE_COMPONENT_TYPE);
++            .get(ServiceComponent.SERVICE_COMPONENT_TYPE.getName());
+         Assert.assertEquals(1, serviceComponents.size());
+         Assert.assertTrue(serviceComponentCollection instanceof List);
+         Assert.assertEquals("testSofaService",
+@@ -109,7 +109,7 @@ public void testComponents() {
+                 .get(0).getApplicationId());
+ 
+         Collection<SofaBootComponentsEndPoint.ComponentDisplayInfo> extComponentCollection = componentTypeCollectionMap
+-            .get(ExtensionComponent.EXTENSION_COMPONENT_TYPE);
++            .get(ExtensionComponent.EXTENSION_COMPONENT_TYPE.getName());
+         Assert.assertEquals(1, extComponentCollection.size());
+         Assert.assertTrue(extComponentCollection instanceof List);
+         Assert.assertEquals("testSofaExt",
+
+File: sofa-boot-project/sofa-boot-core/healthcheck-sofa-boot/src/main/java/com/alipay/sofa/healthcheck/ReadinessCheckListener.java
+Patch:
+@@ -139,7 +139,7 @@ public void onAvailabilityChangeEvent(AvailabilityChangeEvent<?> event) {
+         if (isReadinessCheckFinish()) {
+             Object payload = event.getPayload();
+             if (payload instanceof ReadinessState && payload != readinessState) {
+-                // If readinessCheck if performed normally, readinessState won't be null
++                // If readinessCheck is performed normally, readinessState won't be null
+                 // it means application is in critical state if it is
+                 if (readinessState == null) {
+                     AvailabilityChangeEvent.publish(applicationContext,
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/isle/deployment/DependencyTree.java
+Patch:
+@@ -37,7 +37,7 @@ public class DependencyTree<K, T> implements Iterable<DependencyTree.Entry<K, T>
+ 
+     // the sorted list of resolved entries.
+     // given an element e from that list it is ensured that any element at the left
+-    // of 'e' doesn't depends on it
++    // of 'e' doesn't depend on it
+     private final List<Entry<K, T>>   resolved;
+ 
+     public DependencyTree() {
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/isle/deployment/impl/FileDeploymentDescriptor.java
+Patch:
+@@ -48,7 +48,7 @@ public void loadSpringXMLs() {
+ 
+         try {
+             // When path contains special characters (e.g., white space, Chinese), URL converts them to UTF8 code point.
+-            // In order to processing correctly, create File from URI
++            // In order to process correctly, create File from URI
+             URI springXmlUri = new URI("file://"
+                                        + url.getFile().substring(
+                                            0,
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/isle/profile/SofaModuleProfileChecker.java
+Patch:
+@@ -26,15 +26,15 @@
+ public interface SofaModuleProfileChecker {
+ 
+     /***
+-     * determine whether the module should be activate
++     * determine whether the module should be activated
+      *
+      * @param sofaModuleProfiles sofa module profiles
+      * @return true or false
+      */
+     boolean acceptProfiles(String[] sofaModuleProfiles);
+ 
+     /**
+-     * determine whether the module should be activate
++     * determine whether the module should be activated
+      *
+      * @param deploymentDescriptor
+      * @return
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/isle/spring/SofaModuleContextLifecycle.java
+Patch:
+@@ -27,7 +27,7 @@
+ 
+ /**
+  * SofaModuleContextLifecycle is a SmartLifecycle bean which will be started after ApplicationContext refreshed.
+- * SofaModuleContextLifecycle has -100 phase, which overrides default lowest order, and has following effect:
++ * SofaModuleContextLifecycle has -100 phase, which overrides default the lowest order, and has the following effect:
+  * 1. Start before default Lifecycle bean.
+  * 2. Any other bean has option to precede.
+  *
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/main/java/com/alipay/sofa/rpc/boot/common/NetworkAddressUtil.java
+Patch:
+@@ -43,7 +43,7 @@ public class NetworkAddressUtil {
+     private static String          DEFAULT_HOST_NAME    = "app";
+ 
+     /**
+-     * this method should be invoked fisrt
++     * this method should be invoked first
+      *
+      * @param enabledIpRange
+      * @param bindNetworkInterface
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/test/java/com/alipay/sofa/rpc/boot/test/adapter/BindingAdapterFactoryTest.java
+Patch:
+@@ -24,7 +24,7 @@
+ 
+ /**
+  * @author zhaowang
+- * @version : BindingAdatperFactoryTest.java, v 0.1 2020年02月05日 2:46 下午 zhaowang Exp $
++ * @version : BindingAdapterFactoryTest.java, v 0.1 2020年02月05日 2:46 下午 zhaowang Exp $
+  */
+ public class BindingAdapterFactoryTest {
+ 
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/test/java/com/alipay/sofa/rpc/boot/test/bean/direct/DirectService.java
+Patch:
+@@ -21,6 +21,6 @@
+  */
+ public interface DirectService {
+ 
+-    String sayDirect(String stirng);
++    String sayDirect(String string);
+ 
+ }
+\ No newline at end of file
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/test/java/com/alipay/sofa/rpc/boot/test/bean/direct/DirectServiceImpl.java
+Patch:
+@@ -21,7 +21,7 @@
+  */
+ public class DirectServiceImpl implements DirectService {
+     @Override
+-    public String sayDirect(String stirng) {
+-        return stirng;
++    public String sayDirect(String string) {
++        return string;
+     }
+ }
+\ No newline at end of file
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/test/java/com/alipay/sofa/rpc/boot/test/config/SofaRpcLoggerLevelConfigTest.java
+Patch:
+@@ -55,7 +55,7 @@ public void testOtherLoggerLevel() {
+     }
+ 
+     @Test
+-    public void testUserAppLogerLevel() {
++    public void testUserAppLoggerLevel() {
+         org.slf4j.Logger userLogger = org.slf4j.LoggerFactory.getLogger("com.user.app.xxx");
+         Assert.assertTrue(userLogger.isWarnEnabled());
+     }
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/common/xmap/XAnnotatedList.java
+Patch:
+@@ -79,7 +79,7 @@ protected Object getValue(Context ctx, Element base) throws Exception {
+         if (type != ArrayList.class) {
+             if (type.isArray()) {
+                 if (componentType.isPrimitive()) {
+-                    // primitive arrays cannot be casted to Object[]
++                    // primitive arrays cannot be cast to Object[]
+                     return PrimitiveArrays.toPrimitiveArray(values, componentType);
+                 } else {
+                     return values
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/common/xmap/annotation/XNodeList.java
+Patch:
+@@ -45,7 +45,7 @@
+     boolean trim() default true;
+ 
+     /**
+-     * The type of a collection object.
++     * The type of collection object.
+      *
+      * @return the type of items
+      */
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/common/xmap/annotation/spring/XAnnotatedSpring.java
+Patch:
+@@ -56,6 +56,6 @@ protected Object getValue(Context ctx, Element base) throws Exception {
+             // allow DOM elements as values
+             return base;
+         }
+-        return XMapSpringUtil.getSpringOjbect(this, xaso.getApplicationContext(), base);
++        return XMapSpringUtil.getSpringObject(this, xaso.getApplicationContext(), base);
+     }
+ }
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/common/xmap/annotation/spring/XMapSpringUtil.java
+Patch:
+@@ -54,7 +54,7 @@ public static Object getSpringObject(Class type, String beanName,
+      * @param base element base
+      * @return
+      */
+-    public static Object getSpringOjbect(XAnnotatedMember xam,
++    public static Object getSpringObject(XAnnotatedMember xam,
+                                          ApplicationContext applicationContext, Element base) {
+         String val = DOMHelper.getNodeValue(base, xam.path);
+         if (val != null && val.length() > 0) {
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/api/annotation/SofaService.java
+Patch:
+@@ -43,9 +43,9 @@
+ public @interface SofaService {
+ 
+     /**
+-     * The interface type of the SOFA service to be create. Default to the only interface of the annotated Spring bean
++     * The interface type of the SOFA service to be created. Default to the only interface of the annotated Spring bean
+      * when not specified. When the annotated Spring bean has more than one interface, this field must be specified.
+-     * When you want to create a SOFA service which's interface type is not a java interface but and concrete java
++     * When you want to create a SOFA service which interface type is not a java interface but concrete java
+      * class, this field must be specified.
+      *
+      * @return return interface type
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/api/client/param/ExtensionParam.java
+Patch:
+@@ -72,7 +72,7 @@ public void setElement(Element element) {
+     /**
+      * Get the target bean name of extension
+      *
+-     * @return The target target bean name of extension
++     * @return The target bean name of extension
+      */
+     public String getTargetInstanceName() {
+         return targetInstanceName;
+@@ -81,7 +81,7 @@ public String getTargetInstanceName() {
+     /**
+      * Set the target bean name of extension
+      *
+-     * @param targetInstanceName The the target bean name of extension
++     * @param targetInstanceName The target bean name of extension
+      */
+     public void setTargetInstanceName(String targetInstanceName) {
+         this.targetInstanceName = targetInstanceName;
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/test/java/com/alipay/sofa/runtime/test/ClientFactoryTest.java
+Patch:
+@@ -187,7 +187,7 @@ public interface PrivateService {
+     }
+ 
+     /**
+-     * test removeService and removeReference methods in in ReferenceClientImpl and ServiceClientImpl
++     * test removeService and removeReference methods in ReferenceClientImpl and ServiceClientImpl
+      */
+     @Test
+     public void testRemoveServiceOrRemoveReference() {
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/isle/stage/SpringContextInstallStage.java
+Patch:
+@@ -290,7 +290,7 @@ protected void doRefreshSpringContext(DeploymentDescriptor deployment,
+                 publishContextAsSofaComponent(deployment, application, ctx);
+                 application.addInstalled(deployment);
+             } catch (Throwable t) {
+-                SofaLogger.error(ErrorCode.convert("01-11002"), deployment.getName(), t);
++                SofaLogger.error(ErrorCode.convert("01-11002", deployment.getName()), t);
+                 application.addFailed(deployment);
+             } finally {
+                 deployment.deployFinish();
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/ext/component/ExtensionComponent.java
+Patch:
+@@ -154,8 +154,9 @@ private void loadContributions(ExtensionPoint extensionPoint, Extension extensio
+                     .getAppClassLoader())) {
+                     this.e = e;
+                 }
+-                SofaLogger.error(ErrorCode.convert("01-01002"), extensionPoint.getName(),
+-                    extension.getComponentName(), e);
++                SofaLogger.error(
++                    ErrorCode.convert("01-01002", extensionPoint.getName(),
++                        extension.getComponentName()), e);
+             }
+         }
+     }
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/test/java/com/alipay/sofa/runtime/test/SofaEventHandlerTest.java
+Patch:
+@@ -75,6 +75,7 @@ public void before() {
+         properties.setProperty("com.alipay.sofa.boot.skipExtensionHealthCheck", "true");
+         properties.setProperty("com.alipay.sofa.boot.skipJvmSerialize", "true");
+         properties.setProperty("com.alipay.sofa.boot.extensionFailureInsulating", "true");
++        properties.setProperty("com.alipay.sofa.boot.serviceInterfaceTypeCheck", "true");
+         properties.setProperty("spring.application.name", "tSofaEventHandlerTest");
+         SofaFramework.getRuntimeSet().forEach(value -> SofaFramework.unRegisterSofaRuntimeManager(value));
+         SpringApplication springApplication = new SpringApplication(
+@@ -104,6 +105,7 @@ public void testUninstallEvent() {
+         Assert.assertFalse(SofaRuntimeProperties.isSkipExtensionHealthCheck(ctx.getClassLoader()));
+         Assert
+             .assertFalse(SofaRuntimeProperties.isExtensionFailureInsulating(ctx.getClassLoader()));
++        Assert.assertFalse(SofaRuntimeProperties.isServiceInterfaceTypeCheck());
+         Assert.assertFalse(SofaRuntimeProperties.isSkipJvmSerialize(ctx.getClassLoader()));
+         Assert.assertTrue(SofaFramework.getRuntimeSet().isEmpty());
+         Assert.assertFalse(ctx.isActive());
+
+File: sofa-boot-project/sofa-boot-core/healthcheck-sofa-boot/src/main/java/com/alipay/sofa/healthcheck/ReadinessCheckListener.java
+Patch:
+@@ -21,6 +21,7 @@
+ import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.stream.Collectors;
+ 
++import com.alipay.sofa.boot.error.ErrorCode;
+ import com.alipay.sofa.runtime.configure.SofaRuntimeConfigurationProperties;
+ import org.slf4j.Logger;
+ import org.springframework.beans.BeansException;
+@@ -212,7 +213,7 @@ private void determineReadinessState() {
+             logger.info("Readiness check result: success");
+         } else {
+             readinessState = ReadinessState.REFUSING_TRAFFIC;
+-            logger.error("Readiness check result: fail");
++            logger.error(ErrorCode.convert("01-20000"));
+             if (healthCheckProperties.isHealthCheckInsulator()) {
+                 throw new HealthCheckException(
+                     "Application health check is failed and health check insulator switch is turned on!");
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/isle/spring/SofaModuleContextLifecycle.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.alipay.sofa.isle.spring;
+ 
++import com.alipay.sofa.boot.error.ErrorCode;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.context.SmartLifecycle;
+ 
+@@ -44,7 +45,7 @@ public void start() {
+             try {
+                 pipelineContext.process();
+             } catch (Throwable t) {
+-                SofaLogger.error("process pipeline error", t);
++                SofaLogger.error(ErrorCode.convert("01-10000"), t);
+                 throw new RuntimeException(t);
+             }
+         }
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/component/impl/StandardSofaRuntimeManager.java
+Patch:
+@@ -19,6 +19,7 @@
+ import java.util.List;
+ import java.util.concurrent.CopyOnWriteArrayList;
+ 
++import com.alipay.sofa.boot.error.ErrorCode;
+ import com.alipay.sofa.boot.health.RuntimeHealthChecker;
+ import com.alipay.sofa.runtime.api.ServiceRuntimeException;
+ import com.alipay.sofa.runtime.spi.client.ClientFactoryInternal;
+@@ -121,7 +122,7 @@ public void shutdown() throws ServiceRuntimeException {
+ 
+             clear();
+         } catch (Throwable throwable) {
+-            throw new ServiceRuntimeException(throwable);
++            throw new ServiceRuntimeException(ErrorCode.convert("01-03100"), throwable);
+         }
+     }
+ 
+@@ -135,7 +136,7 @@ public void shutDownExternally() throws ServiceRuntimeException {
+             }
+             appClassLoader = null;
+         } catch (Throwable throwable) {
+-            throw new ServiceRuntimeException(throwable);
++            throw new ServiceRuntimeException(ErrorCode.convert("01-03100"), throwable);
+         }
+     }
+ 
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/service/client/ReferenceClientImpl.java
+Patch:
+@@ -18,6 +18,7 @@
+ 
+ import java.util.Collection;
+ 
++import com.alipay.sofa.boot.error.ErrorCode;
+ import com.alipay.sofa.runtime.api.ServiceRuntimeException;
+ import com.alipay.sofa.runtime.api.client.ReferenceClient;
+ import com.alipay.sofa.runtime.api.client.param.BindingParam;
+@@ -72,9 +73,8 @@ private <T> Reference getReferenceFromReferenceParam(ReferenceParam<T> reference
+             BindingConverter bindingConverter = bindingConverterFactory
+                 .getBindingConverter(bindingParam.getBindingType());
+             if (bindingConverter == null) {
+-                throw new ServiceRuntimeException(
+-                    "Can not found binding converter for binding type "
+-                            + bindingParam.getBindingType());
++                throw new ServiceRuntimeException(ErrorCode.convert("01-00200",
++                    bindingParam.getBindingType()));
+             }
+             BindingConverterContext bindingConverterContext = new BindingConverterContext();
+             bindingConverterContext.setInBinding(true);
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/spring/ClientFactoryBeanPostProcessor.java
+Patch:
+@@ -19,6 +19,7 @@
+ import java.lang.reflect.Field;
+ import java.lang.reflect.Modifier;
+ 
++import com.alipay.sofa.boot.error.ErrorCode;
+ import org.springframework.beans.BeansException;
+ import org.springframework.beans.factory.config.BeanPostProcessor;
+ import org.springframework.core.PriorityOrdered;
+@@ -64,9 +65,7 @@ public void doWith(Field field) throws IllegalArgumentException, IllegalAccessEx
+                     ReflectionUtils.makeAccessible(field);
+                     ReflectionUtils.setField(field, bean, client);
+                 } else {
+-                    throw new RuntimeException(
+-                        "Field annotated by ClientFactorySetter must be of type"
+-                                + " ClientFactory or client store in the ClientFactory.");
++                    throw new RuntimeException(ErrorCode.convert("01-02000"));
+                 }
+             }
+         }, new ReflectionUtils.FieldFilter() {
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/spring/ReferenceAnnotationBeanPostProcessor.java
+Patch:
+@@ -20,6 +20,7 @@
+ import java.lang.reflect.Method;
+ import java.lang.reflect.Modifier;
+ 
++import com.alipay.sofa.boot.error.ErrorCode;
+ import com.alipay.sofa.runtime.log.SofaLogger;
+ import org.springframework.beans.BeansException;
+ import org.springframework.beans.factory.config.BeanPostProcessor;
+@@ -166,8 +167,8 @@ private Object createReferenceProxy(SofaReference sofaReferenceAnnotation,
+         BindingConverter bindingConverter = bindingConverterFactory
+             .getBindingConverter(new BindingType(sofaReferenceAnnotation.binding().bindingType()));
+         if (bindingConverter == null) {
+-            throw new ServiceRuntimeException("Can not found binding converter for binding type "
+-                                              + sofaReferenceAnnotation.binding().bindingType());
++            throw new ServiceRuntimeException(ErrorCode.convert("01-00200", sofaReferenceAnnotation
++                .binding().bindingType()));
+         }
+ 
+         BindingConverterContext bindingConverterContext = new BindingConverterContext();
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/spring/factory/AbstractContractFactoryBean.java
+Patch:
+@@ -22,6 +22,7 @@
+ 
+ import javax.xml.parsers.DocumentBuilderFactory;
+ 
++import com.alipay.sofa.boot.error.ErrorCode;
+ import org.springframework.beans.BeansException;
+ import org.springframework.beans.factory.FactoryBean;
+ import org.springframework.beans.factory.InitializingBean;
+@@ -131,7 +132,7 @@ protected List<Binding> parseBindings(List<Element> parseElements,
+     }
+ 
+     protected void dealWithbindingConverterNotExist(String tagName) {
+-        throw new ServiceRuntimeException("Can't find BindingConverter of type " + tagName);
++        throw new ServiceRuntimeException(ErrorCode.convert("01-00200", tagName));
+     }
+ 
+     @Override
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/test/java/com/alipay/sofa/runtime/test/ClientFactoryTest.java
+Patch:
+@@ -181,8 +181,8 @@ public void testRemoveServiceOrRemoveReference() {
+         try {
+             serviceClient.removeService(PrivateService.class, -1);
+         } catch (IllegalArgumentException ex) {
+-            Assert.assertEquals("Argument delay must be a positive integer or zero.",
+-                ex.getMessage());
++            Assert.assertTrue(ex.getMessage().contains(
++                "Argument delay must be a positive integer or zero"));
+         }
+         serviceClient.removeService(PrivateService.class, "uniqueId", 0);
+     }
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/test/java/com/alipay/sofa/runtime/test/SofaServiceAndReferenceTest.java
+Patch:
+@@ -89,8 +89,8 @@ public void testSofaReferenceOnMethodParameter() {
+             springApplication.run();
+         } catch (Throwable t) {
+             throwable = t;
+-            Assert.assertEquals("Only jvm type of @SofaReference on parameter is supported.",
+-                t.getMessage());
++            Assert.assertTrue(t.getMessage().contains(
++                "Only jvm type of @SofaReference on parameter is supported."));
+         }
+         Assert.assertNotNull(throwable);
+     }
+@@ -116,7 +116,7 @@ public void testMultiSofaServiceWithSameInterfaceAndUniqueId() throws IOExceptio
+         String logRootPath = StringUtils.hasText(System.getProperty("logging.path")) ? System
+             .getProperty("logging.path") : "./logs";
+         File sofaLog = new File(logRootPath + File.separator + "sofa-runtime" + File.separator
+-                                + "common-error.log");
++                                + "sofa-default.log");
+         FileUtils.write(sofaLog, "", System.getProperty("file.encoding"));
+         Map<String, Object> properties = new HashMap<>();
+         properties.put("spring.application.name", "SofaServiceAndReferenceTest");
+
+File: sofa-boot-project/sofa-boot-autoconfigure/src/main/java/com/alipay/sofa/boot/autoconfigure/tracer/SofaTracerAutoConfiguration.java
+Patch:
+@@ -61,7 +61,7 @@ public SpanReportListenerHolder sofaTracerSpanReportListener() {
+ 
+     @Bean
+     @ConditionalOnMissingBean
+-    public Tracer tracer(SofaTracerProperties sofaTracerProperties) throws Exception {
++    public Tracer sofaTracer(SofaTracerProperties sofaTracerProperties) throws Exception {
+         String reporterName = sofaTracerProperties.getReporterName();
+         if (StringUtils.isNotBlank(reporterName)) {
+             Reporter reporter = (Reporter) Class.forName(reporterName).newInstance();
+
+File: sofa-boot-project/sofa-boot-autoconfigure/src/main/java/com/alipay/sofa/boot/autoconfigure/startup/SofaStartupIsleAutoConfiguration.java
+Patch:
+@@ -26,6 +26,7 @@
+ import org.springframework.boot.autoconfigure.AutoConfigureBefore;
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
++import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+ import org.springframework.boot.autoconfigure.condition.SearchStrategy;
+ import org.springframework.context.ApplicationContext;
+ import org.springframework.context.annotation.Bean;
+@@ -39,6 +40,7 @@
+ @Configuration
+ @AutoConfigureBefore(SofaModuleAutoConfiguration.class)
+ @ConditionalOnClass({ ApplicationRuntimeModel.class, StartupReporter.class })
++@ConditionalOnProperty(value = "com.alipay.sofa.boot.enable-isle", matchIfMissing = true)
+ public class SofaStartupIsleAutoConfiguration {
+ 
+     @Bean
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/SofaRuntimeProperties.java
+Patch:
+@@ -116,4 +116,4 @@ public static Boolean isSkipJvmSerialize(ClassLoader classLoader) {
+     public static void setSkipJvmSerialize(ClassLoader classLoader, boolean skipJvmSerialize) {
+         skipJvmSerializeMap.putIfAbsent(classLoader, skipJvmSerialize);
+     }
+-}
+\ No newline at end of file
++}
+
+File: sofa-boot-project/sofa-boot-core/log-sofa-boot/src/main/java/com/alipay/sofa/boot/logging/LogEnvironmentPreparingListener.java
+Patch:
+@@ -36,8 +36,8 @@ public class LogEnvironmentPreparingListener
+                                             Ordered {
+     @Override
+     public void onApplicationEvent(ApplicationEnvironmentPreparedEvent event) {
+-        prepare(event.getEnvironment());
+         defaultConsoleLoggers();
++        prepare(event.getEnvironment());
+     }
+ 
+     @Override
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/isle/stage/ModuleLogOutputStage.java
+Patch:
+@@ -130,7 +130,7 @@ private void logInfoBeanCost(StringBuilder stringBuilder, List<DeploymentDescrip
+         int size = deploys.size();
+         for (int i = 0; i < size; ++i) {
+             String prefix = (i == size - 1) ? SYMBOLIC2 : SYMBOLIC1;
+-            String index_prefix = (i == size - 1) ? EMPTY_INDEX_PREFIX : INDENT_PREFIX;
++            String indexPrefix = (i == size - 1) ? EMPTY_INDEX_PREFIX : INDENT_PREFIX;
+ 
+             DeploymentDescriptor dd = deploys.get(i);
+             BeanFactory beanFactory = ((ConfigurableApplicationContext) dd.getApplicationContext())
+@@ -146,7 +146,7 @@ private void logInfoBeanCost(StringBuilder stringBuilder, List<DeploymentDescrip
+             if (beanFactory instanceof BeanLoadCostBeanFactory) {
+                 sb.append(prefix).append("[Module] ").append(dd.getName()).append(" [")
+                     .append(dd.getElapsedTime()).append(" ms]\n");
+-                sb.append(((BeanLoadCostBeanFactory) beanFactory).outputBeanLoadCost(index_prefix));
++                sb.append(((BeanLoadCostBeanFactory) beanFactory).outputBeanLoadCost(indexPrefix));
+             }
+         }
+         stringBuilder.append(" [totalTime = ").append(totalTime).append(" ms, realTime = ")
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/test/java/com/alipay/sofa/runtime/test/SofaEventHandlerTest.java
+Patch:
+@@ -77,6 +77,7 @@ public void before() {
+         properties.setProperty("com.alipay.sofa.boot.skipJvmReferenceHealthCheck", "true");
+         properties.setProperty("com.alipay.sofa.boot.skipExtensionHealthCheck", "true");
+         properties.setProperty("com.alipay.sofa.boot.skipJvmSerialize", "true");
++        properties.setProperty("com.alipay.sofa.boot.extensionFailureInsulating", "true");
+         properties.setProperty("spring.application.name", "tSofaEventHandlerTest");
+         SofaFramework.getRuntimeSet().forEach(value -> SofaFramework.unRegisterSofaRuntimeManager(value));
+         SpringApplication springApplication = new SpringApplication(
+@@ -104,6 +105,8 @@ public void testUninstallEvent() {
+         Assert
+             .assertFalse(SofaRuntimeProperties.isSkipJvmReferenceHealthCheck(ctx.getClassLoader()));
+         Assert.assertFalse(SofaRuntimeProperties.isSkipExtensionHealthCheck(ctx.getClassLoader()));
++        Assert
++            .assertFalse(SofaRuntimeProperties.isExtensionFailureInsulating(ctx.getClassLoader()));
+         Assert.assertFalse(SofaRuntimeProperties.isSkipJvmSerialize(ctx.getClassLoader()));
+         Assert.assertTrue(SofaFramework.getRuntimeSet().isEmpty());
+         Assert.assertFalse(ctx.isActive());
+
+File: sofa-boot-project/sofa-boot-core/tracer-sofa-boot/src/main/java/com/alipay/sofa/tracer/boot/flexible/processor/SofaTracerMethodInvocationProcessor.java
+Patch:
+@@ -59,12 +59,12 @@ private Object proceedProxyMethodWithTracerAnnotation(MethodInvocation invocatio
+                     sofaTracerSpan.setTag("param.types",
+                         stringBuilder.toString().substring(0, stringBuilder.length() - 1));
+                 }
+-                return invocation.proceed();
++                Object result = invocation.proceed();
++                ((FlexibleTracer) tracer).afterInvoke();
++                return result;
+             } catch (Throwable t) {
+                 ((FlexibleTracer) tracer).afterInvoke(t.getMessage());
+                 throw t;
+-            } finally {
+-                ((FlexibleTracer) tracer).afterInvoke();
+             }
+         } else {
+             return invocation.proceed();
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/main/java/com/alipay/sofa/rpc/boot/container/ServerConfigContainer.java
+Patch:
+@@ -487,11 +487,11 @@ ServerConfig createHttpServerConfig() {
+         }
+ 
+         if (StringUtils.hasText(httpThreadPoolCoreSizeStr)) {
+-            serverConfig.setMaxThreads(Integer.parseInt(httpThreadPoolCoreSizeStr));
++            serverConfig.setCoreThreads(Integer.parseInt(httpThreadPoolCoreSizeStr));
+         }
+ 
+         if (StringUtils.hasText(httpThreadPoolMaxSizeStr)) {
+-            serverConfig.setCoreThreads(Integer.parseInt(httpThreadPoolMaxSizeStr));
++            serverConfig.setMaxThreads(Integer.parseInt(httpThreadPoolMaxSizeStr));
+         }
+ 
+         if (StringUtils.hasText(acceptsSizeStr)) {
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/test/java/com/alipay/sofa/rpc/boot/test/SofaBootRpcAllTest.java
+Patch:
+@@ -61,6 +61,7 @@
+ import org.junit.rules.ExpectedException;
+ import org.junit.runner.RunWith;
+ import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.beans.factory.annotation.Qualifier;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.context.annotation.ImportResource;
+@@ -123,6 +124,7 @@ public class SofaBootRpcAllTest {
+     private LazyService                lazyServiceDubbo;
+ 
+     @Autowired
++    @Qualifier("sofaGreeterTripleRef")
+     private SofaGreeterTriple.IGreeter sofaGreeterTripleRef;
+ 
+     @SofaReference(binding = @SofaReferenceBinding(bindingType = "bolt"), jvmFirst = false, uniqueId = "bolt")
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/test/java/com/alipay/sofa/rpc/boot/test/config/DisableTracingTest.java
+Patch:
+@@ -23,6 +23,7 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.test.annotation.DirtiesContext;
+ import org.springframework.test.context.junit4.SpringRunner;
+ 
+ import com.alipay.sofa.rpc.boot.config.SofaBootRpcProperties;
+@@ -37,6 +38,7 @@
+ public class DisableTracingTest {
+ 
+     @Test
++    @DirtiesContext
+     public void testDisableTracing() throws NoSuchFieldException, IllegalAccessException {
+         Field installedModulesField = ModuleFactory.class.getDeclaredField("INSTALLED_MODULES");
+         installedModulesField.setAccessible(true);
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/test/java/com/alipay/sofa/rpc/boot/test/misc/ComponentHealthCheckerTest.java
+Patch:
+@@ -52,7 +52,7 @@ public void componentHealthCheckerTest() {
+         Health health = componentHealthChecker.isHealthy();
+         Map<String, Object> details = health.getDetails();
+         for (String key : details.keySet()) {
+-            Assert.assertTrue(((String) details.get(key)).contains("bolt"));
++            Assert.assertTrue(((String) details.get(key)).contains("passed"));
+         }
+     }
+ 
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/test/java/com/alipay/sofa/runtime/test/SofaEventHandlerTest.java
+Patch:
+@@ -75,6 +75,7 @@ public void before() {
+         Properties properties = new Properties();
+         properties.setProperty("com.alipay.sofa.boot.disableJvmFirst", "true");
+         properties.setProperty("com.alipay.sofa.boot.skipJvmReferenceHealthCheck", "true");
++        properties.setProperty("com.alipay.sofa.boot.skipExtensionHealthCheck", "true");
+         properties.setProperty("com.alipay.sofa.boot.skipJvmSerialize", "true");
+         properties.setProperty("spring.application.name", "tSofaEventHandlerTest");
+         SofaFramework.getRuntimeSet().forEach(value -> SofaFramework.unRegisterSofaRuntimeManager(value));
+@@ -102,6 +103,7 @@ public void testUninstallEvent() {
+         Assert.assertFalse(SofaRuntimeProperties.isDisableJvmFirst(ctx.getClassLoader()));
+         Assert
+             .assertFalse(SofaRuntimeProperties.isSkipJvmReferenceHealthCheck(ctx.getClassLoader()));
++        Assert.assertFalse(SofaRuntimeProperties.isSkipExtensionHealthCheck(ctx.getClassLoader()));
+         Assert.assertFalse(SofaRuntimeProperties.isSkipJvmSerialize(ctx.getClassLoader()));
+         Assert.assertTrue(SofaFramework.getRuntimeSet().isEmpty());
+         Assert.assertFalse(ctx.isActive());
+
+File: sofa-boot-project/sofa-boot-core/runtime-sofa-boot/src/main/java/com/alipay/sofa/runtime/service/component/ReferenceComponent.java
+Patch:
+@@ -120,6 +120,7 @@ public HealthResult isHealthy() {
+         String report = aggregateBindingHealth(reference.getBindings());
+         if (e != null) {
+             report += " [" + e.getMessage() + "]";
++            result.setHealthy(false);
+         }
+ 
+         result.setHealthReport(report);
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/main/java/com/alipay/sofa/rpc/boot/container/ServerConfigContainer.java
+Patch:
+@@ -24,6 +24,7 @@
+ import com.alipay.sofa.rpc.boot.log.SofaBootRpcLoggerFactory;
+ import com.alipay.sofa.rpc.common.RpcConstants;
+ import com.alipay.sofa.rpc.config.ServerConfig;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.server.Server;
+ import com.alipay.sofa.rpc.server.bolt.BoltServer;
+ import org.slf4j.Logger;
+@@ -191,7 +192,8 @@ public ServerConfig getServerConfig(String protocol) {
+         } else if (customServerConfigs.get(protocol) != null) {
+             return customServerConfigs.get(protocol);
+         } else {
+-            throw new SofaBootRpcRuntimeException("protocol [" + protocol + "] is not supported");
++            throw new SofaBootRpcRuntimeException(LogCodes.getLog(
++                LogCodes.ERROR_SERVER_PROTOCOL_NOT_SUPPORT, protocol));
+         }
+ 
+     }
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/main/java/com/alipay/sofa/rpc/boot/runtime/binding/RpcBindingXmlConstants.java
+Patch:
+@@ -52,6 +52,8 @@ public class RpcBindingXmlConstants {
+     public static final String TAG_CHECK             = "check";
+     public static final String TAG_PARAMETER_KEY     = "key";
+     public static final String TAG_PARAMETER_VALUE   = "value";
++    public static final String TAG_MOCK_MODE         = "mock-mode";
++    public static final String TAG_MOCK_BEAN         = "mock-bean";
+ 
+     public static final String TAG_NAME              = "name";
+ 
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/main/java/com/alipay/sofa/rpc/boot/swagger/SwaggerServiceImpl.java
+Patch:
+@@ -37,8 +37,8 @@
+  * @author khotyn
+  */
+ public class SwaggerServiceImpl implements SwaggerService {
+-    private OpenAPI     openapi;
+-    private Set<String> restfulServices;
++    private volatile OpenAPI openapi;
++    private Set<String>      restfulServices;
+ 
+     @Override
+     public String openapi() {
+
+File: sofa-boot-project/sofa-boot-core/rpc-sofa-boot/src/test/java/com/alipay/sofa/rpc/boot/test/readiness/ReadinessTest.java
+Patch:
+@@ -54,7 +54,7 @@ public class ReadinessTest extends ActivelyDestroyTest {
+     @Test
+     public void testCannotFoundAddress() throws InterruptedException {
+         thrown.expect(SofaRouteException.class);
+-        thrown.expectMessage("RPC-02306");
++        thrown.expectMessage("RPC-020060001");
+         TimeUnit.SECONDS.sleep(1);
+         Assert.assertEquals("hi World!", sampleFacade.sayHi("World"));
+     }
+
+File: sofa-boot-project/sofa-boot-autoconfigure/src/main/java/com/alipay/sofa/boot/autoconfigure/rpc/SofaRpcAutoConfiguration.java
+Patch:
+@@ -121,13 +121,13 @@ public MeshConfigurator meshConfigurator() {
+ 
+     @Bean
+     @ConditionalOnMissingBean
+-    public RegistryConfigureProcessor nacosConfigurator() {
++    public NacosConfigurator nacosConfigurator() {
+         return new NacosConfigurator();
+     }
+ 
+     @Bean
+     @ConditionalOnMissingBean
+-    public RegistryConfigureProcessor sofaRegistryConfigurator() {
++    public SofaRegistryConfigurator sofaRegistryConfigurator() {
+         return new SofaRegistryConfigurator();
+     }
+ 
+@@ -142,7 +142,7 @@ public Map<String, RegistryConfigureProcessor> configureProcessorMap(List<Regist
+ 
+     @Bean
+     @ConditionalOnMissingBean
+-    public RegistryConfigureProcessor consulConfigurator() {
++    public ConsulConfigurator consulConfigurator() {
+         return new ConsulConfigurator();
+     }
+ 
+
+File: sofa-boot-project/sofa-boot-autoconfigure/src/main/java/com/alipay/sofa/boot/autoconfigure/runtime/SofaRuntimeAutoConfiguration.java
+Patch:
+@@ -98,8 +98,8 @@ public static SofaRuntimeContext sofaRuntimeContext(@Value("${spring.application
+                                                         BindingConverterFactory bindingConverterFactory,
+                                                         BindingAdapterFactory bindingAdapterFactory) {
+         ClientFactoryInternal clientFactoryInternal = new ClientFactoryImpl();
+-        SofaRuntimeManager sofaRuntimeManager = new StandardSofaRuntimeManager(appName,
+-            SofaRuntimeAutoConfiguration.class.getClassLoader(), clientFactoryInternal);
++        SofaRuntimeManager sofaRuntimeManager = new StandardSofaRuntimeManager(appName, Thread
++            .currentThread().getContextClassLoader(), clientFactoryInternal);
+         sofaRuntimeManager.getComponentManager().registerComponentClient(
+             ReferenceClient.class,
+             new ReferenceClientImpl(sofaRuntimeManager.getSofaRuntimeContext(),
+
+File: sofa-boot-project/sofa-boot-core/isle-sofa-boot/src/main/java/com/alipay/sofa/isle/stage/AbstractPipelineStage.java
+Patch:
+@@ -27,8 +27,8 @@
+  * @author xuanbei 18/3/1
+  */
+ public abstract class AbstractPipelineStage implements PipelineStage {
+-    protected final ClassLoader                appClassLoader = AbstractPipelineStage.class
+-                                                                  .getClassLoader();
++    protected final ClassLoader                appClassLoader = Thread.currentThread()
++                                                                  .getContextClassLoader();
+     protected final AbstractApplicationContext applicationContext;
+     protected final String                     appName;
+ 
+
+File: infra-sofa-boot-starter/src/main/java/com/alipay/sofa/infra/listener/SofaBootstrapRunListener.java
+Patch:
+@@ -60,7 +60,7 @@ private void assemblyLogSetting(ConfigurableEnvironment environment) {
+         StreamSupport.stream(environment.getPropertySources().spliterator(), false)
+             .filter(propertySource -> propertySource instanceof EnumerablePropertySource)
+             .map(propertySource -> Arrays
+-                .asList(((MapPropertySource) propertySource).getPropertyNames()))
++                .asList(((EnumerablePropertySource) propertySource).getPropertyNames()))
+                 .flatMap(Collection::stream).filter(LogEnvUtils::filterAllLogConfig)
+                 .forEach((key) -> HIGH_PRIORITY_CONFIG.getSource().put(key, environment.getProperty(key)));
+     }
+
+File: infra-sofa-boot-starter/src/test/java/com/alipay/sofa/infra/base/SofaBootWebSpringBootApplication.java
+Patch:
+@@ -32,6 +32,6 @@ public class SofaBootWebSpringBootApplication {
+     public static void main(String[] args) {
+         SpringApplication springApplication = new SpringApplication(
+             SofaBootWebSpringBootApplication.class);
+-        springApplication.run(args);
++        springApplication.run();
+     }
+ }
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/service/binding/JvmBindingAdapter.java
+Patch:
+@@ -189,7 +189,7 @@ public Object doInvoke(MethodInvocation invocation) throws Throwable {
+                             + getInterfaceName()
+                             + "#"
+                             + getUniqueId()
+-                            + "] cant not find the corresponding JVM service. "
++                            + "] can not find the corresponding JVM service. "
+                             + "Please check if there is a SOFA deployment publish the corresponding JVM service. "
+                             + "If this exception occurred when the application starts up, please add Require-Module to SOFA deployment's MANIFEST.MF to indicate the startup dependency of SOFA modules.");
+             }
+
+File: infra-sofa-boot-starter/src/main/java/com/alipay/sofa/infra/log/space/SofaBootLogSpaceIsolationInit.java
+Patch:
+@@ -39,7 +39,7 @@ public static void initSofaBootLogger(Environment environment, String runtimeLog
+         String loggingPath = environment.getProperty(Constants.LOG_PATH);
+         if (!StringUtils.isEmpty(loggingPath)) {
+             System.setProperty(Constants.LOG_PATH, environment.getProperty(Constants.LOG_PATH));
+-            ReportUtil.report("Actual " + Constants.LOG_PATH + " is [ " + loggingPath + " ]");
++            ReportUtil.reportDebug("Actual " + Constants.LOG_PATH + " is [ " + loggingPath + " ]");
+         }
+ 
+         //for example : init logging.level.com.alipay.sofa.runtime argument
+
+File: isle-sofa-boot-starter/src/main/java/com/alipay/sofa/isle/loader/DynamicSpringContextLoader.java
+Patch:
+@@ -18,7 +18,7 @@
+ 
+ import java.util.Map;
+ 
+-import com.alipay.sofa.runtime.spring.listener.SofaRuntimeApplicationListener;
++import com.alipay.sofa.runtime.spring.initializer.SofaRuntimeSpringContextInitializer;
+ import org.springframework.beans.CachedIntrospectionResults;
+ import org.springframework.beans.PropertyEditorRegistrar;
+ import org.springframework.beans.PropertyEditorRegistry;
+@@ -66,7 +66,7 @@ public void loadSpringContext(DeploymentDescriptor deployment,
+             .setAutowireCandidateResolver(new QualifierAnnotationAutowireCandidateResolver());
+         GenericApplicationContext ctx = sofaModuleProperties.isPublishEventToParent() ? new GenericApplicationContext(
+             beanFactory) : new SofaModuleApplicationContext(beanFactory);
+-        SofaRuntimeApplicationListener.initApplicationContext(ctx);
++        SofaRuntimeSpringContextInitializer.initApplicationContext(ctx);
+         String activeProfiles = sofaModuleProperties.getActiveProfiles();
+         if (StringUtils.hasText(activeProfiles)) {
+             String[] profiles = activeProfiles
+
+File: runtime-sofa-boot-starter/src/test/java/com/alipay/sofa/runtime/integration/base/AbstractTestBase.java
+Patch:
+@@ -47,6 +47,7 @@ public void before() {
+         Map<String, Object> properties = new HashMap<>();
+         properties.put("spring.application.name", "runtime-test");
+         properties.put("mix-xml-annotation-unique-id", "xmlAnnotationSampleService");
++        properties.put("spring.jmx.enabled", "false");
+         initApplicationContext(properties, IntegrationTestConfiguration.class);
+         awareTest = applicationContext.getBean(AwareTest.class);
+     }
+
+File: infra-sofa-boot-starter/src/test/java/com/alipay/sofa/infra/utils/SOFABootEnvUtilsTest.java
+Patch:
+@@ -19,7 +19,6 @@
+ import com.alipay.sofa.infra.base.AbstractTestBase;
+ import com.alipay.sofa.infra.constants.SofaBootInfraConstants;
+ import org.junit.Test;
+-import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.context.ApplicationContextInitializer;
+ import org.springframework.context.ConfigurableApplicationContext;
+ import org.springframework.core.env.ConfigurableEnvironment;
+
+File: isle-sofa-boot-starter/src/main/java/com/alipay/sofa/isle/deployment/DependencyTree.java
+Patch:
+@@ -258,7 +258,7 @@ public void addDependency(Entry<K, T> entry) {
+         }
+ 
+         /**
+-         * Getter method for property <tt>dependencies</tt>.
++         * Getter method for property of dependencies.
+          *
+          * @return property value of dependencies
+          */
+
+File: isle-sofa-boot-starter/src/test/java/com/alipay/sofa/isle/ReferenceAnnotationBeanPostProcessorTest.java
+Patch:
+@@ -108,7 +108,6 @@ public void testCreateReferenceProxy() throws Exception {
+         createReferenceProxy.invoke(referenceAnnotationBeanPostProcessor, sofaReference,
+             ReferenceAnnotationBeanPostProcessorTest.class);
+ 
+-        PowerMockito.verifyStatic();
+         ReferenceRegisterHelper.registerReference(referenceImpl, null, sofaRuntimeContext);
+     }
+ }
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/spi/binding/AbstractBinding.java
+Patch:
+@@ -52,7 +52,7 @@ public void setDestroyed(boolean destroyed) {
+     }
+ 
+     /**
+-     * Getter method for property <tt>isDestroyed</tt>.
++     * Getter method for property of isDestroyed.
+      *
+      * @return property value of isDestroyed
+      */
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/api/annotation/SofaReferenceBinding.java
+Patch:
+@@ -108,4 +108,6 @@
+     boolean lazy() default false;
+ 
+     String serializeType() default "";
++
++    String loadBalancer() default "";
+ }
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/api/annotation/SofaServiceBinding.java
+Patch:
+@@ -58,7 +58,7 @@
+     /**
+      * custorm thread pool for current service
+      *
+-     * @return custorm thread pool
++     * @return custom thread pool
+      */
+     String userThreadPool() default "";
+ 
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/api/annotation/SofaServiceBinding.java
+Patch:
+@@ -75,4 +75,6 @@
+      * @return timeout
+      */
+     int timeout() default 3000;
++
++    String serializeType() default "";
+ }
+
+File: healthcheck-sofa-boot-starter/src/main/java/com/alipay/sofa/healthcheck/core/AfterReadinessCheckCallbackProcessor.java
+Patch:
+@@ -18,7 +18,7 @@
+ 
+ import com.alipay.sofa.healthcheck.log.SofaBootHealthCheckLoggerFactory;
+ import com.alipay.sofa.healthcheck.startup.ReadinessCheckCallback;
+-import com.alipay.sofa.healthcheck.utils.BinaryOperators;
++import com.alipay.sofa.infra.utils.BinaryOperators;
+ import com.alipay.sofa.healthcheck.utils.HealthCheckUtils;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: healthcheck-sofa-boot-starter/src/main/java/com/alipay/sofa/healthcheck/core/HealthCheckerProcessor.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.alipay.sofa.healthcheck.core;
+ 
+ import com.alipay.sofa.healthcheck.log.SofaBootHealthCheckLoggerFactory;
+-import com.alipay.sofa.healthcheck.utils.BinaryOperators;
++import com.alipay.sofa.infra.utils.BinaryOperators;
+ import com.alipay.sofa.healthcheck.utils.HealthCheckUtils;
+ import com.fasterxml.jackson.core.JsonProcessingException;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+
+File: healthcheck-sofa-boot-starter/src/main/java/com/alipay/sofa/healthcheck/core/HealthIndicatorProcessor.java
+Patch:
+@@ -18,7 +18,7 @@
+ 
+ import com.alipay.sofa.healthcheck.log.SofaBootHealthCheckLoggerFactory;
+ import com.alipay.sofa.healthcheck.service.SofaBootHealthIndicator;
+-import com.alipay.sofa.healthcheck.utils.BinaryOperators;
++import com.alipay.sofa.infra.utils.BinaryOperators;
+ import com.alipay.sofa.healthcheck.utils.HealthCheckUtils;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: infra-sofa-boot-starter/src/main/java/com/alipay/sofa/infra/constants/SofaBootInfraConstants.java
+Patch:
+@@ -30,6 +30,7 @@ public class SofaBootInfraConstants {
+     public static final String APP_NAME_KEY                              = "spring.application.name";
+ 
+     public static final String SOFA_DEFAULT_PROPERTY_SOURCE              = "sofaConfigurationProperties";
++    public static final String SOFA_BOOTSTRAP                            = "sofaBootstrap";
+ 
+     /**
+      * {@link org.springframework.boot.ResourceBanner#getVersionsMap}
+
+File: infra-sofa-boot-starter/src/main/java/com/alipay/sofa/infra/utils/BinaryOperators.java
+Patch:
+@@ -14,7 +14,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.alipay.sofa.healthcheck.utils;
++package com.alipay.sofa.infra.utils;
+ 
+ import java.util.function.BinaryOperator;
+ 
+@@ -23,7 +23,7 @@
+  * @since 3.0.0
+  */
+ public class BinaryOperators {
+-    public static BinaryOperator<Boolean> andBoolean(){
++    public static BinaryOperator<Boolean> andBoolean() {
+         return (a, b) -> a && b;
+     }
+ }
+\ No newline at end of file
+
+File: infra-sofa-boot-starter/src/test/java/com/alipay/sofa/infra/base/SofaBootWebSpringBootApplication.java
+Patch:
+@@ -19,6 +19,7 @@
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ import org.springframework.context.annotation.ImportResource;
++import org.springframework.context.annotation.PropertySource;
+ 
+ /**
+  * SofaBootWebSpringBootApplication
+
+File: healthcheck-sofa-boot-starter/src/main/java/com/alipay/sofa/healthcheck/service/ReadinessEndpointWebExtension.java
+Patch:
+@@ -23,6 +23,7 @@
+ import org.springframework.boot.actuate.endpoint.web.annotation.EndpointWebExtension;
+ import org.springframework.boot.actuate.health.Health;
+ import org.springframework.boot.actuate.health.HealthWebEndpointResponseMapper;
++import org.springframework.boot.actuate.health.ShowDetails;
+ 
+ /**
+  * @author qilong.zql
+@@ -39,7 +40,7 @@ public class ReadinessEndpointWebExtension {
+ 
+     @ReadOperation
+     public WebEndpointResponse<Health> getHealth(SecurityContext securityContext) {
+-        return this.responseMapper.map(this.delegate.health(), securityContext);
++        return this.responseMapper.map(this.delegate.health(), securityContext, ShowDetails.ALWAYS);
+     }
+ 
+ }
+\ No newline at end of file
+
+File: healthcheck-sofa-boot-starter/src/test/java/com/alipay/sofa/healthcheck/base/BaseHealthCheckTest.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.alipay.sofa.healthcheck.base;
+ 
++import org.springframework.boot.actuate.autoconfigure.health.HealthEndpointAutoConfiguration;
+ import org.springframework.boot.test.util.EnvironmentTestUtils;
+ import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+ 
+@@ -34,7 +35,7 @@ protected void initApplicationContext(Map<String, Object> properties,
+             EnvironmentTestUtils.addEnvironment(this.applicationContext,
+                 buildProperty(property.getKey(), property.getValue()));
+         }
+-
++        this.applicationContext.register(HealthEndpointAutoConfiguration.class);
+         this.applicationContext.register(annotatedClasses);
+         this.applicationContext.refresh();
+     }
+
+File: healthcheck-sofa-boot-starter/src/test/java/com/alipay/sofa/healthcheck/readiness/ReadinessHealthCheckHttpCodeTest.java
+Patch:
+@@ -29,15 +29,15 @@
+ import org.springframework.context.annotation.Configuration;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
+-import org.springframework.test.context.junit4.SpringRunner;
++import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
+ 
+ /**
+  * @author liangen
+  * @author qilong.zql
+  * @version 2.3.0
+  */
+ @SpringBootApplication
+-@RunWith(SpringRunner.class)
++@RunWith(SpringJUnit4ClassRunner.class)
+ @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = { "management.endpoints.web.exposure.include=health,info,readiness" })
+ public class ReadinessHealthCheckHttpCodeTest {
+ 
+@@ -48,7 +48,7 @@ public class ReadinessHealthCheckHttpCodeTest {
+     public void testReadinessCheckFailedHttpCode() {
+         ResponseEntity<String> response = restTemplate.getForEntity("/actuator/readiness",
+             String.class);
+-        Assert.assertEquals(HttpStatus.OK, response.getStatusCode());
++        Assert.assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+     }
+ 
+     @Test
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/spring/initializer/SofaRuntimeSpringContextInitializer.java
+Patch:
+@@ -19,6 +19,7 @@
+ import com.alipay.sofa.common.log.Constants;
+ import com.alipay.sofa.infra.log.space.SofaBootLogSpaceIsolationInit;
+ import com.alipay.sofa.infra.utils.SOFABootEnvUtils;
++import com.alipay.sofa.runtime.spi.log.SofaLogger;
+ import com.alipay.sofa.runtime.spi.log.SofaRuntimeLoggerFactory;
+ import org.springframework.context.ApplicationContextInitializer;
+ import org.springframework.context.ConfigurableApplicationContext;
+@@ -41,7 +42,6 @@ public void initialize(ConfigurableApplicationContext applicationContext) {
+                                     + SofaRuntimeLoggerFactory.SOFA_RUNTIME_LOG_SPACE;
+         SofaBootLogSpaceIsolationInit.initSofaBootLogger(environment, runtimeLogLevelKey);
+ 
+-        SofaRuntimeLoggerFactory.getLogger(SofaRuntimeSpringContextInitializer.class).info(
+-            "SOFABoot Runtime Starting!");
++        SofaLogger.info("SOFABoot Runtime Starting!");
+     }
+ }
+
+File: infra-sofa-boot-starter/src/main/java/com/alipay/sofa/infra/env/EnvironmentCustomizer.java
+Patch:
+@@ -20,7 +20,6 @@
+ import com.alipay.sofa.infra.constants.SofaBootInfraConstants;
+ import com.alipay.sofa.infra.utils.SOFABootEnvUtils;
+ import org.springframework.boot.SpringApplication;
+-import org.springframework.boot.context.config.ConfigFileApplicationListener;
+ import org.springframework.boot.env.EnvironmentPostProcessor;
+ import org.springframework.core.env.*;
+ import org.springframework.util.StringUtils;
+
+File: isle-sofa-boot-starter/src/main/java/com/alipay/sofa/isle/stage/AbstractPipelineStage.java
+Patch:
+@@ -16,7 +16,7 @@
+  */
+ package com.alipay.sofa.isle.stage;
+ 
+-import com.alipay.sofa.infra.constants.CommonMiddlewareConstants;
++import com.alipay.sofa.infra.constants.SofaBootInfraConstants;
+ import com.alipay.sofa.runtime.spi.log.SofaLogger;
+ import org.springframework.context.support.AbstractApplicationContext;
+ import org.springframework.core.Ordered;
+@@ -35,7 +35,7 @@ public abstract class AbstractPipelineStage implements PipelineStage, Ordered {
+     public AbstractPipelineStage(AbstractApplicationContext applicationContext) {
+         this.applicationContext = applicationContext;
+         appName = applicationContext.getEnvironment().getProperty(
+-            CommonMiddlewareConstants.APP_NAME_KEY);
++            SofaBootInfraConstants.APP_NAME_KEY);
+     }
+ 
+     @Override
+
+File: isle-sofa-boot-starter/src/test/java/com/alipay/sofa/isle/DeploymentExceptionTest.java
+Patch:
+@@ -16,7 +16,7 @@
+  */
+ package com.alipay.sofa.isle;
+ 
+-import com.alipay.sofa.infra.constants.CommonMiddlewareConstants;
++import com.alipay.sofa.infra.constants.SofaBootInfraConstants;
+ import com.alipay.sofa.isle.constants.SofaModuleFrameworkConstants;
+ import com.alipay.sofa.isle.deployment.DeploymentBuilder;
+ import com.alipay.sofa.isle.deployment.DeploymentDescriptorConfiguration;
+@@ -64,8 +64,7 @@ public void test() throws Exception {
+ 
+         ConfigurableEnvironment environment = mock(ConfigurableEnvironment.class);
+         when(applicationContext.getEnvironment()).thenReturn(environment);
+-        when(environment.getProperty(CommonMiddlewareConstants.APP_NAME_KEY))
+-            .thenReturn("testCase");
++        when(environment.getProperty(SofaBootInfraConstants.APP_NAME_KEY)).thenReturn("testCase");
+ 
+         new SpringContextInstallStage(applicationContext).process();
+     }
+
+File: sofaboot-samples/sofaboot-sample-standard/app/common/dal/src/main/java/com/alipay/sofa/common/dal/dao/NewsDO.java
+Patch:
+@@ -20,14 +20,14 @@
+  * @author qilong.zql
+  * @since 2.5.0
+  */
+-public class NewDO {
++public class NewsDO {
+     /**
+      * News title
+      */
+     private String title;
+ 
+     /**
+-     * New id
++     * News id
+      */
+     private String author;
+ 
+
+File: sofaboot-samples/sofaboot-sample-standard/app/common/service/facade/src/main/java/com/alipay/sofa/facade/NewsReadService.java
+Patch:
+@@ -23,7 +23,7 @@
+  * @author qilong.zql
+  * @since 2.5.0
+  */
+-public interface NewReadService<T> {
++public interface NewsReadService<T> {
+     /**
+      * read new
+      * @param author
+
+File: sofaboot-samples/sofaboot-sample-standard/app/common/service/facade/src/main/java/com/alipay/sofa/facade/NewsWriteService.java
+Patch:
+@@ -22,20 +22,20 @@
+  * @author qilong.zql
+  * @since 2.5.0
+  */
+-public interface NewWriteService {
++public interface NewsWriteService {
+     /**
+      * add a new
+      * @param author
+      * @param title
+      * @return
+      * @throws SQLException
+      */
+-    int addNew(String author, String title) throws SQLException;
++    int addNews(String author, String title) throws SQLException;
+ 
+     /**
+      * delete a new
+      * @param author
+      * @throws SQLException
+      */
+-    void deleteNew(String author) throws SQLException;
++    void deleteNews(String author) throws SQLException;
+ }
+\ No newline at end of file
+
+File: healthcheck-sofa-boot-starter/src/main/java/com/alipay/sofa/healthcheck/service/SofaBootReadinessCheckEndpoint.java
+Patch:
+@@ -52,8 +52,6 @@ public SofaBootReadinessCheckEndpoint(String id, boolean sensitive) {
+     public Health invoke() {
+         boolean healthCheckerStatus = readinessCheckListener.getHealthCheckerStatus();
+         Map<String, Health> healthCheckerDetails = readinessCheckListener.getHealthCheckerDetails();
+-
+-        boolean healthIndicatorStatus = readinessCheckListener.getHealthIndicatorStatus();
+         Map<String, Health> healthIndicatorDetails = readinessCheckListener
+             .getHealthIndicatorDetails();
+ 
+@@ -63,7 +61,7 @@ public Health invoke() {
+ 
+         Builder builder;
+         Map<String, Health> healths = new HashMap<>();
+-        if (healthCheckerStatus && healthIndicatorStatus && afterHealthCheckCallbackStatus) {
++        if (healthCheckerStatus && afterHealthCheckCallbackStatus) {
+             builder = Health.up();
+         } else {
+             builder = Health.down();
+@@ -75,6 +73,8 @@ public Health invoke() {
+             builder = builder.withDetail("ReadinessCheckCallback", afterHealthCheckCallbackDetails);
+         }
+         healths.put("SOFABootReadinessHealthCheckInfo", builder.build());
++
++        // HealthIndicator
+         healths.putAll(healthIndicatorDetails);
+         return this.healthAggregator.aggregate(healths);
+     }
+
+File: infra-sofa-boot-starter/src/test/java/com/alipay/sofa/infra/log/AllInfraLoggerFactoryTest.java
+Patch:
+@@ -71,6 +71,5 @@ public void testInfoGetLogger() {
+         logger2.info("test2 info ok");
+ 
+         assertTrue(logger.isInfoEnabled());
+-        assertTrue(logger.isDebugEnabled());
+     }
+ }
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/integration/invoke/DynamicJvmServiceProxyFinder.java
+Patch:
+@@ -36,6 +36,7 @@
+ import java.io.ByteArrayInputStream;
+ import java.io.ByteArrayOutputStream;
+ import java.io.IOException;
++import java.lang.reflect.InvocationTargetException;
+ import java.lang.reflect.Method;
+ import java.util.Collection;
+ 
+@@ -167,6 +168,8 @@ protected Object doInvoke(MethodInvocation invocation) throws Throwable {
+                 Object retVal = transformMethod.invoke(targetService, arguments);
+ 
+                 return hessianTransport(retVal, getClientClassloader());
++            } catch (InvocationTargetException ex) {
++                throw ex.getTargetException();
+             } finally {
+                 setClientClassloader(null);
+             }
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/service/binding/JvmBindingAdapter.java
+Patch:
+@@ -124,7 +124,7 @@ private Object createServiceProxy(Contract contract, JvmBinding binding,
+                 factory.setProxyTargetClass(true);
+             }
+             factory.addAdvice(handler);
+-            return factory.getProxy();
++            return factory.getProxy(newClassLoader);
+         } finally {
+             Thread.currentThread().setContextClassLoader(oldClassLoader);
+         }
+
+File: runtime-sofa-boot-starter/src/test/java/com/alipay/sofa/runtime/integration/IntegrationTest.java
+Patch:
+@@ -80,5 +80,7 @@ public void testServiceAndReference() {
+         Assert.assertEquals(
+             ((SampleService) awareTest.getApplicationContext().getBean("xmlReferenceWithUniqueId"))
+                 .service(), "XmlSampleServiceWithUniqueId");
++        Assert.assertEquals(awareTest.getServiceWithoutInterface().service(),
++            "ServiceWithoutInterface");
+     }
+ }
+\ No newline at end of file
+
+File: isle-sofa-boot-starter/src/main/java/com/alipay/sofa/isle/loader/DynamicSpringContextLoader.java
+Patch:
+@@ -145,7 +145,9 @@ private void addPostProcessors(DefaultListableBeanFactory beanFactory) {
+         Map<String, BeanDefinition> processors = (Map<String, BeanDefinition>) rootApplicationContext
+             .getBean(SofaModuleFrameworkConstants.PROCESSORS_OF_ROOT_APPLICATION_CONTEXT);
+         for (Map.Entry<String, BeanDefinition> entry : processors.entrySet()) {
+-            beanFactory.registerBeanDefinition(entry.getKey(), entry.getValue());
++            if (!beanFactory.containsBeanDefinition(entry.getKey())) {
++                beanFactory.registerBeanDefinition(entry.getKey(), entry.getValue());
++            }
+         }
+     }
+ }
+
+File: isle-sofa-boot-starter/src/test/java/com/alipay/sofa/isle/ServiceAnnotationBeanPostProcessorTest.java
+Patch:
+@@ -53,7 +53,6 @@
+ @RunWith(PowerMockRunner.class)
+ @PrepareForTest({ ReferenceRegisterHelper.class, ServiceAnnotationBeanPostProcessor.class })
+ public class ServiceAnnotationBeanPostProcessorTest {
+-    @Ignore
+     @Test
+     public void testCreateReferenceProxy() throws Exception {
+         Class clazz = Class
+
+File: isle-sofa-boot-starter/src/test/java/com/alipay/sofa/isle/integration/IntegrationTest.java
+Patch:
+@@ -63,7 +63,7 @@ public void test() {
+         assertEquals(sofaModuleProperties.isModuleStartUpParallel(), true);
+         assertEquals(sofaModuleProperties.isPublishEventToParent(), false);
+         assertEquals(sofaModuleProperties.isAllowBeanDefinitionOverriding(), true);
+-        assertEquals(sofaModuleProperties.getBeanLoadCost(), 10);
++        assertEquals(sofaModuleProperties.getBeanLoadCost(), 0);
+ 
+         ApplicationRuntimeModel applicationRuntimeModel = (ApplicationRuntimeModel) applicationContext
+             .getBean(SofaModuleFrameworkConstants.APPLICATION);
+
+File: healthcheck-sofa-boot-starter/src/main/java/com/alipay/sofa/healthcheck/initializer/HealthcheckInitializer.java
+Patch:
+@@ -16,11 +16,11 @@
+  */
+ package com.alipay.sofa.healthcheck.initializer;
+ 
++import com.alipay.sofa.common.log.Constants;
+ import com.alipay.sofa.healthcheck.configuration.HealthCheckConfiguration;
+ import com.alipay.sofa.healthcheck.configuration.HealthCheckConfigurationConstants;
+ import com.alipay.sofa.healthcheck.service.SofaBootComponentHealthCheckInfo;
+ import com.alipay.sofa.healthcheck.startup.HealthCheckTrigger;
+-import com.alipay.sofa.common.log.Constants;
+ import org.springframework.context.ApplicationContextInitializer;
+ import org.springframework.context.ConfigurableApplicationContext;
+ import org.springframework.context.annotation.ComponentScan;
+
+File: healthcheck-sofa-boot-starter/src/main/java/com/alipay/sofa/healthcheck/service/EndPointConfig.java
+Patch:
+@@ -27,7 +27,7 @@
+  */
+ @Configuration
+ public class EndPointConfig {
+-    private static final String READINESS_CHECK_ENDPOINT_NAME = "health/readiness";
++    static final String READINESS_CHECK_ENDPOINT_NAME = "health_readiness";
+ 
+     @Bean
+     public SofaBootReadinessCheckEndpoint readinessCheck() {
+
+File: healthcheck-sofa-boot-starter/src/main/java/com/alipay/sofa/healthcheck/service/SofaBootReadinessCheckMvcEndpoint.java
+Patch:
+@@ -49,6 +49,7 @@ public class SofaBootReadinessCheckMvcEndpoint
+     SofaBootReadinessCheckMvcEndpoint(SofaBootReadinessCheckEndpoint delegate) {
+         super(delegate);
+         setupDefaultStatusMapping();
++        setPath(EndPointConfig.READINESS_CHECK_ENDPOINT_NAME.replace("_", "/"));
+     }
+ 
+     @RequestMapping(produces = MediaType.APPLICATION_JSON_VALUE)
+
+File: infra-sofa-boot-starter/src/main/java/com/alipay/sofa/infra/endpoint/SofaBootVersionEndpoint.java
+Patch:
+@@ -44,7 +44,7 @@
+ public class SofaBootVersionEndpoint extends AbstractEndpoint<Object> implements
+                                                                      ApplicationContextAware {
+ 
+-    public static final String                  SOFA_BOOT_VERSION_PREFIX = "sofaboot/versions";
++    public static final String                  SOFA_BOOT_VERSION_PREFIX = "sofaboot_versions";
+ 
+     private Logger                              logger                   = InfraHealthCheckLoggerFactory
+                                                                              .getLogger(SofaBootVersionEndpoint.class);
+@@ -116,9 +116,8 @@ private void generateSofaVersionProperties(List<Properties> gavResult) throws IO
+      * Load properties into the given instance.
+      *
+      * @param resourceLocation the Resource locations to load
+-     * @throws IOException in case of I/O errors
+      */
+-    private Properties loadProperties(Resource resourceLocation) throws IOException {
++    private Properties loadProperties(Resource resourceLocation) {
+         Properties result = new Properties();
+         if (resourceLocation != null) {
+             if (logger.isInfoEnabled()) {
+
+File: infra-sofa-boot-starter/src/main/java/com/alipay/sofa/infra/initializer/SOFABootInfrastructureSpringContextInitializer.java
+Patch:
+@@ -16,9 +16,9 @@
+  */
+ package com.alipay.sofa.infra.initializer;
+ 
+-import com.alipay.sofa.infra.log.InfraHealthCheckLoggerFactory;
+ import com.alipay.sofa.common.log.Constants;
+ import com.alipay.sofa.common.log.ReportUtil;
++import com.alipay.sofa.infra.log.InfraHealthCheckLoggerFactory;
+ import org.springframework.context.ApplicationContextInitializer;
+ import org.springframework.context.ConfigurableApplicationContext;
+ import org.springframework.core.PriorityOrdered;
+@@ -65,7 +65,7 @@ public int getOrder() {
+         return HIGHEST_PRECEDENCE;
+     }
+ 
+-    public static void initLoggingPath(String middlewareLoggingPath) {
++    private static void initLoggingPath(String middlewareLoggingPath) {
+         if (StringUtils.isEmpty(System.getProperty(Constants.LOG_PATH))
+             && !StringUtils.isEmpty(middlewareLoggingPath)) {
+             System.setProperty(Constants.LOG_PATH, middlewareLoggingPath);
+
+File: infra-sofa-boot-starter/src/test/java/com/alipay/sofa/infra/log/base/AbstractTestBase.java
+Patch:
+@@ -16,9 +16,9 @@
+  */
+ package com.alipay.sofa.infra.log.base;
+ 
+-import com.alipay.sofa.infra.log.InfraHealthCheckLoggerFactory;
+ import com.alipay.sofa.common.log.Constants;
+ import com.alipay.sofa.common.log.LoggerSpaceManager;
++import com.alipay.sofa.infra.log.InfraHealthCheckLoggerFactory;
+ 
+ /**
+  * AbstractTestBase
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/component/impl/StandardSofaRuntimeManager.java
+Patch:
+@@ -18,7 +18,9 @@
+ 
+ import com.alipay.sofa.runtime.api.ServiceRuntimeException;
+ import com.alipay.sofa.runtime.spi.client.ClientFactoryInternal;
+-import com.alipay.sofa.runtime.spi.component.*;
++import com.alipay.sofa.runtime.spi.component.ComponentManager;
++import com.alipay.sofa.runtime.spi.component.SofaRuntimeContext;
++import com.alipay.sofa.runtime.spi.component.SofaRuntimeManager;
+ 
+ /**
+  * Default Sofa Runtime Manager
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/spi/binding/Binding.java
+Patch:
+@@ -16,9 +16,9 @@
+  */
+ package com.alipay.sofa.runtime.spi.binding;
+ 
++import com.alipay.sofa.runtime.api.binding.BindingType;
+ import com.alipay.sofa.runtime.spi.health.HealthResult;
+ import org.w3c.dom.Element;
+-import com.alipay.sofa.runtime.api.binding.BindingType;
+ 
+ /**
+  * @author xuanbei 18/2/28
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/spring/parser/ServiceDefinitionParser.java
+Patch:
+@@ -17,7 +17,6 @@
+ package com.alipay.sofa.runtime.spring.parser;
+ 
+ import com.alipay.sofa.runtime.spring.factory.ServiceFactoryBean;
+-import com.alipay.sofa.runtime.spring.parser.AbstractContractDefinitionParser;
+ import org.springframework.beans.factory.support.BeanDefinitionBuilder;
+ import org.springframework.beans.factory.xml.ParserContext;
+ import org.w3c.dom.Element;
+
+File: healthcheck-sofa-boot-starter/src/test/java/com/alipay/sofa/healthcheck/readiness/DownHealthIndicator.java
+Patch:
+@@ -21,7 +21,7 @@
+ import org.springframework.stereotype.Component;
+ 
+ @Component
+-public class DownHealthIndicataor implements HealthIndicator {
++public class DownHealthIndicator implements HealthIndicator {
+     @Override
+     public Health health() {
+         return Health.down().build();
+
+File: healthcheck-sofa-boot-starter/src/test/java/com/alipay/sofa/healthcheck/readiness/ReadinessCheckHttpCodeTest.java
+Patch:
+@@ -20,11 +20,8 @@
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.springframework.boot.SpringApplication;
+-import org.springframework.boot.actuate.health.Health;
+-import org.springframework.boot.actuate.health.HealthIndicator;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ import org.springframework.boot.test.context.SpringBootTest;
+-import org.springframework.stereotype.Component;
+ import org.springframework.test.context.junit4.SpringRunner;
+ 
+ import java.io.IOException;
+
+File: infra-sofa-boot-starter/src/main/java/com/alipay/sofa/infra/initializer/SOFABootInfrastructureSpringContextInitializer.java
+Patch:
+@@ -66,7 +66,7 @@ public int getOrder() {
+     }
+ 
+     public static void initLoggingPath(String middlewareLoggingPath) {
+-        if (StringUtils.isEmpty((String) System.getProperty(Constants.LOG_PATH))
++        if (StringUtils.isEmpty(System.getProperty(Constants.LOG_PATH))
+             && !StringUtils.isEmpty(middlewareLoggingPath)) {
+             System.setProperty(Constants.LOG_PATH, middlewareLoggingPath);
+             ReportUtil.report("Actual " + Constants.LOG_PATH + " is [ " + middlewareLoggingPath
+
+File: infra-sofa-boot-starter/src/test/java/com/alipay/sofa/infra/log/AllInfraLoggerFactoryTest.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.alipay.sofa.infra.log;
+ 
+ import com.alipay.sofa.common.log.Constants;
+-import com.alipay.sofa.infra.log.base.AbstraceTestBase;
++import com.alipay.sofa.infra.log.base.AbstractTestBase;
+ import org.junit.After;
+ import org.junit.Before;
+ import org.junit.Test;
+@@ -28,7 +28,7 @@
+ /**
+  * Created by yangguanchao on 18/01/04.
+  */
+-public class AllInfraLoggerFactoryTest extends AbstraceTestBase {
++public class AllInfraLoggerFactoryTest extends AbstractTestBase {
+ 
+     @Before
+     public void before() throws Exception {
+
+File: infra-sofa-boot-starter/src/test/java/com/alipay/sofa/infra/log/Log4j2InfraLoggerFactoryTest.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.alipay.sofa.infra.log;
+ 
+ import com.alipay.sofa.common.log.Constants;
+-import com.alipay.sofa.infra.log.base.AbstraceTestBase;
++import com.alipay.sofa.infra.log.base.AbstractTestBase;
+ import org.junit.After;
+ import org.junit.Before;
+ import org.junit.Test;
+@@ -31,7 +31,7 @@
+  * @version 1.0
+  * @since <pre>1月 20, 2018</pre>
+  */
+-public class Log4j2InfraLoggerFactoryTest extends AbstraceTestBase {
++public class Log4j2InfraLoggerFactoryTest extends AbstractTestBase {
+ 
+     @Before
+     public void before() throws Exception {
+
+File: infra-sofa-boot-starter/src/test/java/com/alipay/sofa/infra/log/Log4jInfraLoggerFactoryTest.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.alipay.sofa.infra.log;
+ 
+ import com.alipay.sofa.common.log.Constants;
+-import com.alipay.sofa.infra.log.base.AbstraceTestBase;
++import com.alipay.sofa.infra.log.base.AbstractTestBase;
+ import org.junit.After;
+ import org.junit.Before;
+ import org.junit.Test;
+@@ -31,7 +31,7 @@
+  * @version 1.0
+  * @since <pre>九月 20, 2016</pre>
+  */
+-public class Log4jInfraLoggerFactoryTest extends AbstraceTestBase {
++public class Log4jInfraLoggerFactoryTest extends AbstractTestBase {
+ 
+     @Before
+     public void before() throws Exception {
+
+File: infra-sofa-boot-starter/src/test/java/com/alipay/sofa/infra/log/LogbackRestLoggerFactoryTest.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.alipay.sofa.infra.log;
+ 
+ import com.alipay.sofa.common.log.Constants;
+-import com.alipay.sofa.infra.log.base.AbstraceTestBase;
++import com.alipay.sofa.infra.log.base.AbstractTestBase;
+ import org.junit.After;
+ import org.junit.Before;
+ import org.junit.Test;
+@@ -31,7 +31,7 @@
+  * @version 1.0
+  * @since <pre>一月 05, 2018</pre>
+  */
+-public class LogbackRestLoggerFactoryTest extends AbstraceTestBase {
++public class LogbackRestLoggerFactoryTest extends AbstractTestBase {
+ 
+     @Before
+     public void before() throws Exception {
+
+File: infra-sofa-boot-starter/src/test/java/com/alipay/sofa/infra/log/base/AbstractTestBase.java
+Patch:
+@@ -21,11 +21,11 @@
+ import com.alipay.sofa.common.log.LoggerSpaceManager;
+ 
+ /**
+- * AbstraceTestBase
++ * AbstractTestBase
+  * <p/>
+  * Created by yangguanchao on 18/01/04.
+  */
+-public abstract class AbstraceTestBase {
++public abstract class AbstractTestBase {
+ 
+     public static final String restLogLevel = Constants.LOG_LEVEL_PREFIX
+                                               + InfraHealthCheckLoggerFactory.INFRASTRUCTURE_LOG_SPACE;
+
+File: runtime-sofa-boot-starter/src/main/java/com/alipay/sofa/runtime/spi/service/BindingConverter.java
+Patch:
+@@ -31,7 +31,7 @@ public interface BindingConverter<L extends BindingParam, R extends Binding> ext
+     /**
+      * convert {@link BindingParam} to concrete {@link Binding}
+      *
+-     * @param bindingParam binding paramter
++     * @param bindingParam binding parameter
+      * @param bindingConverterContext binding converter context
+      * @return Binding Object
+      */
+
+File: healthcheck-sofa-boot-starter/src/main/java/com/alipay/sofa/healthcheck/startup/HealthCheckTrigger.java
+Patch:
+@@ -43,9 +43,8 @@ public void onApplicationEvent(ContextRefreshedEvent contextRefreshedEvent) {
+ 
+         logPrintCheckers();
+ 
+-        HealthCheckStartupProcessor healthCheckStartupProcessor = new HealthCheckStartupProcessor();
++        ReadinessCheckProcessor healthCheckStartupProcessor = new ReadinessCheckProcessor();
+         healthCheckStartupProcessor.checkHealth();
+-
+     }
+ 
+     private void logPrintCheckers() {
+
+File: healthcheck-sofa-boot-starter/src/main/java/com/alipay/sofa/healthcheck/startup/StartUpHealthCheckStatus.java
+Patch:
+@@ -130,11 +130,11 @@ public static Map<String, Health> getComponentDetail() {
+         return componentDetail;
+     }
+ 
+-    public static void openStartStatu() {
++    public static void openStartStatus() {
+         isOpen = true;
+     }
+ 
+-    public static void closeStartStatu() {
++    public static void closeStartStatus() {
+         isOpen = false;
+     }
+ 
+

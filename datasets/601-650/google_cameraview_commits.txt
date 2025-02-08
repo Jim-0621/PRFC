@@ -1,0 +1,195 @@
+File: demo/src/main/java/com/google/android/cameraview/demo/AspectRatioFragment.java
+Patch:
+@@ -31,6 +31,7 @@
+ 
+ import com.google.android.cameraview.AspectRatio;
+ 
++import java.util.Arrays;
+ import java.util.Set;
+ 
+ 
+@@ -75,6 +76,7 @@ public Dialog onCreateDialog(Bundle savedInstanceState) {
+         if (ratios == null) {
+             throw new RuntimeException("No ratios");
+         }
++        Arrays.sort(ratios);
+         final AspectRatio current = args.getParcelable(ARG_CURRENT_ASPECT_RATIO);
+         final AspectRatioAdapter adapter = new AspectRatioAdapter(ratios, current);
+         return new AlertDialog.Builder(getActivity())
+
+File: library/src/main/api14/com/google/android/cameraview/TextureViewPreview.java
+Patch:
+@@ -134,6 +134,8 @@ void configureTransform() {
+                                     0.f, height, // bottom right
+                             }, 0,
+                     4);
++        } else if (mDisplayOrientation == 180) {
++            matrix.postRotate(180, getWidth() / 2, getHeight() / 2);
+         }
+         mTextureView.setTransform(matrix);
+     }
+
+File: library/src/main/api14/com/google/android/cameraview/TextureViewPreview.java
+Patch:
+@@ -134,6 +134,8 @@ void configureTransform() {
+                                     0.f, height, // bottom right
+                             }, 0,
+                     4);
++        } else if (mDisplayOrientation == 180) {
++            matrix.postRotate(180, getWidth() / 2, getHeight() / 2);
+         }
+         mTextureView.setTransform(matrix);
+     }
+
+File: library/src/main/base/com/google/android/cameraview/SizeMap.java
+Patch:
+@@ -70,4 +70,7 @@ boolean isEmpty() {
+         return mRatios.isEmpty();
+     }
+ 
++    public void remove(AspectRatio ratio) {
++        mRatios.remove(ratio);
++    }
+ }
+
+File: library/src/main/api14/com/google/android/cameraview/Camera1.java
+Patch:
+@@ -231,6 +231,7 @@ void takePictureInternal() {
+             @Override
+             public void onPictureTaken(byte[] data, Camera camera) {
+                 mCallback.onPictureTaken(data);
++                camera.cancelAutoFocus();
+                 camera.startPreview();
+             }
+         });
+
+File: library/src/main/java/com/google/android/cameraview/CameraView.java
+Patch:
+@@ -230,8 +230,11 @@ protected void onRestoreInstanceState(Parcelable state) {
+      */
+     public void start() {
+         if (!mImpl.start()) {
++            //store the state ,and restore this state after fall back o Camera1
++            Parcelable state=onSaveInstanceState();
+             // Camera2 uses legacy hardware layer; fall back to Camera1
+             mImpl = new Camera1(mCallbacks, createPreviewImpl(getContext()));
++            onRestoreInstanceState(state);
+             mImpl.start();
+         }
+     }
+
+File: library/src/main/api14/com/google/android/cameraview/TextureViewPreview.java
+Patch:
+@@ -106,7 +106,7 @@ boolean isReady() {
+      * Configures the transform matrix for TextureView based on {@link #mDisplayOrientation} and
+      * the surface size.
+      */
+-    private void configureTransform() {
++    void configureTransform() {
+         Matrix matrix = new Matrix();
+         if (mDisplayOrientation % 180 == 90) {
+             final int width = getWidth();
+
+File: library/src/main/api9/com/google/android/cameraview/SurfaceViewPreview.java
+Patch:
+@@ -26,7 +26,7 @@
+ 
+ class SurfaceViewPreview extends PreviewImpl {
+ 
+-    private final SurfaceView mSurfaceView;
++    final SurfaceView mSurfaceView;
+ 
+     SurfaceViewPreview(Context context, ViewGroup parent) {
+         final View view = View.inflate(context, R.layout.surface_view, parent);
+
+File: library/src/main/java/com/google/android/cameraview/DisplayOrientationDetector.java
+Patch:
+@@ -31,7 +31,7 @@ abstract class DisplayOrientationDetector {
+     private final OrientationEventListener mOrientationEventListener;
+ 
+     /** Mapping from Surface.Rotation_n to degrees. */
+-    private static final SparseIntArray DISPLAY_ORIENTATIONS = new SparseIntArray();
++    static final SparseIntArray DISPLAY_ORIENTATIONS = new SparseIntArray();
+ 
+     static {
+         DISPLAY_ORIENTATIONS.put(Surface.ROTATION_0, 0);
+@@ -40,7 +40,7 @@ abstract class DisplayOrientationDetector {
+         DISPLAY_ORIENTATIONS.put(Surface.ROTATION_270, 270);
+     }
+ 
+-    private Display mDisplay;
++    Display mDisplay;
+ 
+     private int mLastKnownDisplayOrientation = 0;
+ 
+@@ -81,7 +81,7 @@ public int getLastKnownDisplayOrientation() {
+         return mLastKnownDisplayOrientation;
+     }
+ 
+-    private void dispatchOnDisplayOrientationChanged(int displayOrientation) {
++    void dispatchOnDisplayOrientationChanged(int displayOrientation) {
+         mLastKnownDisplayOrientation = displayOrientation;
+         onDisplayOrientationChanged(displayOrientation);
+     }
+
+File: library/src/androidTest/java/com/google/android/cameraview/CameraViewTest.java
+Patch:
+@@ -271,7 +271,7 @@ private static ViewAssertion showingPreview() {
+         return new ViewAssertion() {
+             @Override
+             public void check(View view, NoMatchingViewException noViewFoundException) {
+-                if (android.os.Build.VERSION.SDK_INT < Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
++                if (android.os.Build.VERSION.SDK_INT < 14) {
+                     return;
+                 }
+                 CameraView cameraView = (CameraView) view;
+
+File: library/src/main/api14/com/google/android/cameraview/TextureViewPreview.java
+Patch:
+@@ -26,7 +26,7 @@
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+-@TargetApi(Build.VERSION_CODES.ICE_CREAM_SANDWICH)
++@TargetApi(14)
+ class TextureViewPreview extends PreviewImpl {
+ 
+     private final TextureView mTextureView;
+@@ -64,10 +64,10 @@ public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+         });
+     }
+ 
+-    @TargetApi(Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1)
++    // This method is called only from Camera2.
++    @TargetApi(15)
+     @Override
+     void setBufferSize(int width, int height) {
+-        // This method is called only from Camera2.
+         mTextureView.getSurfaceTexture().setDefaultBufferSize(width, height);
+     }
+ 
+
+File: library/src/main/java/com/google/android/cameraview/CameraView.java
+Patch:
+@@ -129,7 +129,7 @@ public void onDisplayOrientationChanged(int displayOrientation) {
+     @Override
+     protected void onAttachedToWindow() {
+         super.onAttachedToWindow();
+-        mDisplayOrientationDetector.enable(getDisplay());
++        mDisplayOrientationDetector.enable(ViewCompat2.getDisplay(this));
+     }
+ 
+     @Override
+
+File: library/src/main/base/com/google/android/cameraview/Constants.java
+Patch:
+@@ -19,6 +19,8 @@
+ 
+ interface Constants {
+ 
++    AspectRatio DEFAULT_ASPECT_RATIO = AspectRatio.of(4, 3);
++
+     int FACING_BACK = 0;
+     int FACING_FRONT = 1;
+ 
+

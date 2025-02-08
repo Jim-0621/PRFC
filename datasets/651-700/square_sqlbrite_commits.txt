@@ -1,0 +1,458 @@
+File: sample/src/main/java/com/example/sqlbrite/todo/db/TodoItem.java
+Patch:
+@@ -64,7 +64,7 @@ public Builder description(String description) {
+     }
+ 
+     public Builder complete(boolean complete) {
+-      values.put(COMPLETE, complete);
++      values.put(COMPLETE, complete ? Db.BOOLEAN_TRUE : Db.BOOLEAN_FALSE);
+       return this;
+     }
+ 
+
+File: sample/src/main/java/com/example/sqlbrite/todo/db/TodoItem.java
+Patch:
+@@ -64,7 +64,7 @@ public Builder description(String description) {
+     }
+ 
+     public Builder complete(boolean complete) {
+-      values.put(COMPLETE, complete);
++      values.put(COMPLETE, complete ? Db.BOOLEAN_TRUE : Db.BOOLEAN_FALSE);
+       return this;
+     }
+ 
+
+File: sqlbrite/src/androidTest/java/com/squareup/sqlbrite2/BriteDatabaseTest.java
+Patch:
+@@ -152,9 +152,10 @@ public final class BriteDatabaseTest {
+     assertThat(employees).isEqualTo(new Employee("alice", "Alice Allison"));
+   }
+ 
+-  @Ignore("https://github.com/square/sqlbrite/issues/185")
+   @Test public void badQueryCallsError() {
+-    db.createQuery(TABLE_EMPLOYEE, "SELECT * FROM missing").subscribe(o);
++    // safeSubscribe is needed because the error occurs in onNext and will otherwise bubble up
++    // to the thread exception handler.
++    db.createQuery(TABLE_EMPLOYEE, "SELECT * FROM missing").safeSubscribe(o);
+     o.assertErrorContains("no such table: missing");
+   }
+ 
+
+File: sqlbrite/src/androidTest/java/com/squareup/sqlbrite2/BriteDatabaseTest.java
+Patch:
+@@ -152,9 +152,10 @@ public final class BriteDatabaseTest {
+     assertThat(employees).isEqualTo(new Employee("alice", "Alice Allison"));
+   }
+ 
+-  @Ignore("https://github.com/square/sqlbrite/issues/185")
+   @Test public void badQueryCallsError() {
+-    db.createQuery(TABLE_EMPLOYEE, "SELECT * FROM missing").subscribe(o);
++    // safeSubscribe is needed because the error occurs in onNext and will otherwise bubble up
++    // to the thread exception handler.
++    db.createQuery(TABLE_EMPLOYEE, "SELECT * FROM missing").safeSubscribe(o);
+     o.assertErrorContains("no such table: missing");
+   }
+ 
+
+File: sample/src/main/java/com/example/sqlbrite/todo/db/DbOpenHelper.java
+Patch:
+@@ -80,7 +80,7 @@ public DbOpenHelper(Context context) {
+         .build());
+     db.insert(TodoItem.TABLE, null, new TodoItem.Builder()
+         .listId(holidayPresentsListId)
+-        .description("Coal for Jesse W.")
++        .description("Cola for Jesse W.")
+         .build());
+ 
+     long workListId = db.insert(TodoList.TABLE, null, new TodoList.Builder()
+
+File: sample/src/main/java/com/example/sqlbrite/todo/db/DbOpenHelper.java
+Patch:
+@@ -80,7 +80,7 @@ public DbOpenHelper(Context context) {
+         .build());
+     db.insert(TodoItem.TABLE, null, new TodoItem.Builder()
+         .listId(holidayPresentsListId)
+-        .description("Coal for Jesse W.")
++        .description("Cola for Jesse W.")
+         .build());
+ 
+     long workListId = db.insert(TodoList.TABLE, null, new TodoList.Builder()
+
+File: sqlbrite/src/androidTest/java/com/squareup/sqlbrite/BriteContentResolverTest.java
+Patch:
+@@ -207,7 +207,9 @@ public void testBackpressureSupportedWhenSchedulerSlow() {
+     scheduler.triggerActions();
+ 
+     // Assert we got all the events from the queue plus the one buffered from backpressure.
+-    for (int i = 0; i < RxRingBuffer.SIZE + 1; i++) {
++    // Note: Because of the rebatching request behavior of observeOn, the initial emission is
++    // counted against this amount which is why there is no +1 on SIZE.
++    for (int i = 0; i < RxRingBuffer.SIZE; i++) {
+       o.assertCursor(); // Ignore contents, just assert we got notified.
+     }
+   }
+
+File: sqlbrite/src/androidTest/java/com/squareup/sqlbrite/BriteDatabaseTest.java
+Patch:
+@@ -1256,7 +1256,9 @@ public final class BriteDatabaseTest {
+     scheduler.triggerActions();
+ 
+     // Assert we got all the events from the queue plus the one buffered from backpressure.
+-    for (int i = 0; i < RxRingBuffer.SIZE + 1; i++) {
++    // Note: Because of the rebatching request behavior of observeOn, the initial emission is
++    // counted against this amount which is why there is no +1 on SIZE.
++    for (int i = 0; i < RxRingBuffer.SIZE; i++) {
+       o.assertCursor(); // Ignore contents, just assert we got notified.
+     }
+   }
+
+File: sample/src/main/java/com/example/sqlbrite/todo/db/DbModule.java
+Patch:
+@@ -22,6 +22,7 @@
+ import dagger.Module;
+ import dagger.Provides;
+ import javax.inject.Singleton;
++import rx.schedulers.Schedulers;
+ import timber.log.Timber;
+ 
+ @Module(complete = false, library = true)
+@@ -39,7 +40,7 @@ public final class DbModule {
+   }
+ 
+   @Provides @Singleton BriteDatabase provideDatabase(SqlBrite sqlBrite, SQLiteOpenHelper helper) {
+-    BriteDatabase db = sqlBrite.wrapDatabaseHelper(helper);
++    BriteDatabase db = sqlBrite.wrapDatabaseHelper(helper, Schedulers.io());
+     db.setLoggingEnabled(true);
+     return db;
+   }
+
+File: sample/src/main/java/com/example/sqlbrite/todo/ui/ItemsFragment.java
+Patch:
+@@ -187,7 +187,6 @@ public void onViewCreated(View view, @Nullable Bundle savedInstanceState) {
+             return listName + " (" + itemCount + ")";
+           }
+         })
+-            .subscribeOn(Schedulers.io())
+             .observeOn(AndroidSchedulers.mainThread())
+             .subscribe(new Action1<String>() {
+               @Override public void call(String title) {
+@@ -197,7 +196,6 @@ public void onViewCreated(View view, @Nullable Bundle savedInstanceState) {
+ 
+     subscriptions.add(db.createQuery(TodoItem.TABLE, LIST_QUERY, listId)
+         .mapToList(TodoItem.MAPPER)
+-        .subscribeOn(Schedulers.io())
+         .observeOn(AndroidSchedulers.mainThread())
+         .subscribe(adapter));
+   }
+
+File: sample/src/main/java/com/example/sqlbrite/todo/ui/ListsFragment.java
+Patch:
+@@ -36,7 +36,6 @@
+ import javax.inject.Inject;
+ import rx.Subscription;
+ import rx.android.schedulers.AndroidSchedulers;
+-import rx.schedulers.Schedulers;
+ 
+ import static android.support.v4.view.MenuItemCompat.SHOW_AS_ACTION_IF_ROOM;
+ import static android.support.v4.view.MenuItemCompat.SHOW_AS_ACTION_WITH_TEXT;
+@@ -110,7 +109,6 @@ public void onViewCreated(View view, @Nullable Bundle savedInstanceState) {
+ 
+     subscription = db.createQuery(ListsItem.TABLES, ListsItem.QUERY)
+         .mapToList(ListsItem.MAPPER)
+-        .subscribeOn(Schedulers.io())
+         .observeOn(AndroidSchedulers.mainThread())
+         .subscribe(adapter);
+   }
+
+File: sqlbrite/src/androidTest/java/com/squareup/sqlbrite/QueryTest.java
+Patch:
+@@ -24,6 +24,7 @@
+ import org.junit.Test;
+ import rx.functions.Func1;
+ import rx.observables.BlockingObservable;
++import rx.schedulers.Schedulers;
+ 
+ import static com.google.common.truth.Truth.assertThat;
+ import static com.squareup.sqlbrite.TestDb.SELECT_EMPLOYEES;
+@@ -35,7 +36,7 @@ public final class QueryTest {
+   @Before public void setUp() {
+     SqlBrite sqlBrite = SqlBrite.create();
+     TestDb helper = new TestDb(InstrumentationRegistry.getContext());
+-    db = sqlBrite.wrapDatabaseHelper(helper);
++    db = sqlBrite.wrapDatabaseHelper(helper, Schedulers.immediate());
+   }
+ 
+   @Test public void mapToOne() {
+
+File: sample/src/main/java/com/example/sqlbrite/todo/db/DbModule.java
+Patch:
+@@ -22,6 +22,7 @@
+ import dagger.Module;
+ import dagger.Provides;
+ import javax.inject.Singleton;
++import rx.schedulers.Schedulers;
+ import timber.log.Timber;
+ 
+ @Module(complete = false, library = true)
+@@ -39,7 +40,7 @@ public final class DbModule {
+   }
+ 
+   @Provides @Singleton BriteDatabase provideDatabase(SqlBrite sqlBrite, SQLiteOpenHelper helper) {
+-    BriteDatabase db = sqlBrite.wrapDatabaseHelper(helper);
++    BriteDatabase db = sqlBrite.wrapDatabaseHelper(helper, Schedulers.io());
+     db.setLoggingEnabled(true);
+     return db;
+   }
+
+File: sample/src/main/java/com/example/sqlbrite/todo/ui/ItemsFragment.java
+Patch:
+@@ -187,7 +187,6 @@ public void onViewCreated(View view, @Nullable Bundle savedInstanceState) {
+             return listName + " (" + itemCount + ")";
+           }
+         })
+-            .subscribeOn(Schedulers.io())
+             .observeOn(AndroidSchedulers.mainThread())
+             .subscribe(new Action1<String>() {
+               @Override public void call(String title) {
+@@ -197,7 +196,6 @@ public void onViewCreated(View view, @Nullable Bundle savedInstanceState) {
+ 
+     subscriptions.add(db.createQuery(TodoItem.TABLE, LIST_QUERY, listId)
+         .mapToList(TodoItem.MAPPER)
+-        .subscribeOn(Schedulers.io())
+         .observeOn(AndroidSchedulers.mainThread())
+         .subscribe(adapter));
+   }
+
+File: sample/src/main/java/com/example/sqlbrite/todo/ui/ListsFragment.java
+Patch:
+@@ -36,7 +36,6 @@
+ import javax.inject.Inject;
+ import rx.Subscription;
+ import rx.android.schedulers.AndroidSchedulers;
+-import rx.schedulers.Schedulers;
+ 
+ import static android.support.v4.view.MenuItemCompat.SHOW_AS_ACTION_IF_ROOM;
+ import static android.support.v4.view.MenuItemCompat.SHOW_AS_ACTION_WITH_TEXT;
+@@ -110,7 +109,6 @@ public void onViewCreated(View view, @Nullable Bundle savedInstanceState) {
+ 
+     subscription = db.createQuery(ListsItem.TABLES, ListsItem.QUERY)
+         .mapToList(ListsItem.MAPPER)
+-        .subscribeOn(Schedulers.io())
+         .observeOn(AndroidSchedulers.mainThread())
+         .subscribe(adapter);
+   }
+
+File: sqlbrite/src/androidTest/java/com/squareup/sqlbrite/QueryTest.java
+Patch:
+@@ -24,6 +24,7 @@
+ import org.junit.Test;
+ import rx.functions.Func1;
+ import rx.observables.BlockingObservable;
++import rx.schedulers.Schedulers;
+ 
+ import static com.google.common.truth.Truth.assertThat;
+ import static com.squareup.sqlbrite.TestDb.SELECT_EMPLOYEES;
+@@ -35,7 +36,7 @@ public final class QueryTest {
+   @Before public void setUp() {
+     SqlBrite sqlBrite = SqlBrite.create();
+     TestDb helper = new TestDb(InstrumentationRegistry.getContext());
+-    db = sqlBrite.wrapDatabaseHelper(helper);
++    db = sqlBrite.wrapDatabaseHelper(helper, Schedulers.immediate());
+   }
+ 
+   @Test public void mapToOne() {
+
+File: sqlbrite/src/main/java/com/squareup/sqlbrite/BackpressureBufferLastOperator.java
+Patch:
+@@ -43,8 +43,8 @@ static final class BufferLastSubscriber<T> extends Subscriber<T> {
+ 
+     private final Subscriber<? super T> child;
+ 
+-    private volatile Object last = NONE; // Guarded by 'this'.
+-    private volatile long requested; // Guarded by 'this'. Starts at zero.
++    private Object last = NONE; // Guarded by 'this'.
++    private long requested; // Guarded by 'this'. Starts at zero.
+ 
+     final Producer producer = new Producer() {
+       @Override public void request(long n) {
+
+File: sqlbrite-sample/src/main/java/com/example/sqlbrite/todo/ui/ItemsFragment.java
+Patch:
+@@ -35,7 +35,7 @@
+ import com.example.sqlbrite.todo.db.Db;
+ import com.example.sqlbrite.todo.db.TodoItem;
+ import com.example.sqlbrite.todo.db.TodoList;
+-import com.squareup.sqlbrite.SqlBrite;
++import com.squareup.sqlbrite.BriteDatabase;
+ import javax.inject.Inject;
+ import rx.Observable;
+ import rx.android.schedulers.AndroidSchedulers;
+@@ -85,7 +85,7 @@ public static ItemsFragment newInstance(long listId) {
+     return fragment;
+   }
+ 
+-  @Inject SqlBrite db;
++  @Inject BriteDatabase db;
+ 
+   @InjectView(android.R.id.list) ListView listView;
+   @InjectView(android.R.id.empty) View emptyView;
+
+File: sqlbrite-sample/src/main/java/com/example/sqlbrite/todo/ui/ListsFragment.java
+Patch:
+@@ -32,7 +32,7 @@
+ import butterknife.OnItemClick;
+ import com.example.sqlbrite.todo.R;
+ import com.example.sqlbrite.todo.TodoApp;
+-import com.squareup.sqlbrite.SqlBrite;
++import com.squareup.sqlbrite.BriteDatabase;
+ import javax.inject.Inject;
+ import rx.Subscription;
+ import rx.android.schedulers.AndroidSchedulers;
+@@ -51,7 +51,7 @@ static ListsFragment newInstance() {
+     return new ListsFragment();
+   }
+ 
+-  @Inject SqlBrite db;
++  @Inject BriteDatabase db;
+ 
+   @InjectView(android.R.id.list) ListView listView;
+   @InjectView(android.R.id.empty) View emptyView;
+
+File: sqlbrite-sample/src/main/java/com/example/sqlbrite/todo/ui/NewItemFragment.java
+Patch:
+@@ -29,7 +29,7 @@
+ import com.example.sqlbrite.todo.R;
+ import com.example.sqlbrite.todo.TodoApp;
+ import com.example.sqlbrite.todo.db.TodoItem;
+-import com.squareup.sqlbrite.SqlBrite;
++import com.squareup.sqlbrite.BriteDatabase;
+ import javax.inject.Inject;
+ import rx.Observable;
+ import rx.android.schedulers.AndroidSchedulers;
+@@ -56,7 +56,7 @@ public static NewItemFragment newInstance(long listId) {
+ 
+   private final PublishSubject<String> createClicked = PublishSubject.create();
+ 
+-  @Inject SqlBrite db;
++  @Inject BriteDatabase db;
+ 
+   private long getListId() {
+     return getArguments().getLong(KEY_LIST_ID);
+
+File: sqlbrite-sample/src/main/java/com/example/sqlbrite/todo/ui/NewListFragment.java
+Patch:
+@@ -29,7 +29,7 @@
+ import com.example.sqlbrite.todo.R;
+ import com.example.sqlbrite.todo.TodoApp;
+ import com.example.sqlbrite.todo.db.TodoList;
+-import com.squareup.sqlbrite.SqlBrite;
++import com.squareup.sqlbrite.BriteDatabase;
+ import javax.inject.Inject;
+ import rx.Observable;
+ import rx.android.schedulers.AndroidSchedulers;
+@@ -49,7 +49,7 @@ public static NewListFragment newInstance() {
+ 
+   private final PublishSubject<String> createClicked = PublishSubject.create();
+ 
+-  @Inject SqlBrite db;
++  @Inject BriteDatabase db;
+ 
+   @Override public void onAttach(Activity activity) {
+     super.onAttach(activity);
+
+File: sqlbrite-sample/src/main/java/com/example/sqlbrite/todo/ui/ItemsFragment.java
+Patch:
+@@ -35,7 +35,7 @@
+ import com.example.sqlbrite.todo.db.Db;
+ import com.example.sqlbrite.todo.db.TodoItem;
+ import com.example.sqlbrite.todo.db.TodoList;
+-import com.squareup.sqlbrite.SqlBrite;
++import com.squareup.sqlbrite.BriteDatabase;
+ import javax.inject.Inject;
+ import rx.Observable;
+ import rx.android.schedulers.AndroidSchedulers;
+@@ -85,7 +85,7 @@ public static ItemsFragment newInstance(long listId) {
+     return fragment;
+   }
+ 
+-  @Inject SqlBrite db;
++  @Inject BriteDatabase db;
+ 
+   @InjectView(android.R.id.list) ListView listView;
+   @InjectView(android.R.id.empty) View emptyView;
+
+File: sqlbrite-sample/src/main/java/com/example/sqlbrite/todo/ui/ListsFragment.java
+Patch:
+@@ -32,7 +32,7 @@
+ import butterknife.OnItemClick;
+ import com.example.sqlbrite.todo.R;
+ import com.example.sqlbrite.todo.TodoApp;
+-import com.squareup.sqlbrite.SqlBrite;
++import com.squareup.sqlbrite.BriteDatabase;
+ import javax.inject.Inject;
+ import rx.Subscription;
+ import rx.android.schedulers.AndroidSchedulers;
+@@ -51,7 +51,7 @@ static ListsFragment newInstance() {
+     return new ListsFragment();
+   }
+ 
+-  @Inject SqlBrite db;
++  @Inject BriteDatabase db;
+ 
+   @InjectView(android.R.id.list) ListView listView;
+   @InjectView(android.R.id.empty) View emptyView;
+
+File: sqlbrite-sample/src/main/java/com/example/sqlbrite/todo/ui/NewItemFragment.java
+Patch:
+@@ -29,7 +29,7 @@
+ import com.example.sqlbrite.todo.R;
+ import com.example.sqlbrite.todo.TodoApp;
+ import com.example.sqlbrite.todo.db.TodoItem;
+-import com.squareup.sqlbrite.SqlBrite;
++import com.squareup.sqlbrite.BriteDatabase;
+ import javax.inject.Inject;
+ import rx.Observable;
+ import rx.android.schedulers.AndroidSchedulers;
+@@ -56,7 +56,7 @@ public static NewItemFragment newInstance(long listId) {
+ 
+   private final PublishSubject<String> createClicked = PublishSubject.create();
+ 
+-  @Inject SqlBrite db;
++  @Inject BriteDatabase db;
+ 
+   private long getListId() {
+     return getArguments().getLong(KEY_LIST_ID);
+
+File: sqlbrite-sample/src/main/java/com/example/sqlbrite/todo/ui/NewListFragment.java
+Patch:
+@@ -29,7 +29,7 @@
+ import com.example.sqlbrite.todo.R;
+ import com.example.sqlbrite.todo.TodoApp;
+ import com.example.sqlbrite.todo.db.TodoList;
+-import com.squareup.sqlbrite.SqlBrite;
++import com.squareup.sqlbrite.BriteDatabase;
+ import javax.inject.Inject;
+ import rx.Observable;
+ import rx.android.schedulers.AndroidSchedulers;
+@@ -49,7 +49,7 @@ public static NewListFragment newInstance() {
+ 
+   private final PublishSubject<String> createClicked = PublishSubject.create();
+ 
+-  @Inject SqlBrite db;
++  @Inject BriteDatabase db;
+ 
+   @Override public void onAttach(Activity activity) {
+     super.onAttach(activity);
+
+File: sqlbrite/src/androidTest/java/com/squareup/sqlbrite/SqlBriteTest.java
+Patch:
+@@ -60,7 +60,7 @@ public final class SqlBriteTest {
+     helper = new TestDb(InstrumentationRegistry.getContext());
+     real = helper.getWritableDatabase();
+     db = SqlBrite.builder(helper)
+-        .debugLogging(true)
++        .loggingEnabled(true)
+         .build();
+   }
+ 
+

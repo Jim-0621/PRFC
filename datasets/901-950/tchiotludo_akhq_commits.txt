@@ -1,0 +1,1957 @@
+File: src/main/java/org/akhq/utils/JsonMaskByDefaultMasker.java
+Patch:
+@@ -34,6 +34,8 @@ public Record maskRecord(Record record) {
+                     .findFirst()
+                     .map(filter -> applyMasking(record, filter.getKeys()))
+                     .orElseGet(() -> applyMasking(record, List.of()));
++            } else {
++                record.setValue("This record is unable to be masked as it is not a structured object. This record is unavailable to view due to safety measures from json_mask_by_default to not leak sensitive data. Please contact akhq administrator.");
+             }
+         } catch (Exception e) {
+             LOG.error("Error masking record at topic {}, partition {}, offset {} due to {}", record.getTopic(), record.getPartition(), record.getOffset(), e.getMessage());
+@@ -59,7 +61,7 @@ private void maskAllExcept(String currentKey, JsonObject node, List<String> keys
+             JsonObject objectNode = node.getAsJsonObject();
+             for(Map.Entry<String, JsonElement> entry : objectNode.entrySet()) {
+                 if(entry.getValue().isJsonObject()) {
+-                    maskAllExcept(entry.getKey() + ".", entry.getValue().getAsJsonObject(), keys);
++                    maskAllExcept(currentKey + entry.getKey() + ".", entry.getValue().getAsJsonObject(), keys);
+                 } else {
+                     if(!keys.contains(currentKey + entry.getKey())) {
+                         objectNode.addProperty(entry.getKey(), jsonMaskReplacement);
+
+File: src/main/java/org/akhq/configs/DataMasking.java
+Patch:
+@@ -9,5 +9,7 @@
+ @ConfigurationProperties("akhq.security.data-masking")
+ @Data
+ public class DataMasking {
+-   List<DataMaskingFilter> filters = new ArrayList<>();
++   List<RegexFilter> filters = new ArrayList<>(); // regex filters still use `filters` for backwards compatibility
++   List<JsonMaskingFilter> jsonFilters = new ArrayList<>();
++   String jsonMaskReplacement = "xxxx";
+ }
+
+File: src/main/java/org/akhq/configs/RegexFilter.java
+Patch:
+@@ -5,7 +5,7 @@
+ 
+ @EachProperty("filters")
+ @Data
+-public class DataMaskingFilter {
++public class RegexFilter {
+     String description;
+     String searchRegex;
+     String replacement;
+
+File: src/main/java/org/akhq/models/Record.java
+Patch:
+@@ -39,6 +39,8 @@
+ @Getter
+ @NoArgsConstructor
+ public class Record {
++
++    @Setter
+     private Topic topic;
+     @JsonView(Views.Download.class)
+     private int partition;
+
+File: src/test/java/org/akhq/controllers/AkhqControllerTest.java
+Patch:
+@@ -51,10 +51,10 @@ void user() {
+         );
+ 
+         assertEquals("admin", result.getUsername());
+-        assertEquals(2, result.getRoles().size());
++        assertEquals(3, result.getRoles().size());
+         assertThat(result.getRoles().stream().map(AkhqController.AuthUser.AuthPermissions::getPatterns).flatMap(Collection::stream).collect(Collectors.toList()),
+-            containsInAnyOrder(".*", "user.*"));
++            containsInAnyOrder(".*", "user.*", "public.*"));
+         assertThat(result.getRoles().stream().map(AkhqController.AuthUser.AuthPermissions::getClusters).flatMap(Collection::stream).collect(Collectors.toList()),
+-            containsInAnyOrder(".*", ".*"));
++            containsInAnyOrder(".*", ".*", "pub.*"));
+     }
+ }
+
+File: src/test/java/org/akhq/security/claim/GroovyClaimProviderTest.java
+Patch:
+@@ -24,7 +24,7 @@ class GroovyClaimProviderTest {
+ 
+     @Test
+     void successUser() {
+-        AuthenticationResponse response = Flowable
++        AuthenticationResponse response = (AuthenticationResponse) Flowable
+                 .fromPublisher(auth.authenticate(null, new UsernamePasswordCredentials(
+                         "user",
+                         "pass"
+
+File: src/test/java/org/akhq/controllers/TopicControllerTest.java
+Patch:
+@@ -16,7 +16,7 @@
+ import static org.junit.jupiter.api.Assertions.*;
+ 
+ @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+-class TopicControllerTest extends AbstractTest {
++public class TopicControllerTest extends AbstractTest {
+     public static final String BASE_URL = "/api/" + KafkaTestCluster.CLUSTER_ID + "/topic";
+     public static final String DEFAULTS_CONFIGS_URL = "api/topic/defaults-configs";
+     public static final String TOPIC_URL = BASE_URL + "/" + KafkaTestCluster.TOPIC_COMPACTED;
+
+File: src/main/java/org/akhq/controllers/TopicController.java
+Patch:
+@@ -272,7 +272,7 @@ public List<Partition> partitions(String cluster, String topicName) throws Execu
+         return this.topicRepository.findByName(cluster, topicName).getPartitions();
+     }
+ 
+-    @AKHQSecured(resource = Role.Resource.TOPIC, action = Role.Action.READ)
++    @AKHQSecured(resource = Role.Resource.CONSUMER_GROUP, action = Role.Action.READ)
+     @Get("api/{cluster}/topic/{topicName}/groups")
+     @Operation(tags = {"topic"}, summary = "List all consumer groups from a topic")
+     public List<ConsumerGroup> groups(String cluster, String topicName) throws ExecutionException, InterruptedException {
+
+File: src/main/java/org/akhq/security/authentication/GithubApiClient.java
+Patch:
+@@ -8,7 +8,7 @@
+ 
+ @Header(name = "User-Agent", value = "Micronaut")
+ @Header(name = "Accept", value = "application/vnd.github.v3+json, application/json")
+-@Client("${github.api.url}")
++@Client("${github.api.url:`https://api.github.com`}")
+ public interface GithubApiClient {
+ 
+     @Get("/user")
+
+File: src/main/java/org/akhq/App.java
+Patch:
+@@ -24,6 +24,8 @@
+ )
+ public class App {
+     public static void main(String[] args) {
+-        Micronaut.run(App.class);
++        Micronaut.build(args)
++            .banner(false)
++            .start();
+     }
+ }
+
+File: src/main/java/org/akhq/models/KeyValue.java
+Patch:
+@@ -2,12 +2,14 @@
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Getter;
++import lombok.NoArgsConstructor;
+ 
+ /**
+  * Represents a simple key-value pair of any type
+  */
+ @Getter
+ @AllArgsConstructor
++@NoArgsConstructor
+ public class KeyValue<K,V> {
+     K key;
+     V value;
+
+File: src/main/java/org/akhq/models/Record.java
+Patch:
+@@ -36,7 +36,6 @@
+ @Getter
+ @NoArgsConstructor
+ public class Record {
+-    @JsonIgnore
+     private Topic topic;
+     private int partition;
+     private long offset;
+
+File: src/main/java/org/akhq/models/Record.java
+Patch:
+@@ -87,6 +87,7 @@ public class Record {
+ 
+     @JsonIgnore
+     private Boolean truncated;
++    @JsonIgnore
+     private Deserializer awsGlueKafkaDeserializer;
+ 
+ 
+
+File: src/main/java/org/akhq/controllers/ErrorController.java
+Patch:
+@@ -84,10 +84,10 @@ private HttpResponse<?> renderExecption(HttpRequest<?> request, Exception e) {
+     public HttpResponse<?> error(HttpRequest<?> request, AuthorizationException e) throws URISyntaxException {
+         if (request.getUri().toString().startsWith("/api")) {
+             if (e.isForbidden()) {
+-                if (request.getAttribute(HttpAttributes.ROUTE_INFO).isPresent() &&
+-                    ((UriRouteMatch<?, ?>) request.getAttribute(HttpAttributes.ROUTE_INFO).get()).hasAnnotation(AKHQSecured.class)) {
++                if (request.getAttribute(HttpAttributes.ROUTE_MATCH).isPresent() &&
++                    ((UriRouteMatch<?, ?>) request.getAttribute(HttpAttributes.ROUTE_MATCH).get()).hasAnnotation(AKHQSecured.class)) {
+                     AnnotationValue<AKHQSecured> annotation =
+-                        ((UriRouteMatch<?, ?>) request.getAttribute(HttpAttributes.ROUTE_INFO).get()).getAnnotation(AKHQSecured.class);
++                        ((UriRouteMatch<?, ?>) request.getAttribute(HttpAttributes.ROUTE_MATCH).get()).getAnnotation(AKHQSecured.class);
+ 
+                     return HttpResponse.status(HttpStatus.FORBIDDEN)
+                         .body(new JsonError(String.format("Unauthorized: missing permission on resource %s and action %s",
+
+File: src/main/java/org/akhq/security/claim/RestApiClaimProvider.java
+Patch:
+@@ -6,13 +6,16 @@
+ import io.micronaut.http.annotation.Body;
+ import io.micronaut.http.annotation.Post;
+ import io.micronaut.http.client.annotation.Client;
++import io.micronaut.scheduling.TaskExecutors;
++import io.micronaut.scheduling.annotation.ExecuteOn;
+ import org.akhq.models.security.ClaimProvider;
+ import org.akhq.models.security.ClaimRequest;
+ import org.akhq.models.security.ClaimResponse;
+ 
+ @Primary
+ @Requires(property = "akhq.security.rest.enabled", value = StringUtils.TRUE)
+ @Client("${akhq.security.rest.url}")
++@ExecuteOn(TaskExecutors.BLOCKING)
+ public interface RestApiClaimProvider extends ClaimProvider {
+     @Post
+     @Override
+
+File: src/main/java/org/akhq/controllers/NodeController.java
+Patch:
+@@ -130,7 +130,7 @@ public List<Config> nodeConfig(String cluster, Integer nodeId) throws ExecutionE
+     @AKHQSecured(resource = Role.Resource.NODE, action = Role.Action.ALTER_CONFIG)
+     @Post("api/{cluster}/node/{nodeId}/configs")
+     @Operation(tags = {"node"}, summary = "Update configs for a node")
+-    public List<Config> nodeConfigUpdate(String cluster, Integer nodeId, @Body Map<String, String> configs) throws ExecutionException, InterruptedException {
++    public List<Config> nodeConfigUpdate(String cluster, Integer nodeId, @Body("configs") Map<String, String> configs) throws ExecutionException, InterruptedException {
+         checkIfClusterAndResourceAllowed(cluster, nodeId.toString());
+ 
+         List<Config> updated = ConfigRepository.updatedConfigs(configs, this.configRepository.findByBroker(cluster, nodeId), false);
+
+File: src/main/java/org/akhq/controllers/TopicController.java
+Patch:
+@@ -306,7 +306,7 @@ public List<AccessControl> acls(String cluster, String topicName) throws Executi
+     @AKHQSecured(resource = Role.Resource.TOPIC, action = Role.Action.ALTER_CONFIG)
+     @Post(value = "api/{cluster}/topic/{topicName}/configs")
+     @Operation(tags = {"topic"}, summary = "Update configs from a topic")
+-    public List<Config> updateConfig(String cluster, String topicName, @Body Map<String, String> configs) throws ExecutionException, InterruptedException {
++    public List<Config> updateConfig(String cluster, String topicName, @Body("configs") Map<String, String> configs) throws ExecutionException, InterruptedException {
+         checkIfClusterAndResourceAllowed(cluster, topicName);
+ 
+         List<Config> updated = ConfigRepository.updatedConfigs(configs, this.configRepository.findByTopic(cluster, topicName), false);
+
+File: src/test/java/org/akhq/controllers/NodeControllerTest.java
+Patch:
+@@ -53,7 +53,7 @@ void nodeConfigUpdateApi() {
+         List<Config> result = this.retrieveList(
+             HttpRequest.POST(
+                 "/api/" +  KafkaTestCluster.CLUSTER_ID + "/node/0/configs",
+-                ImmutableMap.of("max.connections.per.ip", s)
++                ImmutableMap.of("configs", ImmutableMap.of("max.connections.per.ip", s))
+             ),
+             Config.class
+         );
+
+File: src/test/java/org/akhq/controllers/TopicControllerTest.java
+Patch:
+@@ -106,7 +106,7 @@ void updateConfigApi() {
+         List<Config> result = this.retrieveList(
+             HttpRequest.POST(
+                 TOPIC_URL + "/configs",
+-                ImmutableMap.of("message.timestamp.difference.max.ms", s)
++                ImmutableMap.of("configs", ImmutableMap.of("message.timestamp.difference.max.ms", s))
+             ),
+             Config.class
+         );
+
+File: src/main/java/org/akhq/repositories/RecordRepository.java
+Patch:
+@@ -811,6 +811,7 @@ private boolean containsAll(String search, Collection<String> in) {
+         }
+ 
+         return in.parallelStream()
++    		.filter(Objects::nonNull)
+             .anyMatch(s -> extractSearchPatterns(search)
+                 .stream()
+                 .anyMatch(s.toLowerCase()::contains));
+
+File: src/main/java/org/akhq/repositories/RecordRepository.java
+Patch:
+@@ -636,7 +636,7 @@ public RecordMetadata produce(
+             }
+         }
+ 
+-        if (value.isPresent() && valueSchema.isPresent()) {
++        if (value.isPresent() && valueSchema.isPresent() && StringUtils.isNotEmpty(valueSchema.get())) {
+             Schema schema = schemaRegistryRepository.getLatestVersion(clusterId, valueSchema.get());
+             SchemaSerializer valueSerializer = serializerFactory.createSerializer(clusterId, schema.getId());
+             valueAsBytes = valueSerializer.serialize(value.get());
+
+File: src/main/java/org/akhq/controllers/AbstractController.java
+Patch:
+@@ -60,7 +60,8 @@ protected List<Group> getUserGroups() {
+             .collect(Collectors.toList());
+ 
+         // Add the default group if there is one
+-        if (groupBindings.isEmpty() && StringUtils.isNotEmpty(securityProperties.getDefaultGroup())) {
++        if (groupBindings.isEmpty() && StringUtils.isNotEmpty(securityProperties.getDefaultGroup())
++            && securityProperties.getGroups().get(securityProperties.getDefaultGroup()) != null) {
+             groupBindings.addAll(securityProperties.getGroups().get(securityProperties.getDefaultGroup()));
+         }
+ 
+
+File: src/main/java/org/akhq/controllers/NodeController.java
+Patch:
+@@ -20,7 +20,7 @@
+ import java.util.concurrent.ExecutionException;
+ import java.util.stream.Collectors;
+ 
+-@AKHQSecured(resource = Role.Resource.NODE, action = Role.Action.READ_CONFIG)
++@AKHQSecured(resource = Role.Resource.NODE, action = Role.Action.READ)
+ @Controller
+ public class NodeController extends AbstractController {
+     private final ClusterRepository clusterRepository;
+@@ -108,6 +108,7 @@ public List<LogDir> nodeLog(String cluster, Integer nodeId) throws ExecutionExce
+     }
+ 
+     @Get("api/{cluster}/node/{nodeId}/configs")
++    @AKHQSecured(resource = Role.Resource.NODE, action = Role.Action.READ_CONFIG)
+     @Operation(tags = {"node"}, summary = "List all configs for a node")
+     public List<Config> nodeConfig(String cluster, Integer nodeId) throws ExecutionException, InterruptedException {
+         checkIfClusterAndResourceAllowed(cluster, nodeId.toString());
+
+File: src/main/java/org/akhq/controllers/SchemaController.java
+Patch:
+@@ -52,7 +52,7 @@ public SchemaController(SchemaRegistryRepository schemaRepository) {
+     @Operation(tags = {"schema registry"}, summary = "List all schemas")
+     public List<String> listAll(
+         String cluster) throws RestClientException, IOException {
+-        return this.schemaRepository.all(cluster, Optional.empty());
++        return this.schemaRepository.all(cluster, Optional.empty(), List.of());
+     }
+ 
+ 
+
+File: src/main/java/org/akhq/controllers/StaticFilter.java
+Patch:
+@@ -72,7 +72,7 @@ public Publisher<MutableHttpResponse<?>> doFilter(HttpRequest<?> request, Server
+     private String replace(String line) {
+         line = line.replace("./ui", (basePath == null ? "" : basePath) + "/ui");
+ 
+-        line = line.replace("<meta name=\"html-head\" content=\"replace\">", this.htmlHead == null ? "" : this.htmlHead);
++        line = line.replace("<meta name=\"html-head\" content=\"replace\" />", this.htmlHead == null ? "" : this.htmlHead);
+ 
+         return line;
+     }
+
+File: src/main/java/org/akhq/models/ConnectPlugin.java
+Patch:
+@@ -31,7 +31,8 @@ public ConnectPlugin(ConnectorPlugin connectorPlugin, ConnectorPluginConfigValid
+                 .map(config -> new Definition(config.getDefinition())),
+             registryDefinition()
+         )
+-            .sorted(Comparator.comparing(Definition::getGroup, (s1, s2) -> s1.equals("Others") ? 1 : s1.compareTo(s2))
++            .sorted(Comparator.comparing(Definition::getGroup, Comparator.comparing((String s) -> s.equals("Others"))
++                    .thenComparing(Comparator.naturalOrder()))
+                 .thenComparing(Definition::getOrder)
+             )
+             .collect(Collectors.toList());
+
+File: src/main/java/org/akhq/repositories/RecordRepository.java
+Patch:
+@@ -408,7 +408,7 @@ private Optional<EndOffsetBound> getOffsetForSortNewest(KafkaConsumer<byte[], by
+                     last = options.after.get(partition.getId()) - 1;
+                 }
+ 
+-                if (last == partition.getFirstOffset() || last < 0) {
++                if (last < 0) {
+                     consumer.close();
+                     return null;
+                 } else if (!(last - pollSizePerPartition < first)) {
+
+File: src/main/java/org/akhq/models/Record.java
+Patch:
+@@ -8,14 +8,14 @@
+ import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
+ import io.confluent.kafka.schemaregistry.json.JsonSchema;
+ import io.confluent.kafka.schemaregistry.protobuf.ProtobufSchema;
+-import io.micronaut.context.annotation.Value;
+ import kafka.coordinator.group.GroupMetadataManager;
+ import kafka.coordinator.transaction.TransactionLog;
+ import kafka.coordinator.transaction.TxnKey;
+ import lombok.*;
+ import org.akhq.configs.SchemaRegistryType;
+ import org.akhq.utils.AvroToJsonDeserializer;
+ import org.akhq.utils.AvroToJsonSerializer;
++import org.akhq.utils.ContentUtils;
+ import org.akhq.utils.ProtobufToJsonDeserializer;
+ import org.apache.avro.generic.GenericRecord;
+ import org.apache.kafka.clients.consumer.ConsumerRecord;
+@@ -115,7 +115,7 @@ public Record(SchemaRegistryClient client, ConsumerRecord<byte[], byte[]> record
+         this.bytesValue = bytesValue;
+         this.valueSchemaId = getAvroSchemaId(this.bytesValue);
+         for (Header header: record.headers()) {
+-            String headerValue = header.value() != null ? new String(header.value()) : null;
++            String headerValue = String.valueOf(ContentUtils.convertToObject(header.value()));
+             this.headers.add(new KeyValue<>(header.key(), headerValue));
+         }
+ 
+
+File: src/main/java/org/akhq/repositories/TopicRepository.java
+Patch:
+@@ -137,9 +137,7 @@ private boolean isStream(String name) {
+     }
+ 
+     public void create(String clusterId, String name, int partitions, short replicationFactor, List<org.akhq.models.Config> configs) throws ExecutionException, InterruptedException {
+-        kafkaWrapper.createTopics(clusterId, name, partitions, replicationFactor);
+-        checkIfTopicExists(clusterId, name);
+-        configRepository.updateTopic(clusterId, name, configs);
++        kafkaWrapper.createTopics(clusterId, name, partitions, replicationFactor, configs);
+     }
+ 
+     public void delete(String clusterId, String name) throws ExecutionException, InterruptedException {
+
+File: src/main/java/org/akhq/repositories/RecordRepository.java
+Patch:
+@@ -39,6 +39,7 @@
+ import java.util.concurrent.ExecutionException;
+ import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.function.Function;
++import java.util.function.Predicate;
+ import java.util.stream.Collectors;
+ import java.util.stream.Stream;
+ import jakarta.inject.Inject;
+@@ -606,7 +607,7 @@ public RecordMetadata produce(
+                 SchemaSerializer keySerializer = serializerFactory.createSerializer(clusterId, keySchemaId.get());
+                 keyAsBytes = keySerializer.serialize(key.get());
+             } else {
+-                keyAsBytes = key.get().getBytes();
++                keyAsBytes = key.filter(Predicate.not(String::isEmpty)).map(String::getBytes).orElse(null);
+             }
+         } else {
+             try {
+@@ -622,7 +623,7 @@ public RecordMetadata produce(
+             SchemaSerializer valueSerializer = serializerFactory.createSerializer(clusterId, valueSchemaId.get());
+             valueAsBytes = valueSerializer.serialize(value.get());
+         } else {
+-            valueAsBytes = value.map(String::getBytes).orElse(null);
++            valueAsBytes = value.filter(Predicate.not(String::isEmpty)).map(String::getBytes).orElse(null);
+         }
+ 
+         return produce(clusterId, topic, valueAsBytes, headers, keyAsBytes, partition, timestamp);
+
+File: src/test/java/org/akhq/modules/AvroSchemaSerializerTest.java
+Patch:
+@@ -1,7 +1,6 @@
+ package org.akhq.modules;
+ 
+ import io.confluent.kafka.schemaregistry.avro.AvroSchema;
+-import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
+ import org.akhq.configs.SchemaRegistryType;
+ import org.akhq.modules.schemaregistry.AvroSerializer;
+ import org.apache.avro.SchemaBuilder;
+@@ -10,7 +9,6 @@
+ import org.junit.jupiter.api.extension.ExtendWith;
+ import org.mockito.junit.jupiter.MockitoExtension;
+ 
+-import java.io.IOException;
+ import java.nio.ByteBuffer;
+ 
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+@@ -66,5 +64,4 @@ void shouldFailIfDoesntMatchSchemaId() {
+             avroSerializer.serialize(INVALID_JSON);
+         });
+     }
+-
+ }
+
+File: src/test/java/org/akhq/KafkaTestCluster.java
+Patch:
+@@ -295,7 +295,7 @@ private void injectTestData() throws InterruptedException, ExecutionException {
+         log.debug("{} topic created", TOPIC_JSON_SCHEMA);
+ 
+         // consumer groups
+-        for (int c = 0; c < 5; c++) {
++        for (int c = 0; c < CONSUMER_GROUP_COUNT; c++) {
+             Properties properties = new Properties();
+             properties.put("group.id", "consumer-" + c);
+ 
+
+File: src/test/java/org/akhq/configs/SecurityPropertiesTest.java
+Patch:
+@@ -19,13 +19,12 @@ void shouldReturnAllBasicGroups() {
+                 CollectionUtils.toSet(new String[] {"admin", "limited", "operator", "no-filter"}),
+                 securityProperties.getGroups().keySet()
+         );
+-
+         ctx.close();
+     }
+ 
+     @Test
+     void shouldReturnAllBasicPlusConfiguredGroups() {
+-        ApplicationContext ctx = ApplicationContext.run(ApplicationContext.class, "extragroups");
++        ApplicationContext ctx = ApplicationContext.run("extragroups");
+         SecurityProperties securityProperties = ctx.getBean(SecurityProperties.class);
+ 
+         assertEquals(
+@@ -38,7 +37,7 @@ void shouldReturnAllBasicPlusConfiguredGroups() {
+ 
+     @Test
+     void shouldOverrideBasicGroups() {
+-        ApplicationContext ctx = ApplicationContext.run(ApplicationContext.class, "overridegroups");
++        ApplicationContext ctx = ApplicationContext.run("overridegroups");
+         SecurityProperties securityProperties = ctx.getBean(SecurityProperties.class);
+ 
+         assertEquals(
+
+File: src/test/java/org/akhq/controllers/GroupControllerTest.java
+Patch:
+@@ -38,8 +38,9 @@ void listApi() {
+         assertEquals(5, result.getResults().size());
+ 
+         result = this.retrievePagedList(HttpRequest.GET(BASE_URL + "?page=2"), ConsumerGroup.class);
+-        assertEquals(1, result.getResults().size());
+-        assertEquals("stream-test-example", result.getResults().get(0).getId());
++        assertEquals(2, result.getResults().size());
++        assertEquals("consumer-5", result.getResults().get(0).getId());
++        assertEquals("stream-test-example",result.getResults().get(1).getId());
+     }
+ 
+     @Test
+
+File: src/test/java/org/akhq/controllers/SchemaControllerTest.java
+Patch:
+@@ -32,7 +32,7 @@ class SchemaControllerTest extends AbstractTest {
+     @Test
+     void listApi() {
+         ResultPagedList<Schema> result = this.retrievePagedList(HttpRequest.GET(BASE_URL), Schema.class);
+-        assertEquals(5, result.getResults().size());
++        assertEquals(3, result.getResults().size());
+     }
+ 
+     @Test
+
+File: src/test/java/org/akhq/controllers/TopicControllerTest.java
+Patch:
+@@ -75,7 +75,7 @@ void partitionsApi() {
+     @Order(1)
+     void groupsApi() {
+         List<ConsumerGroup> result = this.retrieveList(HttpRequest.GET(TOPIC_URL + "/groups"), ConsumerGroup.class);
+-        assertEquals(5, result.size());
++        assertEquals(KafkaTestCluster.CONSUMER_GROUP_COUNT, result.size());
+     }
+ 
+     @Test
+
+File: src/test/java/org/akhq/modules/RestApiClaimProviderTest.java
+Patch:
+@@ -50,7 +50,7 @@ void loginExternalClaim() throws ParseException {
+         assertTrue(token.getJWTClaimsSet().getClaims().containsKey("topicsFilterRegexp"));
+         assertTrue(token.getJWTClaimsSet().getClaims().containsKey("roles"));
+ 
+-        assertEquals("[\"filter1\",\"filter2\"]", token.getJWTClaimsSet().getClaims().get("topicsFilterRegexp").toString());
++        //assertEquals(List.of("filter1", "filter2"), token.getJWTClaimsSet().getClaims().get("topicsFilterRegexp").toString());
+         List<String> actualTopicFilters = token.getJWTClaimsSet().getStringListClaim("topicsFilterRegexp");
+         assertLinesMatch(List.of("filter1", "filter2"), actualTopicFilters);
+ 
+
+File: src/test/java/org/akhq/repositories/ConsumerGroupRepositoryTest.java
+Patch:
+@@ -40,6 +40,7 @@ void before() {
+ 
+     @Test
+     void list() throws ExecutionException, InterruptedException {
++        mockApplicationContext();
+         assertEquals(KafkaTestCluster.CONSUMER_GROUP_COUNT, consumerGroupRepository.list(
+             KafkaTestCluster.CLUSTER_ID,
+             new Pagination(100, URIBuilder.empty(), 1),
+@@ -50,7 +51,7 @@ void list() throws ExecutionException, InterruptedException {
+     @Test
+     void listWithConsumerGroupRegex() throws ExecutionException, InterruptedException {
+         mockApplicationContext();
+-        assertEquals(5, consumerGroupRepository.list(
++        assertEquals(KafkaTestCluster.CONSUMER_GROUP_COUNT, consumerGroupRepository.list(
+             KafkaTestCluster.CLUSTER_ID,
+             new Pagination(100, URIBuilder.empty(), 1),
+             Optional.empty()
+
+File: src/main/java/org/akhq/repositories/RecordRepository.java
+Patch:
+@@ -396,6 +396,7 @@ private Optional<EndOffsetBound> getOffsetForSortNewest(KafkaConsumer<byte[], by
+                 }
+ 
+                 if (last == partition.getFirstOffset() || last < 0) {
++                    consumer.close();
+                     return null;
+                 } else if (!(last - pollSizePerPartition < first)) {
+                     first = last - pollSizePerPartition;
+
+File: src/main/java/org/akhq/modules/AbstractKafkaWrapper.java
+Patch:
+@@ -16,6 +16,7 @@
+ import org.apache.kafka.common.errors.ClusterAuthorizationException;
+ import org.apache.kafka.common.errors.SecurityDisabledException;
+ import org.apache.kafka.common.errors.TopicAuthorizationException;
++import org.apache.kafka.common.errors.UnsupportedVersionException;
+ 
+ import java.util.*;
+ import java.util.concurrent.ExecutionException;
+@@ -254,7 +255,7 @@ public Map<Integer, Map<String, LogDirDescription>> describeLogDir(String cluste
+                             .allDescriptions()
+                             .get();
+                     } catch (ExecutionException e) {
+-                        if (e.getCause() instanceof ClusterAuthorizationException || e.getCause() instanceof TopicAuthorizationException) {
++                        if (e.getCause() instanceof ClusterAuthorizationException || e.getCause() instanceof TopicAuthorizationException || e.getCause() instanceof UnsupportedVersionException) {
+                             return new HashMap<>();
+                         }
+ 
+
+File: src/main/java/org/akhq/repositories/SchemaRegistryRepository.java
+Patch:
+@@ -220,7 +220,7 @@ public Schema.Config getConfig(String clusterId, String subject) throws IOExcept
+         try {
+             return new Schema.Config(this.kafkaModule
+                 .getRegistryRestClient(clusterId)
+-                .getConfig(subject)
++                .getConfig(Map.of(), subject, true)
+             );
+         } catch (RestClientException exception) {
+             if (exception.getStatus() != 404) {
+
+File: src/main/java/org/akhq/repositories/RecordRepository.java
+Patch:
+@@ -1276,7 +1276,7 @@ private static class EndOffsetBound {
+     }
+ 
+     private void filterMessageLength(Record record) {
+-        if (maxKafkaMessageLength == Integer.MAX_VALUE) {
++        if (maxKafkaMessageLength == Integer.MAX_VALUE || record.getValue() == null) {
+             return;
+         }
+ 
+
+File: src/main/java/org/akhq/configs/Connection.java
+Patch:
+@@ -74,7 +74,8 @@ public UiOptions mergeOptions(UIOptions defaultOptions) {
+         options.topic = new UiOptionsTopic(
+             StringUtils.isNotEmpty(this.uiOptions.topic.getDefaultView()) ? this.uiOptions.topic.getDefaultView() : defaultOptions.getTopic().getDefaultView(),
+             (this.uiOptions.topic.getSkipConsumerGroups() != null) ? this.uiOptions.topic.getSkipConsumerGroups() : defaultOptions.getTopic().getSkipConsumerGroups(),
+-            (this.uiOptions.topic.getSkipLastRecord() != null) ? this.uiOptions.topic.getSkipLastRecord() : defaultOptions.getTopic().getSkipLastRecord()
++            (this.uiOptions.topic.getSkipLastRecord() != null) ? this.uiOptions.topic.getSkipLastRecord() : defaultOptions.getTopic().getSkipLastRecord(),
++            (this.uiOptions.topic.getShowAllConsumerGroups() != null) ? this.uiOptions.topic.getShowAllConsumerGroups() : defaultOptions.getTopic().getShowAllConsumerGroups()
+         );
+ 
+         options.topicData = new UiOptionsTopicData(
+
+File: src/main/java/org/akhq/configs/UiOptionsTopic.java
+Patch:
+@@ -11,4 +11,5 @@ public class UiOptionsTopic {
+     private String defaultView;
+     private Boolean skipConsumerGroups;
+     private Boolean skipLastRecord;
++    private Boolean showAllConsumerGroups;
+ }
+
+File: src/main/java/org/akhq/utils/GroovyClaimProvider.java
+Patch:
+@@ -35,7 +35,7 @@ private void init() {
+     }
+ 
+     @Override
+-    public AKHQClaimResponse generateClaim(AKHQClaimRequest request) {
++    public ClaimResponse generateClaim(ClaimRequest request) {
+         return groovyImpl.generateClaim(request);
+     }
+ }
+
+File: src/main/java/org/akhq/utils/RestApiClaimProvider.java
+Patch:
+@@ -11,8 +11,7 @@
+ @Requires(property = "akhq.security.rest.enabled", value = StringUtils.TRUE)
+ @Client("${akhq.security.rest.url}")
+ public interface RestApiClaimProvider extends ClaimProvider {
+-
+     @Post
+     @Override
+-    AKHQClaimResponse generateClaim(@Body AKHQClaimRequest request);
++    ClaimResponse generateClaim(@Body ClaimRequest request);
+ }
+
+File: src/main/java/org/akhq/models/Record.java
+Patch:
+@@ -51,6 +51,7 @@ public class Record {
+     @JsonIgnore
+     private SchemaRegistryClient client;
+ 
++    @JsonIgnore
+     private ProtobufToJsonDeserializer protobufToJsonDeserializer;
+ 
+     @Getter(AccessLevel.NONE)
+
+File: src/main/java/org/akhq/utils/ProtobufToJsonDeserializer.java
+Patch:
+@@ -158,7 +158,7 @@ private String tryToDeserializeWithMessageType(byte[] buffer, String topicRegex,
+         List<Descriptor> descriptorsWithDependencies = this.descriptors.get(topicRegex);
+         List<Descriptor> descriptorsForConfiguredMessageTypes =
+                 descriptorsWithDependencies.stream()
+-                        .filter(mp -> messageType.equals(mp.getName()))
++                        .filter(mp -> messageType.equals(mp.getFullName()))
+                         .collect(Collectors.toList());
+ 
+         if (descriptorsForConfiguredMessageTypes.isEmpty()) {
+
+File: src/test/java/org/akhq/utils/ProtobufToJsonDeserializerTest.java
+Patch:
+@@ -47,13 +47,13 @@ private void createTopicProtobufDeserializationMapping() throws URISyntaxExcepti
+         TopicsMapping albumTopicsMapping = new TopicsMapping();
+         albumTopicsMapping.setTopicRegex("album.*");
+         albumTopicsMapping.setDescriptorFile("album.desc");
+-        albumTopicsMapping.setValueMessageType("Album");
++        albumTopicsMapping.setValueMessageType("org.akhq.utils.Album");
+ 
+         TopicsMapping filmTopicsMapping = new TopicsMapping();
+         filmTopicsMapping.setTopicRegex("film.*");
+         String base64FilmDescriptor = encodeDescriptorFileToBase64("film.desc");
+         filmTopicsMapping.setDescriptorFileBase64(base64FilmDescriptor);
+-        filmTopicsMapping.setValueMessageType("Film");
++        filmTopicsMapping.setValueMessageType("org.akhq.utils.Film");
+ 
+         // Do not specify message type neither for a key, nor for a value
+         TopicsMapping incorrectTopicsMapping = new TopicsMapping();
+@@ -64,7 +64,7 @@ private void createTopicProtobufDeserializationMapping() throws URISyntaxExcepti
+         TopicsMapping complexObjectTopicsMapping = new TopicsMapping();
+         complexObjectTopicsMapping.setTopicRegex("complex.*");
+         complexObjectTopicsMapping.setDescriptorFile("complex.desc");
+-        complexObjectTopicsMapping.setValueMessageType("Complex");
++        complexObjectTopicsMapping.setValueMessageType("org.akhq.utils.Complex");
+ 
+         protobufDeserializationTopicsMapping.setTopicsMapping(
+                 Arrays.asList(albumTopicsMapping, filmTopicsMapping, complexObjectTopicsMapping, incorrectTopicsMapping));
+
+File: src/main/java/org/akhq/models/Topic.java
+Patch:
+@@ -126,8 +126,10 @@ public Boolean canDeleteRecords(String clusterId, ConfigRepository configReposit
+             return false;
+         }
+ 
+-        List<Config> configs = configRepository.findByTopic(clusterId, this.getName());
++        return isCompacted(configRepository.findByTopic(clusterId, this.getName()));
++    }
+ 
++    public static boolean isCompacted(List<Config> configs) {
+         return configs != null && configs
+             .stream()
+             .filter(config -> config.getName().equals(TopicConfig.CLEANUP_POLICY_CONFIG))
+
+File: src/main/java/org/akhq/utils/AvroSerializer.java
+Patch:
+@@ -112,6 +112,9 @@ private static Object objectSerializer(Object value, Schema schema) {
+                 case INT:
+                     return value;
+                 case LONG:
++                    if (value != null && value instanceof Integer) {
++                        return ((Integer) value).longValue();
++                    }
+                     return value;
+                 case FLOAT:
+                     return value;
+
+File: src/test/java/org/akhq/utils/AvroDeserializerTest.java
+Patch:
+@@ -77,6 +77,7 @@ static Stream<Arguments> convertionSource() {
+             Arguments.of("abc", "\"bytes\"", "abc".getBytes()),
+             Arguments.of("10.10", "{\"type\": \"bytes\", \"logicalType\": \"decimal\", \"scale\": 2, \"precision\": 4}", new BigDecimal("10.10")),
+             Arguments.of("26910000000000000000000000000258.00000", "{\"type\": \"bytes\", \"logicalType\": \"decimal\", \"scale\": 5, \"precision\": 37}", new BigDecimal("26910000000000000000000000000258.00000")),
++            Arguments.of(1, "[\"null\",\"long\"]", 1L),
+             Arguments.of(uuid.toString(), "{\"type\": \"string\", \"logicalType\": \"uuid\"}", uuid),
+             Arguments.of(LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE), "{\"type\": \"int\", \"logicalType\": \"date\"}", LocalDate.now()),
+             Arguments.of(localTime.format(DateTimeFormatter.ISO_LOCAL_TIME), "{\"type\": \"long\", \"logicalType\": \"time-micros\"}", localTime),
+
+File: src/main/java/org/akhq/repositories/SchemaRegistryRepository.java
+Patch:
+@@ -226,7 +226,7 @@ public Schema.Config getConfig(String clusterId, String subject) throws IOExcept
+                 .getConfig(subject)
+             );
+         } catch (RestClientException exception) {
+-            if (exception.getErrorCode() != ERROR_NOT_FOUND) {
++            if (exception.getStatus() != 404) {
+                 throw exception;
+             }
+ 
+
+File: src/test/java/org/akhq/modules/AvroSchemaSerializerTest.java
+Patch:
+@@ -68,7 +68,7 @@ public void shouldSerializeSchemaId() {
+ 
+     @Test
+     public void shouldFailIfDoesntMatchSchemaId() {
+-        assertThrows(AvroTypeException.class, () -> {
++        assertThrows(NullPointerException.class, () -> {
+             int schemaId = 3;
+             cut.toAvro(INVALID_JSON, schemaId);
+         });
+
+File: src/test/java/org/akhq/controllers/AkhqControllerTest.java
+Patch:
+@@ -32,6 +32,7 @@ void auth() {
+         );
+ 
+         assertTrue(result.isLoginEnabled());
++        assertTrue(result.isFormEnabled());
+     }
+ 
+     @Test
+
+File: src/main/java/org/akhq/controllers/TopicController.java
+Patch:
+@@ -352,7 +352,7 @@ public ResultNextList<Record> record(
+             String cluster,
+             String topicName,
+             Integer partition,
+-            Integer offset
++            Long offset
+     ) throws ExecutionException, InterruptedException {
+         Topic topic = this.topicRepository.findByName(cluster, topicName);
+ 
+
+File: src/main/java/org/akhq/controllers/ErrorController.java
+Patch:
+@@ -71,11 +71,11 @@ private HttpResponse<?> renderExecption(HttpRequest<?> request, Exception e) {
+ 
+     @Error(global = true)
+     public HttpResponse<?> error(HttpRequest<?> request, AuthorizationException e) throws URISyntaxException {
+-
+         if (request.getUri().toString().startsWith("/api")) {
+-            return HttpResponse.unauthorized().body( new JsonError("Unauthorized"));
++            return HttpResponse.unauthorized().body(new JsonError("Unauthorized"));
+         }
+-        return HttpResponse.temporaryRedirect(this.uri("/login"));
++
++        return HttpResponse.temporaryRedirect(this.uri("/ui/login"));
+     }
+ 
+     @Error(global = true)
+
+File: src/main/java/org/akhq/controllers/TopicController.java
+Patch:
+@@ -35,7 +35,6 @@
+ import java.util.concurrent.ExecutionException;
+ import java.util.stream.Collectors;
+ import javax.inject.Inject;
+-import org.akhq.models.Record;
+ 
+ @Slf4j
+ @Secured(Role.ROLE_TOPIC_READ)
+@@ -192,7 +191,7 @@ public ResultNextList<Record> data(
+             data,
+             options.after(data, uri),
+             (options.getPartition() == null ? topic.getSize() : topic.getSize(options.getPartition())),
+-            topic.canDeleteRecords(cluster, configRepository)
++            this.isAllowed(Role.ROLE_TOPIC_DATA_DELETE) && topic.canDeleteRecords(cluster, configRepository)
+         );
+     }
+ 
+@@ -378,7 +377,7 @@ public ResultNextList<Record> record(
+                 data,
+                 URIBuilder.empty(),
+                 data.size(),
+-                topic.canDeleteRecords(cluster, configRepository)
++            this.isAllowed(Role.ROLE_TOPIC_DATA_DELETE) && topic.canDeleteRecords(cluster, configRepository)
+         );
+     }
+ 
+
+File: src/test/java/org/akhq/controllers/SchemaControllerTest.java
+Patch:
+@@ -32,7 +32,7 @@ class SchemaControllerTest extends AbstractTest {
+     @Test
+     void listApi() {
+         ResultPagedList<Schema> result = this.retrievePagedList(HttpRequest.GET(BASE_URL), Schema.class);
+-        assertEquals(3, result.getResults().size());
++        assertEquals(5, result.getResults().size());
+     }
+ 
+     @Test
+
+File: src/main/java/org/akhq/controllers/TopicController.java
+Patch:
+@@ -28,6 +28,7 @@
+ import org.apache.kafka.common.resource.ResourceType;
+ import org.codehaus.httpcache4j.uri.URIBuilder;
+ import org.reactivestreams.Publisher;
++import org.akhq.models.Record;
+ 
+ import java.time.Instant;
+ import java.util.*;
+
+File: src/main/java/org/akhq/repositories/RecordRepository.java
+Patch:
+@@ -5,6 +5,7 @@
+ import com.google.common.collect.ImmutableMap;
+ import io.micronaut.context.annotation.Value;
+ import io.micronaut.context.env.Environment;
++import io.micronaut.core.util.StringUtils;
+ import io.micronaut.http.sse.Event;
+ import io.reactivex.Flowable;
+ import lombok.*;
+@@ -456,6 +457,7 @@ private RecordMetadata produce(
+                 (headers == null ? ImmutableMap.<String, String>of() : headers)
+                     .entrySet()
+                     .stream()
++                    .filter(entry -> StringUtils.isNotEmpty(entry.getKey()))
+                     .map(entry -> new RecordHeader(
+                         entry.getKey(),
+                         entry.getValue() == null ? null : entry.getValue().getBytes()
+
+File: src/main/java/org/akhq/repositories/ConnectRepository.java
+Patch:
+@@ -256,9 +256,9 @@ private Optional<List<String>> getConnectFilterRegex() {
+ 
+     @SuppressWarnings("unchecked")
+     private List<String> getConnectFilterRegexFromAttributes(Map<String, Object> attributes) {
+-        if (attributes.get("connects-filter-regexp") != null) {
+-            if (attributes.get("connects-filter-regexp") instanceof List) {
+-                return (List<String>)attributes.get("connects-filter-regexp");
++        if (attributes.get("connectsFilterRegexp") != null) {
++            if (attributes.get("connectsFilterRegexp") instanceof List) {
++                return (List<String>)attributes.get("connectsFilterRegexp");
+             }
+         }
+         return new ArrayList<>();
+
+File: src/main/java/org/akhq/repositories/TopicRepository.java
+Patch:
+@@ -168,9 +168,9 @@ private Optional<List<String>> getTopicFilterRegex() {
+ 
+     @SuppressWarnings("unchecked")
+     private List<String> getTopicFilterRegexFromAttributes(Map<String, Object> attributes) {
+-        if (attributes.get("topics-filter-regexp") != null) {
+-            if (attributes.get("topics-filter-regexp") instanceof List) {
+-                return (List<String>)attributes.get("topics-filter-regexp");
++        if (attributes.get("topicsFilterRegexp") != null) {
++            if (attributes.get("topicsFilterRegexp") instanceof List) {
++                return (List<String>)attributes.get("topicsFilterRegexp");
+             }
+         }
+         return new ArrayList<>();
+
+File: src/test/java/org/akhq/repositories/ConnectRepositoryTest.java
+Patch:
+@@ -201,7 +201,7 @@ public void getFilteredList() {
+         repository.delete(KafkaTestCluster.CLUSTER_ID, "connect-1","not.Matching3");
+     }
+     private void mockApplicationContext() {
+-        Authentication auth = new DefaultAuthentication("test", Collections.singletonMap("connects-filter-regexp", new ArrayList<>(Arrays.asList("^prefixed.*$"))));
++        Authentication auth = new DefaultAuthentication("test", Collections.singletonMap("connectsFilterRegexp", new ArrayList<>(Arrays.asList("^prefixed.*$"))));
+         DefaultSecurityService securityService = Mockito.mock(DefaultSecurityService.class);
+         when(securityService.getAuthentication()).thenReturn(Optional.of(auth));
+         when(applicationContext.containsBean(SecurityService.class)).thenReturn(true);
+
+File: src/test/java/org/akhq/repositories/TopicRepositoryTest.java
+Patch:
+@@ -168,7 +168,7 @@ public void partition() throws ExecutionException, InterruptedException {
+     }
+ 
+     private void mockApplicationContext() {
+-        Authentication auth = new DefaultAuthentication("test", Collections.singletonMap("topics-filter-regexp", new ArrayList<>(Arrays.asList("rando.*"))));
++        Authentication auth = new DefaultAuthentication("test", Collections.singletonMap("topicsFilterRegexp", new ArrayList<>(Arrays.asList("rando.*"))));
+         DefaultSecurityService securityService = Mockito.mock(DefaultSecurityService.class);
+         when(securityService.getAuthentication()).thenReturn(Optional.of(auth));
+         when(applicationContext.containsBean(SecurityService.class)).thenReturn(true);
+
+File: src/main/java/org/akhq/configs/Connection.java
+Patch:
+@@ -31,6 +31,7 @@ public static class SchemaRegistry {
+         String url;
+         String basicAuthUsername;
+         String basicAuthPassword;
++        SchemaRegistryType type = SchemaRegistryType.CONFLUENT;
+ 
+         @MapFormat(transformation = MapFormat.MapTransformation.FLAT)
+         Map<String, String> properties;
+
+File: src/main/java/org/akhq/models/ConnectPlugin.java
+Patch:
+@@ -29,15 +29,15 @@ public ConnectPlugin(ConnectorPlugin connectorPlugin, ConnectorPluginConfigValid
+             results.getConfigs()
+                 .stream()
+                 .map(config -> new Definition(config.getDefinition())),
+-            registryDefintion()
++            registryDefinition()
+         )
+             .sorted(Comparator.comparing(Definition::getGroup, (s1, s2) -> s1.equals("Others") ? 1 : s1.compareTo(s2))
+                 .thenComparing(Definition::getOrder)
+             )
+             .collect(Collectors.toList());
+     }
+ 
+-    public Stream<Definition> registryDefintion() {
++    public Stream<Definition> registryDefinition() {
+         return Stream.of(
+             Definition.builder()
+                 .name("schema.registry.url")
+
+File: src/main/java/org/akhq/models/TopicPartition.java
+Patch:
+@@ -53,14 +53,14 @@ public ConsumerGroupOffset(TopicPartition topicPartition) {
+         public ConsumerGroupOffset(
+             org.apache.kafka.common.TopicPartition topicPartition,
+             OffsetAndMetadata offsetAndMetadata,
+-            Partition.Offsets partiionOffsets
++            Partition.Offsets partitionOffsets
+         ) {
+             super(topicPartition);
+ 
+             this.offset = offsetAndMetadata != null ? Optional.of(offsetAndMetadata.offset()) : Optional.empty();
+             this.metadata = offsetAndMetadata != null ? Optional.of(offsetAndMetadata.metadata()) : Optional.empty();
+-            this.firstOffset = partiionOffsets != null ? Optional.of(partiionOffsets.getFirstOffset()) : Optional.empty();
+-            this.lastOffset = partiionOffsets != null ? Optional.of(partiionOffsets.getLastOffset()) : Optional.empty();
++            this.firstOffset = partitionOffsets != null ? Optional.of(partitionOffsets.getFirstOffset()) : Optional.empty();
++            this.lastOffset = partitionOffsets != null ? Optional.of(partitionOffsets.getLastOffset()) : Optional.empty();
+         }
+ 
+         public Optional<Long> getOffsetLag() {
+
+File: src/test/java/org/akhq/modules/AvroSchemaSerializerTest.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
+ import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
++import org.akhq.configs.SchemaRegistryType;
+ import org.apache.avro.AvroTypeException;
+ import org.apache.avro.SchemaBuilder;
+ import org.junit.jupiter.api.BeforeEach;
+@@ -48,7 +49,7 @@ class AvroSchemaSerializerTest {
+ 
+     @BeforeEach
+     void setUp() throws IOException, RestClientException {
+-        cut = new AvroSerializer(schemaRegistryClient);
++        cut = new AvroSerializer(schemaRegistryClient, SchemaRegistryType.CONFLUENT);
+         when(schemaRegistryClient.getById(anyInt())).thenReturn(SCHEMA);
+     }
+ 
+
+File: src/main/java/org/akhq/utils/UserGroupUtils.java
+Patch:
+@@ -28,7 +28,7 @@ public List<String> getUserRoles(List<String> groups) {
+             return new ArrayList<>();
+         }
+ 
+-        return securityProperties.getGroups().stream()
++        return securityProperties.getGroups().values().stream()
+             .filter(group -> groups.contains(group.getName()))
+             .filter(group -> group.getRoles() != null)
+             .flatMap(group -> group.getRoles().stream())
+@@ -48,7 +48,7 @@ public Map<String, Object> getUserAttributes(List<String> groups) {
+             return null;
+         }
+ 
+-        return securityProperties.getGroups().stream()
++        return securityProperties.getGroups().values().stream()
+             .filter(group -> groups.contains(group.getName()))
+             .flatMap(group -> (group.getAttributes() != null) ? group.getAttributes().entrySet().stream() : null)
+             .collect(Collectors.toMap(
+
+File: src/main/java/org/akhq/controllers/TailController.java
+Patch:
+@@ -8,7 +8,6 @@
+ import io.micronaut.scheduling.TaskExecutors;
+ import io.micronaut.scheduling.annotation.ExecuteOn;
+ import io.micronaut.security.annotation.Secured;
+-import io.reactivex.schedulers.Schedulers;
+ import io.swagger.v3.oas.annotations.Operation;
+ import lombok.EqualsAndHashCode;
+ import lombok.Getter;
+@@ -36,8 +35,8 @@ public TailController(RecordRepository recordRepository) {
+     }
+ 
+     @Secured(Role.ROLE_TOPIC_DATA_READ)
+-    @ExecuteOn(TaskExecutors.IO)
+     @Get(value = "api/{cluster}/tail/sse", produces = MediaType.TEXT_EVENT_STREAM)
++    @ExecuteOn(TaskExecutors.IO)
+     @Operation(tags = {"topic data"}, summary = "Tail for data on multiple topic")
+     public Publisher<Event<TailRecord>> sse(
+         String cluster,
+@@ -51,7 +50,6 @@ public Publisher<Event<TailRecord>> sse(
+ 
+         return recordRepository
+             .tail(cluster, options)
+-            .observeOn(Schedulers.io())
+             .map(event -> {
+                 TailRecord tailRecord = new TailRecord();
+                 tailRecord.offsets = getOffsets(event);
+
+File: src/test/java/org/akhq/modules/BasicAuthAuthenticationProviderTest.java
+Patch:
+@@ -40,7 +40,7 @@ public void success() {
+         assertThat(roles, hasItem("topic/read"));
+         assertThat(roles, hasItem("registry/version/delete"));
+ 
+-        assertEquals("test.*", ((List)userDetail.getAttributes("roles", "username").get("topics-filter-regexp")).get(0));
++        assertEquals("test.*", ((List)userDetail.getAttributes("roles", "username").get("topicsFilterRegexp")).get(0));
+     }
+ 
+     @Test
+
+File: src/test/java/org/akhq/modules/LdapAuthenticationProviderTest.java
+Patch:
+@@ -91,7 +91,7 @@ public void success() throws NamingException {
+         assertThat(roles, hasItem("topic/read"));
+         assertThat(roles, hasItem("registry/version/delete"));
+ 
+-        assertEquals("test.*", ((List)userDetail.getAttributes("roles", "username").get("topics-filter-regexp")).get(0));
++        assertEquals("test.*", ((List)userDetail.getAttributes("roles", "username").get("topicsFilterRegexp")).get(0));
+     }
+ 
+     @Test
+@@ -127,7 +127,7 @@ public void successWithMultipleLdapGroups() throws NamingException {
+         assertThat(roles, hasItem("registry/version/delete"));
+         assertThat(roles, hasItem("topic/data/read"));
+ 
+-        List<String> topicsFilterList =  (List)(userDetail.getAttributes("roles", "username").get("topics-filter-regexp"));
++        List<String> topicsFilterList =  (List)(userDetail.getAttributes("roles", "username").get("topicsFilterRegexp"));
+         assertThat(topicsFilterList, hasSize(2));
+         assertThat(topicsFilterList, hasItem("test.*"));
+         assertThat(topicsFilterList, hasItem("test-operator.*"));
+@@ -166,7 +166,7 @@ public void successWithLdapGroupAndUserRole() throws NamingException {
+         assertThat(roles, hasItem("registry/version/delete"));
+         assertThat(roles, hasItem("topic/data/read"));
+ 
+-        List<String> topicsFilterList =  (List)(userDetail.getAttributes("roles", "username").get("topics-filter-regexp"));
++        List<String> topicsFilterList =  (List)(userDetail.getAttributes("roles", "username").get("topicsFilterRegexp"));
+         assertThat(topicsFilterList, hasSize(2));
+         assertThat(topicsFilterList, hasItem("test.*"));
+         assertThat(topicsFilterList, hasItem("test-operator.*"));
+
+File: src/main/java/org/akhq/controllers/TopicController.java
+Patch:
+@@ -326,7 +326,7 @@ public ResultNextList<Record> record(
+         RecordRepository.Options options = dataSearchOptions(
+             cluster,
+             topicName,
+-            Optional.of(String.join("-", String.valueOf(partition), String.valueOf(offset - 1))),
++            offset - 1 < 0 ? Optional.empty() : Optional.of(String.join("-", String.valueOf(partition), String.valueOf(offset - 1))),
+             Optional.of(partition),
+             Optional.empty(),
+             Optional.empty(),
+
+File: src/main/java/org/akhq/repositories/RecordRepository.java
+Patch:
+@@ -144,7 +144,7 @@ public Optional<Record> consumeSingleRecord(String clusterId, Topic topic, Optio
+         return Debug.call(() -> {
+             Optional<Record> singleRecord = Optional.empty();
+             KafkaConsumer<byte[], byte[]> consumer = kafkaModule.getConsumer(clusterId, new Properties() {{
+-                put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, Integer.valueOf(1));
++                put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 1);
+             }});
+ 
+             Map<TopicPartition, Long> partitions = getTopicPartitionForSortOldest(topic, options, consumer);
+@@ -312,7 +312,7 @@ private Optional<OffsetBound> getFirstOffsetForSortOldest(KafkaConsumer<byte[],
+         return getFirstOffset(consumer, partition, options)
+             .map(first -> {
+                 if (options.after.size() > 0 && options.after.containsKey(partition.getId())) {
+-                    first = options.after.get(partition.getId());
++                    first = options.after.get(partition.getId()) + 1;
+                 }
+ 
+                 if (first > partition.getLastOffset()) {
+
+File: src/main/java/org/akhq/configs/SecurityProperties.java
+Patch:
+@@ -3,12 +3,13 @@
+ import io.micronaut.context.annotation.ConfigurationProperties;
+ import lombok.Data;
+ 
++import java.util.ArrayList;
+ import java.util.List;
+ 
+ @ConfigurationProperties("akhq.security")
+ @Data
+ public class SecurityProperties {
+-    private List<BasicAuth> basicAuth;
++    private List<BasicAuth> basicAuth = new ArrayList<>();
+     private List<Group> groups;
+     private String defaultGroup;
+ }
+
+File: src/main/java/org/akhq/controllers/TopicController.java
+Patch:
+@@ -245,11 +245,13 @@ public List<Config> updateConfig(String cluster, String topicName, Map<String, S
+     @Secured(Role.ROLE_TOPIC_DATA_DELETE)
+     @Delete("api/{cluster}/topic/{topicName}/data/empty")
+     @Operation(tags = {"topic data"}, summary = "Empty data from a topic")
+-    public void emptyTopicApi(String cluster, String topicName) throws ExecutionException, InterruptedException{
++    public HttpResponse<?> emptyTopic(String cluster, String topicName) throws ExecutionException, InterruptedException{
+         this.recordRepository.emptyTopic(
+                 cluster,
+                 topicName
+         );
++
++        return HttpResponse.noContent();
+     }
+ 
+     @Secured(Role.ROLE_TOPIC_DATA_DELETE)
+
+File: src/main/java/org/akhq/models/Schema.java
+Patch:
+@@ -21,7 +21,7 @@
+ @NoArgsConstructor
+ public class Schema {
+     @JsonIgnore
+-    private final Parser parser = new Parser();
++    private final Parser parser = new Parser().setValidateDefaults(false);
+ 
+     private Integer id;
+     private String subject;
+
+File: src/main/java/org/akhq/models/Record.java
+Patch:
+@@ -3,6 +3,7 @@
+ import com.fasterxml.jackson.annotation.JsonIgnore;
+ import io.confluent.kafka.serializers.KafkaAvroDeserializer;
+ import lombok.*;
++import org.akhq.utils.AvroToJsonSerializer;
+ import org.apache.avro.generic.GenericRecord;
+ import org.apache.kafka.clients.consumer.ConsumerRecord;
+ import org.apache.kafka.clients.producer.RecordMetadata;
+@@ -105,8 +106,8 @@ private String convertToString(byte[] payload, Integer keySchemaId) {
+             return null;
+         } else  if (keySchemaId != null) {
+             try {
+-                GenericRecord deserialize = (GenericRecord) kafkaAvroDeserializer.deserialize(topic, payload);
+-                return deserialize.toString();
++                GenericRecord record = (GenericRecord) kafkaAvroDeserializer.deserialize(topic, payload);
++                return AvroToJsonSerializer.toJson(record);
+             } catch (Exception exception) {
+                 return new String(payload);
+             }
+
+File: src/main/java/org/akhq/utils/AvroSchemaDeserializer.java
+Patch:
+@@ -8,7 +8,7 @@
+ 
+ import java.io.IOException;
+ 
+-public class AvroDeserializer extends JsonDeserializer<Schema> {
++public class AvroSchemaDeserializer extends JsonDeserializer<Schema> {
+     @Override
+     public Schema deserialize(
+         JsonParser p,
+
+File: src/main/java/org/akhq/utils/AvroSchemaSerializer.java
+Patch:
+@@ -8,7 +8,7 @@
+ 
+ import java.io.IOException;
+ 
+-public class AvroSerializer extends JsonSerializer<Schema> {
++public class AvroSchemaSerializer extends JsonSerializer<Schema> {
+     @Override
+     public void serialize(
+         Schema value,
+
+File: src/test/java/org/akhq/modules/AvroSchemaSerializerTest.java
+Patch:
+@@ -19,7 +19,7 @@
+ import static org.mockito.Mockito.when;
+ 
+ @ExtendWith(MockitoExtension.class)
+-class AvroSerializerTest {
++class AvroSchemaSerializerTest {
+ 
+     private final org.apache.avro.Schema SCHEMA = SchemaBuilder
+             .record("schema1").namespace("org.akhq")
+
+File: src/test/java/org/akhq/repositories/RecordRepositoryTest.java
+Patch:
+@@ -122,7 +122,7 @@ public void consumeAvro() throws ExecutionException, InterruptedException {
+             .findFirst();
+ 
+         avroRecord.orElseThrow(() -> new NoSuchElementException("Unable to find key 1"));
+-        avroRecord.ifPresent(record -> assertEquals("{\"id\": 1, \"name\": \"WaWa\", \"breed\": \"ABYSSINIAN\"}", record.getValue()));
++        avroRecord.ifPresent(record -> assertEquals("{\"id\":1,\"name\":\"WaWa\",\"breed\":\"ABYSSINIAN\"}", record.getValue()));
+     }
+ 
+     private List<Record> consumeAllRecord(RecordRepository.Options options) throws ExecutionException, InterruptedException {
+
+File: src/main/java/org/akhq/controllers/TopicController.java
+Patch:
+@@ -95,7 +95,8 @@ public ResultPagedList<Topic> list(
+             cluster,
+             pagination,
+             show.orElse(TopicRepository.TopicListView.valueOf(defaultView)),
+-            search
++            search,
++            skipConsumerGroups
+         ));
+     }
+ 
+@@ -198,7 +199,7 @@ public List<Partition> partitions(String cluster, String topicName) throws Execu
+     @Get("api/{cluster}/topic/{topicName}/groups")
+     @Operation(tags = {"topic"}, summary = "List all consumer groups from a topic")
+     public List<ConsumerGroup> groups(String cluster, String topicName) throws ExecutionException, InterruptedException {
+-        return this.topicRepository.findByName(cluster, topicName, false).getConsumerGroups();
++        return this.topicRepository.findByName(cluster, topicName, skipConsumerGroups).getConsumerGroups();
+     }
+ 
+     @Get("api/{cluster}/topic/{topicName}/configs")
+
+File: src/main/java/org/akhq/middlewares/HttpServerAccessLogHandler.java
+Patch:
+@@ -200,8 +200,8 @@ void logAccess(Logger accessLogger, List<String> filters) {
+                     method,
+                     uri,
+                     status,
+-                    contentLength > -1L ? contentLength : MISSING,
+                     inetAddress,
++                    contentLength > -1L ? contentLength : MISSING,
+                     port
+                 }).getMessage();
+ 
+
+File: src/main/java/org/akhq/controllers/TailController.java
+Patch:
+@@ -73,7 +73,7 @@ public Publisher<Event<?>> sse(
+         List<String> topics,
+         Optional<String> search,
+         Optional<List<String>> after
+-    ) throws ExecutionException, InterruptedException {
++    ) {
+         RecordRepository.TailOptions options = new RecordRepository.TailOptions(cluster, topics);
+         search.ifPresent(options::setSearch);
+         after.ifPresent(options::setAfter);
+@@ -117,7 +117,7 @@ public Publisher<Event<TailRecord>> sseApi(
+         List<String> topics,
+         Optional<String> search,
+         Optional<List<String>> after
+-    ) throws ExecutionException, InterruptedException {
++    ) {
+         RecordRepository.TailOptions options = new RecordRepository.TailOptions(cluster, topics);
+         search.ifPresent(options::setSearch);
+         after.ifPresent(options::setAfter);
+
+File: src/main/java/org/akhq/modules/KafkaModule.java
+Patch:
+@@ -213,7 +213,7 @@ public Map<String, KafkaConnectClient> getConnectRestClient(String clusterId) {
+                     }
+ 
+                     if (connect.getSslKeyStore() != null) {
+-                        configuration.useTrustStore(
++                        configuration.useKeyStore(
+                                 new File(connect.getSslKeyStore()),
+                                 connect.getSslKeyStorePassword()
+                         );
+
+File: src/main/java/org/akhq/utils/UserGroupUtils.java
+Patch:
+@@ -26,6 +26,7 @@ public List<String> getUserRoles(List<String> groups) {
+ 
+         return this.akhqGroups.stream()
+             .filter(group -> groups.contains(group.getName()))
++            .filter(group -> group.getRoles() != null)
+             .flatMap(group -> group.getRoles().stream())
+             .distinct()
+             .collect(Collectors.toList());
+
+File: src/main/java/org/akhq/models/Record.java
+Patch:
+@@ -23,10 +23,12 @@ public class Record {
+     private int partition;
+     private long offset;
+     private long timestamp;
++    @JsonIgnore
+     private TimestampType timestampType;
+     private Integer keySchemaId;
+     private Integer valueSchemaId;
+     private Map<String, String> headers = new HashMap<>();
++    @JsonIgnore
+     private KafkaAvroDeserializer kafkaAvroDeserializer;
+ 
+     @Getter(AccessLevel.NONE)
+
+File: src/main/java/org/akhq/controllers/TopicController.java
+Patch:
+@@ -122,7 +122,8 @@ public HttpResponse<?> list(
+             cluster,
+             pagination,
+             show.orElse(TopicRepository.TopicListView.valueOf(defaultView)),
+-            search
++            search,
++            skipConsumerGroups
+         );
+ 
+         return this.template(
+
+File: src/main/java/org/kafkahq/modules/KafkaModule.java
+Patch:
+@@ -178,7 +178,7 @@ public SchemaRegistryClient getRegistryClient(String clusterId) {
+             SchemaRegistryClient client = new CachedSchemaRegistryClient(
+                 this.getRegistryRestClient(clusterId),
+                 Integer.MAX_VALUE,
+-                connection.getSchemaRegistry().getProperties()
++                connection.getSchemaRegistry() != null ? connection.getSchemaRegistry().getProperties() : null
+             );
+ 
+             this.registryClient.put(clusterId, client);
+
+File: src/main/java/org/kafkahq/repositories/AbstractRepository.java
+Patch:
+@@ -20,7 +20,7 @@ public static boolean isSearchMatch(Optional<String> search, String value) {
+         String[] split = search.get().split(" ");
+ 
+         long count = Arrays.stream(split)
+-            .filter(s -> value.toLowerCase().contains(s))
++            .filter(s -> value.toLowerCase().contains(s.toLowerCase()))
+             .count();
+ 
+         return count == split.length;
+
+File: src/main/java/org/kafkahq/controllers/RedirectController.java
+Patch:
+@@ -25,7 +25,7 @@ public HttpResponse slash() throws URISyntaxException {
+         return HttpResponse.redirect(this.uri("/" + kafkaModule.getClustersList().get(0) + "/topic"));
+     }
+ 
+-    @Get("${kafkahq.server.base-path:}^")
++    @Get("${kafkahq.server.base-path:}")
+     public HttpResponse home() throws URISyntaxException {
+         return HttpResponse.redirect(this.uri("/" + kafkaModule.getClustersList().get(0) + "/topic"));
+     }
+
+File: src/main/java/org/kafkahq/controllers/LoginController.java
+Patch:
+@@ -16,7 +16,7 @@
+ @Requires(property = SecurityConfigurationProperties.PREFIX + ".enabled", value = StringUtils.TRUE)
+ @Controller
+ public class LoginController extends AbstractController {
+-    @Get("${kafkahq.server.base-path:}/login{/failed:[a-zA-Z]+}")
++    @Get("${kafkahq.server.base-path:}/login/{failed:[a-zA-Z]+}")
+     @View("login")
+     public HttpResponse login(Optional<String> failed) {
+         return HttpResponse
+
+File: src/main/java/org/kafkahq/controllers/RedirectController.java
+Patch:
+@@ -30,7 +30,7 @@ public HttpResponse home() throws URISyntaxException {
+         return HttpResponse.redirect(this.uri("/" + kafkaModule.getClustersList().get(0) + "/topic"));
+     }
+ 
+-    @Get("${kafkahq.server.base-path:}/{cluster}")
++    @Get("${kafkahq.server.base-path:}/{cluster:(?!login)[^/]+}")
+     public HttpResponse topic(String cluster) throws URISyntaxException {
+         return HttpResponse.redirect(this.uri("/" + cluster + "/topic"));
+     }
+
+File: src/main/java/org/kafkahq/controllers/TopicController.java
+Patch:
+@@ -93,6 +93,7 @@ public HttpResponse createSubmit(HttpRequest request,
+         List<Config> options = configs
+             .entrySet()
+             .stream()
++            .filter(r -> r.getKey().startsWith("configs"))
+             .map(r -> new AbstractMap.SimpleEntry<>(
+                 r.getKey().replaceAll("(configs\\[)(.*)(])", "$2"),
+                 r.getValue()
+
+File: src/main/java/org/kafkahq/controllers/AbstractController.java
+Patch:
+@@ -129,7 +129,7 @@ private static List<String> expandRoles(List<String> roles) {
+     }
+ 
+     @SuppressWarnings("unchecked")
+-    private List<String> getRights() {
++    protected List<String> getRights() {
+         if (!applicationContext.containsBean(SecurityService.class)) {
+             return expandRoles(this.defaultRoles);
+         }
+
+File: src/main/java/org/kafkahq/controllers/TopicController.java
+Patch:
+@@ -357,6 +357,7 @@ public Publisher<Event<?>> sse(String cluster,
+         datas.put("canDeleteRecords", topic.canDeleteRecords(configRepository));
+         datas.put("clusterId", cluster);
+         datas.put("basePath", getBasePath());
++        datas.put("roles", getRights());
+ 
+         return recordRepository
+             .search(options)
+
+File: src/main/java/org/kafkahq/controllers/SchemaController.java
+Patch:
+@@ -79,9 +79,9 @@ public HttpResponse createSubmit(String cluster,
+         URI redirect;
+ 
+         if (toast.getType() != Toast.Type.error) {
+-            redirect = new URI("/" + cluster + "/schema/" + subject);
++            redirect = this.uri("/" + cluster + "/schema/" + subject);
+         } else {
+-            redirect = new URI("/" + cluster + "/schema/create");
++            redirect = this.uri("/" + cluster + "/schema/create");
+         }
+ 
+         return response.status(HttpStatus.MOVED_PERMANENTLY)
+
+File: src/main/java/org/kafkahq/controllers/LoginController.java
+Patch:
+@@ -16,7 +16,7 @@
+ @Requires(property = SecurityConfigurationProperties.PREFIX + ".enabled", value = StringUtils.TRUE)
+ @Controller
+ public class LoginController extends AbstractController {
+-    @Get("/login{/failed:[a-zA-Z]+}")
++    @Get("${kafkahq.server.base-path:}/login{/failed:[a-zA-Z]+}")
+     @View("login")
+     public HttpResponse login(Optional<String> failed) {
+         return HttpResponse
+
+File: src/main/java/org/kafkahq/repositories/RecordRepository.java
+Patch:
+@@ -36,7 +36,7 @@ public class RecordRepository extends AbstractRepository {
+     private final TopicRepository topicRepository;
+     private final SchemaRegistryRepository schemaRegistryRepository;
+ 
+-    @Value("${kafkahq.topic-data.poll-timeout}")
++    @Value("${kafkahq.topic-data.poll-timeout:1000}")
+     protected int pollTimeout;
+ 
+     @Inject
+
+File: src/main/java/org/kafkahq/models/LogDir.java
+Patch:
+@@ -3,6 +3,7 @@
+ import lombok.EqualsAndHashCode;
+ import lombok.Getter;
+ import lombok.ToString;
++import org.apache.kafka.common.TopicPartition;
+ import org.apache.kafka.common.requests.DescribeLogDirsResponse;
+ 
+ @ToString
+@@ -17,7 +18,7 @@ public class LogDir {
+     private final long offsetLag;
+     private final boolean isFuture;
+ 
+-    public LogDir(Integer brokerId, String path, org.apache.kafka.common.TopicPartition topicPartition, DescribeLogDirsResponse.ReplicaInfo replicaInfo) {
++    public LogDir(Integer brokerId, String path, TopicPartition topicPartition, DescribeLogDirsResponse.ReplicaInfo replicaInfo) {
+         this.brokerId = brokerId;
+         this.path = path;
+         this.topic = topicPartition.topic();
+
+File: src/main/java/org/kafkahq/controllers/ErrorController.java
+Patch:
+@@ -38,6 +38,8 @@ public ErrorController(ViewsRenderer viewsRenderer, RequestHelper requestHelper)
+ 
+     @Error(global = true)
+     public HttpResponse error(HttpRequest request, Throwable e) {
++        log.error(e.getMessage(), e);
++
+         if (isHtml(request)) {
+             StringWriter stringWriter = new StringWriter();
+             e.printStackTrace(new PrintWriter(stringWriter));
+
+File: src/main/java/org/kafkahq/repositories/ConsumerGroupRepository.java
+Patch:
+@@ -98,6 +98,7 @@ public void updateOffsets(String clusterId, String name, Map<org.kafkahq.models.
+             .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+ 
+         consumer.commitSync(offsets);
++        consumer.close();
+     }
+ 
+     public void delete(String clusterId, String name) throws ExecutionException, InterruptedException {
+
+File: src/main/java/org/kafkahq/configs/Connection.java
+Patch:
+@@ -7,10 +7,10 @@
+ import java.net.URL;
+ import java.util.Optional;
+ 
+-@EachProperty("kafka.connections")
++@EachProperty("kafkahq.connections")
+ @Getter
+ public class Connection extends AbstractProperties {
+-    Optional<URL> registry = Optional.empty();
++    Optional<URL> schemaRegistry = Optional.empty();
+ 
+     public Connection(@Parameter  String name) {
+         super(name);
+
+File: src/main/java/org/kafkahq/configs/Default.java
+Patch:
+@@ -4,7 +4,7 @@
+ import io.micronaut.context.annotation.Parameter;
+ import lombok.Getter;
+ 
+-@EachProperty("kafka.defaults")
++@EachProperty("kafkahq.clients-defaults")
+ @Getter
+ public class Default extends AbstractProperties  {
+     public Default(@Parameter  String name) {
+
+File: src/main/java/org/kafkahq/controllers/AbstractController.java
+Patch:
+@@ -24,7 +24,7 @@ abstract public class AbstractController {
+         .enableComplexMapKeySerialization()
+         .create();
+ 
+-    @Value("${micronaut.context.path}")
++    @Value("${kafkahq.server.base-path}")
+     protected String basePath;
+ 
+     @Inject
+
+File: src/main/java/org/kafkahq/controllers/GroupController.java
+Patch:
+@@ -25,7 +25,7 @@
+ import java.util.stream.Collectors;
+ 
+ @ThreadLocal
+-@Controller("${micronaut.context.path:}/{cluster}/group")
++@Controller("${kafkahq.server.base-path:}/{cluster}/group")
+ public class GroupController extends AbstractController {
+     private ConsumerGroupRepository consumerGroupRepository;
+     private RecordRepository recordRepository;
+
+File: src/main/java/org/kafkahq/controllers/NodeController.java
+Patch:
+@@ -23,7 +23,7 @@
+ import java.util.concurrent.ExecutionException;
+ 
+ @ThreadLocal
+-@Controller("${micronaut.context.path:}/{cluster}/node")
++@Controller("${kafkahq.server.base-path:}/{cluster}/node")
+ public class NodeController extends AbstractController {
+     private ClusterRepository clusterRepository;
+     private ConfigRepository configRepository;
+
+File: src/main/java/org/kafkahq/controllers/RedirectController.java
+Patch:
+@@ -26,12 +26,12 @@ public HttpResponse slash() throws URISyntaxException {
+         return HttpResponse.redirect(this.uri("/" + kafkaModule.getClustersList().get(0) + "/topic"));
+     }
+ 
+-    @Get("${micronaut.context.path:}")
++    @Get("${kafkahq.server.base-path:}")
+     public HttpResponse home() throws URISyntaxException {
+         return HttpResponse.redirect(this.uri("/" + kafkaModule.getClustersList().get(0) + "/topic"));
+     }
+ 
+-    @Get("${micronaut.context.path:}/{cluster}")
++    @Get("${kafkahq.server.base-path:}/{cluster}")
+     public HttpResponse topic(String cluster) throws URISyntaxException {
+         return HttpResponse.redirect(this.uri("/" + cluster + "/topic"));
+     }
+
+File: src/main/java/org/kafkahq/controllers/SchemaController.java
+Patch:
+@@ -16,7 +16,7 @@
+ import java.net.URI;
+ 
+ @ThreadLocal
+-@Controller("${micronaut.context.path:}/{cluster}/schema")
++@Controller("${kafkahq.server.base-path:}/{cluster}/schema")
+ public class SchemaController extends AbstractController {
+     private SchemaRegistryRepository schemaRepository;
+ 
+
+File: src/main/java/org/kafkahq/controllers/TopicController.java
+Patch:
+@@ -36,7 +36,7 @@
+ import java.util.stream.Collectors;
+ 
+ @Slf4j
+-@Controller("${micronaut.context.path:}/{cluster}/topic")
++@Controller("${kafkahq.server.base-path:}/{cluster}/topic")
+ @ThreadLocal
+ public class TopicController extends AbstractController {
+     private TopicRepository topicRepository;
+
+File: src/main/java/org/kafkahq/middlewares/KafkaWrapperFilter.java
+Patch:
+@@ -25,7 +25,7 @@ public KafkaWrapperFilter(KafkaModule kafkaModule) {
+         this.kafkaModule = kafkaModule;
+     }
+ 
+-    @Value("${micronaut.context.path}")
++    @Value("${kafkahq.server.base-path}")
+     protected String basePath;
+ 
+     @Inject
+
+File: src/main/java/org/kafkahq/modules/KafkaModule.java
+Patch:
+@@ -155,9 +155,9 @@ public RestService getRegistryRestClient(String clusterId) {
+         if (!this.registryRestClient.containsKey(clusterId)) {
+             Connection connection = this.getConnection(clusterId);
+ 
+-            if (connection.getRegistry().isPresent()) {
++            if (connection.getSchemaRegistry().isPresent()) {
+                 this.registryRestClient.put(clusterId, new RestService(
+-                    connection.getRegistry().get().toString()
++                    connection.getSchemaRegistry().get().toString()
+                 ));
+             }
+         }
+
+File: src/test/java/org/kafkahq/KafkaClusterExtension.java
+Patch:
+@@ -36,9 +36,9 @@ public void beforeAll(ExtensionContext context) throws Exception {
+         applicationContext = ApplicationContext.run(PropertySource.of(
+             "test",
+             ImmutableMap.of(
+-                "kafka.connections." + KafkaTestCluster.CLUSTER_ID + ".properties.bootstrap.servers",
++                "kafkahq.connections." + KafkaTestCluster.CLUSTER_ID + ".properties.bootstrap.servers",
+                 connectionString.getKafka(),
+-                "kafka.connections." + KafkaTestCluster.CLUSTER_ID + ".registry",
++                "kafkahq.connections." + KafkaTestCluster.CLUSTER_ID + ".schema-registry",
+                 connectionString.getSchemaRegistry()
+             )
+         ));
+
+File: src/main/java/org/kafkahq/controllers/GroupController.java
+Patch:
+@@ -7,6 +7,7 @@
+ import io.micronaut.http.annotation.Controller;
+ import io.micronaut.http.annotation.Get;
+ import io.micronaut.http.annotation.Post;
++import io.micronaut.runtime.context.scope.ThreadLocal;
+ import io.micronaut.views.View;
+ import org.kafkahq.models.ConsumerGroup;
+ import org.kafkahq.models.TopicPartition;
+@@ -15,7 +16,6 @@
+ import org.kafkahq.repositories.RecordRepository;
+ 
+ import javax.inject.Inject;
+-import javax.inject.Singleton;
+ import java.time.Instant;
+ import java.util.AbstractMap;
+ import java.util.List;
+@@ -24,7 +24,7 @@
+ import java.util.concurrent.ExecutionException;
+ import java.util.stream.Collectors;
+ 
+-@Singleton
++@ThreadLocal
+ @Controller("${micronaut.context.path:}/{cluster}/group")
+ public class GroupController extends AbstractController {
+     private ConsumerGroupRepository consumerGroupRepository;
+
+File: src/main/java/org/kafkahq/controllers/NodeController.java
+Patch:
+@@ -7,6 +7,7 @@
+ import io.micronaut.http.annotation.Controller;
+ import io.micronaut.http.annotation.Get;
+ import io.micronaut.http.annotation.Post;
++import io.micronaut.runtime.context.scope.ThreadLocal;
+ import io.micronaut.views.View;
+ import org.kafkahq.models.Config;
+ import org.kafkahq.models.Node;
+@@ -16,13 +17,12 @@
+ import org.kafkahq.repositories.LogDirRepository;
+ 
+ import javax.inject.Inject;
+-import javax.inject.Singleton;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.NoSuchElementException;
+ import java.util.concurrent.ExecutionException;
+ 
+-@Singleton
++@ThreadLocal
+ @Controller("${micronaut.context.path:}/{cluster}/node")
+ public class NodeController extends AbstractController {
+     private ClusterRepository clusterRepository;
+
+File: src/main/java/org/kafkahq/controllers/RedirectController.java
+Patch:
+@@ -3,14 +3,14 @@
+ import io.micronaut.http.HttpResponse;
+ import io.micronaut.http.annotation.Controller;
+ import io.micronaut.http.annotation.Get;
++import io.micronaut.runtime.context.scope.ThreadLocal;
+ import lombok.extern.slf4j.Slf4j;
+ import org.kafkahq.modules.KafkaModule;
+ 
+ import javax.inject.Inject;
+-import javax.inject.Singleton;
+ import java.net.URISyntaxException;
+ 
+-@Singleton
++@ThreadLocal
+ @Slf4j
+ @Controller
+ public class RedirectController extends AbstractController {
+
+File: src/main/java/org/kafkahq/controllers/SchemaController.java
+Patch:
+@@ -5,17 +5,17 @@
+ import io.micronaut.http.annotation.Controller;
+ import io.micronaut.http.annotation.Get;
+ import io.micronaut.http.annotation.Post;
++import io.micronaut.runtime.context.scope.ThreadLocal;
+ import io.micronaut.views.View;
+ import org.kafkahq.models.Schema;
+ import org.kafkahq.modules.RequestHelper;
+ import org.kafkahq.repositories.SchemaRegistryRepository;
+ 
+ import javax.inject.Inject;
+-import javax.inject.Singleton;
+ import java.io.IOException;
+ import java.net.URI;
+ 
+-@Singleton
++@ThreadLocal
+ @Controller("${micronaut.context.path:}/{cluster}/schema")
+ public class SchemaController extends AbstractController {
+     private SchemaRegistryRepository schemaRepository;
+
+File: src/main/java/org/kafkahq/modules/KafkaWrapper.java
+Patch:
+@@ -10,7 +10,6 @@
+ import org.apache.kafka.common.requests.DescribeLogDirsResponse;
+ import org.kafkahq.models.Partition;
+ 
+-import javax.inject.Inject;
+ import java.util.*;
+ import java.util.concurrent.ExecutionException;
+ import java.util.stream.Collectors;
+@@ -21,7 +20,6 @@ public class KafkaWrapper {
+     private KafkaModule kafkaModule;
+     private String clusterId;
+ 
+-    @Inject
+     public KafkaWrapper(KafkaModule kafkaModule, String clusterId) {
+         this.kafkaModule = kafkaModule;
+         this.clusterId = clusterId;
+
+File: src/test/java/org/kafkahq/KafkaTestCluster.java
+Patch:
+@@ -142,6 +142,9 @@ public void run() {
+             injectTestData();
+             logger.info("Test data injected");
+ 
++            Thread.sleep(5000);
++            logger.info("Test data injected sleep done");
++
+             if (reuse) {
+                 Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                     try {
+
+File: src/test/java/org/kafkahq/KafkaTestCluster.java
+Patch:
+@@ -142,6 +142,9 @@ public void run() {
+             injectTestData();
+             logger.info("Test data injected");
+ 
++            Thread.sleep(5000);
++            logger.info("Test data injected sleep done");
++
+             if (reuse) {
+                 Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                     try {
+
+File: src/main/java/org/kafkahq/models/Record.java
+Patch:
+@@ -8,7 +8,6 @@
+ import org.apache.kafka.clients.consumer.ConsumerRecord;
+ import org.apache.kafka.common.header.Header;
+ import org.apache.kafka.common.record.TimestampType;
+-import org.kafkahq.utils.Debug;
+ 
+ import java.nio.ByteBuffer;
+ import java.util.Base64;
+@@ -76,7 +75,7 @@ private static boolean isAvroPayload(byte[] payload) {
+             ByteBuffer buffer = ByteBuffer.wrap(payload);
+             byte magicBytes = buffer.get();
+             int schemaId = buffer.getInt();
+-            Debug.print(magicBytes, schemaId);
++
+             if (magicBytes == 0 && schemaId >= 0) {
+                 convert = true;
+             }
+
+File: src/main/java/org/kafkahq/models/Record.java
+Patch:
+@@ -8,7 +8,6 @@
+ import org.apache.kafka.clients.consumer.ConsumerRecord;
+ import org.apache.kafka.common.header.Header;
+ import org.apache.kafka.common.record.TimestampType;
+-import org.kafkahq.utils.Debug;
+ 
+ import java.nio.ByteBuffer;
+ import java.util.Base64;
+@@ -76,7 +75,7 @@ private static boolean isAvroPayload(byte[] payload) {
+             ByteBuffer buffer = ByteBuffer.wrap(payload);
+             byte magicBytes = buffer.get();
+             int schemaId = buffer.getInt();
+-            Debug.print(magicBytes, schemaId);
++
+             if (magicBytes == 0 && schemaId >= 0) {
+                 convert = true;
+             }
+
+File: src/test/java/org/kafkahq/repositories/TopicRepositoryTest.java
+Patch:
+@@ -16,7 +16,7 @@ public class TopicRepositoryTest extends BaseTest {
+ 
+     @Test
+     public void list() throws ExecutionException, InterruptedException {
+-        assertEquals(3, topicRepository.list().size());
++        assertEquals(4, topicRepository.list().size());
+     }
+ 
+     @Test
+
+File: src/test/java/org/kafkahq/repositories/TopicRepositoryTest.java
+Patch:
+@@ -16,7 +16,7 @@ public class TopicRepositoryTest extends BaseTest {
+ 
+     @Test
+     public void list() throws ExecutionException, InterruptedException {
+-        assertEquals(3, topicRepository.list().size());
++        assertEquals(4, topicRepository.list().size());
+     }
+ 
+     @Test
+
+File: src/main/java/org/kafkahq/models/ConsumerGroup.java
+Patch:
+@@ -18,7 +18,7 @@ public ConsumerGroup(
+         Map<org.apache.kafka.common.TopicPartition, OffsetAndMetadata> groupOffset,
+         Map<String, List<Partition.Offsets>> topicsOffsets
+     ) {
+-        this.id = groupDescription.groupId().equals("") ? "null" : groupDescription.groupId();
++        this.id = groupDescription.groupId();
+         this.isSimpleConsumerGroup = groupDescription.isSimpleConsumerGroup();
+         this.partitionAssignor = groupDescription.partitionAssignor();
+         this.state = groupDescription.state();
+
+File: src/main/java/org/kafkahq/repositories/ConsumerGroupRepository.java
+Patch:
+@@ -47,8 +47,6 @@ public ConsumerGroup findByName(String name) throws ExecutionException, Interrup
+     public List<ConsumerGroup> findByName(List<String> groups) throws ExecutionException, InterruptedException {
+         ArrayList<ConsumerGroup> list = new ArrayList<>();
+ 
+-        groups = groups.stream().map(s -> s.equals("null") ? "" : s).collect(Collectors.toList());
+-
+         Set<Map.Entry<String, ConsumerGroupDescription>> consumerDescriptions = kafkaWrapper.describeConsumerGroups(groups).entrySet();
+ 
+         for (Map.Entry<String, ConsumerGroupDescription> description : consumerDescriptions) {
+
+File: src/main/java/org/kafkahq/models/ConsumerGroup.java
+Patch:
+@@ -18,7 +18,7 @@ public ConsumerGroup(
+         Map<org.apache.kafka.common.TopicPartition, OffsetAndMetadata> groupOffset,
+         Map<String, List<Partition.Offsets>> topicsOffsets
+     ) {
+-        this.id = groupDescription.groupId();
++        this.id = groupDescription.groupId().equals("") ? "null" : groupDescription.groupId();
+         this.isSimpleConsumerGroup = groupDescription.isSimpleConsumerGroup();
+         this.partitionAssignor = groupDescription.partitionAssignor();
+         this.state = groupDescription.state();
+
+File: src/main/java/org/kafkahq/repositories/ConsumerGroupRepository.java
+Patch:
+@@ -47,6 +47,8 @@ public ConsumerGroup findByName(String name) throws ExecutionException, Interrup
+     public List<ConsumerGroup> findByName(List<String> groups) throws ExecutionException, InterruptedException {
+         ArrayList<ConsumerGroup> list = new ArrayList<>();
+ 
++        groups = groups.stream().map(s -> s.equals("null") ? "" : s).collect(Collectors.toList());
++
+         Set<Map.Entry<String, ConsumerGroupDescription>> consumerDescriptions = kafkaWrapper.describeConsumerGroups(groups).entrySet();
+ 
+         for (Map.Entry<String, ConsumerGroupDescription> description : consumerDescriptions) {
+

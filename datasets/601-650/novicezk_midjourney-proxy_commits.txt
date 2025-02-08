@@ -1,0 +1,1137 @@
+File: src/main/java/com/github/novicezk/midjourney/support/TaskTimeoutSchedule.java
+Patch:
+@@ -26,9 +26,9 @@ public void checkTasks() {
+ 					.toList();
+ 			for (Task task : tasks) {
+ 				if (Set.of(TaskStatus.FAILURE, TaskStatus.SUCCESS).contains(task.getStatus())) {
+-					log.warn("task status is failure/success but is in the queue, end it. id: {}", task.getId());
++					log.warn("[{}] - task status is failure/success but is in the queue, end it. id: {}", instance.account().getDisplay(), task.getId());
+ 				} else {
+-					log.debug("task timeout, id: {}", task.getId());
++					log.debug("[{}] - task timeout, id: {}", instance.account().getDisplay(), task.getId());
+ 					task.fail("任务超时");
+ 				}
+ 				instance.exitTask(task);
+
+File: src/main/java/com/github/novicezk/midjourney/Constants.java
+Patch:
+@@ -17,4 +17,6 @@ public final class Constants {
+ 
+ 	public static final String API_SECRET_HEADER_NAME = "mj-api-secret";
+ 	public static final String DEFAULT_DISCORD_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36";
++
++	public static final String MJ_MESSAGE_HANDLED = "mj_proxy_handled";
+ }
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/RerollSuccessHandler.java
+Patch:
+@@ -3,6 +3,7 @@
+ 
+ import com.github.novicezk.midjourney.enums.MessageType;
+ import com.github.novicezk.midjourney.enums.TaskAction;
++import com.github.novicezk.midjourney.loadbalancer.DiscordInstance;
+ import com.github.novicezk.midjourney.support.TaskCondition;
+ import com.github.novicezk.midjourney.util.ContentParseData;
+ import com.github.novicezk.midjourney.util.ConvertUtils;
+@@ -24,14 +25,14 @@ public class RerollSuccessHandler extends MessageHandler {
+ 	private static final String CONTENT_REGEX_3 = "\\*\\*(.*?)\\*\\* - Variations \\(.*?\\) by <@\\d+> \\((.*?)\\)";
+ 
+ 	@Override
+-	public void handle(MessageType messageType, DataObject message) {
++	public void handle(DiscordInstance instance, MessageType messageType, DataObject message) {
+ 		String content = getMessageContent(message);
+ 		ContentParseData parseData = getParseData(content);
+ 		if (MessageType.CREATE.equals(messageType) && parseData != null && hasImage(message)) {
+ 			TaskCondition condition = new TaskCondition()
+ 					.setActionSet(Set.of(TaskAction.REROLL))
+ 					.setFinalPromptEn(parseData.getPrompt());
+-			findAndFinishImageTask(condition, parseData.getPrompt(), message);
++			findAndFinishImageTask(instance, condition, parseData.getPrompt(), message);
+ 		}
+ 	}
+ 
+
+File: src/main/java/com/github/novicezk/midjourney/loadbalancer/DiscordInstance.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ 
+ import com.github.novicezk.midjourney.domain.DiscordAccount;
+-import com.github.novicezk.midjourney.enums.TaskAction;
+ import com.github.novicezk.midjourney.result.Message;
+ import com.github.novicezk.midjourney.result.SubmitResultVO;
+ import com.github.novicezk.midjourney.service.DiscordService;
+
+File: src/main/java/com/github/novicezk/midjourney/loadbalancer/DiscordInstanceImpl.java
+Patch:
+@@ -42,13 +42,12 @@ public class DiscordInstanceImpl implements DiscordInstance {
+ 	private final Map<String, Future<?>> taskFutureMap = Collections.synchronizedMap(new HashMap<>());
+ 
+ 	public DiscordInstanceImpl(DiscordAccount account, UserWebSocketStarter socketStarter, RestTemplate restTemplate,
+-			TaskStoreService taskStoreService, NotifyService notifyService,
+-			String discordServer, Map<String, String> paramsMap) {
++			TaskStoreService taskStoreService, NotifyService notifyService, Map<String, String> paramsMap) {
+ 		this.account = account;
+ 		this.socketStarter = socketStarter;
+ 		this.taskStoreService = taskStoreService;
+ 		this.notifyService = notifyService;
+-		this.service = new DiscordServiceImpl(account, restTemplate, discordServer, paramsMap);
++		this.service = new DiscordServiceImpl(account, restTemplate, paramsMap);
+ 		this.runningTasks = new CopyOnWriteArrayList<>();
+ 		this.taskExecutor = new ThreadPoolTaskExecutor();
+ 		this.taskExecutor.setCorePoolSize(account.getCoreSize());
+
+File: src/main/java/com/github/novicezk/midjourney/support/DiscordAccountHelper.java
+Patch:
+@@ -38,7 +38,6 @@ public DiscordInstance createDiscordInstance(DiscordAccount account) {
+ 		var messageListener = new UserMessageListener(account, this.messageHandlers);
+ 		var webSocketStarter = new UserWebSocketStarter(this.discordHelper.getWss(), account, messageListener, this.properties.getProxy());
+ 		return new DiscordInstanceImpl(account, webSocketStarter, this.restTemplate,
+-				this.taskStoreService, this.notifyService,
+-				this.discordHelper.getServer(), this.paramsMap);
++				this.taskStoreService, this.notifyService, this.paramsMap);
+ 	}
+ }
+
+File: src/main/java/com/github/novicezk/midjourney/controller/SubmitController.java
+Patch:
+@@ -13,6 +13,7 @@
+ import com.github.novicezk.midjourney.dto.SubmitSimpleChangeDTO;
+ import com.github.novicezk.midjourney.enums.TaskAction;
+ import com.github.novicezk.midjourney.enums.TaskStatus;
++import com.github.novicezk.midjourney.enums.TranslateWay;
+ import com.github.novicezk.midjourney.exception.BannedPromptException;
+ import com.github.novicezk.midjourney.result.SubmitResultVO;
+ import com.github.novicezk.midjourney.service.TaskService;
+@@ -215,7 +216,7 @@ private Task newTask(BaseSubmitDTO base) {
+ 	}
+ 
+ 	private String translatePrompt(String prompt) {
+-		if (CharSequenceUtil.isBlank(prompt)) {
++		if (TranslateWay.NULL.equals(this.properties.getTranslateWay()) || CharSequenceUtil.isBlank(prompt)) {
+ 			return prompt;
+ 		}
+ 		List<String> imageUrls = new ArrayList<>();
+@@ -231,7 +232,7 @@ private String translatePrompt(String prompt) {
+ 		String imageStr = CharSequenceUtil.join("", imageUrls);
+ 		String text = prompt.substring(imageStr.length(), prompt.length() - paramStr.length());
+ 		if (CharSequenceUtil.isNotBlank(text)) {
+-			text = this.translateService.translateToEnglish(prompt).trim();
++			text = this.translateService.translateToEnglish(text).trim();
+ 		}
+ 		return imageStr + text + paramStr;
+ 	}
+
+File: src/main/java/com/github/novicezk/midjourney/service/translate/GPTTranslateServiceImpl.java
+Patch:
+@@ -32,7 +32,7 @@ public class GPTTranslateServiceImpl implements TranslateService {
+ 	public GPTTranslateServiceImpl(ProxyProperties properties) {
+ 		this.openaiConfig = properties.getOpenai();
+ 		if (CharSequenceUtil.isBlank(this.openaiConfig.getGptApiKey())) {
+-			throw new BeanDefinitionValidationException("mj-proxy.openai.gpt-api-key未配置");
++			throw new BeanDefinitionValidationException("mj.openai.gpt-api-key未配置");
+ 		}
+ 		HttpLoggingInterceptor httpLoggingInterceptor = new HttpLoggingInterceptor(new OpenAILogger());
+ 		httpLoggingInterceptor.setLevel(HttpLoggingInterceptor.Level.HEADERS);
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/VariationMessageHandler.java
+Patch:
+@@ -23,15 +23,15 @@
+  * 开始(create): Making variations for image #1 with prompt **cat** - <@1012983546824114217> (Waiting to start)
+  * 进度(update): **cat** - Variations (Strong) by <@1012983546824114217> (0%) (relaxed)
+  * 5.2前-进度(update): **cat** - Variations by <@1012983546824114217> (0%) (relaxed)
+- * 完成(create): **cat** - Variations (Strong) by <@1012983546824114217> (relaxed)
++ * 完成(create): **cat** - Variations (Strong或Subtle) by <@1012983546824114217> (relaxed)
+  * 5.2前-完成(create): **cat** - Variations by <@1012983546824114217> (relaxed)
+  */
+ @Slf4j
+ @Component
+ public class VariationMessageHandler extends MessageHandler {
+ 	private static final String START_CONTENT_REGEX = "Making variations for image #(\\d) with prompt \\*\\*(.*?)\\*\\* - <@\\d+> \\((.*?)\\)";
+ 	private static final String OLD_CONTENT_REGEX = "\\*\\*(.*?)\\*\\* - Variations by <@\\d+> \\((.*?)\\)";
+-	private static final String CONTENT_REGEX = "\\*\\*(.*?)\\*\\* - Variations \\(Strong\\) by <@\\d+> \\((.*?)\\)";
++	private static final String CONTENT_REGEX = "\\*\\*(.*?)\\*\\* - Variations \\(.*?\\) by <@\\d+> \\((.*?)\\)";
+ 
+ 	@Override
+ 	public void handle(MessageType messageType, DataObject message) {
+
+File: src/main/java/com/github/novicezk/midjourney/Constants.java
+Patch:
+@@ -12,7 +12,6 @@ public final class Constants {
+ 	public static final String TASK_PROPERTY_PROGRESS_MESSAGE_ID = "progressMessageId";
+ 	public static final String TASK_PROPERTY_FLAGS = "flags";
+ 	public static final String TASK_PROPERTY_MESSAGE_HASH = "messageHash";
+-	public static final String TASK_PROPERTY_PROMPT_EN_WITHOUT_IMAGE = "promptEnWithoutImage";
+ 	// 任务扩展属性 end
+ 
+ 	public static final String API_SECRET_HEADER_NAME = "mj-api-secret";
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/BlendMessageHandler.java
+Patch:
+@@ -51,7 +51,7 @@ public void handle(MessageType messageType, DataObject message) {
+ 					return;
+ 				}
+ 				String url = getRealUrl(urls.get(0));
+-				String taskId = this.discordHelper.findTaskWithCdnUrl(url);
++				String taskId = this.discordHelper.findTaskIdWithCdnUrl(url);
+ 				TaskCondition condition = new TaskCondition()
+ 						.setId(taskId)
+ 						.setActionSet(Set.of(TaskAction.BLEND))
+@@ -100,7 +100,7 @@ public void handle(MessageType messageType, DataObject message) {
+ 	@Override
+ 	public void handle(MessageType messageType, Message message) {
+ 		String content = message.getContentRaw();
+-		boolean match = CharSequenceUtil.startWith(content, "**<https://s.mj.run/") || (message.getInteraction() != null && "blend".equals(message.getInteraction().getName()));
++		boolean match = CharSequenceUtil.startWith(content, "**<" + DiscordHelper.SIMPLE_URL_PREFIX) || (message.getInteraction() != null && "blend".equals(message.getInteraction().getName()));
+ 		if (!match) {
+ 			return;
+ 		}
+@@ -116,7 +116,7 @@ public void handle(MessageType messageType, Message message) {
+ 					return;
+ 				}
+ 				String url = getRealUrl(urls.get(0));
+-				String taskId = this.discordHelper.findTaskWithCdnUrl(url);
++				String taskId = this.discordHelper.findTaskIdWithCdnUrl(url);
+ 				TaskCondition condition = new TaskCondition()
+ 						.setId(taskId)
+ 						.setActionSet(Set.of(TaskAction.BLEND))
+
+File: src/main/java/com/github/novicezk/midjourney/Constants.java
+Patch:
+@@ -12,7 +12,6 @@ public final class Constants {
+ 	public static final String TASK_PROPERTY_PROGRESS_MESSAGE_ID = "progressMessageId";
+ 	public static final String TASK_PROPERTY_FLAGS = "flags";
+ 	public static final String TASK_PROPERTY_MESSAGE_HASH = "messageHash";
+-	public static final String TASK_PROPERTY_PROMPT_EN_WITHOUT_IMAGE = "promptEnWithoutImage";
+ 	// 任务扩展属性 end
+ 
+ 	public static final String API_SECRET_HEADER_NAME = "mj-api-secret";
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/BlendMessageHandler.java
+Patch:
+@@ -51,7 +51,7 @@ public void handle(MessageType messageType, DataObject message) {
+ 					return;
+ 				}
+ 				String url = getRealUrl(urls.get(0));
+-				String taskId = this.discordHelper.findTaskWithCdnUrl(url);
++				String taskId = this.discordHelper.findTaskIdWithCdnUrl(url);
+ 				TaskCondition condition = new TaskCondition()
+ 						.setId(taskId)
+ 						.setActionSet(Set.of(TaskAction.BLEND))
+@@ -100,7 +100,7 @@ public void handle(MessageType messageType, DataObject message) {
+ 	@Override
+ 	public void handle(MessageType messageType, Message message) {
+ 		String content = message.getContentRaw();
+-		boolean match = CharSequenceUtil.startWith(content, "**<https://s.mj.run/") || (message.getInteraction() != null && "blend".equals(message.getInteraction().getName()));
++		boolean match = CharSequenceUtil.startWith(content, "**<" + DiscordHelper.SIMPLE_URL_PREFIX) || (message.getInteraction() != null && "blend".equals(message.getInteraction().getName()));
+ 		if (!match) {
+ 			return;
+ 		}
+@@ -116,7 +116,7 @@ public void handle(MessageType messageType, Message message) {
+ 					return;
+ 				}
+ 				String url = getRealUrl(urls.get(0));
+-				String taskId = this.discordHelper.findTaskWithCdnUrl(url);
++				String taskId = this.discordHelper.findTaskIdWithCdnUrl(url);
+ 				TaskCondition condition = new TaskCondition()
+ 						.setId(taskId)
+ 						.setActionSet(Set.of(TaskAction.BLEND))
+
+File: src/main/java/com/github/novicezk/midjourney/controller/SubmitController.java
+Patch:
+@@ -56,6 +56,7 @@ public SubmitResultVO imagine(@RequestBody SubmitImagineDTO imagineDTO) {
+ 		if (CharSequenceUtil.isBlank(prompt)) {
+ 			return SubmitResultVO.fail(ReturnCode.VALIDATION_ERROR, "prompt不能为空");
+ 		}
++		prompt = prompt.trim();
+ 		Task task = newTask(imagineDTO);
+ 		task.setAction(TaskAction.IMAGINE);
+ 		task.setPrompt(prompt);
+@@ -82,7 +83,7 @@ public SubmitResultVO imagine(@RequestBody SubmitImagineDTO imagineDTO) {
+ 			}
+ 		}
+ 		task.setPromptEn(promptEn);
+-		task.setDescription("/imagine " + imagineDTO.getPrompt());
++		task.setDescription("/imagine " + prompt);
+ 		return this.taskService.submitImagine(task, dataUrl);
+ 	}
+ 
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/BlendMessageHandler.java
+Patch:
+@@ -23,7 +23,7 @@
+ 
+ /**
+  * blend消息处理.
+- * 开始(create): **https://xxx/xxx1/1780749341481612.png https://xxx/xxx2/1780749341481612.png --v 5.1** - <@1012983546824114217> (Waiting to start)
++ * 开始(create): **<https://s.mj.run/JWu6jaL1D-8> <https://s.mj.run/QhfnQY-l68o> --v 5.1** - <@1012983546824114217> (Waiting to start)
+  * 进度(update): **<https://s.mj.run/JWu6jaL1D-8> <https://s.mj.run/QhfnQY-l68o> --v 5.1** - <@1012983546824114217> (0%) (relaxed)
+  * 完成(create): **<https://s.mj.run/JWu6jaL1D-8> <https://s.mj.run/QhfnQY-l68o> --v 5.1** - <@1012983546824114217> (relaxed)
+  */
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/VariationMessageHandler.java
+Patch:
+@@ -19,7 +19,7 @@
+ import java.util.regex.Pattern;
+ 
+ /**
+- * variation消息处理. todo: 待兼容blend
++ * variation消息处理.
+  * 开始(create): Making variations for image #1 with prompt **cat** - <@1012983546824114217> (Waiting to start)
+  * 进度(update): **cat** - Variations by <@1012983546824114217> (0%) (relaxed)
+  * 完成(create): **cat** - Variations by <@1012983546824114217> (relaxed)
+
+File: src/main/java/com/github/novicezk/midjourney/controller/SubmitController.java
+Patch:
+@@ -17,7 +17,6 @@
+ import com.github.novicezk.midjourney.service.TaskService;
+ import com.github.novicezk.midjourney.service.TaskStoreService;
+ import com.github.novicezk.midjourney.service.TranslateService;
+-import com.github.novicezk.midjourney.support.DiscordHelper;
+ import com.github.novicezk.midjourney.support.Task;
+ import com.github.novicezk.midjourney.support.TaskCondition;
+ import com.github.novicezk.midjourney.util.BannedPromptUtils;
+@@ -49,7 +48,6 @@ public class SubmitController {
+ 	private final TaskStoreService taskStoreService;
+ 	private final ProxyProperties properties;
+ 	private final TaskService taskService;
+-	private final DiscordHelper discordHelper;
+ 
+ 	@ApiOperation(value = "提交Imagine任务")
+ 	@PostMapping("/imagine")
+
+File: src/main/java/com/github/novicezk/midjourney/support/ApiAuthorizeInterceptor.java
+Patch:
+@@ -24,7 +24,7 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
+ 		String apiSecret = request.getHeader(Constants.API_SECRET_HEADER_NAME);
+ 		boolean authorized = CharSequenceUtil.equals(apiSecret, this.properties.getApiSecret());
+ 		if (!authorized) {
+-			response.setStatus(403);
++			response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+ 		}
+ 		return authorized;
+ 	}
+
+File: src/main/java/com/github/novicezk/midjourney/support/TaskQueueHelper.java
+Patch:
+@@ -13,13 +13,13 @@
+ import org.springframework.stereotype.Component;
+ 
+ import javax.annotation.Resource;
+-import java.util.ArrayList;
+ import java.util.Collections;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Set;
+ import java.util.concurrent.Callable;
++import java.util.concurrent.CopyOnWriteArrayList;
+ import java.util.concurrent.Future;
+ import java.util.concurrent.RejectedExecutionException;
+ import java.util.function.Predicate;
+@@ -39,7 +39,7 @@ public class TaskQueueHelper {
+ 
+ 	public TaskQueueHelper(ProxyProperties properties) {
+ 		ProxyProperties.TaskQueueConfig queueConfig = properties.getQueue();
+-		this.runningTasks = Collections.synchronizedList(new ArrayList<>(queueConfig.getCoreSize() * 2));
++		this.runningTasks = new CopyOnWriteArrayList<>();
+ 		this.taskExecutor = new ThreadPoolTaskExecutor();
+ 		this.taskExecutor.setCorePoolSize(queueConfig.getCoreSize());
+ 		this.taskExecutor.setMaxPoolSize(queueConfig.getCoreSize());
+
+File: src/main/java/com/github/novicezk/midjourney/support/TaskQueueHelper.java
+Patch:
+@@ -13,13 +13,13 @@
+ import org.springframework.stereotype.Component;
+ 
+ import javax.annotation.Resource;
+-import java.util.ArrayList;
+ import java.util.Collections;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Set;
+ import java.util.concurrent.Callable;
++import java.util.concurrent.CopyOnWriteArrayList;
+ import java.util.concurrent.Future;
+ import java.util.concurrent.RejectedExecutionException;
+ import java.util.stream.Stream;
+@@ -38,7 +38,7 @@ public class TaskQueueHelper {
+ 
+ 	public TaskQueueHelper(ProxyProperties properties) {
+ 		ProxyProperties.TaskQueueConfig queueConfig = properties.getQueue();
+-		this.runningTasks = Collections.synchronizedList(new ArrayList<>(queueConfig.getCoreSize() * 2));
++		this.runningTasks = new CopyOnWriteArrayList<>();
+ 		this.taskExecutor = new ThreadPoolTaskExecutor();
+ 		this.taskExecutor.setCorePoolSize(queueConfig.getCoreSize());
+ 		this.taskExecutor.setMaxPoolSize(queueConfig.getCoreSize());
+
+File: src/main/java/com/github/novicezk/midjourney/ProxyProperties.java
+Patch:
+@@ -79,11 +79,11 @@ public static class DiscordConfig {
+ 		 */
+ 		private String botToken;
+ 		/**
+-		 * prompt拼接ID的前缀，可使用多个字符.
++		 * prompt拼接ID的前缀，可使用多个字符，不要使用 '\' 字符.
+ 		 */
+ 		private String idPrefix = "[";
+ 		/**
+-		 * prompt拼接ID的后缀，可使用多个字符.
++		 * prompt拼接ID的后缀，可使用多个字符，不要使用 '\' 字符.
+ 		 */
+ 		private String idSuffix = "]";
+ 	}
+
+File: src/main/java/com/github/novicezk/midjourney/dto/SubmitImagineDTO.java
+Patch:
+@@ -14,7 +14,7 @@ public class SubmitImagineDTO extends BaseSubmitDTO {
+ 	@ApiModelProperty(value = "提示词", required = true, example = "Cat")
+ 	private String prompt;
+ 
+-	@ApiModelProperty(value = "垫图base64", example = "data:image/png;base64,xxx")
++	@ApiModelProperty(value = "垫图base64")
+ 	private String base64;
+ 
+ }
+
+File: src/main/java/com/github/novicezk/midjourney/support/TaskCondition.java
+Patch:
+@@ -29,6 +29,9 @@ public class TaskCondition implements Predicate<Task> {
+ 
+ 	@Override
+ 	public boolean test(Task task) {
++		if (task == null) {
++			return false;
++		}
+ 		if (CharSequenceUtil.isNotBlank(this.id) && !this.id.equals(task.getId())) {
+ 			return false;
+ 		}
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/DescribeMessageHandler.java
+Patch:
+@@ -68,7 +68,7 @@ public void handle(MessageType messageType, Message message) {
+ 			return;
+ 		}
+ 		task.setProperty(Constants.TASK_PROPERTY_MESSAGE_ID, message.getId());
+-		task.setProperty(Constants.TASK_PROPERTY_FLAGS, message.getFlagsRaw());
++		task.setProperty(Constants.TASK_PROPERTY_FLAGS, (int) message.getFlagsRaw());
+ 		task.setPrompt(prompt);
+ 		task.setPromptEn(prompt);
+ 		task.setImageUrl(replaceCdnUrl(imageUrl));
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/MessageHandler.java
+Patch:
+@@ -42,7 +42,7 @@ protected void finishTask(Task task, DataObject message) {
+ 
+ 	protected void finishTask(Task task, Message message) {
+ 		task.setProperty(Constants.TASK_PROPERTY_MESSAGE_ID, message.getId());
+-		task.setProperty(Constants.TASK_PROPERTY_FLAGS, message.getFlagsRaw());
++		task.setProperty(Constants.TASK_PROPERTY_FLAGS, (int) message.getFlagsRaw());
+ 		if (!message.getAttachments().isEmpty()) {
+ 			String imageUrl = message.getAttachments().get(0).getUrl();
+ 			task.setImageUrl(replaceCdnUrl(imageUrl));
+
+File: src/main/java/com/github/novicezk/midjourney/support/TaskQueueHelper.java
+Patch:
+@@ -97,13 +97,13 @@ public SubmitResultVO submitTask(Task task, Callable<Message<Void>> discordSubmi
+ 	private void executeTask(Task task, Callable<Message<Void>> discordSubmit) {
+ 		this.runningTasks.add(task);
+ 		try {
++			task.start();
+ 			Message<Void> result = discordSubmit.call();
+ 			if (result.getCode() != ReturnCode.SUCCESS) {
+ 				task.fail(result.getDescription());
+ 				changeStatusAndNotify(task, TaskStatus.FAILURE);
+ 				return;
+ 			}
+-			task.start();
+ 			changeStatusAndNotify(task, TaskStatus.SUBMITTED);
+ 			waitTaskFuture(task);
+ 			do {
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/ImagineMessageHandler.java
+Patch:
+@@ -70,6 +70,7 @@ public void handle(MessageType messageType, DataObject message) {
+ 			if (task == null) {
+ 				return;
+ 			}
++			task.setStatus(TaskStatus.IN_PROGRESS);
+ 			task.setProgress(parseData.getStatus());
+ 			updateTaskImageUrl(task, message);
+ 			task.awake();
+@@ -119,6 +120,7 @@ public void handle(MessageType messageType, Message message) {
+ 			if (task == null) {
+ 				return;
+ 			}
++			task.setStatus(TaskStatus.IN_PROGRESS);
+ 			task.setProgress(parseData.getStatus());
+ 			updateTaskImageUrl(task, message);
+ 			task.awake();
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/VariationMessageHandler.java
+Patch:
+@@ -59,7 +59,7 @@ public void handle(MessageType messageType, DataObject message) {
+ 			TaskCondition condition = new TaskCondition()
+ 					.setRelatedTaskId(end.getTaskId())
+ 					.setActionSet(Set.of(TaskAction.VARIATION))
+-					.setStatusSet(Set.of(TaskStatus.IN_PROGRESS));
++					.setStatusSet(Set.of(TaskStatus.SUBMITTED, TaskStatus.IN_PROGRESS));
+ 			Task task = this.taskQueueHelper.findRunningTask(condition)
+ 					.max(Comparator.comparing(Task::getProgress))
+ 					.orElse(null);
+@@ -76,12 +76,13 @@ public void handle(MessageType messageType, DataObject message) {
+ 			TaskCondition condition = new TaskCondition()
+ 					.setMessageId(message.getString("id"))
+ 					.setActionSet(Set.of(TaskAction.VARIATION))
+-					.setStatusSet(Set.of(TaskStatus.IN_PROGRESS));
++					.setStatusSet(Set.of(TaskStatus.SUBMITTED, TaskStatus.IN_PROGRESS));
+ 			Task task = this.taskQueueHelper.findRunningTask(condition)
+ 					.findFirst().orElse(null);
+ 			if (task == null) {
+ 				return;
+ 			}
++			task.setStatus(TaskStatus.IN_PROGRESS);
+ 			task.setProgress(parseData.getStatus());
+ 			updateTaskImageUrl(task, message);
+ 			task.awake();
+
+File: src/main/java/com/github/novicezk/midjourney/support/TaskQueueHelper.java
+Patch:
+@@ -97,13 +97,13 @@ public SubmitResultVO submitTask(Task task, Callable<Message<Void>> discordSubmi
+ 	private void executeTask(Task task, Callable<Message<Void>> discordSubmit) {
+ 		this.runningTasks.add(task);
+ 		try {
++			task.start();
+ 			Message<Void> result = discordSubmit.call();
+ 			if (result.getCode() != ReturnCode.SUCCESS) {
+ 				task.fail(result.getDescription());
+ 				changeStatusAndNotify(task, TaskStatus.FAILURE);
+ 				return;
+ 			}
+-			task.start();
+ 			changeStatusAndNotify(task, TaskStatus.SUBMITTED);
+ 			waitTaskFuture(task);
+ 			do {
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/ImagineMessageHandler.java
+Patch:
+@@ -70,6 +70,7 @@ public void handle(MessageType messageType, DataObject message) {
+ 			if (task == null) {
+ 				return;
+ 			}
++			task.setStatus(TaskStatus.IN_PROGRESS);
+ 			task.setProgress(parseData.getStatus());
+ 			updateTaskImageUrl(task, message);
+ 			task.awake();
+@@ -119,6 +120,7 @@ public void handle(MessageType messageType, Message message) {
+ 			if (task == null) {
+ 				return;
+ 			}
++			task.setStatus(TaskStatus.IN_PROGRESS);
+ 			task.setProgress(parseData.getStatus());
+ 			updateTaskImageUrl(task, message);
+ 			task.awake();
+
+File: src/main/java/com/github/novicezk/midjourney/wss/handle/VariationMessageHandler.java
+Patch:
+@@ -59,7 +59,7 @@ public void handle(MessageType messageType, DataObject message) {
+ 			TaskCondition condition = new TaskCondition()
+ 					.setRelatedTaskId(end.getTaskId())
+ 					.setActionSet(Set.of(TaskAction.VARIATION))
+-					.setStatusSet(Set.of(TaskStatus.IN_PROGRESS));
++					.setStatusSet(Set.of(TaskStatus.SUBMITTED, TaskStatus.IN_PROGRESS));
+ 			Task task = this.taskQueueHelper.findRunningTask(condition)
+ 					.max(Comparator.comparing(Task::getProgress))
+ 					.orElse(null);
+@@ -76,12 +76,13 @@ public void handle(MessageType messageType, DataObject message) {
+ 			TaskCondition condition = new TaskCondition()
+ 					.setMessageId(message.getString("id"))
+ 					.setActionSet(Set.of(TaskAction.VARIATION))
+-					.setStatusSet(Set.of(TaskStatus.IN_PROGRESS));
++					.setStatusSet(Set.of(TaskStatus.SUBMITTED, TaskStatus.IN_PROGRESS));
+ 			Task task = this.taskQueueHelper.findRunningTask(condition)
+ 					.findFirst().orElse(null);
+ 			if (task == null) {
+ 				return;
+ 			}
++			task.setStatus(TaskStatus.IN_PROGRESS);
+ 			task.setProgress(parseData.getStatus());
+ 			updateTaskImageUrl(task, message);
+ 			task.awake();
+
+File: src/main/java/com/github/novicezk/midjourney/wss/WebSocketStarter.java
+Patch:
+@@ -21,8 +21,7 @@ default void initProxy(ProxyProperties properties) {
+ 
+ 	default WebSocketFactory createWebSocketFactory(ProxyProperties properties) {
+ 		ProxyProperties.ProxyConfig proxy = properties.getProxy();
+-		WebSocketFactory webSocketFactory = new WebSocketFactory()
+-				.setConnectionTimeout(20000).setSocketTimeout(20000);
++		WebSocketFactory webSocketFactory = new WebSocketFactory().setConnectionTimeout(10000);
+ 		if (Strings.isNotBlank(proxy.getHost())) {
+ 			ProxySettings proxySettings = webSocketFactory.getProxySettings();
+ 			proxySettings.setHost(proxy.getHost());
+
+File: src/main/java/com/github/novicezk/midjourney/wss/WebSocketStarter.java
+Patch:
+@@ -21,8 +21,7 @@ default void initProxy(ProxyProperties properties) {
+ 
+ 	default WebSocketFactory createWebSocketFactory(ProxyProperties properties) {
+ 		ProxyProperties.ProxyConfig proxy = properties.getProxy();
+-		WebSocketFactory webSocketFactory = new WebSocketFactory()
+-				.setConnectionTimeout(20000).setSocketTimeout(20000);
++		WebSocketFactory webSocketFactory = new WebSocketFactory().setConnectionTimeout(10000);
+ 		if (Strings.isNotBlank(proxy.getHost())) {
+ 			ProxySettings proxySettings = webSocketFactory.getProxySettings();
+ 			proxySettings.setHost(proxy.getHost());
+
+File: src/main/java/com/github/novicezk/midjourney/controller/SubmitController.java
+Patch:
+@@ -128,7 +128,7 @@ public SubmitResultVO change(@RequestBody SubmitChangeDTO changeDTO) {
+ 		if (!TaskStatus.SUCCESS.equals(targetTask.getStatus())) {
+ 			return SubmitResultVO.fail(ReturnCode.VALIDATION_ERROR, "关联任务状态错误");
+ 		}
+-		if (Set.of(TaskAction.IMAGINE, TaskAction.VARIATION).contains(targetTask.getAction())) {
++		if (!Set.of(TaskAction.IMAGINE, TaskAction.VARIATION).contains(targetTask.getAction())) {
+ 			return SubmitResultVO.fail(ReturnCode.VALIDATION_ERROR, "关联任务不允许执行变化");
+ 		}
+ 		Task task = newTask(changeDTO);
+
+File: src/main/java/com/github/novicezk/midjourney/wss/WebSocketStarter.java
+Patch:
+@@ -21,7 +21,8 @@ default void initProxy(ProxyProperties properties) {
+ 
+ 	default WebSocketFactory createWebSocketFactory(ProxyProperties properties) {
+ 		ProxyProperties.ProxyConfig proxy = properties.getProxy();
+-		WebSocketFactory webSocketFactory = new WebSocketFactory().setConnectionTimeout(5000);
++		WebSocketFactory webSocketFactory = new WebSocketFactory()
++				.setConnectionTimeout(20000).setSocketTimeout(20000);
+ 		if (Strings.isNotBlank(proxy.getHost())) {
+ 			ProxySettings proxySettings = webSocketFactory.getProxySettings();
+ 			proxySettings.setHost(proxy.getHost());
+
+File: src/main/java/com/github/novicezk/midjourney/controller/SubmitController.java
+Patch:
+@@ -128,7 +128,7 @@ public SubmitResultVO change(@RequestBody SubmitChangeDTO changeDTO) {
+ 		if (!TaskStatus.SUCCESS.equals(targetTask.getStatus())) {
+ 			return SubmitResultVO.fail(ReturnCode.VALIDATION_ERROR, "关联任务状态错误");
+ 		}
+-		if (Set.of(TaskAction.IMAGINE, TaskAction.VARIATION).contains(targetTask.getAction())) {
++		if (!Set.of(TaskAction.IMAGINE, TaskAction.VARIATION).contains(targetTask.getAction())) {
+ 			return SubmitResultVO.fail(ReturnCode.VALIDATION_ERROR, "关联任务不允许执行变化");
+ 		}
+ 		Task task = newTask(changeDTO);
+
+File: src/main/java/com/github/novicezk/midjourney/wss/WebSocketStarter.java
+Patch:
+@@ -21,7 +21,8 @@ default void initProxy(ProxyProperties properties) {
+ 
+ 	default WebSocketFactory createWebSocketFactory(ProxyProperties properties) {
+ 		ProxyProperties.ProxyConfig proxy = properties.getProxy();
+-		WebSocketFactory webSocketFactory = new WebSocketFactory().setConnectionTimeout(5000);
++		WebSocketFactory webSocketFactory = new WebSocketFactory()
++				.setConnectionTimeout(20000).setSocketTimeout(20000);
+ 		if (Strings.isNotBlank(proxy.getHost())) {
+ 			ProxySettings proxySettings = webSocketFactory.getProxySettings();
+ 			proxySettings.setHost(proxy.getHost());
+
+File: src/main/java/com/github/novicezk/midjourney/dto/SubmitChangeDTO.java
+Patch:
+@@ -15,8 +15,8 @@ public class SubmitChangeDTO extends BaseSubmitDTO {
+ 	@ApiModelProperty(value = "任务ID", required = true, example = "\"1320098173412546\"")
+ 	private String taskId;
+ 
+-	@ApiModelProperty(value = "UPSCALE(放大); VARIATION(变换); RESET(重新生成)", required = true,
+-			allowableValues = "UPSCALE, VARIATION, RESET", example = "UPSCALE")
++	@ApiModelProperty(value = "UPSCALE(放大); VARIATION(变换); REROLL(重新生成)", required = true,
++			allowableValues = "UPSCALE, VARIATION, REROLL", example = "UPSCALE")
+ 	private TaskAction action;
+ 
+ 	@ApiModelProperty(value = "序号(1~4), action为UPSCALE,VARIATION时必传", allowableValues = "range[1, 4]", example = "1")
+
+File: src/main/java/com/github/novicezk/midjourney/enums/TaskAction.java
+Patch:
+@@ -17,7 +17,7 @@ public enum TaskAction {
+ 	/**
+ 	 * 重新生成.
+ 	 */
+-	RESET,
++	REROLL,
+ 	/**
+ 	 * 图转prompt.
+ 	 */
+
+File: src/main/java/com/github/novicezk/midjourney/service/DiscordService.java
+Patch:
+@@ -12,7 +12,7 @@ public interface DiscordService {
+ 
+ 	Message<Void> variation(String messageId, int index, String messageHash);
+ 
+-	Message<Void> reset(String messageId, String messageHash);
++	Message<Void> reroll(String messageId, String messageHash);
+ 
+ 	Message<String> upload(String fileName, DataUrl dataUrl);
+ 
+
+File: src/main/java/com/github/novicezk/midjourney/support/TaskCondition.java
+Patch:
+@@ -13,7 +13,6 @@
+ @Data
+ @Accessors(chain = true)
+ public class TaskCondition implements Predicate<Task> {
+-
+ 	private String id;
+ 
+ 	private String prompt;
+
+File: src/main/java/com/github/novicezk/midjourney/util/ConvertUtils.java
+Patch:
+@@ -25,7 +25,7 @@ public static TaskChangeParams convertChangeParams(String content) {
+ 		} else if (action.charAt(0) == 'v') {
+ 			changeParams.setAction(TaskAction.VARIATION);
+ 		} else if (action.equals("r")) {
+-			changeParams.setAction(TaskAction.RESET);
++			changeParams.setAction(TaskAction.REROLL);
+ 		} else {
+ 			return null;
+ 		}
+
+File: src/main/java/com/github/novicezk/midjourney/support/handle/ImagineMessageHandler.java
+Patch:
+@@ -22,6 +22,9 @@ public void onMessageReceived(Message message) {
+ 			return;
+ 		}
+ 		String taskId = ConvertUtils.findTaskIdByFinalPrompt(messageData.getPrompt());
++		if (taskId == null) {
++			return;
++		}
+ 		Task task = this.taskQueueService.getTask(taskId);
+ 		if (task == null) {
+ 			return;
+
+File: src/main/java/com/github/novicezk/midjourney/ProxyApplication.java
+Patch:
+@@ -5,11 +5,10 @@
+ import org.springframework.context.annotation.Import;
+ import org.springframework.scheduling.annotation.EnableScheduling;
+ import spring.config.BeanConfig;
+-import spring.config.Knife4jConfig;
+ 
+ @EnableScheduling
+ @SpringBootApplication
+-@Import({BeanConfig.class, Knife4jConfig.class})
++@Import(BeanConfig.class)
+ public class ProxyApplication {
+ 
+ 	public static void main(String[] args) {
+
+File: src/main/java/com/github/novicezk/midjourney/ProxyProperties.java
+Patch:
+@@ -153,8 +153,8 @@ public static class TaskQueueConfig {
+ 		 */
+ 		private int queueSize = 10;
+ 		/**
+-		 * 任务超时时间(分钟), 默认2分钟.
++		 * 任务超时时间(分钟).
+ 		 */
+-		private int timeoutMinutes = 2;
++		private int timeoutMinutes = 5;
+ 	}
+ }
+
+File: src/main/java/com/github/novicezk/midjourney/controller/TaskController.java
+Patch:
+@@ -20,15 +20,15 @@
+ public class TaskController {
+ 	private final TaskStoreService taskStoreService;
+ 
+-	@ApiOperation(value = "列出所有任务信息")
++	@ApiOperation(value = "查询所有任务")
+ 	@GetMapping("/list")
+ 	public List<Task> listTask() {
+ 		return this.taskStoreService.listTask();
+ 	}
+ 
+-	@ApiOperation(value = "列出指定id任务信息")
++	@ApiOperation(value = "指定ID获取任务")
+ 	@GetMapping("/{id}/fetch")
+-	public Task getTask(@ApiParam(value = "任务id") @PathVariable String id) {
++	public Task getTask(@ApiParam(value = "任务ID") @PathVariable String id) {
+ 		return this.taskStoreService.getTask(id);
+ 	}
+ 
+
+File: src/main/java/com/github/novicezk/midjourney/dto/DescribeDTO.java
+Patch:
+@@ -5,17 +5,17 @@
+ import lombok.Data;
+ 
+ @Data
+-@ApiModel("图生文字模型")
++@ApiModel("提交图生文任务参数")
+ public class DescribeDTO {
+ 	/**
+ 	 * 自定义参数.
+ 	 */
+-	@ApiModelProperty("自定义参数")
++	@ApiModelProperty(value = "自定义参数")
+ 	private String state;
+ 	/**
+ 	 * 文件base64: data:image/png;base64,xxx.
+ 	 */
+-	@ApiModelProperty("图片base64")
++	@ApiModelProperty(value = "图片base64, 如data:image/png;base64,xxx", required = true)
+ 	private String base64;
+ 	/**
+ 	 * notifyHook of caller.
+
+File: src/main/java/com/github/novicezk/midjourney/controller/TaskController.java
+Patch:
+@@ -13,7 +13,7 @@
+ 
+ import java.util.List;
+ 
+-@Api(tags = "任务模块")
++@Api(tags = "任务查询")
+ @RestController
+ @RequestMapping("/task")
+ @RequiredArgsConstructor
+
+File: src/main/java/com/github/novicezk/midjourney/controller/TriggerController.java
+Patch:
+@@ -30,7 +30,7 @@
+ 
+ import java.net.MalformedURLException;
+ 
+-@Api(tags = "出图模块")
++@Api(tags = "任务提交")
+ @RestController
+ @RequestMapping("/trigger")
+ @RequiredArgsConstructor
+@@ -41,7 +41,7 @@ public class TriggerController {
+ 	private final ProxyProperties properties;
+ 	private final BannedPromptHelper bannedPromptHelper;
+ 
+-	@ApiOperation(value = "提交任务")
++	@ApiOperation(value = "提交Imagine或UV任务")
+ 	@PostMapping("/submit")
+ 	public Message<String> submit(@RequestBody SubmitDTO submitDTO) {
+ 		if (submitDTO.getAction() == null) {
+@@ -132,7 +132,7 @@ public Message<String> submitUV(@RequestBody UVSubmitDTO uvSubmitDTO) {
+ 		return submit(submitDTO);
+ 	}
+ 
+-	@ApiOperation(value = "提交describe任务")
++	@ApiOperation(value = "提交Describe图生文任务")
+ 	@PostMapping("/describe")
+ 	public Message<String> describe(@RequestBody DescribeDTO describeDTO) {
+ 		if (CharSequenceUtil.isBlank(describeDTO.getBase64())) {
+
+File: src/main/java/com/github/novicezk/midjourney/util/BannedPromptUtils.java
+Patch:
+@@ -8,6 +8,7 @@
+ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Locale;
++import java.util.regex.Pattern;
+ 
+ @UtilityClass
+ public class BannedPromptUtils {
+@@ -26,8 +27,8 @@ public class BannedPromptUtils {
+ 	}
+ 
+ 	public static boolean isBanned(String promptEn) {
+-		promptEn = promptEn.toLowerCase(Locale.ENGLISH);
+-		return BANNED_WORDS.stream().anyMatch(promptEn::contains);
++		String finalPromptEn = promptEn.toLowerCase(Locale.ENGLISH);
++		return BANNED_WORDS.stream().anyMatch(bannedWord -> Pattern.compile("\\b" + bannedWord + "\\b").matcher(finalPromptEn).find());
+ 	}
+ 
+ }
+
+File: src/main/java/com/github/novicezk/midjourney/util/BannedPromptUtils.java
+Patch:
+@@ -8,6 +8,7 @@
+ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Locale;
++import java.util.regex.Pattern;
+ 
+ @UtilityClass
+ public class BannedPromptUtils {
+@@ -26,8 +27,8 @@ public class BannedPromptUtils {
+ 	}
+ 
+ 	public static boolean isBanned(String promptEn) {
+-		promptEn = promptEn.toLowerCase(Locale.ENGLISH);
+-		return BANNED_WORDS.stream().anyMatch(promptEn::contains);
++		String finalPromptEn = promptEn.toLowerCase(Locale.ENGLISH);
++		return BANNED_WORDS.stream().anyMatch(bannedWord -> Pattern.compile("\\b" + bannedWord + "\\b").matcher(finalPromptEn).find());
+ 	}
+ 
+ }
+
+File: src/main/java/com/github/novicezk/midjourney/service/NotifyService.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.github.novicezk.midjourney.service;
+ 
+ 
+-import com.github.novicezk.midjourney.support.task.Task;
++import com.github.novicezk.midjourney.support.Task;
+ 
+ public interface NotifyService {
+ 
+
+File: src/main/java/com/github/novicezk/midjourney/service/NotifyServiceImpl.java
+Patch:
+@@ -3,7 +3,7 @@
+ import cn.hutool.core.text.CharSequenceUtil;
+ import com.fasterxml.jackson.core.JsonProcessingException;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+-import com.github.novicezk.midjourney.support.task.Task;
++import com.github.novicezk.midjourney.support.Task;
+ import lombok.RequiredArgsConstructor;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.http.HttpEntity;
+
+File: src/main/java/com/github/novicezk/midjourney/service/NotifyService.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.github.novicezk.midjourney.service;
+ 
+ 
+-import com.github.novicezk.midjourney.support.task.Task;
++import com.github.novicezk.midjourney.support.Task;
+ 
+ public interface NotifyService {
+ 
+
+File: src/main/java/com/github/novicezk/midjourney/service/NotifyServiceImpl.java
+Patch:
+@@ -3,7 +3,7 @@
+ import cn.hutool.core.text.CharSequenceUtil;
+ import com.fasterxml.jackson.core.JsonProcessingException;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+-import com.github.novicezk.midjourney.support.task.Task;
++import com.github.novicezk.midjourney.support.Task;
+ import lombok.RequiredArgsConstructor;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.http.HttpEntity;
+
+File: src/main/java/com/github/novicezk/midjourney/support/DiscordMessageListener.java
+Patch:
+@@ -118,7 +118,9 @@ private void finishTask(Task task, Message message) {
+ 			String imageUrl = message.getAttachments().get(0).getUrl();
+ 			task.setImageUrl(imageUrl);
+ 			int hashStartIndex = imageUrl.lastIndexOf("_");
+-			task.setMessageHash(imageUrl.substring(hashStartIndex + 1).replace(".png", ""));
++			// .webp or .png
++			int hashEndIndex = imageUrl.endsWith(".webp") ? imageUrl.length() - 5 : imageUrl.length() - 4;
++			task.setMessageHash(imageUrl.substring(hashStartIndex + 1, hashEndIndex));
+ 		} else {
+ 			task.setStatus(TaskStatus.FAILURE);
+ 		}
+
+File: src/main/java/com/github/novicezk/midjourney/support/DiscordMessageListener.java
+Patch:
+@@ -118,7 +118,8 @@ private void finishTask(Task task, Message message) {
+ 			String imageUrl = message.getAttachments().get(0).getUrl();
+ 			task.setImageUrl(imageUrl);
+ 			int hashStartIndex = imageUrl.lastIndexOf("_");
+-			task.setMessageHash(imageUrl.substring(hashStartIndex + 1).replace(".png", ""));
++			int hashEndIndex = imageUrl.endsWith(".webp") ? imageUrl.length() - 5 : imageUrl.length() - 4;
++			task.setMessageHash(imageUrl.substring(hashStartIndex + 1, hashEndIndex));
+ 		} else {
+ 			task.setStatus(TaskStatus.FAILURE);
+ 		}
+
+File: src/main/java/com/github/novicezk/midjourney/ProxyApplication.java
+Patch:
+@@ -1,6 +1,5 @@
+ package com.github.novicezk.midjourney;
+ 
+-import com.github.novicezk.midjourney.enums.TaskStore;
+ import com.github.novicezk.midjourney.service.TranslateService;
+ import com.github.novicezk.midjourney.service.translate.BaiduTranslateServiceImpl;
+ import com.github.novicezk.midjourney.service.translate.GPTTranslateServiceImpl;
+
+File: src/main/java/com/github/novicezk/midjourney/support/task/InMemoryTaskHelper.java
+Patch:
+@@ -3,8 +3,8 @@
+ import cn.hutool.cache.CacheUtil;
+ import cn.hutool.cache.impl.TimedCache;
+ import cn.hutool.core.collection.ListUtil;
+-import com.github.novicezk.midjourney.ProxyProperties;
+ 
++import java.time.Duration;
+ import java.util.List;
+ 
+ 
+@@ -13,8 +13,8 @@ public class InMemoryTaskHelper implements TaskHelper {
+ 	// 创建缓存
+ 	private final TimedCache<String, Task> taskMap;
+ 
+-	public InMemoryTaskHelper(ProxyProperties properties) {
+-		taskMap = CacheUtil.newTimedCache(properties.getTaskStore().getTimeout().toMillis());
++	public InMemoryTaskHelper(Duration timeout) {
++		taskMap = CacheUtil.newTimedCache(timeout.toMillis());
+ 	}
+ 
+ 	@Override
+
+File: src/main/java/com/github/novicezk/midjourney/support/task/InMemoryTaskHelper.java
+Patch:
+@@ -3,10 +3,8 @@
+ import cn.hutool.cache.CacheUtil;
+ import cn.hutool.cache.impl.TimedCache;
+ import cn.hutool.core.collection.ListUtil;
+-import cn.hutool.core.stream.StreamUtil;
+ import com.github.novicezk.midjourney.ProxyProperties;
+ 
+-import java.time.Duration;
+ import java.util.List;
+ 
+ 
+@@ -16,7 +14,7 @@ public class InMemoryTaskHelper implements TaskHelper {
+ 	private final TimedCache<String, Task> taskMap;
+ 
+ 	public InMemoryTaskHelper(ProxyProperties properties) {
+-		taskMap = CacheUtil.newTimedCache(properties.getTaskStore().getTimeout());
++		taskMap = CacheUtil.newTimedCache(properties.getTaskStore().getTimeout().toMillis());
+ 	}
+ 
+ 	@Override
+
+File: src/main/java/com/github/novicezk/midjourney/support/task/InMemoryTaskHelper.java
+Patch:
+@@ -4,8 +4,6 @@
+ import cn.hutool.cache.impl.TimedCache;
+ import cn.hutool.core.collection.ListUtil;
+ import cn.hutool.core.stream.StreamUtil;
+-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+-import org.springframework.stereotype.Component;
+ 
+ import java.util.Iterator;
+ import java.util.List;
+
+File: src/main/java/com/github/novicezk/midjourney/configuration/RedisConfig.java
+Patch:
+@@ -9,7 +9,7 @@
+ import org.springframework.data.redis.serializer.StringRedisSerializer;
+ 
+ @Configuration
+-@ConditionalOnProperty(name = "mj.task.store", havingValue = "redis")
++@ConditionalOnProperty(name = "mj.task-store", havingValue = "redis")
+ public class RedisConfig {
+ 
+     @Bean
+
+File: src/main/java/com/github/novicezk/midjourney/support/task/InMemoryTaskHelper.java
+Patch:
+@@ -10,8 +10,6 @@
+ import java.util.Iterator;
+ import java.util.List;
+ 
+-@Component
+-@ConditionalOnProperty(value = "mj.task.store", havingValue = "in-memory")
+ public class InMemoryTaskHelper implements TaskHelper {
+ 	// 创建缓存，1天过期
+ 	private static final TimedCache<String, Task> TASK_MAP = CacheUtil.newTimedCache(3600 * 24 * 1000L);
+
+File: src/main/java/com/github/novicezk/midjourney/support/task/RedisTaskHelper.java
+Patch:
+@@ -13,7 +13,7 @@
+ import java.util.stream.Collectors;
+ 
+ @Component
+-@ConditionalOnProperty(value = "mj.task.store", havingValue = "redis")
++@ConditionalOnProperty(value = "mj.task-store", havingValue = "redis")
+ public class RedisTaskHelper implements TaskHelper {
+     private static final long EXPIRATION_TIME = 3600 * 24 * 30; // 30 days
+     String keyPrefix = "mj::task::";
+
+File: src/main/java/com/github/novicezk/midjourney/service/DiscordServiceImpl.java
+Patch:
+@@ -28,6 +28,7 @@ public class DiscordServiceImpl implements DiscordService {
+ 	private final ProxyProperties properties;
+ 
+ 	private static final String DISCORD_API_URL = "https://discord.com/api/v9/interactions";
++	private static final String USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36";
+ 
+ 	private String imagineParamsJson;
+ 	private String upscaleParamsJson;
+@@ -96,7 +97,7 @@ private Message<Void> postJson(String paramsStr) {
+ 		HttpHeaders headers = new HttpHeaders();
+ 		headers.setContentType(MediaType.APPLICATION_JSON);
+ 		headers.set("Authorization", this.discordUserToken);
+-		headers.add("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36");
++		headers.add("user-agent", USER_AGENT);
+ 		HttpEntity<String> httpEntity = new HttpEntity<>(paramsStr, headers);
+ 		try {
+ 			ResponseEntity<String> responseEntity = new RestTemplate().postForEntity(DISCORD_API_URL, httpEntity, String.class);
+
+File: src/main/java/com/github/novicezk/midjourney/service/DiscordServiceImpl.java
+Patch:
+@@ -96,6 +96,7 @@ private Message<Void> postJson(String paramsStr) {
+ 		HttpHeaders headers = new HttpHeaders();
+ 		headers.setContentType(MediaType.APPLICATION_JSON);
+ 		headers.set("Authorization", this.discordUserToken);
++		headers.add("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36");
+ 		HttpEntity<String> httpEntity = new HttpEntity<>(paramsStr, headers);
+ 		try {
+ 			ResponseEntity<String> responseEntity = new RestTemplate().postForEntity(DISCORD_API_URL, httpEntity, String.class);
+
+File: src/main/java/com/github/novicezk/midjourney/controller/TriggerController.java
+Patch:
+@@ -49,7 +49,7 @@ public Message<String> submit(@RequestBody SubmitDTO submitDTO) {
+ 				return Message.validationError();
+ 			}
+ 			task.setPrompt(prompt);
+-			String promptEn = this.translateService.translateToEnglish(prompt);
++			String promptEn = this.translateService.translateToEnglish(prompt).trim();
+ 			key = promptEn;
+ 			task.setPromptEn(promptEn);
+ 			task.setDescription("/imagine " + submitDTO.getPrompt());
+
+File: src/main/java/com/github/novicezk/midjourney/support/DiscordMessageListener.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.github.novicezk.midjourney.support;
+ 
+ import cn.hutool.core.stream.StreamUtil;
+-import cn.hutool.core.text.CharSequenceUtil;
+ import com.github.novicezk.midjourney.ProxyProperties;
+ import com.github.novicezk.midjourney.enums.Action;
+ import com.github.novicezk.midjourney.enums.TaskStatus;
+@@ -112,7 +111,8 @@ private void finishTask(Task task, Message message) {
+ 			task.setStatus(TaskStatus.SUCCESS);
+ 			String imageUrl = message.getAttachments().get(0).getUrl();
+ 			task.setImageUrl(imageUrl);
+-			task.setMessageHash(CharSequenceUtil.subBetween(imageUrl, "__", ".png"));
++			int hashStartIndex = imageUrl.lastIndexOf("_");
++			task.setMessageHash(imageUrl.substring(hashStartIndex + 1).replace(".png", ""));
+ 		} else {
+ 			task.setStatus(TaskStatus.FAILURE);
+ 		}
+
+File: src/main/java/com/github/novicezk/midjourney/controller/TriggerController.java
+Patch:
+@@ -58,13 +58,13 @@ public Message<String> submitTask(@RequestBody TaskDTO taskDTO) {
+ 			}
+ 			MjTask targetTask = this.mjTaskHelper.findById(taskDTO.getTaskId());
+ 			if (targetTask == null) {
+-				return Message.of(Message.VALIDATION_ERROR_CODE, "任务ID不存在或已失效");
++				return Message.of(Message.VALIDATION_ERROR_CODE, "任务不存在或已失效");
+ 			}
+ 			if (!TaskStatus.SUCCESS.equals(targetTask.getStatus())) {
+ 				return Message.of(Message.VALIDATION_ERROR_CODE, "关联任务状态错误");
+ 			}
+ 			task.setPrompt(targetTask.getPrompt());
+-			key = taskDTO.getTaskId() + "-" + taskDTO.getAction();
++			key = targetTask.getMessageId() + "-" + taskDTO.getAction();
+ 			this.mjTaskHelper.putTask(key, task);
+ 			if (Action.UPSCALE.equals(taskDTO.getAction())) {
+ 				task.setDescription("/up " + taskDTO.getTaskId() + " U" + taskDTO.getIndex());
+

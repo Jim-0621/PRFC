@@ -1,0 +1,350 @@
+File: manager/web/src/main/java/com/alibaba/otter/manager/web/common/NumberFormatUtil.java
+Patch:
+@@ -190,7 +190,7 @@ public String formatGroupDbAddress(SourcingType defaultType, List<List<DataSourc
+             List<String> address = new ArrayList<String>();
+             for (DataSourcing dbAddress : groupDbAddress) {
+                 StringBuilder dbAddressBuilder = new StringBuilder();
+-                dbAddressBuilder.append(dbAddress.getDbAddress().getAddress().getHostName());
++                dbAddressBuilder.append(dbAddress.getDbAddress().getHostString());
+                 dbAddressBuilder.append(":");
+                 dbAddressBuilder.append(String.valueOf(dbAddress.getDbAddress().getPort()));
+                 if (!defaultType.equals(dbAddress.getType())) {
+
+File: manager/web/src/main/java/com/alibaba/otter/manager/web/common/model/SeniorCanal.java
+Patch:
+@@ -58,7 +58,7 @@ public String getUrl() {
+                 int i = 0;
+                 for (DataSourcing dbAddress : groupAddress) {
+                     ++i;
+-                    address.append(dbAddress.getDbAddress().getAddress().getHostName())
++                    address.append(dbAddress.getDbAddress().getHostString())
+                         .append(":")
+                         .append(dbAddress.getDbAddress().getPort());
+ 
+
+File: shared/common/src/test/java/com/alibaba/otter/shared/common/JsonUtilsTest.java
+Patch:
+@@ -84,7 +84,7 @@ public void test_bytes() {
+         data.put("two", two);
+ 
+         StringWriter jsonStr = new StringWriter();
+-        JSONWriter writer = new JSONWriter(jsonStr);//超大文本写入
++        JSONWriter writer = new JSONWriter(jsonStr);// 超大文本写入
+         writer.startArray();
+         writer.writeValue(one);
+         writer.writeValue(two);
+
+File: node/etl/src/main/java/com/alibaba/otter/node/etl/common/db/dialect/SqlTemplate.java
+Patch:
+@@ -26,7 +26,7 @@ public interface SqlTemplate {
+ 
+     public String getSelectSql(String schemaName, String tableName, String[] pkNames, String[] columnNames);
+ 
+-    public String getUpdateSql(String schemaName, String tableName, String[] pkNames, String[] columnNames);
++    public String getUpdateSql(String schemaName, String tableName, String[] pkNames, String[] columnNames, boolean updatePks, String shardColumn);
+ 
+     public String getDeleteSql(String schemaName, String tableName, String[] pkNames);
+ 
+@@ -36,5 +36,5 @@ public interface SqlTemplate {
+      * 获取对应的mergeSql
+      */
+     public String getMergeSql(String schemaName, String tableName, String[] pkNames, String[] columnNames,
+-                              String[] viewColumnNames, boolean updatePks);
++                              String[] viewColumnNames, boolean updatePks, String shardColumn);
+ }
+
+File: node/etl/src/main/java/com/alibaba/otter/node/etl/common/db/dialect/oracle/OracleSqlTemplate.java
+Patch:
+@@ -32,7 +32,7 @@ public class OracleSqlTemplate extends AbstractSqlTemplate {
+      * http://en.wikipedia.org/wiki/Merge_(SQL)
+      */
+     public String getMergeSql(String schemaName, String tableName, String[] keyNames, String[] columnNames,
+-                              String[] viewColumnNames, boolean includePks) {
++                              String[] viewColumnNames, boolean includePks, String shardColumn) {
+         final String aliasA = "a";
+         final String aliasB = "b";
+         StringBuilder sql = new StringBuilder();
+
+File: node/etl/src/main/java/com/alibaba/otter/node/etl/common/db/dialect/SqlTemplate.java
+Patch:
+@@ -26,7 +26,7 @@ public interface SqlTemplate {
+ 
+     public String getSelectSql(String schemaName, String tableName, String[] pkNames, String[] columnNames);
+ 
+-    public String getUpdateSql(String schemaName, String tableName, String[] pkNames, String[] columnNames);
++    public String getUpdateSql(String schemaName, String tableName, String[] pkNames, String[] columnNames, boolean updatePks, String shardColumn);
+ 
+     public String getDeleteSql(String schemaName, String tableName, String[] pkNames);
+ 
+@@ -36,5 +36,5 @@ public interface SqlTemplate {
+      * 获取对应的mergeSql
+      */
+     public String getMergeSql(String schemaName, String tableName, String[] pkNames, String[] columnNames,
+-                              String[] viewColumnNames, boolean updatePks);
++                              String[] viewColumnNames, boolean updatePks, String shardColumn);
+ }
+
+File: node/etl/src/main/java/com/alibaba/otter/node/etl/common/db/dialect/oracle/OracleSqlTemplate.java
+Patch:
+@@ -32,7 +32,7 @@ public class OracleSqlTemplate extends AbstractSqlTemplate {
+      * http://en.wikipedia.org/wiki/Merge_(SQL)
+      */
+     public String getMergeSql(String schemaName, String tableName, String[] keyNames, String[] columnNames,
+-                              String[] viewColumnNames, boolean includePks) {
++                              String[] viewColumnNames, boolean includePks, String shardColumn) {
+         final String aliasA = "a";
+         final String aliasB = "b";
+         StringBuilder sql = new StringBuilder();
+
+File: shared/push/src/main/java/com/alibaba/otter/common/push/supplier/media/MediaDatasourceSupplier.java
+Patch:
+@@ -139,7 +139,7 @@ private HaDatasourceInfo parse(String matrixStr) {
+             haInfo.setMaster(master);
+         }
+ 
+-        String slaveAddress = (String) jsonMap.get("master");
++        String slaveAddress = (String) jsonMap.get("slave");
+         if (slaveAddress != null) {
+             DatasourceInfo slave = new DatasourceInfo();
+             slave.setAddress(parseAddress(slaveAddress));
+
+File: node/etl/src/main/java/com/alibaba/otter/node/etl/common/db/utils/DdlUtils.java
+Patch:
+@@ -68,7 +68,7 @@ private void processTableName(SQLExpr sqlName) {
+                 }
+             } else if (sqlName instanceof SQLIdentifierExpr) {
+                 String oldTable = unescapeName(((SQLIdentifierExpr) sqlName).getName());
+-                if (targetTable == null || oldTable.equalsIgnoreCase(targetTable)) {
++                if (sourceTable == null || oldTable.equalsIgnoreCase(sourceTable)) {
+                     // try {
+                     // // 拼上一个schema
+                     // this.appender.append("`" + targetSchema + "`");
+
+File: node/etl/src/main/java/com/alibaba/otter/node/etl/load/loader/db/DbLoadAction.java
+Patch:
+@@ -357,7 +357,7 @@ private void doDdl(DbLoadContext context, List<EventData> eventDatas) {
+                 Boolean result = dbDialect.getJdbcTemplate().execute(new StatementCallback<Boolean>() {
+ 
+                     public Boolean doInStatement(Statement stmt) throws SQLException, DataAccessException {
+-                        Boolean result = false;
++                        Boolean result = true;
+                         if (dbDialect instanceof MysqlDialect && StringUtils.isNotEmpty(data.getDdlSchemaName())) {
+                             // 如果mysql，执行ddl时，切换到在源库执行的schema上
+                             // result &= stmt.execute("use " +
+
+File: node/etl/src/test/java/com/alibaba/otter/node/etl/select/OtterDownStreamHandlerIntergration.java
+Patch:
+@@ -93,8 +93,6 @@ public void run() {
+     }
+ 
+     private Event buildEvent() {
+-        Event event = new Event();
+-        event.setLogIdentity(new LogIdentity());
+ 
+         Header.Builder headBuilder = Header.newBuilder();
+         headBuilder.setEventLength(1000L);
+@@ -114,7 +112,7 @@ private Event buildEvent() {
+ 
+         entryBuilder.setStoreValue(rowChangeBuilder.build().toByteString());
+         Entry entry = entryBuilder.build();
+-        event.setEntry(entry);
++        Event event = new Event(new LogIdentity(), entry);
+         return event;
+     }
+ }
+
+File: node/etl/src/test/java/com/alibaba/otter/node/etl/select/OtterDownStreamHandlerIntergration.java
+Patch:
+@@ -93,8 +93,6 @@ public void run() {
+     }
+ 
+     private Event buildEvent() {
+-        Event event = new Event();
+-        event.setLogIdentity(new LogIdentity());
+ 
+         Header.Builder headBuilder = Header.newBuilder();
+         headBuilder.setEventLength(1000L);
+@@ -114,7 +112,7 @@ private Event buildEvent() {
+ 
+         entryBuilder.setStoreValue(rowChangeBuilder.build().toByteString());
+         Entry entry = entryBuilder.build();
+-        event.setEntry(entry);
++        Event event = new Event(new LogIdentity(), entry);
+         return event;
+     }
+ }
+
+File: manager/biz/src/main/java/com/alibaba/otter/manager/biz/config/record/impl/LogRecordServiceImpl.java
+Patch:
+@@ -153,8 +153,8 @@ private LogRecordDO modelToDo(LogRecord entityObj) {
+             logRecordDo.setNid(entityObj.getNid());
+             logRecordDo.setTitle(entityObj.getTitle());
+             String message = entityObj.getMessage();
+-            if (message != null && message.length() > 65535) {
+-                message = message.substring(0, 65535);
++            if (message != null && message.length() > 65535 / 3) {
++                message = message.substring(0, 65535 / 3);
+             }
+             logRecordDo.setMessage(message);
+             logRecordDo.setGmtCreate(entityObj.getGmtCreate());
+
+File: shared/common/src/main/java/com/alibaba/otter/shared/common/utils/JsonUtils.java
+Patch:
+@@ -28,6 +28,7 @@
+ 
+ import com.alibaba.fastjson.JSON;
+ import com.alibaba.fastjson.TypeReference;
++import com.alibaba.fastjson.parser.ParserConfig;
+ import com.alibaba.fastjson.serializer.JSONSerializer;
+ import com.alibaba.fastjson.serializer.ObjectSerializer;
+ import com.alibaba.fastjson.serializer.PropertyFilter;
+@@ -47,6 +48,7 @@ public class JsonUtils {
+         SerializeConfig.getGlobalInstance().put(InetAddress.class, InetAddressSerializer.instance);
+         SerializeConfig.getGlobalInstance().put(Inet4Address.class, InetAddressSerializer.instance);
+         SerializeConfig.getGlobalInstance().put(Inet6Address.class, InetAddressSerializer.instance);
++        ParserConfig.getGlobalInstance().setAutoTypeSupport(true);
+     }
+ 
+     public static <T> T unmarshalFromByte(byte[] bytes, Class<T> targetClass) {
+
+File: manager/biz/src/main/java/com/alibaba/otter/manager/biz/monitor/impl/DelayStatRuleMonitor.java
+Patch:
+@@ -88,7 +88,7 @@ private boolean checkDelayTime(AlarmRule rule, Long delayTime) {
+         String matchValue = rule.getMatchValue();
+         matchValue = StringUtils.substringBeforeLast(matchValue, "@");
+         Long maxDelayTime = Long.parseLong(StringUtils.trim(matchValue));
+-        if (delayTime >= maxDelayTime * 1000) {
++        if (delayTime >= maxDelayTime) {
+             sendAlarm(rule, String.format(DELAY_TIME_MESSAGE, rule.getPipelineId(), delayTime));
+             return true;
+         }
+
+File: manager/web/src/main/java/com/alibaba/otter/manager/web/common/NumberFormatUtil.java
+Patch:
+@@ -190,7 +190,7 @@ public String formatGroupDbAddress(SourcingType defaultType, List<List<DataSourc
+             List<String> address = new ArrayList<String>();
+             for (DataSourcing dbAddress : groupDbAddress) {
+                 StringBuilder dbAddressBuilder = new StringBuilder();
+-                dbAddressBuilder.append(dbAddress.getDbAddress().getAddress().getHostAddress());
++                dbAddressBuilder.append(dbAddress.getDbAddress().getAddress().getHostName());
+                 dbAddressBuilder.append(":");
+                 dbAddressBuilder.append(String.valueOf(dbAddress.getDbAddress().getPort()));
+                 if (!defaultType.equals(dbAddress.getType())) {
+
+File: manager/web/src/main/java/com/alibaba/otter/manager/web/common/model/SeniorCanal.java
+Patch:
+@@ -58,7 +58,7 @@ public String getUrl() {
+                 int i = 0;
+                 for (DataSourcing dbAddress : groupAddress) {
+                     ++i;
+-                    address.append(dbAddress.getDbAddress().getAddress().getHostAddress())
++                    address.append(dbAddress.getDbAddress().getAddress().getHostName())
+                         .append(":")
+                         .append(dbAddress.getDbAddress().getPort());
+ 
+
+File: node/etl/src/main/java/com/alibaba/otter/node/etl/common/db/dialect/AbstractSqlTemplate.java
+Patch:
+@@ -74,9 +74,9 @@ public String getDeleteSql(String schemaName, String tableName, String[] pkNames
+     protected String getFullName(String schemaName, String tableName) {
+         StringBuilder sb = new StringBuilder();
+         if (schemaName != null) {
+-            sb.append(schemaName).append(DOT);
++            sb.append(appendEscape(schemaName)).append(DOT);
+         }
+-        sb.append(tableName);
++        sb.append(appendEscape(tableName));
+         return sb.toString().intern();
+     }
+ 
+
+File: node/etl/src/main/java/com/alibaba/otter/node/etl/common/db/dialect/SqlTemplate.java
+Patch:
+@@ -36,5 +36,5 @@ public interface SqlTemplate {
+      * 获取对应的mergeSql
+      */
+     public String getMergeSql(String schemaName, String tableName, String[] pkNames, String[] columnNames,
+-                              String[] viewColumnNames);
++                              String[] viewColumnNames, boolean updatePks);
+ }
+
+File: node/etl/src/test/java/com/alibaba/otter/node/etl/common/db/DbDialectTest.java
+Patch:
+@@ -123,7 +123,7 @@ public Object doInPreparedStatement(PreparedStatement ps) throws SQLException, D
+                 });
+                 want.number(affect).isEqualTo(1);
+                 // 执行merge
+-                sql = sqlTemplate.getMergeSql(MYSQL_SCHEMA_NAME, TABLE_NAME, pkColumns, columns, null);
++                sql = sqlTemplate.getMergeSql(MYSQL_SCHEMA_NAME, TABLE_NAME, pkColumns, columns, null, true);
+                 System.out.println(sql);
+                 affect = (Integer) jdbcTemplate.execute(sql, new PreparedStatementCallback() {
+ 
+@@ -203,7 +203,7 @@ public Object doInPreparedStatement(PreparedStatement ps) throws SQLException, D
+                 });
+                 want.number(affect).isEqualTo(1);
+                 // 执行merge
+-                sql = sqlTemplate.getMergeSql(ORACLE_SCHEMA_NAME, TABLE_NAME, pkColumns, columns, null);
++                sql = sqlTemplate.getMergeSql(ORACLE_SCHEMA_NAME, TABLE_NAME, pkColumns, columns, null, true);
+                 System.out.println(sql);
+ 
+                 affect = (Integer) jdbcTemplate.execute(sql, new PreparedStatementCallback() {
+
+File: shared/etl/src/main/java/com/alibaba/otter/shared/etl/model/DbBatch.java
+Patch:
+@@ -44,6 +44,8 @@ public DbBatch(){
+ 
+     public DbBatch(RowBatch rowBatch){
+         this.rowBatch = rowBatch;
++        this.fileBatch = new FileBatch();
++        this.fileBatch.setIdentity(rowBatch.getIdentity());
+     }
+ 
+     public DbBatch(RowBatch rowBatch, FileBatch fileBatch, File root){
+
+File: shared/etl/src/main/java/com/alibaba/otter/shared/etl/model/EventData.java
+Patch:
+@@ -300,7 +300,7 @@ public EventData clone() {
+         data.setRemedy(remedy);
+         data.setHint(hint);
+         data.setWithoutSchema(withoutSchema);
+-        return null;
++        return data;
+     }
+ 
+     public String toString() {
+
+File: manager/biz/src/main/java/com/alibaba/otter/manager/biz/utils/DataSourceChecker.java
+Patch:
+@@ -147,6 +147,7 @@ public String check(String url, String username, String password, String encode,
+             try {
+                 conn = dataSource.getConnection();
+             } catch (Exception e) {
++                logger.error("check error!", e);
+             }
+ 
+             if (null == conn) {
+
+File: node/etl/src/main/java/com/alibaba/otter/node/etl/select/selector/MessageParser.java
+Patch:
+@@ -474,6 +474,9 @@ private EventData internParse(Pipeline pipeline, Entry entry, RowChange rowChang
+             for (Column column : beforeColumns) {
+                 if (isKey(tableHolder, tableName, column)) {
+                     oldKeyColumns.put(column.getName(), copyEventColumn(column, true, tableHolder));
++                    // 同时记录一下new
++                    // key,因为mysql5.6之后出现了minimal模式,after里会没有主键信息,需要在before记录中找
++                    keyColumns.put(column.getName(), copyEventColumn(column, true, tableHolder));
+                 } else {
+                     if (needAllColumns && entry.getHeader().getSourceType() == CanalEntry.Type.ORACLE) {
+                         // 针对行记录同步时，针对oracle记录一下非主键的字段，因为update时针对未变更的字段在aftercolume里没有
+
+File: manager/biz/src/main/java/com/alibaba/otter/manager/biz/utils/DataSourceChecker.java
+Patch:
+@@ -109,6 +109,7 @@ private void closeConnection(Connection conn, Statement st, ResultSet rs) {
+         }
+     }
+ 
++    @SuppressWarnings("resource")
+     public String check(String url, String username, String password, String encode, String sourceType) {
+         Connection conn = null;
+         Statement stmt = null;
+

@@ -1,0 +1,903 @@
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportFragment.java
+Patch:
+@@ -5,6 +5,7 @@
+ import android.os.Bundle;
+ import android.support.annotation.Nullable;
+ import android.support.v4.app.Fragment;
++import android.support.v4.app.FragmentActivity;
+ import android.view.View;
+ import android.view.animation.Animation;
+ 
+@@ -18,7 +19,7 @@
+  */
+ public class SupportFragment extends Fragment implements ISupportFragment {
+     final SupportFragmentDelegate mDelegate = new SupportFragmentDelegate(this);
+-    protected SupportActivity _mActivity;
++    protected FragmentActivity _mActivity;
+ 
+     @Override
+     public SupportFragmentDelegate getSupportDelegate() {
+@@ -38,7 +39,7 @@ public ExtraTransaction extraTransaction() {
+     public void onAttach(Activity activity) {
+         super.onAttach(activity);
+         mDelegate.onAttach(activity);
+-        _mActivity = (SupportActivity) mDelegate.getActivity();
++        _mActivity = mDelegate.getActivity();
+     }
+ 
+     @Override
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/SupportActivityDelegate.java
+Patch:
+@@ -32,6 +32,7 @@ public SupportActivityDelegate(ISupportActivity support) {
+             throw new RuntimeException("Must extends FragmentActivity/AppCompatActivity");
+         this.mSupport = support;
+         this.mActivity = (FragmentActivity) support;
++        this.mDebugStackDelegate = new DebugStackDelegate(this.mActivity);
+     }
+ 
+     /**
+@@ -44,8 +45,6 @@ public ExtraTransaction extraTransaction() {
+ 
+     public void onCreate(@Nullable Bundle savedInstanceState) {
+         mTransactionDelegate = getTransactionDelegate();
+-        mDebugStackDelegate = new DebugStackDelegate(mActivity);
+-
+         mFragmentAnimator = mSupport.onCreateFragmentAnimator();
+         mDebugStackDelegate.onCreate(Fragmentation.getDefault().getMode());
+     }
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/debug/DebugHierarchyViewContainer.java
+Patch:
+@@ -84,7 +84,7 @@ private LinearLayout getTitleLayout() {
+         mTitleLayout.setLayoutParams(flParams);
+ 
+         TextView title = new TextView(mContext);
+-        title.setText("栈视图(Stack)");
++        title.setText(R.string.fragmentation_stack_view);
+         title.setTextSize(20);
+         title.setTextColor(Color.BLACK);
+         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+@@ -101,7 +101,7 @@ private LinearLayout getTitleLayout() {
+         mTitleLayout.setOnClickListener(new OnClickListener() {
+             @Override
+             public void onClick(View v) {
+-                Toast.makeText(mContext, "* means not in backBack.", Toast.LENGTH_SHORT).show();
++                Toast.makeText(mContext, R.string.fragmentation_stack_help, Toast.LENGTH_LONG).show();
+             }
+         });
+         mTitleLayout.addView(img);
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/SupportFragmentDelegate.java
+Patch:
+@@ -561,7 +561,7 @@ public void popToChild(Class<?> targetFragmentClass, boolean includeTargetFragme
+     }
+ 
+     public void popQuiet() {
+-        mTransactionDelegate.popQuiet(mFragment.getFragmentManager());
++        mTransactionDelegate.popQuiet(mFragment.getFragmentManager(), mFragment);
+     }
+ 
+     private FragmentManager getChildFragmentManager() {
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/TransactionDelegate.java
+Patch:
+@@ -267,12 +267,13 @@ private void removeTopFragment(FragmentManager fm) {
+         }
+     }
+ 
+-    void popQuiet(final FragmentManager fm) {
++    void popQuiet(final FragmentManager fm, final Fragment fragment) {
+         enqueue(fm, new Action(Action.ACTION_POP_MOCK) {
+             @Override
+             public void run() {
+                 mSupport.getSupportDelegate().mPopMultipleNoAnim = true;
+                 removeTopFragment(fm);
++                FragmentationMagician.popBackStackAllowingStateLoss(fm, fragment.getTag(), 0);
+                 FragmentationMagician.popBackStackAllowingStateLoss(fm);
+                 FragmentationMagician.executePendingTransactionsAllowingStateLoss(fm);
+                 mSupport.getSupportDelegate().mPopMultipleNoAnim = false;
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/SupportFragmentDelegate.java
+Patch:
+@@ -104,6 +104,7 @@ public void onCreate(@Nullable Bundle savedInstanceState) {
+         if (savedInstanceState == null) {
+             getFragmentAnimator();
+         } else {
++            savedInstanceState.setClassLoader(getClass().getClassLoader());
+             mSaveInstanceState = savedInstanceState;
+             mFragmentAnimator = savedInstanceState.getParcelable(TransactionDelegate.FRAGMENTATION_STATE_SAVE_ANIMATOR);
+             mIsHidden = savedInstanceState.getBoolean(TransactionDelegate.FRAGMENTATION_STATE_SAVE_IS_HIDDEN);
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/queue/Action.java
+Patch:
+@@ -7,7 +7,7 @@
+  */
+ 
+ public abstract class Action {
+-    public static final int BUFFER_TIME = 60;
++    public static final long DEFAULT_POP_TIME = 300L;
+ 
+     public static final int ACTION_NORMAL = 0;
+     public static final int ACTION_POP = 1;
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/queue/ActionQueue.java
+Patch:
+@@ -58,8 +58,7 @@ private void handleAction() {
+     private void executeNextAction(Action action) {
+         if (action.action == Action.ACTION_POP) {
+             ISupportFragment top = SupportHelper.getBackStackTopFragment(action.fragmentManager);
+-            if (top == null) return;
+-            action.duration = top.getSupportDelegate().getExitAnimDuration();
++            action.duration = top == null ? Action.DEFAULT_POP_TIME : top.getSupportDelegate().getExitAnimDuration();
+         }
+ 
+         mMainHandler.postDelayed(new Runnable() {
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/SupportFragmentDelegate.java
+Patch:
+@@ -205,6 +205,9 @@ public void onActivityCreated(@Nullable Bundle savedInstanceState) {
+                 || (mFragment.getTag() != null && mFragment.getTag().startsWith("android:switcher:"))
+                 || (mReplaceMode && !mFirstCreateView)) {
+             notifyEnterAnimEnd();
++        } else if (mCustomEnterAnim != Integer.MIN_VALUE) {
++            fixAnimationListener(mCustomEnterAnim == 0 ?
++                    mAnimHelper.getNoneAnim() : AnimationUtils.loadAnimation(_mActivity, mCustomEnterAnim));
+         }
+ 
+         if (mFirstCreateView) {
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/SupportHelper.java
+Patch:
+@@ -245,8 +245,8 @@ static List<Fragment> getWillPopFragments(FragmentManager fm, String targetTag,
+ 
+         for (int i = size - 1; i >= startIndex; i--) {
+             Fragment fragment = fragmentList.get(i);
+-            if (fragment != null) {
+-                willPopFragments.add(fragmentList.get(i));
++            if (fragment != null && fragment.getView() != null) {
++                willPopFragments.add(fragment);
+             }
+         }
+         return willPopFragments;
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/TransactionDelegate.java
+Patch:
+@@ -396,7 +396,7 @@ private ISupportFragment getTopFragmentForStart(ISupportFragment from, FragmentM
+                     throw new IllegalStateException("Can't find container, please call loadRootFragment() first!");
+                 }
+             }
+-            top = SupportHelper.getBackStackTopFragment(fm, from.getSupportDelegate().mContainerId);
++            top = SupportHelper.getTopFragment(fm, from.getSupportDelegate().mContainerId);
+         }
+         return top;
+     }
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/TransactionDelegate.java
+Patch:
+@@ -562,7 +562,7 @@ private void doPopTo(final String targetFragmentTag, boolean includeTargetFragme
+         List<Fragment> willPopFragments = SupportHelper.getWillPopFragments(fm, targetFragmentTag, includeTargetFragment);
+         if (willPopFragments.size() <= 0) return;
+ 
+-        Fragment top = willPopFragments.get(willPopFragments.size() - 1);
++        Fragment top = willPopFragments.get(0);
+         mockPopToAnim(top, targetFragmentTag, fm, flag, willPopFragments, popAnim);
+     }
+ 
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/queue/Action.java
+Patch:
+@@ -24,9 +24,6 @@ public Action() {
+ 
+     public Action(int action) {
+         this.action = action;
+-        if (action == ACTION_POP_MOCK) {
+-            duration = BUFFER_TIME;
+-        }
+     }
+ 
+     public Action(int action, FragmentManager fragmentManager) {
+
+File: fragmentation_swipeback/src/main/java/me/yokeyword/fragmentation_swipeback/core/SwipeBackActivityDelegate.java
+Patch:
+@@ -58,7 +58,7 @@ public boolean swipeBackPriority() {
+ 
+     private void onActivityCreate() {
+         mActivity.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+-        mActivity.getWindow().getDecorView().setBackgroundDrawable(null);
++        mActivity.getWindow().getDecorView().setBackgroundColor(Color.TRANSPARENT);
+         mSwipeBackLayout = new SwipeBackLayout(mActivity);
+         ViewGroup.LayoutParams params = new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+         mSwipeBackLayout.setLayoutParams(params);
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/debug/DebugStackDelegate.java
+Patch:
+@@ -200,7 +200,8 @@ private void addDebugFragmentRecord(List<DebugFragmentRecord> fragmentRecords, F
+             } else {
+                 for (int j = 0; j < backStackCount; j++) {
+                     FragmentManager.BackStackEntry entry = fragment.getFragmentManager().getBackStackEntryAt(j);
+-                    if (entry.getName().equals(fragment.getTag())) {
++                    if ((entry.getName() != null && entry.getName().equals(fragment.getTag()))
++                            || (entry.getName() == null && fragment.getTag() == null)) {
+                         break;
+                     }
+                     if (j == backStackCount - 1) {
+
+File: demo/src/main/java/me/yokeyword/sample/demo_wechat/ui/fragment/first/MsgFragment.java
+Patch:
+@@ -96,6 +96,7 @@ public void onClick(View v) {
+     @Override
+     public void onDestroyView() {
+         super.onDestroyView();
++        mRecy = null;
+         _mActivity.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN);
+         hideSoftInput();
+     }
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/SupportFragmentDelegate.java
+Patch:
+@@ -194,7 +194,7 @@ public void onPause() {
+     public void onDestroyView() {
+         mSupport.getSupportDelegate().mFragmentClickable = true;
+         getVisibleDelegate().onDestroyView();
+-        getHandler().removeCallbacks(mNotifyEnterAnimEndRunnable);
++        getHandler().removeCallbacksAndMessages(null);
+     }
+ 
+     public void onDestroy() {
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/Fragmentation.java
+Patch:
+@@ -50,6 +50,8 @@ public static Fragmentation getDefault() {
+         debug = builder.debug;
+         if (debug) {
+             mode = builder.mode;
++        } else {
++            mode = NONE;
+         }
+         handler = builder.handler;
+     }
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/Fragmentation.java
+Patch:
+@@ -50,6 +50,8 @@ public static Fragmentation getDefault() {
+         debug = builder.debug;
+         if (debug) {
+             mode = builder.mode;
++        } else {
++            mode = NONE;
+         }
+         handler = builder.handler;
+     }
+
+File: fragmentation_swipeback/src/main/java/me/yokeyword/fragmentation/SwipeBackLayout.java
+Patch:
+@@ -483,7 +483,7 @@ public void onViewPositionChanged(View changedView, int left, int top, int dx, i
+                         ((ISupportFragment) mPreFragment).getSupportDelegate().mLockAnim = true;
+                     }
+                     if (!((Fragment) mFragment).isDetached()) {
+-                        mFragment.getSupportDelegate().popTo(mFragment.getClass(), true, null, 0);
++                        mFragment.getSupportDelegate().popForSwipeBack();
+                     }
+                     if (mPreFragment instanceof ISupportFragment) {
+                         ((ISupportFragment) mPreFragment).getSupportDelegate().mLockAnim = false;
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/Fragmentation.java
+Patch:
+@@ -27,7 +27,7 @@ public class Fragmentation {
+     static volatile Fragmentation INSTANCE;
+ 
+     private boolean debug;
+-    private int mode = NONE;
++    private int mode = BUBBLE;
+     private ExceptionHandler handler;
+ 
+     @IntDef({NONE, SHAKE, BUBBLE})
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/TransactionDelegate.java
+Patch:
+@@ -171,7 +171,7 @@ void showHideFragment(FragmentManager fragmentManager, ISupportFragment showFrag
+     private void start(FragmentManager fragmentManager, final ISupportFragment from, ISupportFragment to, String toFragmentTag,
+                        boolean dontAddToBackStack, ArrayList<TransactionRecord.SharedElement> sharedElementList, boolean allowRootFragmentAnim, int type) {
+         FragmentTransaction ft = fragmentManager.beginTransaction();
+-        boolean addMode = (type == TYPE_ADD || type == TYPE_ADD_RESULT || type == TYPE_ADD_WITHOUT_HIDE);
++        boolean addMode = (type == TYPE_ADD || type == TYPE_ADD_RESULT || type == TYPE_ADD_WITHOUT_HIDE || type == TYPE_ADD_RESULT_WITHOUT_HIDE);
+         Fragment fromF = (Fragment) from;
+         Fragment toF = (Fragment) to;
+         Bundle args = getArguments(toF);
+@@ -207,7 +207,7 @@ private void start(FragmentManager fragmentManager, final ISupportFragment from,
+         } else {
+             if (addMode) {
+                 ft.add(from.getSupportDelegate().mContainerId, toF, toFragmentTag);
+-                if (type != TYPE_ADD_WITHOUT_HIDE) {
++                if (type != TYPE_ADD_WITHOUT_HIDE && type != TYPE_ADD_RESULT_WITHOUT_HIDE) {
+                     ft.hide(fromF);
+                 }
+             } else {
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/helper/internal/VisibleDelegate.java
+Patch:
+@@ -167,6 +167,7 @@ private void dispatchSupportVisible(boolean visible) {
+         }
+ 
+         if (visible) {
++            if (!mFragment.isAdded()) return;
+             mSupportF.onSupportVisible();
+ 
+             if (mIsFirstVisible) {
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/SupportFragmentDelegate.java
+Patch:
+@@ -122,8 +122,8 @@ public Animation onCreateAnimation(int transit, boolean enter, int nextAnim) {
+                     enterAnim = mAnimHelper.getNoneAnim();
+                 } else {
+                     enterAnim = mAnimHelper.enterAnim;
++                    fixAnimationListener(enterAnim);
+                 }
+-                fixAnimationListener(enterAnim);
+                 return enterAnim;
+             } else {
+                 return mAnimHelper.popExitAnim;
+@@ -160,7 +160,7 @@ public void onActivityCreated(@Nullable Bundle savedInstanceState) {
+         }
+ 
+         if (savedInstanceState != null
+-                || mRootStatus != STATUS_UN_ROOT
++                || mRootStatus == STATUS_ROOT_ANIM_DISABLE
+                 || (mFragment.getTag() != null && mFragment.getTag().startsWith("android:switcher:"))
+                 || (mReplaceMode && !mFirstCreateView)) {
+             notifyEnterAnimEnd();
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/SupportFragmentDelegate.java
+Patch:
+@@ -122,8 +122,8 @@ public Animation onCreateAnimation(int transit, boolean enter, int nextAnim) {
+                     enterAnim = mAnimHelper.getNoneAnim();
+                 } else {
+                     enterAnim = mAnimHelper.enterAnim;
++                    fixAnimationListener(enterAnim);
+                 }
+-                fixAnimationListener(enterAnim);
+                 return enterAnim;
+             } else {
+                 return mAnimHelper.popExitAnim;
+@@ -160,6 +160,7 @@ public void onActivityCreated(@Nullable Bundle savedInstanceState) {
+         }
+ 
+         if (savedInstanceState != null
++                || mRootStatus == STATUS_ROOT_ANIM_DISABLE
+                 || (mFragment.getTag() != null && mFragment.getTag().startsWith("android:switcher:"))
+                 || (mReplaceMode && !mFirstCreateView)) {
+             notifyEnterAnimEnd();
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/SupportFragmentDelegate.java
+Patch:
+@@ -160,7 +160,6 @@ public void onActivityCreated(@Nullable Bundle savedInstanceState) {
+         }
+ 
+         if (savedInstanceState != null
+-                || mRootStatus != STATUS_UN_ROOT
+                 || (mFragment.getTag() != null && mFragment.getTag().startsWith("android:switcher:"))
+                 || (mReplaceMode && !mFirstCreateView)) {
+             notifyEnterAnimEnd();
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/SupportFragmentDelegate.java
+Patch:
+@@ -136,7 +136,7 @@ public Animation onCreateAnimation(int transit, boolean enter, int nextAnim) {
+             }
+ 
+             if (!enter) {
+-                return mAnimHelper.getViewPagerChildFragmentAnimFixed(mFragment);
++                return mAnimHelper.compatChildFragmentExitAnim(mFragment);
+             }
+ 
+             return null;
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/helper/internal/AnimatorHelper.java
+Patch:
+@@ -48,9 +48,9 @@ public Animation getNoneAnimFixed() {
+     }
+ 
+     @Nullable
+-    public Animation getViewPagerChildFragmentAnimFixed(Fragment fragment) {
+-        if (fragment.getTag() != null && fragment.getTag().startsWith("android:switcher:")
+-                && fragment.getUserVisibleHint()) {
++    public Animation compatChildFragmentExitAnim(Fragment fragment) {
++        if ((fragment.getTag() != null && fragment.getTag().startsWith("android:switcher:") && fragment.getUserVisibleHint()) ||
++                (fragment.getParentFragment() != null && fragment.getParentFragment().isRemoving() && !fragment.isHidden())) {
+             Animation animation = new Animation() {
+             };
+             animation.setDuration(exitAnim.getDuration());
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/ExtraTransaction.java
+Patch:
+@@ -236,7 +236,7 @@ public void startForResult(ISupportFragment toFragment, int requestCode) {
+         @Override
+         public void startForResultDontHideSelf(ISupportFragment toFragment, int requestCode) {
+             toFragment.getSupportDelegate().mTransactionRecord = mRecord;
+-            mTransactionDelegate.dispatchStartTransaction(mFragment.getFragmentManager(), mSupportF, toFragment, requestCode, ISupportFragment.STANDARD, TransactionDelegate.TYPE_ADD_WITHOUT_HIDE);
++            mTransactionDelegate.dispatchStartTransaction(mFragment.getFragmentManager(), mSupportF, toFragment, requestCode, ISupportFragment.STANDARD, TransactionDelegate.TYPE_ADD_RESULT_WITHOUT_HIDE);
+         }
+ 
+         @Override
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/TransactionDelegate.java
+Patch:
+@@ -46,6 +46,7 @@ class TransactionDelegate {
+     static final int TYPE_ADD_WITH_POP = 1;
+     static final int TYPE_ADD_RESULT = 2;
+     static final int TYPE_ADD_WITHOUT_HIDE = 3;
++    static final int TYPE_ADD_RESULT_WITHOUT_HIDE = 4;
+     static final int TYPE_REPLACE = 10;
+     static final int TYPE_REPLACE_DONT_BACK = 14;
+ 
+@@ -131,7 +132,7 @@ void dispatchStartTransaction(FragmentManager fragmentManager, ISupportFragment
+             }
+         }
+ 
+-        if (type == TYPE_ADD_RESULT) {
++        if (type == TYPE_ADD_RESULT || type == TYPE_ADD_RESULT_WITHOUT_HIDE) {
+             saveRequestCode((Fragment) to, requestCode);
+         }
+ 
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/TransactionDelegate.java
+Patch:
+@@ -199,6 +199,7 @@ private void start(FragmentManager fragmentManager, final ISupportFragment from,
+         if (from == null) {
+             ft.replace(args.getInt(FRAGMENTATION_ARG_CONTAINER), toF, toFragmentTag);
+             if (!addMode) {
++                ft.setTransition(FragmentTransaction.TRANSIT_FRAGMENT_OPEN);
+                 args.putInt(FRAGMENTATION_ARG_ROOT_STATUS, allowRootFragmentAnim ?
+                         SupportFragmentDelegate.STATUS_ROOT_ANIM_ENABLE : SupportFragmentDelegate.STATUS_ROOT_ANIM_DISABLE);
+             }
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/helper/internal/VisibleDelegate.java
+Patch:
+@@ -142,8 +142,6 @@ public void run() {
+     }
+ 
+     private void dispatchSupportVisible(boolean visible) {
+-        if (!mFragment.isAdded()) return;
+-
+         if (mIsSupportVisible == visible) {
+             mNeedDispatch = true;
+             return;
+@@ -154,6 +152,7 @@ private void dispatchSupportVisible(boolean visible) {
+         if (!mNeedDispatch) {
+             mNeedDispatch = true;
+         } else {
++            if (!mFragment.isAdded()) return;
+             FragmentManager fragmentManager = mFragment.getChildFragmentManager();
+             if (fragmentManager != null) {
+                 List<Fragment> childFragments = FragmentationHack.getActiveFragments(fragmentManager);
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/helper/internal/VisibleDelegate.java
+Patch:
+@@ -131,13 +131,14 @@ private void enqueueDispatchVisible() {
+         getHandler().post(new Runnable() {
+             @Override
+             public void run() {
+-                if (!mFragment.isAdded()) return;
+                 dispatchSupportVisible(true);
+             }
+         });
+     }
+ 
+     private void dispatchSupportVisible(boolean visible) {
++        if (!mFragment.isAdded()) return;
++
+         if (mIsSupportVisible == visible) {
+             mNeedDispatch = true;
+             return;
+
+File: fragmentation_swipeback/src/main/java/me/yokeyword/fragmentation/SwipeBackLayout.java
+Patch:
+@@ -296,12 +296,12 @@ public void computeScroll() {
+             }
+             if (mPreFragment != null && mPreFragment.getView() != null && mHelper.getCapturedView() != null) {
+                 if (mCallOnDestroyView) {
+-                    mPreFragment.getView().setLeft(0);
++                    mPreFragment.getView().setX(0);
+                     return;
+                 }
+ 
+                 int leftOffset = (int) ((mHelper.getCapturedView().getLeft() - getWidth()) * mParallaxOffset * mScrimOpacity);
+-                mPreFragment.getView().setLeft(leftOffset > 0 ? 0 : leftOffset);
++                mPreFragment.getView().setX(leftOffset > 0 ? 0 : leftOffset);
+             }
+         }
+     }
+
+File: fragmentation_swipeback/src/main/java/me/yokeyword/fragmentation/SwipeBackLayout.java
+Patch:
+@@ -296,12 +296,12 @@ public void computeScroll() {
+             }
+             if (mPreFragment != null && mPreFragment.getView() != null && mHelper.getCapturedView() != null) {
+                 if (mCallOnDestroyView) {
+-                    mPreFragment.getView().setLeft(0);
++                    mPreFragment.getView().setX(0);
+                     return;
+                 }
+ 
+                 int leftOffset = (int) ((mHelper.getCapturedView().getLeft() - getWidth()) * mParallaxOffset * mScrimOpacity);
+-                mPreFragment.getView().setLeft(leftOffset > 0 ? 0 : leftOffset);
++                mPreFragment.getView().setX(leftOffset > 0 ? 0 : leftOffset);
+             }
+         }
+     }
+
+File: fragmentation_core/src/main/java/me/yokeyword/fragmentation/helper/internal/VisibleDelegate.java
+Patch:
+@@ -25,7 +25,6 @@ public class VisibleDelegate {
+     private boolean mFixStatePagerAdapter;
+     private Bundle mSaveInstanceState;
+     private boolean mFirstCreateViewCompatReplace = true;
+-    private boolean mLazyInitCompatReplace = true;
+ 
+     private ISupportFragment mSupportF;
+     private Fragment mFragment;
+@@ -114,9 +113,8 @@ private void dispatchSupportVisible(boolean visible) {
+         if (visible) {
+             mSupportF.onSupportVisible();
+ 
+-            if (mIsFirstVisible && mLazyInitCompatReplace) {
++            if (mIsFirstVisible) {
+                 mIsFirstVisible = false;
+-                mLazyInitCompatReplace = false;
+                 mSupportF.onLazyInitView(mSaveInstanceState);
+             }
+         } else {
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportFragment.java
+Patch:
+@@ -41,7 +41,7 @@ public class SupportFragment extends Fragment implements ISupportFragment {
+ 
+     private Bundle mNewBundle;
+ 
+-    private boolean mIsRoot, mIsSharedElement;
++    boolean mIsRoot, mIsSharedElement;
+     private boolean mIsHidden = true;   // 用于记录Fragment show/hide 状态
+ 
+     // SupportVisible
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/FragmentationDelegate.java
+Patch:
+@@ -36,7 +36,6 @@ class FragmentationDelegate {
+ 
+     static final String FRAGMENTATION_STATE_SAVE_ANIMATOR = "fragmentation_state_save_animator";
+     static final String FRAGMENTATION_STATE_SAVE_IS_HIDDEN = "fragmentation_state_save_status";
+-    static final String FRAGMENTATION_STATE_SAVE_IS_INVISIBLE_WHEN_LEAVE = "fragmentation_state_save_invisible_when_leave";
+ 
+     private long mShareElementDebounceTime;
+     private static final long BUFFER_TIME = 50L;
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/FragmentationDelegate.java
+Patch:
+@@ -366,7 +366,7 @@ <T extends SupportFragment> T findStackFragment(Class<T> fragmentClass, String t
+         Fragment fragment = null;
+ 
+         if (toFragmentTag == null) {
+-            // 如果是 查找Fragment时,则有可能是在FragmentPagerAdapter/FragmentStatePagerAdapter中,这种情况下,
++            // 如果是 查找Fragment时,则有可能是在FragmentPagerAdapter,这种情况下,
+             // 它们的Tag是以android:switcher开头,所以这里我们使用下面的方式
+             List<Fragment> fragmentList = fragmentManager.getFragments();
+             if (fragmentList == null) return null;
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportFragment.java
+Patch:
+@@ -628,7 +628,7 @@ public void popToChild(String targetFragmentTag, boolean includeTargetFragment)
+ 
+     @Override
+     public void popToChild(Class<?> targetFragmentClass, boolean includeTargetFragment, Runnable afterPopTransactionRunnable) {
+-        popTo(targetFragmentClass.getName(), includeTargetFragment, afterPopTransactionRunnable);
++        popToChild(targetFragmentClass.getName(), includeTargetFragment, afterPopTransactionRunnable);
+     }
+ 
+     @Override
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/Fragmentation.java
+Patch:
+@@ -101,6 +101,8 @@ void loadMultipleRootTransaction(FragmentManager fragmentManager, int containerI
+         }
+ 
+         supportCommit(fragmentManager, ft);
++        // for compatibility with 25.1.1
++        fragmentManager.executePendingTransactions();
+     }
+ 
+     /**
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportFragment.java
+Patch:
+@@ -366,7 +366,7 @@ private void dispatchSupportVisible(boolean visible) {
+                 List<Fragment> childFragments = fragmentManager.getFragments();
+                 if (childFragments != null) {
+                     for (Fragment child : childFragments) {
+-                        if (child instanceof SupportFragment && !child.isHidden() && child.getUserVisibleHint()) {
++                        if (child!=null && child instanceof SupportFragment && !child.isHidden() && child.getUserVisibleHint()) {
+                             ((SupportFragment) child).dispatchSupportVisible(visible);
+                         }
+                     }
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/Fragmentation.java
+Patch:
+@@ -36,7 +36,6 @@ class Fragmentation {
+ 
+     static final String FRAGMENTATION_STATE_SAVE_ANIMATOR = "fragmentation_state_save_animator";
+     static final String FRAGMENTATION_STATE_SAVE_IS_HIDDEN = "fragmentation_state_save_status";
+-    static final String FRAGMENTATION_STATE_SAVE_IS_SUPPORT_VISIBLE = "fragmentation_state_save_support_visible";
+     static final String FRAGMENTATION_STATE_SAVE_IS_INVISIBLE_WHEN_LEAVE = "fragmentation_state_save_invisible_when_leave";
+ 
+     private long mShareElementDebounceTime;
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportFragment.java
+Patch:
+@@ -210,6 +210,7 @@ public void onSaveInstanceState(Bundle outState) {
+     @Override
+     public void onActivityCreated(@Nullable Bundle savedInstanceState) {
+         super.onActivityCreated(savedInstanceState);
++        mIsFirstVisible = true;
+ 
+         View view = getView();
+         initFragmentBackground(view);
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportActivity.java
+Patch:
+@@ -328,7 +328,7 @@ public boolean onKeyDown(int keyCode, KeyEvent event) {
+     @Override
+     public boolean dispatchTouchEvent(MotionEvent ev) {
+         // 防抖动(防止点击速度过快)
+-//        if (!mFragmentClickable) return true;
++        if (!mFragmentClickable) return true;
+ 
+         return super.dispatchTouchEvent(ev);
+     }
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportFragment.java
+Patch:
+@@ -847,14 +847,14 @@ public void onStop() {
+ 
+     @Override
+     public void onDestroyView() {
++        _mActivity.setFragmentClickable();
+         if (mFragmentDestoryViewListener != null) {
+             mFragmentDestoryViewListener.onDestoryView();
+         }
+         mFragmentDestoryViewListener = null;
+ 
+         super.onDestroyView();
+ 
+-        _mActivity.setFragmentClickable();
+         _mActivity.dispatchFragmentLifecycle(LifecycleHelper.LIFECYLCE_ONDESTROYVIEW, SupportFragment.this);
+     }
+ 
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportActivity.java
+Patch:
+@@ -328,7 +328,7 @@ public boolean onKeyDown(int keyCode, KeyEvent event) {
+     @Override
+     public boolean dispatchTouchEvent(MotionEvent ev) {
+         // 防抖动(防止点击速度过快)
+-        if (!mFragmentClickable) return true;
++//        if (!mFragmentClickable) return true;
+ 
+         return super.dispatchTouchEvent(ev);
+     }
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportFragment.java
+Patch:
+@@ -854,6 +854,7 @@ public void onDestroyView() {
+ 
+         super.onDestroyView();
+ 
++        _mActivity.setFragmentClickable();
+         _mActivity.dispatchFragmentLifecycle(LifecycleHelper.LIFECYLCE_ONDESTROYVIEW, SupportFragment.this);
+     }
+ 
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/Fragmentation.java
+Patch:
+@@ -158,9 +158,6 @@ void dispatchStartTransaction(FragmentManager fragmentManager, SupportFragment f
+ 
+         if (handleLaunchMode(fragmentManager, to, toFragmentTag, launchMode)) return;
+ 
+-        // 在SingleTask/SingleTop启动模式之后 开启防抖动
+-        mActivity.setFragmentClickable(false);
+-
+         switch (type) {
+             case TYPE_ADD:
+             case TYPE_ADD_RESULT:
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/Fragmentation.java
+Patch:
+@@ -379,7 +379,7 @@ SupportFragment getActiveFragment(SupportFragment parentFragment, FragmentManage
+             Fragment fragment = fragmentList.get(i);
+             if (fragment instanceof SupportFragment) {
+                 SupportFragment supportFragment = (SupportFragment) fragment;
+-                if (!supportFragment.isHidden() && supportFragment.getUserVisibleHint()) {
++                if (supportFragment.isResumed() && !supportFragment.isHidden() && supportFragment.getUserVisibleHint()) {
+                     return getActiveFragment(supportFragment, supportFragment.getChildFragmentManager());
+                 }
+             }
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportActivity.java
+Patch:
+@@ -184,8 +184,10 @@ public void loadMultipleRootFragment(int containerId, int showPosition, SupportF
+     }
+ 
+     /**
+-     * show一个Fragment,hide上一个Fragment
++     * show一个Fragment,hide其他同栈所有Fragment
+      * 使用该方法时，要确保同级栈内无多余的Fragment,(只有通过loadMultipleRootFragment()载入的Fragment)
++     * <p>
++     * 建议使用更明确的{@link #showHideFragment(SupportFragment, SupportFragment)}
+      *
+      * @param showFragment 需要show的Fragment
+      */
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportFragment.java
+Patch:
+@@ -536,8 +536,10 @@ public void loadMultipleRootFragment(int containerId, int showPosition, SupportF
+     }
+ 
+     /**
+-     * show一个Fragment,hide上一个Fragment
++     * show一个Fragment,hide其他同栈所有Fragment
+      * 使用该方法时，要确保同级栈内无多余的Fragment,(只有通过loadMultipleRootFragment()载入的Fragment)
++     * <p>
++     * 建议使用更明确的{@link #showHideFragment(SupportFragment, SupportFragment)}
+      *
+      * @param showFragment 需要show的Fragment
+      */
+
+File: demo/src/main/java/me/yokeyword/sample/demo_flow/MainActivity.java
+Patch:
+@@ -146,9 +146,7 @@ public void run() {
+                     HomeFragment fragment = findFragment(HomeFragment.class);
+                     Bundle newBundle = new Bundle();
+                     newBundle.putString("from", "主页-->来自:" + topFragment.getClass().getSimpleName());
+-                    fragment.setArguments(newBundle);
+-                    // 也可以通过putNewBundle()设置数据
+-//                    fragment.putNewBundle(newBundle);
++                    fragment.putNewBundle(newBundle);
+ 
+                     start(fragment, SupportFragment.SINGLETASK);
+                 } else if (id == R.id.nav_discover) {
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/ISupport.java
+Patch:
+@@ -4,7 +4,7 @@
+ /**
+  * Created by YoKeyword on 16/6/1.
+  */
+-public interface ISupport {
++interface ISupport {
+ 
+     /**
+      * 加载根Fragment, 即Activity内的第一个Fragment 或 Fragment内的第一个子Fragment
+@@ -23,7 +23,7 @@ public interface ISupport {
+      * 加载多个根Fragment
+      *
+      * @param containerId 容器id
+-     * @param toFragments  目标Fragments
++     * @param toFragments 目标Fragments
+      */
+     void loadMultipleRootFragment(int containerId, int showPosition, SupportFragment... toFragments);
+ 
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/ISupportFragment.java
+Patch:
+@@ -6,7 +6,7 @@
+ /**
+  * Created by YoKeyword on 16/6/2.
+  */
+-public interface ISupportFragment extends ISupport {
++interface ISupportFragment extends ISupport {
+ 
+     /**
+      * add目标Fragment, 以addSharedElement方式
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportFragment.java
+Patch:
+@@ -122,9 +122,6 @@ protected boolean restoreInstanceState() {
+ 
+     private void initAnim() {
+         mAnimHelper = new AnimatorHelper(_mActivity.getApplicationContext(), mFragmentAnimator);
+-        if (mAnimHelper.enterAnim == mAnimHelper.getNoAnim()) {
+-            mEnterAnimFlag = true;
+-        }
+ 
+         // 监听入栈动画结束(1.为了防抖动; 2.为了Fragmentation的回调所用)
+         mAnimHelper.enterAnim.setAnimationListener(new DebounceAnimListener(this));
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/helper/AnimatorHelper.java
+Patch:
+@@ -27,9 +27,7 @@ public AnimatorHelper(Context context, FragmentAnimator fragmentAnimator) {
+     }
+ 
+     public Animation getNoAnim() {
+-        if (noAnim == null) {
+-            noAnim = AnimationUtils.loadAnimation(context, R.anim.no_anim);
+-        }
++        noAnim = AnimationUtils.loadAnimation(context, R.anim.no_anim);
+         return noAnim;
+     }
+ 
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/Fragmentation.java
+Patch:
+@@ -32,7 +32,6 @@ public class Fragmentation {
+     static final String TAG = Fragmentation.class.getSimpleName();
+ 
+     static final String ARG_RESULT_RECORD = "fragment_arg_result_record";
+-
+     static final String ARG_IS_ROOT = "fragmentation_arg_is_root";
+     static final String ARG_IS_SHARED_ELEMENT = "fragmentation_arg_is_shared_element";
+     static final String FRAGMENTATION_ARG_CONTAINER = "fragmentation_arg_container";
+@@ -41,6 +40,7 @@ public class Fragmentation {
+     static final String FRAGMENTATION_STATE_SAVE_IS_HIDDEN = "fragmentation_state_save_status";
+ 
+     public static final long BUFFER_TIME = 300L;
++    public static final long BUFFER_TIME_FOR_RESULT = 50L;
+ 
+     public static final int TYPE_ADD = 0;
+     public static final int TYPE_ADD_WITH_POP = 1;
+@@ -434,7 +434,7 @@ private void handleBack(final FragmentManager fragmentManager, boolean fromStart
+                         public void run() {
+                             supportFragment.onFragmentResult(finalFragmentResultRecord.requestCode, finalFragmentResultRecord.resultCode, finalFragmentResultRecord.resultBundle);
+                         }
+-                    }, Math.max(animTime, lastAnimTime));
++                    }, Math.max(animTime, lastAnimTime) + BUFFER_TIME_FOR_RESULT);
+                     return;
+                 }
+             }
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/SupportActivity.java
+Patch:
+@@ -83,9 +83,9 @@ protected FragmentAnimator onCreateFragmentAnimator() {
+     }
+ 
+     /**
+-     * 当Fragment的根布局没有设定background时,
++     * 当Fragment根布局 没有 设定background属性时,
+      * Fragmentation默认使用Theme的android:windowbackground作为Fragment的背景,
+-     * 改变Fragment背景 (给根布局设定background优先级最高)
++     * 可以通过该方法改变Fragment背景。
+      */
+     protected void setDefaultFragmentBackground(@DrawableRes int backgroundRes) {
+         mDefaultFragmentBackground = backgroundRes;
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/Fragmentation.java
+Patch:
+@@ -310,7 +310,7 @@ private void handleBack(final FragmentManager fragmentManager) {
+                             public void run() {
+                                 supportFragment.onFragmentResult(finalRequestCode, finalResultCode, finalData);
+                             }
+-                        }, Math.max(animTime, lastAnimTime));
++                        }, Math.max(animTime, lastAnimTime) + 50);
+                     }
+                     break;
+                 }
+
+File: fragmentation/src/main/java/me/yokeyword/fragmentation/Fragmentation.java
+Patch:
+@@ -275,8 +275,9 @@ void back(FragmentManager fragmentManager) {
+      * handle result
+      */
+     private void handleBack(FragmentManager fragmentManager) {
+-        List<Fragment> fragmentList = fragmentManager.getFragments();
++        fragmentManager.popBackStack();
+ 
++        List<Fragment> fragmentList = fragmentManager.getFragments();
+         int count = 0;
+         int requestCode = 0, resultCode = 0;
+         Bundle data = null;
+@@ -303,7 +304,6 @@ private void handleBack(FragmentManager fragmentManager) {
+                 }
+             }
+         }
+-        fragmentManager.popBackStack();
+     }
+ 
+     /**
+

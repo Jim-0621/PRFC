@@ -1,0 +1,820 @@
+File: parceler/src/main/java/org/parceler/internal/ParcelableAnalysis.java
+Patch:
+@@ -693,7 +693,8 @@ private boolean isGetter(ASTMethod astMethod, boolean ignoreModifier) {
+         return astMethod.getParameters().size() == 0 &&
+                 !astMethod.getReturnType().equals(ASTVoidType.VOID) &&
+                 (ignoreModifier ||
+-                (astMethod.getName().startsWith(GET) || astMethod.getName().startsWith(IS)) &&
++                ((astMethod.getName().startsWith(GET) && astMethod.getName().length() > GET.length()) ||
++                        (astMethod.getName().startsWith(IS) && astMethod.getName().length() > IS.length())) &&
+                         astMethod.getAccessModifier().equals(ASTAccessModifier.PUBLIC));
+     }
+ 
+@@ -707,7 +708,7 @@ private boolean isSetter(ASTMethod astMethod, boolean ignoreModifier) {
+         return astMethod.getParameters().size() == 1 &&
+                 astMethod.getReturnType().equals(ASTVoidType.VOID) &&
+                 (ignoreModifier ||
+-                        (astMethod.getName().startsWith(SET) &&
++                        ((astMethod.getName().startsWith(SET) && astMethod.getName().length() > SET.length()) &&
+                                 astMethod.getAccessModifier().equals(ASTAccessModifier.PUBLIC)));
+     }
+ 
+
+File: parceler/src/main/java/org/parceler/internal/ParcelerModule.java
+Patch:
+@@ -211,6 +211,7 @@ public static Generators addGenerators(Generators generators,
+         generators.add(Matchers.type(new ASTStringType("android.util.SparseArray")).ignoreGenerics().build(), new SparseArrayReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel));
+         generators.add(new InheritsMatcher(new ASTStringType("android.os.Parcelable")), new ParcelableReadWriteGenerator("readParcelable", "writeParcelable", "android.os.Parcelable"));
+         generators.add(new EnumMatcher(), enumReadWriteGenerator);
++        generators.add(new RemoterMatcher(), new RemoterReadWriteGenerator(generationUtil, namer));
+         generators.add(new ParcelMatcher(externalParcelRepository), parcelReadWriteGenerator);
+         generators.add(new ASTArrayMatcher(), new ArrayReadWriteGenerator(generationUtil, namer, generators, codeModel));
+         generators.add(new GenericCollectionMatcher(astClassFactory.getType(List.class), generators, 1), new ListReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, ArrayList.class, true));
+
+File: parceler/src/main/java/org/parceler/internal/generator/MutableLiveDataReadWriteGenerator.java
+Patch:
+@@ -38,7 +38,7 @@ public JExpression generateReader(JBlock body, JVar parcelParam, ASTType type, J
+ 
+         JVar outputVar = body.decl(mutableLiveDataType, namer.generateName(mutableLiveDataType));
+ 
+-        body.assign(outputVar, JExpr._new(generationUtil.ref(TYPE)));
++        body.assign(outputVar, JExpr._new(mutableLiveDataType));
+ 
+         body.invoke(outputVar, "setValue").arg(readExpression);
+ 
+
+File: parceler-api/src/main/java/org/parceler/MapsUtil.java
+Patch:
+@@ -37,7 +37,7 @@ private MapsUtil() {
+      * @param expectedSize
+      * @return HashMap capacity that avoids rehashing.
+      */
+-    static int initialHashMapCapacity(int expectedSize) {
++    public static int initialHashMapCapacity(int expectedSize) {
+         if (expectedSize < 0) {
+             throw new ParcelerRuntimeException("Expected size must be non-negative");
+         }
+
+File: parceler/src/main/java/org/parceler/internal/generator/ObservableFieldReadWriteGenerator.java
+Patch:
+@@ -43,7 +43,7 @@ public ObservableFieldReadWriteGenerator(Generators generators, ClassGenerationU
+     @Override
+     public JExpression generateReader(JBlock body, JVar parcelParam, ASTType type, JClass returnJClassRef, JDefinedClass parcelableClass, JVar identity, JVar readIdentityMap) {
+ 
+-        ASTType componentType = type.getGenericParameters().get(0);
++        ASTType componentType = type.getGenericArgumentTypes().get(0);
+ 
+         ReadWriteGenerator generator = generators.getGenerator(componentType);
+ 
+@@ -55,7 +55,7 @@ public JExpression generateReader(JBlock body, JVar parcelParam, ASTType type, J
+     @Override
+     public void generateWriter(JBlock body, JExpression parcel, JVar flags, ASTType type, JExpression getExpression, JDefinedClass parcelableClass, JVar writeIdentitySet) {
+ 
+-        ASTType componentType = type.getGenericParameters().get(0);
++        ASTType componentType = type.getGenericArgumentTypes().get(0);
+ 
+         ReadWriteGenerator generator = generators.getGenerator(componentType);
+ 
+
+File: parceler/src/main/java/org/parceler/internal/matcher/GenericCollectionMatcher.java
+Patch:
+@@ -43,8 +43,8 @@ public GenericCollectionMatcher(ASTType collectionType, Generators generators, i
+     public boolean matches(ASTType input) {
+ 
+         return collectionMatcher.matches(input) &&
+-            input.getGenericParameters().size() == parameterCount &&
+-            FluentIterable.from(input.getGenericParameters()).allMatch(new Predicate<ASTType>() {
++            input.getGenericArgumentTypes().size() == parameterCount &&
++            FluentIterable.from(input.getGenericArgumentTypes()).allMatch(new Predicate<ASTType>() {
+                 public boolean apply(ASTType astType) {
+                     return generators.matches(astType);
+                 }
+
+File: parceler/src/main/java/org/parceler/internal/matcher/ObservableFieldMatcher.java
+Patch:
+@@ -40,8 +40,8 @@ public ObservableFieldMatcher(Generators generators) {
+     @Override
+     public boolean matches(ASTType input) {
+         return OBSERVABLE_FIELD_TYPE_MATCHER.matches(input) &&
+-                input.getGenericParameters().size() == 1 &&
+-                FluentIterable.from(input.getGenericParameters()).allMatch(new Predicate<ASTType>() {
++                input.getGenericArgumentTypes().size() == 1 &&
++                FluentIterable.from(input.getGenericArgumentTypes()).allMatch(new Predicate<ASTType>() {
+                     public boolean apply(ASTType astType) {
+                         return generators.matches(astType);
+                     }
+
+File: parceler/src/main/java/org/parceler/internal/ParcelableGenerator.java
+Patch:
+@@ -41,8 +41,8 @@
+  */
+ public class ParcelableGenerator {
+ 
+-    public static final String WRITE_METHOD = "write";
+-    public static final String READ_METHOD = "read";
++    private static final String WRITE_METHOD = "write";
++    private static final String READ_METHOD = "read";
+     private static final String ANDROID_PARCEL = "android.os.Parcel";
+     private static final String CREATOR_CLASS_NAME = "CREATOR";
+     private static final String CREATE_FROM_PARCEL = "createFromParcel";
+
+File: parceler-api/src/main/java/org/parceler/IdentityCollection.java
+Patch:
+@@ -43,7 +43,9 @@ public boolean isReserved(int id) {
+     }
+ 
+     public void put(int id, Object input){
+-        values.remove(id);
++        if(values.size() > id) {
++            values.remove(id);
++        }
+         values.add(id, input);
+     }
+ 
+
+File: parceler-api/src/main/java/org/parceler/IdentityCollection.java
+Patch:
+@@ -43,7 +43,9 @@ public boolean isReserved(int id) {
+     }
+ 
+     public void put(int id, Object input){
+-        values.remove(id);
++        if(values.size() > id) {
++            values.remove(id);
++        }
+         values.add(id, input);
+     }
+ 
+
+File: parceler/src/main/java/org/parceler/internal/ParcelerModule.java
+Patch:
+@@ -46,6 +46,7 @@
+ import org.parceler.internal.generator.*;
+ import org.parceler.internal.matcher.EnumMatcher;
+ import org.parceler.internal.matcher.GenericCollectionMatcher;
++import org.parceler.internal.matcher.InheritsParcelableMatcher;
+ import org.parceler.internal.matcher.ParcelMatcher;
+ 
+ import javax.annotation.processing.Filer;
+@@ -204,7 +205,7 @@ public static Generators addGenerators(Generators generators,
+         generators.add(Matchers.type(new ASTStringType("android.os.Bundle")).ignoreGenerics().build(), new BundleReadWriteGenerator("readBundle", "writeBundle", "android.os.Bundle"));
+         generators.addPair("android.util.SparseBooleanArray", "readSparseBooleanArray", "writeSparseBooleanArray");
+         generators.add(Matchers.type(new ASTStringType("android.util.SparseArray")).ignoreGenerics().build(), new SparseArrayReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel));
+-        generators.add(new ImplementsMatcher(new ASTStringType("android.os.Parcelable")), new ParcelableReadWriteGenerator("readParcelable", "writeParcelable", "android.os.Parcelable"));
++        generators.add(new InheritsParcelableMatcher(), new ParcelableReadWriteGenerator("readParcelable", "writeParcelable", "android.os.Parcelable"));
+         generators.add(new EnumMatcher(), enumReadWriteGenerator);
+         generators.add(new ParcelMatcher(externalParcelRepository), parcelReadWriteGenerator);
+         generators.add(new ASTArrayMatcher(), new ArrayReadWriteGenerator(generationUtil, namer, generators, codeModel));
+
+File: parceler/src/main/java/org/parceler/internal/ParcelerModule.java
+Patch:
+@@ -46,6 +46,7 @@
+ import org.parceler.internal.generator.*;
+ import org.parceler.internal.matcher.EnumMatcher;
+ import org.parceler.internal.matcher.GenericCollectionMatcher;
++import org.parceler.internal.matcher.InheritsParcelableMatcher;
+ import org.parceler.internal.matcher.ParcelMatcher;
+ 
+ import javax.annotation.processing.Filer;
+@@ -204,7 +205,7 @@ public static Generators addGenerators(Generators generators,
+         generators.add(Matchers.type(new ASTStringType("android.os.Bundle")).ignoreGenerics().build(), new BundleReadWriteGenerator("readBundle", "writeBundle", "android.os.Bundle"));
+         generators.addPair("android.util.SparseBooleanArray", "readSparseBooleanArray", "writeSparseBooleanArray");
+         generators.add(Matchers.type(new ASTStringType("android.util.SparseArray")).ignoreGenerics().build(), new SparseArrayReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel));
+-        generators.add(new ImplementsMatcher(new ASTStringType("android.os.Parcelable")), new ParcelableReadWriteGenerator("readParcelable", "writeParcelable", "android.os.Parcelable"));
++        generators.add(new InheritsParcelableMatcher(), new ParcelableReadWriteGenerator("readParcelable", "writeParcelable", "android.os.Parcelable"));
+         generators.add(new EnumMatcher(), enumReadWriteGenerator);
+         generators.add(new ParcelMatcher(externalParcelRepository), parcelReadWriteGenerator);
+         generators.add(new ASTArrayMatcher(), new ArrayReadWriteGenerator(generationUtil, namer, generators, codeModel));
+
+File: parceler/src/main/java/org/parceler/internal/generator/BundleReadWriteGenerator.java
+Patch:
+@@ -29,7 +29,7 @@ public BundleReadWriteGenerator(String readMethod, String writeMethod, String bu
+ 
+     @Override
+     public JExpression generateReader(JBlock body, JVar parcelParam, ASTType type, JClass returnJClassRef, JDefinedClass parcelableClass, JVar identity, JVar readIdentityMap) {
+-        return JExpr.cast(returnJClassRef, parcelParam.invoke(getReadMethod()).arg(returnJClassRef.dotclass().invoke("getClassLoader")));
++        return JExpr.cast(returnJClassRef, parcelParam.invoke(getReadMethod()).arg(parcelableClass.dotclass().invoke("getClassLoader")));
+     }
+ 
+     @Override
+
+File: parceler/src/main/java/org/parceler/internal/generator/ParcelableReadWriteGenerator.java
+Patch:
+@@ -29,7 +29,7 @@ public ParcelableReadWriteGenerator(String readMethod, String writeMethod, Strin
+ 
+     @Override
+     public JExpression generateReader(JBlock body, JVar parcelParam, ASTType type, JClass returnJClassRef, JDefinedClass parcelableClass, JVar identity, JVar readIdentityMap) {
+-        return JExpr.cast(returnJClassRef, parcelParam.invoke(getReadMethod()).arg(returnJClassRef.dotclass().invoke("getClassLoader")));
++        return JExpr.cast(returnJClassRef, parcelParam.invoke(getReadMethod()).arg(parcelableClass.dotclass().invoke("getClassLoader")));
+     }
+ 
+     @Override
+
+File: parceler/src/main/java/org/parceler/internal/generator/ParcelReadWriteGenerator.java
+Patch:
+@@ -35,16 +35,14 @@ public class ParcelReadWriteGenerator extends ReadWriteGeneratorBase {
+     private final ParcelableAnalysis analysis;
+     private final Provider<ParcelableGenerator> generator;
+     private final UniqueVariableNamer variableNamer;
+-    private final JCodeModel codeModel;
+ 
+     @Inject
+-    public ParcelReadWriteGenerator(ClassGenerationUtil generationUtil, ParcelableAnalysis analysis, Provider<ParcelableGenerator> generator, UniqueVariableNamer variableNamer, JCodeModel codeModel) {
++    public ParcelReadWriteGenerator(ClassGenerationUtil generationUtil, ParcelableAnalysis analysis, Provider<ParcelableGenerator> generator, UniqueVariableNamer variableNamer) {
+         super("readParcelable", new String[]{ClassLoader.class.getName()}, "writeParcelable", new String[]{"android.os.Parcelable", int.class.getName()});
+         this.generationUtil = generationUtil;
+         this.analysis = analysis;
+         this.generator = generator;
+         this.variableNamer = variableNamer;
+-        this.codeModel = codeModel;
+     }
+ 
+     @Override
+
+File: parceler/src/main/java/org/parceler/internal/ParcelerModule.java
+Patch:
+@@ -240,9 +240,9 @@ public static Generators addGenerators(Generators generators,
+         generators.addPair("android.util.SparseBooleanArray", "readSparseBooleanArray", "writeSparseBooleanArray");
+         generators.add(Matchers.type(new ASTStringType("android.util.SparseArray")).ignoreGenerics().build(), new SparseArrayReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel));
+         generators.add(new ImplementsMatcher(new ASTStringType("android.os.Parcelable")), new ParcelableReadWriteGenerator("readParcelable", "writeParcelable", "android.os.Parcelable"));
+-        generators.add(new ASTArrayMatcher(), new ArrayReadWriteGenerator(generationUtil, namer, generators, codeModel));
+         generators.add(new EnumMatcher(), enumReadWriteGenerator);
+         generators.add(new ParcelMatcher(externalParcelRepository), parcelReadWriteGenerator);
++        generators.add(new ASTArrayMatcher(), new ArrayReadWriteGenerator(generationUtil, namer, generators, codeModel));
+         generators.add(new GenericCollectionMatcher(astClassFactory.getType(List.class), generators, 1), new ListReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, ArrayList.class, true));
+         generators.add(new GenericCollectionMatcher(astClassFactory.getType(ArrayList.class), generators, 1), new ListReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, ArrayList.class, true));
+         generators.add(new GenericCollectionMatcher(astClassFactory.getType(LinkedList.class), generators, 1), new ListReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, LinkedList.class, false));
+
+File: parceler/src/main/java/org/parceler/internal/ParcelerModule.java
+Patch:
+@@ -242,9 +242,9 @@ public static Generators addGenerators(Generators generators,
+         generators.add(new EnumMatcher(), enumReadWriteGenerator);
+         generators.add(new ParcelMatcher(externalParcelRepository), parcelReadWriteGenerator);
+         generators.add(new ASTArrayMatcher(), new ArrayReadWriteGenerator(generationUtil, namer, generators, codeModel));
+-        generators.add(new GenericCollectionMatcher(astClassFactory.getType(List.class), generators, 1), new ListReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, ArrayList.class));
+-        generators.add(new GenericCollectionMatcher(astClassFactory.getType(ArrayList.class), generators, 1), new ListReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, ArrayList.class));
+-        generators.add(new GenericCollectionMatcher(astClassFactory.getType(LinkedList.class), generators, 1), new ListReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, LinkedList.class));
++        generators.add(new GenericCollectionMatcher(astClassFactory.getType(List.class), generators, 1), new ListReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, ArrayList.class, true));
++        generators.add(new GenericCollectionMatcher(astClassFactory.getType(ArrayList.class), generators, 1), new ListReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, ArrayList.class, true));
++        generators.add(new GenericCollectionMatcher(astClassFactory.getType(LinkedList.class), generators, 1), new ListReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, LinkedList.class, false));
+         generators.add(new GenericCollectionMatcher(astClassFactory.getType(Map.class), generators, 2), new MapReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, HashMap.class, true));
+         generators.add(new GenericCollectionMatcher(astClassFactory.getType(HashMap.class), generators, 2), new MapReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, HashMap.class, true));
+         generators.add(new GenericCollectionMatcher(astClassFactory.getType(LinkedHashMap.class), generators, 2), new MapReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel, LinkedHashMap.class, true));
+
+File: parceler/src/main/java/org/parceler/internal/ParcelableAnalysis.java
+Patch:
+@@ -50,7 +50,8 @@ public ParcelableAnalysis(Validator validator, Provider<Generators> generatorsPr
+     }
+ 
+     public ParcelableDescriptor analyze(ASTType astType) {
+-        return analyze(astType, null);
++        ASTAnnotation parcelASTAnnotation = astType.getASTAnnotation(Parcel.class);
++        return analyze(astType, parcelASTAnnotation);
+     }
+ 
+     public ParcelableDescriptor analyze(ASTType astType, ASTAnnotation parcelASTAnnotation) {
+
+File: parceler/src/main/java/org/parceler/internal/ParcelProcessor.java
+Patch:
+@@ -92,7 +92,7 @@ public void logErrors() {
+                 }
+             }
+             else{
+-                logger.error("Code generation did not complete successfully.  For more details add the compiler argument parcelerStacktrace=true");
++                logger.error("Code generation did not complete successfully.  For more details add the compiler argument -AparcelerStacktrace");
+             }
+         }
+     }
+
+File: parceler/src/main/java/org/parceler/ParcelAnnotationProcessor.java
+Patch:
+@@ -78,8 +78,7 @@ public boolean process(Set<? extends TypeElement> typeElements, RoundEnvironment
+         parcelProcessor.execute();
+ 
+         if (roundEnvironment.processingOver()) {
+-            // Throws an exception if errors still exist.
+-            parcelProcessor.checkForErrors();
++            parcelProcessor.logErrors();
+         }
+ 
+         return true;
+
+File: parceler-api/src/main/java/org/parceler/NonParcelRepository.java
+Patch:
+@@ -1205,14 +1205,14 @@ public StringParcelable[] newArray(int size) {
+     private static class ConverterParcelable<T> implements Parcelable, ParcelWrapper<T> {
+ 
+         private final T value;
+-        private final ParcelConverter<T> converter;
++        private final TypeRangeParcelConverter<T, T> converter;
+ 
+         @SuppressWarnings("unchecked")
+-        private ConverterParcelable(android.os.Parcel parcel, ParcelConverter<T> converter) {
++        private ConverterParcelable(android.os.Parcel parcel, TypeRangeParcelConverter<T, T> converter) {
+             this(converter.fromParcel(parcel), converter);
+         }
+ 
+-        private ConverterParcelable(T value, ParcelConverter<T> converter) {
++        private ConverterParcelable(T value, TypeRangeParcelConverter<T, T> converter) {
+             this.converter = converter;
+             this.value = value;
+         }
+
+File: parceler-api/src/main/java/org/parceler/ParcelPropertyConverter.java
+Patch:
+@@ -27,5 +27,5 @@
+ @Target({FIELD, METHOD, PARAMETER})
+ @Retention(RUNTIME)
+ public @interface ParcelPropertyConverter {
+-    Class<? extends ParcelConverter> value();
++    Class<? extends TypeRangeParcelConverter> value();
+ }
+
+File: parceler-api/src/main/java/org/parceler/converter/ArrayListParcelConverter.java
+Patch:
+@@ -1,14 +1,13 @@
+ package org.parceler.converter;
+ 
+ import java.util.ArrayList;
+-import java.util.Collection;
+ 
+ /**
+  * @author John Ericksen
+  */
+-public abstract class ArrayListParcelConverter<T> extends CollectionParcelConverter<T> {
++public abstract class ArrayListParcelConverter<T> extends CollectionParcelConverter<T, ArrayList<T>> {
+     @Override
+-    public Collection<T> createCollection() {
++    public ArrayList<T> createCollection() {
+         return new ArrayList<T>();
+     }
+ }
+
+File: parceler-api/src/main/java/org/parceler/converter/HashMapParcelConverter.java
+Patch:
+@@ -17,16 +17,15 @@
+ package org.parceler.converter;
+ 
+ import java.util.HashMap;
+-import java.util.Map;
+ 
+ /**
+  *
+  * @author u61173
+  */
+-public abstract class HashMapParcelConverter<K, V> extends MapParcelConverter<K, V> {
++public abstract class HashMapParcelConverter<K, V> extends MapParcelConverter<K, V, HashMap<K, V>> {
+ 
+     @Override
+-    public Map<K, V> createMap() {
++    public HashMap<K, V> createMap() {
+         return new HashMap<K, V>();
+     }
+ }
+\ No newline at end of file
+
+File: parceler-api/src/main/java/org/parceler/converter/HashSetParcelConverter.java
+Patch:
+@@ -1,14 +1,13 @@
+ package org.parceler.converter;
+ 
+-import java.util.Collection;
+ import java.util.HashSet;
+ 
+ /**
+  * @author John Ericksen
+  */
+-public abstract class HashSetParcelConverter<T> extends CollectionParcelConverter<T> {
++public abstract class HashSetParcelConverter<T> extends CollectionParcelConverter<T, HashSet<T>> {
+     @Override
+-    public Collection<T> createCollection() {
++    public HashSet<T> createCollection() {
+         return new HashSet<T>();
+     }
+ }
+
+File: parceler-api/src/main/java/org/parceler/converter/LinkedHashMapParcelConverter.java
+Patch:
+@@ -17,16 +17,15 @@
+ package org.parceler.converter;
+ 
+ import java.util.LinkedHashMap;
+-import java.util.Map;
+ 
+ /**
+  *
+  * @author u61173
+  */
+-public abstract class LinkedHashMapParcelConverter<K, V> extends MapParcelConverter<K, V> {
++public abstract class LinkedHashMapParcelConverter<K, V> extends MapParcelConverter<K, V, LinkedHashMap<K, V>> {
+ 
+     @Override
+-    public Map<K, V> createMap() {
++    public LinkedHashMap<K, V> createMap() {
+         return new LinkedHashMap<K, V>();
+     }
+ }
+\ No newline at end of file
+
+File: parceler-api/src/main/java/org/parceler/converter/LinkedHashSetParcelConverter.java
+Patch:
+@@ -1,14 +1,13 @@
+ package org.parceler.converter;
+ 
+-import java.util.Collection;
+ import java.util.LinkedHashSet;
+ 
+ /**
+  * @author John Ericksen
+  */
+-public abstract class LinkedHashSetParcelConverter<T> extends CollectionParcelConverter<T> {
++public abstract class LinkedHashSetParcelConverter<T> extends CollectionParcelConverter<T, LinkedHashSet<T>> {
+     @Override
+-    public Collection<T> createCollection() {
++    public LinkedHashSet<T> createCollection() {
+         return new LinkedHashSet<T>();
+     }
+ }
+
+File: parceler-api/src/main/java/org/parceler/converter/LinkedListParcelConverter.java
+Patch:
+@@ -1,14 +1,13 @@
+ package org.parceler.converter;
+ 
+-import java.util.Collection;
+ import java.util.LinkedList;
+ 
+ /**
+  * @author John Ericksen
+  */
+-public abstract class LinkedListParcelConverter<T> extends CollectionParcelConverter<T> {
++public abstract class LinkedListParcelConverter<T> extends CollectionParcelConverter<T, LinkedList<T>> {
+     @Override
+-    public Collection<T> createCollection() {
++    public LinkedList<T> createCollection() {
+         return new LinkedList<T>();
+     }
+ }
+
+File: parceler-api/src/main/java/org/parceler/converter/TreeMapParcelConverter.java
+Patch:
+@@ -16,17 +16,16 @@
+ 
+ package org.parceler.converter;
+ 
+-import java.util.Map;
+ import java.util.TreeMap;
+ 
+ /**
+  *
+  * @author u61173
+  */
+-public abstract class TreeMapParcelConverter<K, V> extends MapParcelConverter<K, V> {
++public abstract class TreeMapParcelConverter<K, V> extends MapParcelConverter<K, V, TreeMap<K, V>> {
+ 
+     @Override
+-    public Map<K, V> createMap() {
++    public TreeMap<K, V> createMap() {
+         return new TreeMap<K, V>();
+     }
+ }
+\ No newline at end of file
+
+File: parceler-api/src/main/java/org/parceler/converter/TreeSetParcelConverter.java
+Patch:
+@@ -1,14 +1,13 @@
+ package org.parceler.converter;
+ 
+-import java.util.Collection;
+ import java.util.TreeSet;
+ 
+ /**
+  * @author John Ericksen
+  */
+-public abstract class TreeSetParcelConverter<T> extends CollectionParcelConverter<T> {
++public abstract class TreeSetParcelConverter<T> extends CollectionParcelConverter<T, TreeSet<T>> {
+     @Override
+-    public Collection<T> createCollection() {
++    public TreeSet<T> createCollection() {
+         return new TreeSet<T>();
+     }
+ }
+
+File: parceler/src/main/java/org/parceler/internal/ParcelTransactionWorker.java
+Patch:
+@@ -47,7 +47,7 @@ public ParcelImplementations innerRun(Provider<ASTType> valueProvider) {
+         Parcel parcelAnnotation = value.getAnnotation(Parcel.class);
+         ASTAnnotation parcelASTAnnotation = value.getASTAnnotation(Parcel.class);
+ 
+-        ParcelableDescriptor analysis = parcelableAnalysis.analyze(value, parcelAnnotation, parcelASTAnnotation);
++        ParcelableDescriptor analysis = parcelableAnalysis.analyze(value, parcelASTAnnotation);
+ 
+         if(analysis != null) {
+             JDefinedClass definedClass = parcelableGenerator.generateParcelable(value, analysis);
+
+File: parceler/src/main/java/org/parceler/internal/ParcelerModule.java
+Patch:
+@@ -192,7 +192,7 @@ public static Generators addGenerators(Generators generators,
+         generators.addPair(boolean[].class, "createBooleanArray", "writeBooleanArray");
+         generators.addPair(String.class, "readString", "writeString");
+         generators.addPair("android.os.IBinder", "readStrongBinder", "writeStrongBinder");
+-        generators.addPair("android.os.Bundle", "readBundle", "writeBundle");
++        generators.add(Matchers.type(new ASTStringType("android.os.Bundle")).ignoreGenerics().build(), new BundleReadWriteGenerator("readBundle", "writeBundle", "android.os.Bundle"));
+         generators.addPair("android.util.SparseBooleanArray", "readSparseBooleanArray", "writeSparseBooleanArray");
+         generators.add(Matchers.type(new ASTStringType("android.util.SparseArray")).ignoreGenerics().build(), new SparseArrayReadWriteGenerator(generationUtil, namer, generators, astClassFactory, codeModel));
+         generators.add(new ImplementsMatcher(new ASTStringType("android.os.Parcelable")), new ParcelableReadWriteGenerator("readParcelable", "writeParcelable", "android.os.Parcelable"));
+
+File: parceler/src/main/java/org/parceler/internal/generator/ParcelableReadWriteGenerator.java
+Patch:
+@@ -29,7 +29,7 @@ public ParcelableReadWriteGenerator(String readMethod, String writeMethod, Strin
+ 
+     @Override
+     public JExpression generateReader(JBlock body, JVar parcelParam, ASTType type, JClass returnJClassRef, JDefinedClass parcelableClass) {
+-        return JExpr.cast(returnJClassRef, parcelParam.invoke(getReadMethod()).arg(returnJClassRef.dotclass().invoke("getClassLoader")));
++        return JExpr.cast(returnJClassRef, parcelParam.invoke(getReadMethod()).arg(parcelableClass.dotclass().invoke("getClassLoader")));
+     }
+ 
+     @Override
+
+File: parceler/src/main/java/org/parceler/ParcelAnnotationProcessor.java
+Patch:
+@@ -39,7 +39,7 @@
+  *
+  * @author John Ericksen
+  */
+-@SupportedAnnotations({Parcel.class, ParcelClass.class})
++@SupportedAnnotations({Parcel.class, ParcelClass.class, ParcelClasses.class})
+ @Bootstrap
+ public class ParcelAnnotationProcessor extends AnnotationProcessorBase {
+ 
+
+File: parceler/src/main/java/org/parceler/internal/ParcelerModule.java
+Patch:
+@@ -142,9 +142,8 @@ public ParcelProcessor getParcelProcessor(Provider<ParcelTransactionWorker> parc
+                         parcelsProcessor,
+                         scopedTransactionBuilder.buildFactory(parcelsTransactionWorkerProvider));
+ 
+-        TransactionProcessor processorChain = new TransactionProcessorChain(externalParcelProcessor,
+-                new TransactionProcessorChain(processor,
+-                        new TransactionProcessorPredefined(ImmutableSet.of(scopedTransactionBuilder.build(packageHelperGeneratorAdapterProvider)))));
++        TransactionProcessor processorChain = new TransactionProcessorChain(processor,
++                        new TransactionProcessorPredefined(ImmutableSet.of(scopedTransactionBuilder.build(packageHelperGeneratorAdapterProvider))));
+ 
+         return new ParcelProcessor(processorChain, externalParcelRepositoryProcessor, externalParcelProcessor, parcelProcessor, externalParcelRepositoryTransactionWorkerProvider, externalParcelTransactionWorkerProvider, parcelTransactionWorkerProvider, scopedTransactionBuilder);
+     }
+
+File: examples/test/src/test/java/org/parceler/FieldModifiers.java
+Patch:
+@@ -20,7 +20,7 @@
+ 
+ @Parcel
+ public class FieldModifiers {
+-    String one;
++    public String one;
+     String two;
+     protected String three;
+     private String four;
+
+File: parceler/src/main/java/org/parceler/internal/generator/ListReadWriteGenerator.java
+Patch:
+@@ -105,7 +105,7 @@ public void generateWriter(JBlock body, JVar parcel, JVar flags, ASTType type, J
+         JBlock writeBody = nullConditional._else();
+ 
+         writeBody.invoke(parcel, "writeInt").arg(getExpression.invoke("size"));
+-        JForEach forEach = writeBody.forEach(inputType, namer.generateName(inputType), getExpression);
++        JForEach forEach = writeBody.forEach(inputType, namer.generateName(inputType), JExpr.cast(generationUtil.narrowRef(type), getExpression));
+ 
+         ReadWriteGenerator generator = generators.getGenerator(componentType);
+ 
+
+File: parceler/src/main/java/org/parceler/internal/generator/MapReadWriteGenerator.java
+Patch:
+@@ -125,7 +125,7 @@ public void generateWriter(JBlock body, JVar parcel, JVar flags, ASTType type, J
+ 
+         writeBody.invoke(parcel, "writeInt").arg(getExpression.invoke("size"));
+ 
+-        JForEach forEach = writeBody.forEach(inputType, namer.generateName(inputType), getExpression.invoke("entrySet"));
++        JForEach forEach = writeBody.forEach(inputType, namer.generateName(inputType), ((JExpression)JExpr.cast(generationUtil.narrowRef(type), getExpression)).invoke("entrySet"));
+ 
+         ReadWriteGenerator keyGenerator = generators.getGenerator(keyComponentType);
+         ReadWriteGenerator valueGenerator = generators.getGenerator(valueComponentType);
+
+File: parceler/src/main/java/org/parceler/internal/generator/SetReadWriteGenerator.java
+Patch:
+@@ -105,7 +105,7 @@ public void generateWriter(JBlock body, JVar parcel, JVar flags, ASTType type, J
+         JBlock writeBody = nullConditional._else();
+ 
+         writeBody.invoke(parcel, "writeInt").arg(getExpression.invoke("size"));
+-        JForEach forEach = writeBody.forEach(inputType, namer.generateName(inputType), getExpression);
++        JForEach forEach = writeBody.forEach(inputType, namer.generateName(inputType), JExpr.cast(generationUtil.narrowRef(type), getExpression));
+ 
+         ReadWriteGenerator generator = generators.getGenerator(componentType);
+ 
+
+File: parceler/src/main/java/org/parceler/internal/ReadReferenceVisitor.java
+Patch:
+@@ -24,7 +24,7 @@ public Void visit(FieldReference fieldReference, ReadContext input) {
+ 
+         body.add(invocationBuilder.buildFieldSet(
+                 fieldReference.getField().getAccessModifier(),
+-                fieldReference.getField().getASTType(),
++                input.getType(),
+                 input.getWrapped(),
+                 fieldReference.getType(),
+                 fieldReference.getField().getName(),
+@@ -44,7 +44,7 @@ public Void visit(MethodReference methodReference, ReadContext input) {
+                 methodReference.getMethod().getName(),
+                 Collections.singletonList(input.getGetExpression()),
+                 Collections.singletonList(input.getGetExpressionType()),
+-                methodReference.getType(),
++                input.getType(),
+                 input.getWrapped()));
+         return null;
+     }
+
+File: parceler/src/test/java/org/parceler/internal/ParcelableAnalysisTest.java
+Patch:
+@@ -472,7 +472,7 @@ public static class UnnamedConstructorConverterSerialization {
+         String value;
+ 
+         @ParcelConstructor
+-        public UnnamedConstructorConverterSerialization(@ParcelPropertyConverter(StringWriterConverter.class) @ASTClassFactory.ASTParameterName("value")  String value){
++        public UnnamedConstructorConverterSerialization(@ParcelPropertyConverter(StringWriterConverter.class) @ASTClassFactory.ASTParameterName("value") String value){
+             this.value = value;
+         }
+     }
+
+File: parceler/src/main/java/org/parceler/internal/generator/ListReadWriteGenerator.java
+Patch:
+@@ -35,20 +35,18 @@ public ListReadWriteGenerator(ClassGenerationUtil generationUtil, UniqueVariable
+     @Override
+     public JExpression generateReader(JBlock body, JVar parcelParam, ASTType type, JClass returnJClassRef, JDefinedClass parcelableClass) {
+ 
+-        JClass outputType = generationUtil.ref(List.class);
+         JClass arrayListType = generationUtil.ref(ArrayList.class);
+ 
+         ASTType componentType = astClassFactory.getType(Object.class);
+ 
+         if(type.getGenericParameters().size() == 1){
+             componentType = type.getGenericParameters().iterator().next();
+-            outputType = outputType.narrow(generationUtil.narrowRef(componentType));
+             arrayListType = arrayListType.narrow(generationUtil.narrowRef(componentType));
+         }
+ 
+         JVar sizeVar = body.decl(codeModel.INT, namer.generateName(codeModel.INT), parcelParam.invoke("readInt"));
+ 
+-        JVar outputVar = body.decl(outputType, namer.generateName(List.class));
++        JVar outputVar = body.decl(arrayListType, namer.generateName(List.class));
+ 
+         JConditional nullInputConditional = body._if(sizeVar.lt(JExpr.lit(0)));
+ 
+
+File: parceler/src/main/java/org/parceler/internal/generator/MapReadWriteGenerator.java
+Patch:
+@@ -36,7 +36,6 @@ public MapReadWriteGenerator(ClassGenerationUtil generationUtil, UniqueVariableN
+     @Override
+     public JExpression generateReader(JBlock body, JVar parcelParam, ASTType type, JClass returnJClassRef, JDefinedClass parcelableClass) {
+ 
+-        JClass outputType = generationUtil.ref(Map.class);
+         JClass hashMapType = generationUtil.ref(HashMap.class);
+ 
+         ASTType keyComponentType = astClassFactory.getType(Object.class);
+@@ -50,13 +49,12 @@ public JExpression generateReader(JBlock body, JVar parcelParam, ASTType type, J
+             valueComponentType = iterator.next();
+             keyType = generationUtil.narrowRef(keyComponentType);
+             valueType = generationUtil.narrowRef(valueComponentType);
+-            outputType = outputType.narrow(keyType, valueType);
+             hashMapType = hashMapType.narrow(keyType, valueType);
+         }
+ 
+         JVar sizeVar = body.decl(codeModel.INT, namer.generateName(codeModel.INT), parcelParam.invoke("readInt"));
+ 
+-        JVar outputVar = body.decl(outputType, namer.generateName(Map.class));
++        JVar outputVar = body.decl(hashMapType, namer.generateName(Map.class));
+ 
+         JConditional nullInputConditional = body._if(sizeVar.lt(JExpr.lit(0)));
+ 
+
+File: parceler/src/main/java/org/parceler/internal/ParcelerModule.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import com.sun.codemodel.JCodeModel;
+ import com.sun.codemodel.JDefinedClass;
++import org.androidtransfuse.CodeGenerationScope;
+ import org.androidtransfuse.adapter.ASTFactory;
+ import org.androidtransfuse.adapter.ASTType;
+ import org.androidtransfuse.annotations.*;
+
+File: parceler/src/main/java/org/parceler/internal/ScopedTransactionFactory.java
+Patch:
+@@ -15,6 +15,7 @@
+  */
+ package org.parceler.internal;
+ 
++import org.androidtransfuse.CodeGenerationScope;
+ import org.androidtransfuse.annotations.ScopeReference;
+ import org.androidtransfuse.config.EnterableScope;
+ import org.androidtransfuse.transaction.ScopedTransactionWorker;
+
+File: parceler/src/main/java/org/parceler/internal/ParcelTransactionWorker.java
+Patch:
+@@ -56,7 +56,8 @@ public JDefinedClass innerRun(Provider<ASTType> valueProvider) {
+     private ASTType getConverterType(ASTType astType) {
+         ASTAnnotation astAnnotation = astType.getASTAnnotation(Parcel.class);
+         if(astAnnotation != null){
+-            ASTType converterType = astAnnotation.getProperty("value", ASTType.class);
++
++            ASTType converterType = astAnnotation.getProperty("converter", ASTType.class);
+             ASTType emptyConverterType = astClassFactory.getType(Parcel.EmptyConverter.class);
+             if(!emptyConverterType.equals(converterType)){
+                 return converterType;
+
+File: parceler/src/main/java/org/parceler/internal/ParcelerModule.java
+Patch:
+@@ -19,6 +19,7 @@
+ import com.sun.codemodel.JDefinedClass;
+ import org.androidtransfuse.adapter.ASTFactory;
+ import org.androidtransfuse.adapter.ASTType;
++import org.androidtransfuse.annotations.Bind;
+ import org.androidtransfuse.annotations.DefineScope;
+ import org.androidtransfuse.annotations.Install;
+ import org.androidtransfuse.annotations.Provides;
+@@ -27,6 +28,7 @@
+ import org.androidtransfuse.gen.FilerResourceWriter;
+ import org.androidtransfuse.gen.FilerSourceCodeWriter;
+ import org.androidtransfuse.gen.InjectionBuilderContextFactory;
++import org.androidtransfuse.gen.invocationBuilder.InvocationBuilderStrategy;
+ import org.androidtransfuse.gen.variableDecorator.VariableExpressionBuilderFactory;
+ import org.androidtransfuse.transaction.*;
+ import org.androidtransfuse.util.Logger;
+@@ -43,6 +45,7 @@
+ 
+ @BootstrapModule
+ @DefineScope(annotation = CodeGenerationScope.class, scope = ThreadLocalScope.class)
++@Bind(type = InvocationBuilderStrategy.class, to = ParcelerInvocationBuilderStrategy.class)
+ @Install({
+         ASTFactory.class,
+         VariableExpressionBuilderFactory.class,
+
+File: parceler-api/src/main/java/org/parceler/Parcels.java
+Patch:
+@@ -30,9 +30,9 @@
+ public final class Parcels {
+ 
+     public static final String PARCELS_NAME = "Parcels";
+-    public static final String PARCELS_REPOSITORY_NAME = "Parceler$Parcels";
++    public static final String PARCELS_REPOSITORY_NAME = "Parceler$$Parcels";
+     public static final String PARCELS_PACKAGE = "org.parceler";
+-    public static final String IMPL_EXT = "$Parcel";
++    public static final String IMPL_EXT = "Parcelable";
+ 
+     private static final ParcelCodeRepository REPOSITORY = new ParcelCodeRepository();
+ 
+@@ -146,7 +146,7 @@ public ParcelableFactory get(Class clazz){
+         @SuppressWarnings("unchecked")
+         public ParcelableFactory findClass(Class clazz){
+             try {
+-                Class parcelWrapperClass = Class.forName(clazz.getName() + IMPL_EXT);
++                Class parcelWrapperClass = Class.forName(clazz.getName() + "$$" + IMPL_EXT);
+                 return new ParcelableFactoryReflectionProxy(clazz, parcelWrapperClass);
+             } catch (ClassNotFoundException e) {
+                 return null;
+
+File: parceler/src/main/java/org/parceler/internal/ParcelableGenerator.java
+Patch:
+@@ -32,6 +32,7 @@
+ import org.androidtransfuse.gen.UniqueVariableNamer;
+ import org.parceler.ParcelConverter;
+ import org.parceler.ParcelWrapper;
++import org.parceler.Parcels;
+ 
+ import javax.inject.Inject;
+ import java.io.Serializable;
+@@ -49,7 +50,6 @@ public class ParcelableGenerator {
+     private static final String NEW_ARRAY = "newArray";
+     private static final String WRITE_TO_PARCEL = "writeToParcel";
+     private static final String DESCRIBE_CONTENTS = "describeContents";
+-    private static final String PARCELABLE_EXT = "Parcelable";
+     public static final String WRAP_METHOD = "wrap";
+ 
+     private final JCodeModel codeModel;
+@@ -78,7 +78,7 @@ public JDefinedClass generateParcelable(ASTType type, ParcelableDescriptor parce
+         try {
+             JType inputType = generationUtil.ref(type);
+ 
+-            JDefinedClass parcelableClass = generationUtil.defineClass(ClassNamer.className(type).append(PARCELABLE_EXT).build());
++            JDefinedClass parcelableClass = generationUtil.defineClass(ClassNamer.className(type).append(Parcels.IMPL_EXT).build());
+             parcelableClass._implements(Parcelable.class)
+                     ._implements(codeModel.ref(ParcelWrapper.class).narrow(inputType));
+ 
+@@ -158,7 +158,7 @@ public JDefinedClass generateParcelable(ASTType type, ParcelableDescriptor parce
+ 
+             return parcelableClass;
+         } catch (JClassAlreadyExistsException e) {
+-            throw new TransfuseAnalysisException("Class Already Exists: " + type.getName() + PARCELABLE_EXT, e);
++            throw new TransfuseAnalysisException("Class Already Exists: " + ClassNamer.className(type).append(Parcels.IMPL_EXT).build(), e);
+         }
+     }
+ 
+

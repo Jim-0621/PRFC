@@ -1,0 +1,144 @@
+File: databinding-cli/src/main/java/com/antfortune/freeline/databinding/CliMain.java
+Patch:
+@@ -114,13 +114,14 @@ public static void main(String[] args) {
+             ExportDataBindingInfo.run(sdkDirectory, layoutInfoDirectory);
+         } catch (Exception e) {
+             System.err.println("process databinding error: " + e.getMessage() + "\n");
++            e.printStackTrace();
+             System.exit(1);
+         }
+     }
+ 
+     private static void printHelpMessage(Options optionsContainer) {
+         String header = "\nUse databinding-cli to process the layout files without gradle.\n";
+-        String footer = "\nPlease report issues at https://github.com/alibaba/freeline/issues\n";
++        String footer = "\nFreeline DataBidning CLI 1.0.2, Please report issues at https://github.com/alibaba/freeline/issues\n";
+         HelpFormatter formatter = new HelpFormatter();
+         formatter.printHelp("java -jar databinding-cli.jar", header, optionsContainer, footer, true);
+     }
+
+File: runtime/runtime/src/main/java/com/antfortune/freeline/FreelineService.java
+Patch:
+@@ -39,7 +39,7 @@ public int onStartCommand(Intent intent, int flags, int startId) {
+         Log.i(LOG_TAG, "onStartCommand Received start id " + startId + ", intent: " + intent);
+         LongLinkServer.start(this.getApplication(), Router.getInstance());
+ 
+-        String marker = intent.getStringExtra("wakeup");
++        String marker = intent == null ? null : intent.getStringExtra("wakeup");
+         if (TextUtils.isEmpty(marker)) {
+             try {
+                 setForegroundService();
+
+File: runtime/runtime/src/main/java/com/antfortune/freeline/FreelineReceiver.java
+Patch:
+@@ -39,7 +39,7 @@ public void onReceive(Context context, Intent intent) {
+             if (type == ACTION_UPDATE_ACTIVITY) {
+                 saveDynamicResInfo(intent);
+                 FreelineCore.updateDynamicTime();
+-                ActivityManager.restartActivity();
++                ActivityManager.restartForegroundActivity();
+             } else if (type == ACTION_RESTART_APPLICATION) {
+                 saveDynamicResInfo(intent);
+                 applyDynamicDex(intent);
+
+File: runtime/runtime/src/main/java/com/antfortune/freeline/gradle/GradleDynamic.java
+Patch:
+@@ -28,7 +28,8 @@ public boolean applyDynamicRes(HashMap<String, String> dynamicRes) {
+ 			String dynamicResPath = dynamicRes.get(FreelineCore.DEFAULT_PACKAGE_ID);
+ 			Log.i(TAG, "dynamicResPath: " + dynamicResPath);
+ 			if (!TextUtils.isEmpty(dynamicResPath)) {
+-				MonkeyPatcher.monkeyPatchApplication(app, null, app, dynamicResPath);
++                Application realApplication = FreelineCore.getRealApplication();
++				MonkeyPatcher.monkeyPatchApplication(app, app, realApplication, dynamicResPath);
+ 				MonkeyPatcher.monkeyPatchExistingResources(app, dynamicResPath, Arrays.asList(ActivityManager.getAllActivities()));
+ 				Log.i(TAG, "GradleDynamic apply dynamic resource successfully");
+ 			}
+
+File: android-studio-plugin/src/actions/BaseAction.java
+Patch:
+@@ -20,6 +20,7 @@ public abstract class BaseAction extends AnAction {
+ 
+     @Override
+     public final void actionPerformed(AnActionEvent anActionEvent) {
++        ApplicationManager.getApplication().saveAll();
+         this.anActionEvent = anActionEvent;
+         this.currentProject = DataKeys.PROJECT.getData(anActionEvent.getDataContext());
+         this.projectDir = new File(currentProject.getBasePath());
+
+File: android-studio-plugin/src/actions/FreeLineRunAction.java
+Patch:
+@@ -15,7 +15,7 @@ public void actionPerformed() {
+             if (python == null) {
+                 NotificationUtils.errorNotification("command 'python' not found");
+             } else {
+-                FreelineTerminal.getInstance(currentProject).executeShell(new String[]{
++                FreelineTerminal.getInstance(currentProject).initAndExecute(new String[]{
+                         python, "freeline.py", getArgs()});
+             }
+         }
+
+File: android-studio-plugin/src/actions/UpdateAction.java
+Patch:
+@@ -40,7 +40,7 @@ public void actionPerformed() {
+         if (checkFreeLineExist()) {
+             asyncTask(new GetServerVersion(this));
+         } else {
+-            GradleUtil.executeTask(anActionEvent, "initFreeline -Pmirror");
++            GradleUtil.executeTask(currentProject, "initFreeline", "-Pmirror", null);
+         }
+     }
+ 
+@@ -60,7 +60,7 @@ public void run() {
+                     public void run() {
+                         for (GradleBuildModel file : gradleBuildModels.keySet()) {
+                             List<ArtifactDependencyModel> models = gradleBuildModels.get(file);
+-                            for (ArtifactDependencyModel dependencyModel1: models) {
++                            for (ArtifactDependencyModel dependencyModel1 : models) {
+                                 ArtifactDependencyModelWrapper dependencyModel = new ArtifactDependencyModelWrapper(dependencyModel1);
+                                 if (isClasspathLibrary(dependencyModel)) {
+                                     dependencyModel1.setVersion(newVersion);
+
+File: runtime/runtime/src/main/java/com/antfortune/freeline/router/schema/CloseLonglinkSchema.java
+Patch:
+@@ -35,12 +35,12 @@ public void handle(String method, String path, HashMap<String, String> headers,
+         if (LongLinkServer.isDexChanged() || LongLinkServer.isResourcesChanged()) {
+             if (LongLinkServer.isDexChanged() || forceRestart) {
+                 Log.i(TAG, "with dex changes, need to restart the process (activity stack will be reserved)");
+-                FreelineCore.restartApplication();
++                FreelineCore.restartApplication(LongLinkServer.getBundleName(), LongLinkServer.getDstPath(), LongLinkServer.getDynamicDexPath(), LongLinkServer.getOptDirPath());
+                 LongLinkServer.resetDexChangedFlag();
+                 LongLinkServer.resetResourcesChangedFlag();
+             } else if (LongLinkServer.isResourcesChanged()) {
+                 FreelineCore.clearResourcesCache();
+-                FreelineCore.updateActivity();
++                FreelineCore.updateActivity(LongLinkServer.getBundleName(), LongLinkServer.getDstPath());
+                 LongLinkServer.resetResourcesChangedFlag();
+                 Log.i(TAG, "with only res changes, just recreate the running activity.");
+             }
+
+File: runtime/runtime/src/main/java/com/antfortune/freeline/router/schema/PushDexSchema.java
+Patch:
+@@ -50,7 +50,9 @@ public void handle(String method, String path, HashMap<String, String> headers,
+         LongLinkServer.markDexChanged();
+         response.setStatusCode(201);
+         boolean rst = file.renameTo(finalFile);
+-        FreelineCore.applyDynamicDex(finalFile.getAbsolutePath(), optDir.getAbsolutePath());
++        //FreelineCore.applyDynamicDex(finalFile.getAbsolutePath(), optDir.getAbsolutePath());
++        LongLinkServer.setDynamicDexPath(finalFile.getAbsolutePath());
++        LongLinkServer.setOptDirPath(optDir.getAbsolutePath());
+         Log.d(TAG, new StringBuilder().append("dex file received (").append(finalFile.length()).append(" bytes)").toString() + " rename rst :" + rst);
+     }
+ }
+
+File: runtime/runtime/src/main/java/com/antfortune/freeline/router/schema/RestartSchema.java
+Patch:
+@@ -20,7 +20,7 @@ public String getDescription() {
+ 
+     @Override
+     public void handle(String method, String path, HashMap<String, String> headers, Map<String, String> queries, InputStream input, EmbedHttpServer.ResponseOutputStream response) throws Exception {
+-        FreelineCore.restartApplication();
++        FreelineCore.restartApplication(null, null, null, null);
+         response.setStatusCode(200);
+     }
+ }
+

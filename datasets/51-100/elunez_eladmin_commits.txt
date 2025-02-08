@@ -1,0 +1,1634 @@
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/service/UserDetailsServiceImpl.java
+Patch:
+@@ -19,10 +19,11 @@
+ import lombok.extern.slf4j.Slf4j;
+ import me.zhengjie.exception.BadRequestException;
+ import me.zhengjie.modules.security.service.dto.JwtUserDto;
++import me.zhengjie.modules.system.domain.User;
+ import me.zhengjie.modules.system.service.DataService;
+ import me.zhengjie.modules.system.service.RoleService;
+ import me.zhengjie.modules.system.service.UserService;
+-import me.zhengjie.modules.system.service.dto.UserLoginDto;
++import me.zhengjie.modules.system.service.dto.UserDto;
+ import org.springframework.security.core.userdetails.UserDetailsService;
+ import org.springframework.stereotype.Service;
+ 
+@@ -43,7 +44,7 @@ public class UserDetailsServiceImpl implements UserDetailsService {
+     public JwtUserDto loadUserByUsername(String username) {
+         JwtUserDto jwtUserDto = userCacheManager.getUserCache(username);
+         if(jwtUserDto == null){
+-            UserLoginDto user = userService.getLoginData(username);
++            UserDto user = userService.getLoginData(username);
+             if (user == null) {
+                 throw new BadRequestException("用户不存在");
+             } else {
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/UserService.java
+Patch:
+@@ -18,7 +18,6 @@
+ import me.zhengjie.utils.PageResult;
+ import me.zhengjie.modules.system.domain.User;
+ import me.zhengjie.modules.system.service.dto.UserDto;
+-import me.zhengjie.modules.system.service.dto.UserLoginDto;
+ import me.zhengjie.modules.system.service.dto.UserQueryCriteria;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.web.multipart.MultipartFile;
+@@ -72,7 +71,7 @@ public interface UserService {
+      * @param userName /
+      * @return /
+      */
+-    UserLoginDto getLoginData(String userName);
++    UserDto getLoginData(String userName);
+ 
+     /**
+      * 修改密码
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/dto/UserDto.java
+Patch:
+@@ -68,8 +68,8 @@ public class UserDto extends BaseDTO implements Serializable {
+     @ApiModelProperty(value = "头像路径")
+     private String avatarPath;
+ 
+-    @ApiModelProperty(value = "密码")
+     @JSONField(serialize = false)
++    @ApiModelProperty(value = "密码")
+     private String password;
+ 
+     @ApiModelProperty(value = "是否启用")
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/mnt/rest/DatabaseController.java
+Patch:
+@@ -111,8 +111,8 @@ public ResponseEntity<Object> uploadDatabase(@RequestBody MultipartFile file, Ht
+ 		DatabaseDto database = databaseService.findById(id);
+ 		String fileName;
+ 		if(database != null){
+-			fileName = file.getOriginalFilename();
+-			File executeFile = new File(fileSavePath+fileName);
++			fileName = FileUtil.verifyFilename(file.getOriginalFilename());
++			File executeFile = new File(fileSavePath + fileName);
+ 			FileUtil.del(executeFile);
+ 			file.transferTo(executeFile);
+ 			String result = SqlUtils.executeFile(database.getJdbcUrl(), database.getUserName(), database.getPwd(), executeFile);
+
+File: eladmin-common/src/main/java/me/zhengjie/aspect/LimitAspect.java
+Patch:
+@@ -15,6 +15,7 @@
+  */
+ package me.zhengjie.aspect;
+ 
++import cn.hutool.core.util.ObjUtil;
+ import com.google.common.collect.ImmutableList;
+ import me.zhengjie.annotation.Limit;
+ import me.zhengjie.exception.BadRequestException;
+@@ -73,7 +74,7 @@ public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
+         String luaScript = buildLuaScript();
+         RedisScript<Long> redisScript = new DefaultRedisScript<>(luaScript, Long.class);
+         Long count = redisTemplate.execute(redisScript, keys, limit.count(), limit.period());
+-        if (null != count && count.intValue() <= limit.count()) {
++        if (ObjUtil.isNotNull(count) && count.intValue() <= limit.count()) {
+             logger.info("第{}次访问key为 {}，描述为 [{}] 的接口", count, keys, limit.name());
+             return joinPoint.proceed();
+         } else {
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/service/OnlineUserService.java
+Patch:
+@@ -141,7 +141,6 @@ public OnlineUserDto getOne(String key) {
+      * 根据用户名强退用户
+      * @param username /
+      */
+-    @Async
+     public void kickOutForUsername(String username) {
+         String loginKey = properties.getOnlineKey() + username + "*";
+         redisUtils.scanDel(loginKey);
+
+File: eladmin-common/src/main/java/me/zhengjie/aspect/LimitAspect.java
+Patch:
+@@ -71,8 +71,8 @@ public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
+         ImmutableList<Object> keys = ImmutableList.of(StringUtils.join(limit.prefix(), "_", key, "_", request.getRequestURI().replace("/","_")));
+ 
+         String luaScript = buildLuaScript();
+-        RedisScript<Number> redisScript = new DefaultRedisScript<>(luaScript, Number.class);
+-        Number count = redisTemplate.execute(redisScript, keys, limit.count(), limit.period());
++        RedisScript<Long> redisScript = new DefaultRedisScript<>(luaScript, Long.class);
++        Long count = redisTemplate.execute(redisScript, keys, limit.count(), limit.period());
+         if (null != count && count.intValue() <= limit.count()) {
+             logger.info("第{}次访问key为 {}，描述为 [{}] 的接口", count, keys, limit.name());
+             return joinPoint.proceed();
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/security/TokenProvider.java
+Patch:
+@@ -103,14 +103,15 @@ public Claims getClaims(String token) {
+      */
+     public void checkRenewal(String token) {
+         // 判断是否续期token,计算token的过期时间
+-        long time = redisUtils.getExpire(properties.getOnlineKey() + token) * 1000;
++        String loginKey = loginKey(token);
++        long time = redisUtils.getExpire(loginKey) * 1000;
+         Date expireDate = DateUtil.offset(new Date(), DateField.MILLISECOND, (int) time);
+         // 判断当前时间与过期时间的时间差
+         long differ = expireDate.getTime() - System.currentTimeMillis();
+         // 如果在续期检查的范围内，则续期
+         if (differ <= properties.getDetect()) {
+             long renew = time + properties.getRenew();
+-            redisUtils.expire(properties.getOnlineKey() + token, renew, TimeUnit.MILLISECONDS);
++            redisUtils.expire(loginKey, renew, TimeUnit.MILLISECONDS);
+         }
+     }
+ 
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/rest/AuthorizationController.java
+Patch:
+@@ -22,6 +22,7 @@
+ import lombok.RequiredArgsConstructor;
+ import lombok.extern.slf4j.Slf4j;
+ import me.zhengjie.annotation.Log;
++import me.zhengjie.annotation.rest.AnonymousDeleteMapping;
+ import me.zhengjie.annotation.rest.AnonymousGetMapping;
+ import me.zhengjie.annotation.rest.AnonymousPostMapping;
+ import me.zhengjie.config.RsaProperties;
+@@ -140,7 +141,7 @@ public ResponseEntity<Object> getCode() {
+     }
+ 
+     @ApiOperation("退出登录")
+-    @DeleteMapping(value = "/logout")
++    @AnonymousDeleteMapping(value = "/logout")
+     public ResponseEntity<Object> logout(HttpServletRequest request) {
+         onlineUserService.logout(tokenProvider.getToken(request));
+         return new ResponseEntity<>(HttpStatus.OK);
+
+File: eladmin-tools/src/main/java/me/zhengjie/service/impl/EmailServiceImpl.java
+Patch:
+@@ -86,6 +86,8 @@ public void send(EmailVo emailVo, EmailConfig emailConfig){
+         account.setSslEnable(true);
+         // 使用STARTTLS安全连接
+         account.setStarttlsEnable(true);
++        // 解决jdk8之后默认禁用部分tls协议，导致邮件发送失败的问题
++        account.setSslProtocols("TLSv1 TLSv1.1 TLSv1.2");
+         String content = emailVo.getContent();
+         // 发送
+         try {
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/rest/AuthorizationController.java
+Patch:
+@@ -22,7 +22,6 @@
+ import lombok.RequiredArgsConstructor;
+ import lombok.extern.slf4j.Slf4j;
+ import me.zhengjie.annotation.Log;
+-import me.zhengjie.annotation.rest.AnonymousDeleteMapping;
+ import me.zhengjie.annotation.rest.AnonymousGetMapping;
+ import me.zhengjie.annotation.rest.AnonymousPostMapping;
+ import me.zhengjie.config.RsaProperties;
+@@ -141,7 +140,7 @@ public ResponseEntity<Object> getCode() {
+     }
+ 
+     @ApiOperation("退出登录")
+-    @AnonymousDeleteMapping(value = "/logout")
++    @DeleteMapping(value = "/logout")
+     public ResponseEntity<Object> logout(HttpServletRequest request) {
+         onlineUserService.logout(tokenProvider.getToken(request));
+         return new ResponseEntity<>(HttpStatus.OK);
+
+File: eladmin-common/src/main/java/me/zhengjie/utils/StringUtils.java
+Patch:
+@@ -171,7 +171,8 @@ public static String getCityInfo(String ip) {
+ 
+     public static String getBrowser(HttpServletRequest request) {
+         UserAgent ua = UserAgentUtil.parse(request.getHeader("User-Agent"));
+-        return ua.getBrowser().toString() + " " + ua.getVersion();
++        String browser = ua.getBrowser().toString() + " " + ua.getVersion();
++        return browser.replace(".0.0.0","");
+     }
+ 
+     /**
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/config/bean/LoginProperties.java
+Patch:
+@@ -39,7 +39,7 @@ public class LoginProperties {
+ 
+     private LoginCode loginCode;
+ 
+-    public static final String cacheKey = "USER-LOGIN-DATA";
++    public static final String cacheKey = "user-login-cache:";
+ 
+     public boolean isSingleLogin() {
+         return singleLogin;
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/security/TokenFilter.java
+Patch:
+@@ -70,7 +70,8 @@ public void doFilter(ServletRequest servletRequest, ServletResponse servletRespo
+             OnlineUserDto onlineUserDto = null;
+             boolean cleanUserCache = false;
+             try {
+-                onlineUserDto = onlineUserService.getOne(properties.getOnlineKey() + token);
++                String loginKey = tokenProvider.loginKey(token);
++                onlineUserDto = onlineUserService.getOne(loginKey);
+             } catch (ExpiredJwtException e) {
+                 log.error(e.getMessage());
+                 cleanUserCache = true;
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/service/UserCacheManager.java
+Patch:
+@@ -46,7 +46,7 @@ public class UserCacheManager {
+     public JwtUserDto getUserCache(String userName) {
+         if (StringUtils.isNotEmpty(userName)) {
+             // 获取数据
+-            Object obj = redisUtils.hget(LoginProperties.cacheKey, userName);
++            Object obj = redisUtils.get(LoginProperties.cacheKey + userName);
+             if(obj != null){
+                 return (JwtUserDto)obj;
+             }
+@@ -63,7 +63,7 @@ public void addUserCache(String userName, JwtUserDto user) {
+         if (StringUtils.isNotEmpty(userName)) {
+             // 添加数据, 避免数据同时过期
+             long time = idleTime + RandomUtil.randomInt(900, 1800);
+-            redisUtils.hset(LoginProperties.cacheKey, userName, user, time);
++            redisUtils.set(LoginProperties.cacheKey + userName, user, time);
+         }
+     }
+ 
+@@ -76,7 +76,7 @@ public void addUserCache(String userName, JwtUserDto user) {
+     public void cleanUserCache(String userName) {
+         if (StringUtils.isNotEmpty(userName)) {
+             // 清除数据
+-            redisUtils.hdel(LoginProperties.cacheKey, userName);
++            redisUtils.del(LoginProperties.cacheKey + userName);
+         }
+     }
+ }
+\ No newline at end of file
+
+File: eladmin-common/src/main/java/me/zhengjie/annotation/Query.java
+Patch:
+@@ -74,7 +74,9 @@ enum Type {
+         // 不为空
+         ,NOT_NULL
+         // 为空
+-        ,IS_NULL
++        ,IS_NULL,
++        // Aborn Jiang 2022/06/01, 对应SQL: SELECT * FROM table WHERE FIND_IN_SET('querytag', table.tags);
++        FIND_IN_SET
+     }
+ 
+     /**
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/DataServiceImpl.java
+Patch:
+@@ -65,7 +65,7 @@ public List<Long> getDeptIds(UserDto user) {
+                     deptIds.addAll(getCustomize(deptIds, role));
+                     break;
+                 default:
+-                    return new ArrayList<>(deptIds);
++                    return new ArrayList<>();
+             }
+         }
+         return new ArrayList<>(deptIds);
+
+File: eladmin-generator/src/main/java/me/zhengjie/utils/GenUtil.java
+Patch:
+@@ -1,4 +1,4 @@
+-﻿/*
++/*
+  *  Copyright 2019-2020 Zheng Jie
+  *
+  *  Licensed under the Apache License, Version 2.0 (the "License");
+
+File: eladmin-system/src/main/java/me/zhengjie/config/thread/AsyncTaskExecutePool.java
+Patch:
+@@ -43,8 +43,8 @@ public Executor getAsyncExecutor() {
+         executor.setQueueCapacity(AsyncTaskProperties.queueCapacity);
+         //活跃时间
+         executor.setKeepAliveSeconds(AsyncTaskProperties.keepAliveSeconds);
+-        //线程名字前缀
+-        executor.setThreadNamePrefix("el-async-");
++        //线程工厂
++        executor.setThreadFactory(new TheadFactoryName("el-async"));
+         // setRejectedExecutionHandler：当pool已经达到max size的时候，如何处理新任务
+         // CallerRunsPolicy：不在新线程中执行任务，而是由调用者所在的线程来执行
+         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/DataServiceImpl.java
+Patch:
+@@ -43,7 +43,7 @@ public class DataServiceImpl implements DataService {
+     private final DeptService deptService;
+ 
+     /**
+-     * 用户角色改变时需清理缓存
++     * 用户角色和用户部门改变时需清理缓存
+      * @param user /
+      * @return /
+      */
+
+File: eladmin-generator/src/main/java/me/zhengjie/utils/GenUtil.java
+Patch:
+@@ -1,4 +1,4 @@
+-/*
++﻿/*
+  *  Copyright 2019-2020 Zheng Jie
+  *
+  *  Licensed under the Apache License, Version 2.0 (the "License");
+@@ -276,7 +276,8 @@ private static Map<String, Object> getGenMap(List<ColumnInfo> columnInfos, GenCo
+             // 主键存在字典
+             if (StringUtils.isNotBlank(column.getDictName())) {
+                 genMap.put("hasDict", true);
+-                dicts.add(column.getDictName());
++                if(!dicts.contains(column.getDictName()))
++                    dicts.add(column.getDictName());
+             }
+ 
+             // 存储字段类型
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/quartz/task/TestTask.java
+Patch:
+@@ -16,15 +16,15 @@
+ package me.zhengjie.modules.quartz.task;
+ 
+ import lombok.extern.slf4j.Slf4j;
+-import org.springframework.stereotype.Component;
++import org.springframework.stereotype.Service;
+ 
+ /**
+  * 测试用
+  * @author Zheng Jie
+  * @date 2019-01-08
+  */
+ @Slf4j
+-@Component
++@Service
+ public class TestTask {
+ 
+     public void run(){
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/domain/User.java
+Patch:
+@@ -45,14 +45,14 @@ public class User extends BaseEntity implements Serializable {
+     @ApiModelProperty(value = "ID", hidden = true)
+     private Long id;
+ 
+-    @ManyToMany
++    @ManyToMany(fetch = FetchType.EAGER)
+     @ApiModelProperty(value = "用户角色")
+     @JoinTable(name = "sys_users_roles",
+             joinColumns = {@JoinColumn(name = "user_id",referencedColumnName = "user_id")},
+             inverseJoinColumns = {@JoinColumn(name = "role_id",referencedColumnName = "role_id")})
+     private Set<Role> roles;
+ 
+-    @ManyToMany
++    @ManyToMany(fetch = FetchType.EAGER)
+     @ApiModelProperty(value = "用户岗位")
+     @JoinTable(name = "sys_users_jobs",
+             joinColumns = {@JoinColumn(name = "user_id",referencedColumnName = "user_id")},
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/quartz/utils/QuartzManage.java
+Patch:
+@@ -20,6 +20,7 @@
+ import me.zhengjie.modules.quartz.domain.QuartzJob;
+ import org.quartz.*;
+ import org.quartz.impl.triggers.CronTriggerImpl;
++import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+ import javax.annotation.Resource;
+ import java.util.Date;
+@@ -35,7 +36,7 @@ public class QuartzManage {
+ 
+     private static final String JOB_NAME = "TASK_";
+ 
+-    @Resource(name = "scheduler")
++    @Resource
+     private Scheduler scheduler;
+ 
+     public void addJob(QuartzJob quartzJob){
+
+File: eladmin-generator/src/main/java/me/zhengjie/service/impl/GeneratorServiceImpl.java
+Patch:
+@@ -34,16 +34,13 @@
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
+ import org.springframework.stereotype.Service;
+-
+ import javax.persistence.EntityManager;
+ import javax.persistence.PersistenceContext;
+ import javax.persistence.Query;
+ import javax.servlet.http.HttpServletRequest;
+ import javax.servlet.http.HttpServletResponse;
+ import java.io.File;
+ import java.io.IOException;
+-import java.math.BigDecimal;
+-import java.math.BigInteger;
+ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Map;
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/DictServiceImpl.java
+Patch:
+@@ -72,8 +72,9 @@ public void update(Dict resources) {
+         delCaches(resources);
+         Dict dict = dictRepository.findById(resources.getId()).orElseGet(Dict::new);
+         ValidationUtil.isNull( dict.getId(),"Dict","id",resources.getId());
+-        resources.setId(dict.getId());
+-        dictRepository.save(resources);
++        dict.setName(resources.getName());
++        dict.setDescription(resources.getDescription());
++        dictRepository.save(dict);
+     }
+ 
+     @Override
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/quartz/utils/ExecutionJob.java
+Patch:
+@@ -82,7 +82,7 @@ public void executeInternal(JobExecutionContext context) {
+             System.out.println("任务执行完毕，任务名称：" + quartzJob.getJobName() + ", 执行时间：" + times + "毫秒");
+             System.out.println("--------------------------------------------------------------");
+             // 判断是否存在子任务
+-            if(quartzJob.getSubTask() != null){
++            if(StringUtils.isNotBlank(quartzJob.getSubTask())){
+                 String[] tasks = quartzJob.getSubTask().split("[,，]");
+                 // 执行子任务
+                 quartzJobService.executionSubJob(tasks);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/DeptServiceImpl.java
+Patch:
+@@ -179,7 +179,7 @@ public List<Long> getDeptChildren(List<Dept> deptList) {
+         deptList.forEach(dept -> {
+                     if (dept!=null && dept.getEnabled()) {
+                         List<Dept> depts = deptRepository.findByPid(dept.getId());
+-                        if (deptList.size() != 0) {
++                        if (depts.size() != 0) {
+                             list.addAll(getDeptChildren(depts));
+                         }
+                         list.add(dept.getId());
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/DeptServiceImpl.java
+Patch:
+@@ -113,6 +113,8 @@ public void create(Dept resources) {
+         resources.setSubCount(0);
+         // 清理缓存
+         updateSubCnt(resources.getPid());
++        // 清理自定义角色权限的datascope缓存
++        delCaches(resources.getPid());
+     }
+ 
+     @Override
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/repository/UserRepository.java
+Patch:
+@@ -81,12 +81,12 @@ public interface UserRepository extends JpaRepository<User, Long>, JpaSpecificat
+ 
+     /**
+      * 根据角色中的部门查询
+-     * @param id /
++     * @param deptId /
+      * @return /
+      */
+     @Query(value = "SELECT u.* FROM sys_user u, sys_users_roles r, sys_roles_depts d WHERE " +
+-            "u.user_id = r.user_id AND r.role_id = d.role_id AND r.role_id = ?1 group by u.user_id", nativeQuery = true)
+-    List<User> findByDeptRoleId(Long id);
++            "u.user_id = r.user_id AND r.role_id = d.role_id AND d.dept_id = ?1 group by u.user_id", nativeQuery = true)
++    List<User> findByRoleDeptId(Long deptId);
+ 
+     /**
+      * 根据菜单查询
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/DeptServiceImpl.java
+Patch:
+@@ -273,7 +273,7 @@ private List<DeptDto> deduplication(List<DeptDto> list) {
+      * @param id /
+      */
+     public void delCaches(Long id){
+-        List<User> users = userRepository.findByDeptRoleId(id);
++        List<User> users = userRepository.findByRoleDeptId(id);
+         // 删除数据权限
+         redisUtils.delByKeys(CacheKey.DATA_USER, users.stream().map(User::getId).collect(Collectors.toSet()));
+         redisUtils.del(CacheKey.DEPT_ID + id);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/service/OnlineUserService.java
+Patch:
+@@ -179,11 +179,12 @@ public void checkLoginOnUser(String userName, String igoreToken){
+      * @param username /
+      */
+     @Async
+-    public void kickOutForUsername(String username) {
++    public void kickOutForUsername(String username) throws Exception {
+         List<OnlineUserDto> onlineUsers = getAll(username);
+         for (OnlineUserDto onlineUser : onlineUsers) {
+             if (onlineUser.getUserName().equals(username)) {
+-                kickOut(onlineUser.getKey());
++                String token =EncryptUtils.desDecrypt(onlineUser.getKey());
++                kickOut(token);
+             }
+         }
+     }
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/rest/UserController.java
+Patch:
+@@ -114,7 +114,7 @@ public ResponseEntity<Object> create(@Validated @RequestBody User resources){
+     @ApiOperation("修改用户")
+     @PutMapping
+     @PreAuthorize("@el.check('user:edit')")
+-    public ResponseEntity<Object> update(@Validated(User.Update.class) @RequestBody User resources){
++    public ResponseEntity<Object> update(@Validated(User.Update.class) @RequestBody User resources) throws Exception {
+         checkLevel(resources);
+         userService.update(resources);
+         return new ResponseEntity<>(HttpStatus.NO_CONTENT);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/UserService.java
+Patch:
+@@ -49,7 +49,7 @@ public interface UserService {
+      * 编辑用户
+      * @param resources /
+      */
+-    void update(User resources);
++    void update(User resources) throws Exception;
+ 
+     /**
+      * 删除用户
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/UserServiceImpl.java
+Patch:
+@@ -98,7 +98,7 @@ public void create(User resources) {
+ 
+     @Override
+     @Transactional(rollbackFor = Exception.class)
+-    public void update(User resources) {
++    public void update(User resources) throws Exception {
+         User user = userRepository.findById(resources.getId()).orElseGet(User::new);
+         ValidationUtil.isNull(user.getId(), "User", "id", resources.getId());
+         User user1 = userRepository.findByUsername(resources.getUsername());
+
+File: eladmin-system/src/main/java/me/zhengjie/config/ConfigurerAdapter.java
+Patch:
+@@ -73,6 +73,7 @@ public void addResourceHandlers(ResourceHandlerRegistry registry) {
+ 
+     @Override
+     public void configureMessageConverters(List<HttpMessageConverter<?>> converters) {
++        // 使用 fastjson 序列化，会导致 @JsonIgnore 失效，可以使用 @JSONField(serialize = false) 替换
+         FastJsonHttpMessageConverter converter = new FastJsonHttpMessageConverter();
+         List<MediaType> supportMediaTypeList = new ArrayList<>();
+         supportMediaTypeList.add(MediaType.APPLICATION_JSON_UTF8);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/domain/Dept.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package me.zhengjie.modules.system.domain;
+ 
+-import com.fasterxml.jackson.annotation.JsonIgnore;
++import com.alibaba.fastjson.annotation.JSONField;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Getter;
+ import lombok.Setter;
+@@ -44,7 +44,7 @@ public class Dept extends BaseEntity implements Serializable {
+     @GeneratedValue(strategy = GenerationType.IDENTITY)
+     private Long id;
+ 
+-    @JsonIgnore
++    @JSONField(serialize = false)
+     @ManyToMany(mappedBy = "depts")
+     @ApiModelProperty(value = "角色")
+     private Set<Role> roles;
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/domain/Menu.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package me.zhengjie.modules.system.domain;
+ 
+-import com.fasterxml.jackson.annotation.JsonIgnore;
++import com.alibaba.fastjson.annotation.JSONField;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Getter;
+ import lombok.Setter;
+@@ -44,7 +44,7 @@ public class Menu extends BaseEntity implements Serializable {
+     @GeneratedValue(strategy = GenerationType.IDENTITY)
+     private Long id;
+ 
+-    @JsonIgnore
++    @JSONField(serialize = false)
+     @ManyToMany(mappedBy = "menus")
+     @ApiModelProperty(value = "菜单角色")
+     private Set<Role> roles;
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/domain/Role.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package me.zhengjie.modules.system.domain;
+ 
+-import com.fasterxml.jackson.annotation.JsonIgnore;
++import com.alibaba.fastjson.annotation.JSONField;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Getter;
+ import lombok.Setter;
+@@ -47,7 +47,7 @@ public class Role extends BaseEntity implements Serializable {
+     @ApiModelProperty(value = "ID", hidden = true)
+     private Long id;
+ 
+-    @JsonIgnore
++    @JSONField(serialize = false)
+     @ManyToMany(mappedBy = "roles")
+     @ApiModelProperty(value = "用户", hidden = true)
+     private Set<User> users;
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/dto/UserDto.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package me.zhengjie.modules.system.service.dto;
+ 
+-import com.fasterxml.jackson.annotation.JsonIgnore;
++import com.alibaba.fastjson.annotation.JSONField;
+ import lombok.Getter;
+ import lombok.Setter;
+ import me.zhengjie.base.BaseDTO;
+@@ -55,12 +55,12 @@ public class UserDto extends BaseDTO implements Serializable {
+ 
+     private String avatarPath;
+ 
+-    @JsonIgnore
++    @JSONField(serialize = false)
+     private String password;
+ 
+     private Boolean enabled;
+ 
+-    @JsonIgnore
++    @JSONField(serialize = false)
+     private Boolean isAdmin = false;
+ 
+     private Date pwdResetTime;
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/security/TokenProvider.java
+Patch:
+@@ -43,7 +43,7 @@ public class TokenProvider implements InitializingBean {
+ 
+     private final SecurityProperties properties;
+     private final RedisUtils redisUtils;
+-    public static final String AUTHORITIES_KEY = "auth";
++    public static final String AUTHORITIES_KEY = "user";
+     private JwtParser jwtParser;
+     private JwtBuilder jwtBuilder;
+ 
+@@ -74,6 +74,7 @@ public String createToken(Authentication authentication) {
+         return jwtBuilder
+                 // 加入ID确保生成的 Token 都不一致
+                 .setId(IdUtil.simpleUUID())
++                .claim(AUTHORITIES_KEY, authentication.getName())
+                 .setSubject(authentication.getName())
+                 .compact();
+     }
+
+File: eladmin-common/src/main/java/me/zhengjie/utils/FileUtil.java
+Patch:
+@@ -248,7 +248,8 @@ private static void sizeChineseColumn(SXSSFSheet sheet, BigExcelWriter writer) {
+                     SXSSFCell currentCell = currentRow.getCell(columnNum);
+                     if (currentCell.getCellTypeEnum() == CellType.STRING) {
+                         int length = currentCell.getStringCellValue().getBytes().length;
+-                        if (columnWidth < length) {
++                        // 如果长度大于最大值 65280，那就取 length
++                        if (columnWidth < length || (columnWidth * 256 > 65280)) {
+                             columnWidth = length;
+                         }
+                     }
+
+File: eladmin-system/src/main/java/me/zhengjie/config/ConfigurerAdapter.java
+Patch:
+@@ -28,8 +28,6 @@
+ import org.springframework.web.servlet.config.annotation.EnableWebMvc;
+ import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
+ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+-
+-import java.nio.charset.Charset;
+ import java.nio.charset.StandardCharsets;
+ import java.util.ArrayList;
+ import java.util.List;
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/MonitorServiceImpl.java
+Patch:
+@@ -77,7 +77,7 @@ private Map<String,Object> getDiskInfo(OperatingSystem os) {
+         String osName = System.getProperty("os.name");
+         long available = 0, total = 0;
+         for (OSFileStore fs : fsArray){
+-            // windows 需要将所有磁盘分区累加
++            // windows 需要将所有磁盘分区累加，linux 和 mac 直接累加会出现磁盘重复的问题，待修复
+             if(osName.toLowerCase().startsWith(ElAdminConstant.WIN)) {
+                 available += fs.getUsableSpace();
+                 total += fs.getTotalSpace();
+
+File: eladmin-generator/src/main/java/me/zhengjie/service/GeneratorService.java
+Patch:
+@@ -49,7 +49,6 @@ public interface GeneratorService {
+      * @param columnInfos /
+      * @param columnInfoList /
+      */
+-    @Async
+     void sync(List<ColumnInfo> columnInfos, List<ColumnInfo> columnInfoList);
+ 
+     /**
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/config/SecurityConfig.java
+Patch:
+@@ -76,7 +76,8 @@ public PasswordEncoder passwordEncoder() {
+     @Override
+     protected void configure(HttpSecurity httpSecurity) throws Exception {
+         // 搜寻匿名标记 url： @AnonymousAccess
+-        Map<RequestMappingInfo, HandlerMethod> handlerMethodMap = applicationContext.getBean(RequestMappingHandlerMapping.class).getHandlerMethods();
++        RequestMappingHandlerMapping requestMappingHandlerMapping = (RequestMappingHandlerMapping) applicationContext.getBean("requestMappingHandlerMapping");
++        Map<RequestMappingInfo, HandlerMethod> handlerMethodMap = requestMappingHandlerMapping.getHandlerMethods();
+         // 获取匿名标记
+         Map<String, Set<String>> anonymousUrls = getAnonymousUrl(handlerMethodMap);
+         httpSecurity
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/MenuService.java
+Patch:
+@@ -59,12 +59,12 @@ public interface MenuService {
+     void update(Menu resources);
+ 
+     /**
+-     * 获取待删除的菜单
++     * 获取所有子节点，包含自身ID
+      * @param menuList /
+      * @param menuSet /
+      * @return /
+      */
+-    Set<Menu> getDeleteMenus(List<Menu> menuList, Set<Menu> menuSet);
++    Set<Menu> getChildMenus(List<Menu> menuList, Set<Menu> menuSet);
+ 
+     /**
+      * 构建菜单树
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/DictDetailServiceImpl.java
+Patch:
+@@ -93,6 +93,6 @@ public void delete(Long id) {
+ 
+     public void delCaches(DictDetail dictDetail){
+         Dict dict = dictRepository.findById(dictDetail.getDict().getId()).orElseGet(Dict::new);
+-        redisUtils.del("dept::name:" + dict.getName());
++        redisUtils.del("dict::name:" + dict.getName());
+     }
+ }
+\ No newline at end of file
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/DictServiceImpl.java
+Patch:
+@@ -115,6 +115,6 @@ public void download(List<DictDto> dictDtos, HttpServletResponse response) throw
+     }
+ 
+     public void delCaches(Dict dict){
+-        redisUtils.del("dept::name:" + dict.getName());
++        redisUtils.del("dict::name:" + dict.getName());
+     }
+ }
+\ No newline at end of file
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/RoleServiceImpl.java
+Patch:
+@@ -219,6 +219,5 @@ public void delCaches(Long id, List<User> users) {
+             redisUtils.delByKeys(CacheKey.ROLE_AUTH, userIds);
+             redisUtils.del(CacheKey.ROLE_ID + id);
+         }
+-
+     }
+ }
+
+File: eladmin-tools/src/main/java/me/zhengjie/service/impl/EmailServiceImpl.java
+Patch:
+@@ -64,7 +64,7 @@ public EmailConfig find() {
+     @Override
+     @Transactional(rollbackFor = Exception.class)
+     public void send(EmailVo emailVo, EmailConfig emailConfig){
+-        if(emailConfig == null){
++        if(emailConfig.getId() == null){
+             throw new BadRequestException("请先配置，再操作");
+         }
+         // 封装
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/DataServiceImpl.java
+Patch:
+@@ -65,7 +65,7 @@ public List<Long> getDeptIds(UserDto user) {
+                     deptIds.addAll(getCustomize(deptIds, role));
+                     break;
+                 default:
+-                    break;
++                    return new ArrayList<>(deptIds);
+             }
+         }
+         return new ArrayList<>(deptIds);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/service/UserDetailsServiceImpl.java
+Patch:
+@@ -24,6 +24,7 @@
+ import me.zhengjie.modules.system.service.RoleService;
+ import me.zhengjie.modules.system.service.UserService;
+ import me.zhengjie.modules.system.service.dto.UserDto;
++import org.springframework.http.HttpStatus;
+ import org.springframework.security.core.userdetails.UserDetailsService;
+ import org.springframework.security.core.userdetails.UsernameNotFoundException;
+ import org.springframework.stereotype.Service;
+@@ -72,7 +73,7 @@ public JwtUserDto loadUserByUsername(String username) {
+                 throw new UsernameNotFoundException("");
+             } else {
+                 if (!user.getEnabled()) {
+-                    throw new BadRequestException("账号未激活");
++                    throw new BadRequestException("账号未激活！");
+                 }
+                 jwtUserDto = new JwtUserDto(
+                         user,
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/config/ConfigBeanConfiguration.java
+Patch:
+@@ -28,6 +28,7 @@
+  */
+ @Configuration
+ public class ConfigBeanConfiguration {
++
+     @Bean
+     @ConfigurationProperties(prefix = "login", ignoreUnknownFields = true)
+     public LoginProperties loginProperties() {
+
+File: eladmin-common/src/main/java/me/zhengjie/utils/EncryptUtils.java
+Patch:
+@@ -61,7 +61,7 @@ public static String desEncrypt(String source) throws Exception {
+      * 对称解密
+      */
+     public static String desDecrypt(String source) throws Exception {
+-        byte[] src = hex2byte(source.getBytes());
++        byte[] src = hex2byte(source.getBytes(StandardCharsets.UTF_8));
+         DESKeySpec desKeySpec = getDesKeySpec(source);
+         SecretKeyFactory keyFactory = SecretKeyFactory.getInstance("DES");
+         SecretKey secretKey = keyFactory.generateSecret(desKeySpec);
+
+File: eladmin-common/src/main/java/me/zhengjie/annotation/Query.java
+Patch:
+@@ -80,8 +80,8 @@ enum Type {
+      * 适用于简单连接查询，复杂的请自定义该注解，或者使用sql查询
+      */
+     enum Join {
+-        /** jie 2019-6-4 13:18:30 左右连接 */
+-        LEFT, RIGHT
++        /** jie 2019-6-4 13:18:30 */
++        LEFT, RIGHT, INNER
+     }
+ 
+ }
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/RoleServiceImpl.java
+Patch:
+@@ -125,6 +125,7 @@ public void updateMenu(Role resources, RoleDto roleDTO) {
+         role.setMenus(resources.getMenus());
+         // 清理缓存
+         redisUtils.delByKeys("menu::user:",userIds);
++        redisUtils.delByKeys("role::auth:",userIds);
+         redisUtils.del("role::id:" + resources.getId());
+         roleRepository.save(role);
+     }
+
+File: eladmin-tools/src/main/java/me/zhengjie/service/impl/EmailServiceImpl.java
+Patch:
+@@ -69,6 +69,7 @@ public void send(EmailVo emailVo, EmailConfig emailConfig){
+         }
+         // 封装
+         MailAccount account = new MailAccount();
++        account.setUser(emailConfig.getUser());
+         account.setHost(emailConfig.getHost());
+         account.setPort(Integer.parseInt(emailConfig.getPort()));
+         account.setAuth(true);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/UserServiceImpl.java
+Patch:
+@@ -196,7 +196,7 @@ public void download(List<UserDto> queryAll, HttpServletResponse response) throw
+             map.put("用户名", userDTO.getUsername());
+             map.put("角色", roles);
+             map.put("部门", userDTO.getDept().getName());
+-            map.put("岗位", userDTO.getJobs().stream().map(JobSmallDto::getName).toString());
++            map.put("岗位", userDTO.getJobs().stream().map(JobSmallDto::getName).collect(Collectors.toList()));
+             map.put("邮箱", userDTO.getEmail());
+             map.put("状态", userDTO.getEnabled() ? "启用" : "禁用");
+             map.put("手机号码", userDTO.getPhone());
+
+File: eladmin-generator/src/main/java/me/zhengjie/rest/GeneratorController.java
+Patch:
+@@ -58,7 +58,7 @@ public ResponseEntity<Object> queryTables(){
+     public ResponseEntity<Object> queryTables(@RequestParam(defaultValue = "") String name,
+                                     @RequestParam(defaultValue = "0")Integer page,
+                                     @RequestParam(defaultValue = "10")Integer size){
+-        int[] startEnd = PageUtil.transToStartEnd(page+1, size);
++        int[] startEnd = PageUtil.transToStartEnd(page, size);
+         return new ResponseEntity<>(generatorService.getTables(name,startEnd), HttpStatus.OK);
+     }
+ 
+
+File: eladmin-generator/src/main/java/me/zhengjie/utils/GenUtil.java
+Patch:
+@@ -34,6 +34,7 @@
+  * @date 2019-01-02
+  */
+ @Slf4j
++@SuppressWarnings({"unchecked","all"})
+ public class GenUtil {
+ 
+     private static final String TIMESTAMP = "Timestamp";
+
+File: eladmin-system/src/main/java/me/zhengjie/config/WebSocketConfig.java
+Patch:
+@@ -20,8 +20,8 @@
+ import org.springframework.web.socket.server.standard.ServerEndpointExporter;
+ 
+ /**
+- * @author: ZhangHouYing
+- * @date: 2019-08-24 15:44
++ * @author ZhangHouYing
++ * @date 2019-08-24 15:44
+  */
+ @Configuration
+ public class WebSocketConfig {
+@@ -30,5 +30,4 @@ public class WebSocketConfig {
+ 	public ServerEndpointExporter serverEndpointExporter() {
+ 		return new ServerEndpointExporter();
+ 	}
+-
+ }
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/repository/MenuRepository.java
+Patch:
+@@ -63,7 +63,9 @@ public interface MenuRepository extends JpaRepository<Menu, Long>, JpaSpecificat
+      * @param type 类型
+      * @return /
+      */
+-    LinkedHashSet<Menu> findByRoles_IdInAndTypeNotOrderByMenuSortAsc(Set<Long> roleIds, int type);
++    @Query(value = "SELECT m.* FROM sys_menu m, sys_roles_menus r WHERE " +
++            "m.menu_id = r.menu_id AND r.role_id IN ?1 AND type != ?2 order by m.menu_sort asc",nativeQuery = true)
++    LinkedHashSet<Menu> findByRoleIdsAndTypeNot(Set<Long> roleIds, int type);
+ 
+     /**
+      * 获取节点数量
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/JobService.java
+Patch:
+@@ -19,7 +19,6 @@
+ import me.zhengjie.modules.system.service.dto.JobDto;
+ import me.zhengjie.modules.system.service.dto.JobQueryCriteria;
+ import org.springframework.data.domain.Pageable;
+-
+ import javax.servlet.http.HttpServletResponse;
+ import java.io.IOException;
+ import java.util.List;
+
+File: eladmin-system/src/test/java/me/zhengjie/EladminSystemApplicationTests.java
+Patch:
+@@ -6,12 +6,11 @@
+ import org.springframework.test.context.junit4.SpringRunner;
+ 
+ @RunWith(SpringRunner.class)
+-@SpringBootTest
++@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+ public class EladminSystemApplicationTests {
+ 
+     @Test
+     public void contextLoads() {
+-
+     }
+ 
+     public static void main(String[] args) {
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/mnt/rest/DatabaseController.java
+Patch:
+@@ -49,7 +49,7 @@
+ @RequestMapping("/api/database")
+ public class DatabaseController {
+ 
+-	private final String fileSavePath = System.getProperty("java.io.tmpdir");
++	private final String fileSavePath = FileUtil.getTmpDirPath()+"/";
+     private final DatabaseService databaseService;
+ 
+ 	@Log("导出数据库数据")
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/mnt/rest/DeployController.java
+Patch:
+@@ -50,7 +50,7 @@
+ @RequestMapping("/api/deploy")
+ public class DeployController {
+ 
+-	private final String fileSavePath = System.getProperty("java.io.tmpdir");
++	private final String fileSavePath = FileUtil.getTmpDirPath()+"/";
+     private final DeployService deployService;
+ 
+ 
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/mnt/rest/DatabaseController.java
+Patch:
+@@ -49,7 +49,7 @@
+ @RequestMapping("/api/database")
+ public class DatabaseController {
+ 
+-	private final String fileSavePath = System.getProperty("java.io.tmpdir");
++	private final String fileSavePath = FileUtil.getTmpDirPath()+"/";
+     private final DatabaseService databaseService;
+ 
+ 	@Log("导出数据库数据")
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/mnt/rest/DeployController.java
+Patch:
+@@ -50,7 +50,7 @@
+ @RequestMapping("/api/deploy")
+ public class DeployController {
+ 
+-	private final String fileSavePath = System.getProperty("java.io.tmpdir");
++	private final String fileSavePath = FileUtil.getTmpDirPath()+"/";
+     private final DeployService deployService;
+ 
+ 
+
+File: eladmin-common/src/main/java/me/zhengjie/utils/QueryHelp.java
+Patch:
+@@ -56,14 +56,14 @@ public static <R, Q> Predicate getPredicate(Root<R> root, Q query, CriteriaBuild
+                         for (String name : joinNames) {
+                             switch (q.join()) {
+                                 case LEFT:
+-                                    if(ObjectUtil.isNotNull(join)){
++                                    if(ObjectUtil.isNotNull(join) && ObjectUtil.isNotNull(val)){
+                                         join = join.join(name, JoinType.LEFT);
+                                     } else {
+                                         join = root.join(name, JoinType.LEFT);
+                                     }
+                                     break;
+                                 case RIGHT:
+-                                    if(ObjectUtil.isNotNull(join)){
++                                    if(ObjectUtil.isNotNull(join) && ObjectUtil.isNotNull(val)){
+                                         join = join.join(name, JoinType.RIGHT);
+                                     } else {
+                                         join = root.join(name, JoinType.RIGHT);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/security/TokenFilter.java
+Patch:
+@@ -58,7 +58,8 @@ private String resolveToken(HttpServletRequest request) {
+       SecurityProperties properties = SpringContextHolder.getBean(SecurityProperties.class);
+       String bearerToken = request.getHeader(properties.getHeader());
+       if (StringUtils.hasText(bearerToken) && bearerToken.startsWith(properties.getTokenStartWith())) {
+-         return bearerToken.substring(7);
++         // 去掉令牌前缀
++         return bearerToken.replace(properties.getTokenStartWith(),"");
+       }
+       return null;
+    }
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/UserServiceImpl.java
+Patch:
+@@ -93,8 +93,8 @@ public UserDto create(User resources) {
+     public void update(User resources) {
+         User user = userRepository.findById(resources.getId()).orElseGet(User::new);
+         ValidationUtil.isNull(user.getId(),"User","id",resources.getId());
+-        User user1 = userRepository.findByUsername(user.getUsername());
+-        User user2 = userRepository.findByEmail(user.getEmail());
++        User user1 = userRepository.findByUsername(resources.getUsername());
++        User user2 = userRepository.findByEmail(resources.getEmail());
+ 
+         if(user1 !=null&&!user.getId().equals(user1.getId())){
+             throw new EntityExistException(User.class,"username",resources.getUsername());
+
+File: eladmin-generator/src/main/java/me/zhengjie/utils/GenUtil.java
+Patch:
+@@ -85,7 +85,9 @@ public static List<Map<String, Object>> preview(List<ColumnInfo> columns, GenCon
+     }
+ 
+     public static String download(List<ColumnInfo> columns, GenConfig genConfig) throws IOException {
+-        String tempPath =System.getProperty("java.io.tmpdir") + "eladmin-gen-temp" + File.separator + genConfig.getTableName() + File.separator;
++        // 拼接的路径：/tmpeladmin-gen-temp/，这个路径在Linux下需要root用户才有权限创建,非root用户会权限错误而失败，更改为： /tmp/eladmin-gen-temp/
++        // String tempPath =System.getProperty("java.io.tmpdir") + "eladmin-gen-temp" + File.separator + genConfig.getTableName() + File.separator;
++        String tempPath =System.getProperty("java.io.tmpdir") + File.separator + "eladmin-gen-temp" + File.separator + genConfig.getTableName() + File.separator;
+         Map<String,Object> genMap = getGenMap(columns, genConfig);
+         TemplateEngine engine = TemplateUtil.createEngine(new TemplateConfig("template", TemplateConfig.ResourceMode.CLASSPATH));
+         // 生成后端代码
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/mnt/rest/DatabaseController.java
+Patch:
+@@ -97,7 +97,7 @@ public ResponseEntity<Object> testConnect(@Validated @RequestBody Database resou
+ 	public ResponseEntity<Object> upload(@RequestBody MultipartFile file, HttpServletRequest request)throws Exception{
+ 		String id = request.getParameter("id");
+ 		DatabaseDto database = databaseService.findById(id);
+-		String fileName = "";
++		String fileName;
+ 		if(database != null){
+ 			fileName = file.getOriginalFilename();
+ 			File executeFile = new File(fileSavePath+fileName);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/mnt/util/SqlUtils.java
+Patch:
+@@ -155,7 +155,7 @@ public static boolean testConnection(String jdbcUrl, String userName, String pas
+ 	public static String executeFile(String jdbcUrl, String userName, String password, File sqlFile) {
+ 		Connection connection = getConnection(jdbcUrl, userName, password);
+ 		try {
+-			batchExecute(connection, readSqlList( sqlFile));
++			batchExecute(connection, readSqlList(sqlFile));
+ 		} catch (Exception e) {
+ 			log.error("sql脚本执行发生异常:{}",e.getMessage());
+ 			return e.getMessage();
+
+File: eladmin-common/src/main/java/me/zhengjie/utils/QueryHelp.java
+Patch:
+@@ -101,6 +101,7 @@ public static <R, Q> Predicate getPredicate(Root<R> root, Q query, CriteriaBuild
+                         case RIGHT_LIKE:
+                             list.add(cb.like(getExpression(attributeName,join,root)
+                                     .as(String.class), val.toString() + "%"));
++                            break;
+                         case IN:
+                             if (CollUtil.isNotEmpty((Collection<Long>)val)) {
+                                 list.add(getExpression(attributeName,join,root).in((Collection<Long>) val));
+
+File: eladmin-common/src/main/java/me/zhengjie/utils/FileUtil.java
+Patch:
+@@ -136,7 +136,7 @@ public static String getSize(long size){
+      * @throws Exception
+      */
+     public static File inputStreamToFile(InputStream ins, String name) throws Exception{
+-        File file = new File(System.getProperty("java.io.tmpdir") + name);
++        File file = new File(System.getProperty("java.io.tmpdir") + File.separator + name);
+         if (file.exists()) {
+             return file;
+         }
+
+File: eladmin-tools/src/main/java/me/zhengjie/service/impl/LocalStorageServiceImpl.java
+Patch:
+@@ -63,7 +63,7 @@ public LocalStorageDTO findById(Long id) {
+     public LocalStorageDTO create(String name, MultipartFile multipartFile) {
+         FileUtil.checkSize(maxSize, multipartFile.getSize());
+         String suffix = FileUtil.getExtensionName(multipartFile.getOriginalFilename());
+-        String type = FileUtil.getFileType(suffix);
++        String type = FileUtil.getFileTypeByMimeType(suffix);
+         File file = FileUtil.upload(multipartFile, path + type +  File.separator);
+         try {
+             name = StringUtils.isBlank(name) ? FileUtil.getFileNameNoEx(multipartFile.getOriginalFilename()) : name;
+@@ -115,4 +115,4 @@ public void deleteAll(Long[] ids) {
+             localStorageRepository.delete(storage);
+         }
+     }
+-}
+\ No newline at end of file
++}
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/quartz/service/QuartzJobService.java
+Patch:
+@@ -21,7 +21,7 @@ public interface QuartzJobService {
+      * @param pageable
+      * @return
+      */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     Object queryAll(JobQueryCriteria criteria, Pageable pageable);
+ 
+     /**
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/quartz/task/TestTask.java
+Patch:
+@@ -1,6 +1,7 @@
+ package me.zhengjie.modules.quartz.task;
+ 
+ import lombok.extern.slf4j.Slf4j;
++import me.zhengjie.exception.BadRequestException;
+ import org.springframework.stereotype.Component;
+ 
+ /**
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/quartz/utils/ExecutionJob.java
+Patch:
+@@ -25,6 +25,7 @@ public class ExecutionJob extends QuartzJobBean {
+ 
+     private Logger logger = LoggerFactory.getLogger(this.getClass());
+ 
++    // 建议自定义线程池实现方式，该处仅供参考
+     private ExecutorService executorService = Executors.newSingleThreadExecutor();
+ 
+     @Override
+@@ -61,8 +62,7 @@ protected void executeInternal(JobExecutionContext context) {
+             // 任务状态 0：成功 1：失败
+             log.setIsSuccess(false);
+             log.setExceptionDetail(ThrowableUtil.getStackTrace(e));
+-            //出错就暂停任务
+-            quartzManage.pauseJob(quartzJob);
++            quartzJob.setIsPause(false);
+             //更新状态
+             quartzJobService.updateIsPause(quartzJob);
+         } finally {
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/rest/UserController.java
+Patch:
+@@ -27,6 +27,7 @@
+ import org.springframework.web.bind.annotation.*;
+ import org.springframework.web.multipart.MultipartFile;
+ import javax.servlet.http.HttpServletResponse;
++import java.io.IOException;
+ import java.util.*;
+ import java.util.stream.Collectors;
+ 
+@@ -59,7 +60,7 @@ public class UserController {
+     @Log("导出用户数据")
+     @GetMapping(value = "/users/download")
+     @PreAuthorize("hasAnyRole('ADMIN','USER_ALL','USER_SELECT')")
+-    public void update(HttpServletResponse response, UserQueryCriteria criteria){
++    public void update(HttpServletResponse response, UserQueryCriteria criteria) throws IOException {
+         userService.download(userService.queryAll(criteria), response);
+     }
+ 
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/DeptService.java
+Patch:
+@@ -22,7 +22,7 @@ public interface DeptService {
+      * @param criteria
+      * @return
+      */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     List<DeptDTO> queryAll(DeptQueryCriteria criteria);
+ 
+     /**
+@@ -60,15 +60,15 @@ public interface DeptService {
+      * @param deptDTOS
+      * @return
+      */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     Object buildTree(List<DeptDTO> deptDTOS);
+ 
+     /**
+      * findByPid
+      * @param pid
+      * @return
+      */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     List<Dept> findByPid(long pid);
+ 
+     Set<Dept> findByRoleIds(Long id);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/DictDetailService.java
+Patch:
+@@ -47,6 +47,6 @@ public interface DictDetailService {
+     @CacheEvict(allEntries = true)
+     void delete(Long id);
+ 
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     Map queryAll(DictDetailQueryCriteria criteria, Pageable pageable);
+ }
+\ No newline at end of file
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/DictService.java
+Patch:
+@@ -21,7 +21,7 @@ public interface DictService {
+      * @param pageable
+      * @return
+      */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     Object queryAll(DictQueryCriteria dict, Pageable pageable);
+ 
+     /**
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/MenuService.java
+Patch:
+@@ -23,7 +23,7 @@ public interface MenuService {
+      * @param criteria
+      * @return
+      */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     List<MenuDTO> queryAll(MenuQueryCriteria criteria);
+ 
+     /**
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/PermissionService.java
+Patch:
+@@ -67,15 +67,15 @@ public interface PermissionService {
+      * @param permissionDTOS
+      * @return
+      */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     Object buildTree(List<PermissionDTO> permissionDTOS);
+ 
+     /**
+      * queryAll
+      * @param criteria
+      * @return
+      */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     List<PermissionDTO> queryAll(PermissionQueryCriteria criteria);
+ 
+     Set<Permission> getDeletePermission(List<Permission> permissions, Set<Permission> permissionSet);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/service/impl/UserServiceImpl.java
+Patch:
+@@ -180,7 +180,7 @@ public void updateEmail(String username, String email) {
+     }
+ 
+     @Override
+-    public void download(List<UserDTO> queryAll, HttpServletResponse response) {
++    public void download(List<UserDTO> queryAll, HttpServletResponse response) throws IOException {
+         List<Map<String, Object>> list = new ArrayList<>();
+         for (UserDTO userDTO : queryAll) {
+             List roles = userDTO.getRoles().stream().map(RoleSmallDTO::getName).collect(Collectors.toList());
+
+File: eladmin-tools/src/main/java/me/zhengjie/rest/PictureController.java
+Patch:
+@@ -45,7 +45,7 @@ public ResponseEntity getRoles(PictureQueryCriteria criteria, Pageable pageable)
+     public ResponseEntity upload(@RequestParam MultipartFile file){
+         String userName = SecurityUtils.getUsername();
+         Picture picture = pictureService.upload(file,userName);
+-        Map map = new HashMap(3);
++        Map<String,Object> map = new HashMap<>(3);
+         map.put("errno",0);
+         map.put("id",picture.getId());
+         map.put("data",new String[]{picture.getUrl()});
+
+File: eladmin-tools/src/main/java/me/zhengjie/service/LocalStorageService.java
+Patch:
+@@ -22,15 +22,15 @@ public interface LocalStorageService {
+     * @param pageable
+     * @return
+     */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     Object queryAll(LocalStorageQueryCriteria criteria, Pageable pageable);
+ 
+     /**
+     * queryAll 不分页
+     * @param criteria
+     * @return
+     */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     public Object queryAll(LocalStorageQueryCriteria criteria);
+ 
+     /**
+
+File: eladmin-tools/src/main/java/me/zhengjie/service/PictureService.java
+Patch:
+@@ -20,7 +20,7 @@ public interface PictureService {
+      * @param pageable
+      * @return
+      */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     Object queryAll(PictureQueryCriteria criteria, Pageable pageable);
+ 
+     /**
+
+File: eladmin-tools/src/main/java/me/zhengjie/service/QiNiuService.java
+Patch:
+@@ -24,7 +24,7 @@ public interface QiNiuService {
+      * @param pageable
+      * @return
+      */
+-    @Cacheable(keyGenerator = "keyGenerator")
++    @Cacheable
+     Object queryAll(QiniuQueryCriteria criteria, Pageable pageable);
+ 
+     /**
+
+File: eladmin-common/src/main/java/me/zhengjie/utils/QueryHelp.java
+Patch:
+@@ -40,7 +40,7 @@ public static <R, Q> Predicate getPredicate(Root<R> root, Q query, CriteriaBuild
+                     String attributeName = isBlank(propName) ? field.getName() : propName;
+                     Class<?> fieldType = field.getType();
+                     Object val = field.get(query);
+-                    if (ObjectUtil.isNull(val)) {
++                    if (ObjectUtil.isNull(val) || "".equals(val)) {
+                         continue;
+                     }
+                     Join join = null;
+
+File: eladmin-tools/src/main/java/me/zhengjie/service/impl/QiNiuServiceImpl.java
+Patch:
+@@ -137,7 +137,7 @@ public void delete(QiniuContent content, QiniuConfig config) {
+         Auth auth = Auth.create(config.getAccessKey(), config.getSecretKey());
+         BucketManager bucketManager = new BucketManager(auth, cfg);
+         try {
+-            bucketManager.delete(content.getBucket(), content.getKey());
++            bucketManager.delete(content.getBucket(), content.getKey() + "." + content.getSuffix());
+             qiniuContentRepository.delete(content);
+         } catch (QiniuException ex) {
+             qiniuContentRepository.delete(content);
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/quartz/utils/QuartzManage.java
+Patch:
+@@ -94,6 +94,7 @@ public void updateJobCron(QuartzJob quartzJob){
+     public void deleteJob(QuartzJob quartzJob){
+         try {
+             JobKey jobKey = JobKey.jobKey(JOB_NAME + quartzJob.getId());
++            scheduler.pauseJob(jobKey);
+             scheduler.deleteJob(jobKey);
+         } catch (Exception e){
+             log.error("删除定时任务失败", e);
+
+File: eladmin-common/src/main/java/me/zhengjie/exception/handler/GlobalExceptionHandler.java
+Patch:
+@@ -26,8 +26,8 @@ public class GlobalExceptionHandler {
+      * @param e
+      * @return
+      */
+-    @ExceptionHandler(Exception.class)
+-    public ResponseEntity handleException(Exception e){
++    @ExceptionHandler(Throwable.class)
++    public ResponseEntity handleException(Throwable e){
+         // 打印堆栈信息
+         log.error(ThrowableUtil.getStackTrace(e));
+         ApiError apiError = new ApiError(BAD_REQUEST.value(),e.getMessage());
+
+File: eladmin-common/src/main/java/me/zhengjie/exception/handler/GlobalExceptionHandler.java
+Patch:
+@@ -26,8 +26,8 @@ public class GlobalExceptionHandler {
+      * @param e
+      * @return
+      */
+-    @ExceptionHandler(Exception.class)
+-    public ResponseEntity handleException(Exception e){
++    @ExceptionHandler(Throwable.class)
++    public ResponseEntity handleException(Throwable e){
+         // 打印堆栈信息
+         log.error(ThrowableUtil.getStackTrace(e));
+         ApiError apiError = new ApiError(BAD_REQUEST.value(),e.getMessage());
+
+File: eladmin-generator/src/main/java/me/zhengjie/domain/vo/ColumnInfo.java
+Patch:
+@@ -29,6 +29,9 @@ public class ColumnInfo {
+     /** 数据库字段键类型 **/
+     private Object columnKey;
+ 
++    /** 额外的参数 **/
++    private Object extra;
++
+     /** 查询 1:模糊 2：精确 **/
+     private String columnQuery;
+ 
+
+File: eladmin-generator/src/main/java/me/zhengjie/service/impl/GeneratorServiceImpl.java
+Patch:
+@@ -50,7 +50,7 @@ public Object getTables(String name, int[] startEnd) {
+ 
+     @Override
+     public Object getColumns(String name) {
+-        StringBuilder sql = new StringBuilder("select column_name, is_nullable, data_type, column_comment, column_key from information_schema.columns where ");
++        StringBuilder sql = new StringBuilder("select column_name, is_nullable, data_type, column_comment, column_key, extra from information_schema.columns where ");
+         if(!ObjectUtils.isEmpty(name)){
+             sql.append("table_name = '"+name+"' ");
+         }
+@@ -59,7 +59,7 @@ public Object getColumns(String name) {
+         List<Object[]> result = query.getResultList();
+         List<ColumnInfo> columnInfos = new ArrayList<>();
+         for (Object[] obj : result) {
+-            columnInfos.add(new ColumnInfo(obj[0],obj[1],obj[2],obj[3],obj[4],null,"true"));
++            columnInfos.add(new ColumnInfo(obj[0],obj[1],obj[2],obj[3],obj[4],obj[5],null,"true"));
+         }
+         return PageUtil.toPage(columnInfos,columnInfos.size());
+     }
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/domain/DictDetail.java
+Patch:
+@@ -41,7 +41,7 @@ public class DictDetail implements Serializable {
+     /**
+      * 字典id
+      */
+-    @ManyToOne
++    @ManyToOne(fetch=FetchType.LAZY)
+     @JoinColumn(name = "dict_id")
+     private Dict dict;
+ 
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/repository/DeptRepository.java
+Patch:
+@@ -19,6 +19,4 @@ public interface DeptRepository extends JpaRepository<Dept, Long>, JpaSpecificat
+      * @return
+      */
+     List<Dept> findByPid(Long id);
+-
+-    Set<Dept> findByRoles_Id(Long id);
+ }
+\ No newline at end of file
+
+File: eladmin-logging/src/main/java/me/zhengjie/aspect/LogAspect.java
+Patch:
+@@ -21,7 +21,7 @@
+ @Component
+ @Aspect
+ @Slf4j
+-public class DataScopeAspect {
++public class LogAspect {
+ 
+     @Autowired
+     private LogService logService;
+
+File: eladmin-system/src/main/java/me/zhengjie/config/ConfigurerAdapter.java
+Patch:
+@@ -35,7 +35,7 @@ public void addCorsMappings(CorsRegistry registry) {
+ 
+     }
+ 
+-// 可解决Long 类型在 前端精度丢失的问题， 如不想全局 直接添加注解 @JsonSerialize(using= ToStringSerializer.class) 到相应的字段上
++// 可解决Long 类型在 前端精度丢失的问题， 如不想全局 直接添加注解 @JsonSerialize(using= ToStringSerializer.class) 到相应的字段
+ 
+ //    @Override
+ //    public void configureMessageConverters(List<HttpMessageConverter<?>> converters) {
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/system/repository/PermissionRepository.java
+Patch:
+@@ -28,6 +28,4 @@ public interface PermissionRepository extends JpaRepository<Permission, Long>, J
+      * @return
+      */
+     List<Permission> findByPid(long pid);
+-
+-    Set<Permission> findByRoles(Set<Role> roles);
+ }
+
+File: eladmin-system/src/main/java/me/zhengjie/modules/security/service/JwtUserDetailsService.java
+Patch:
+@@ -80,7 +80,7 @@ private static List<GrantedAuthority> mapToGrantedAuthorities(Set<Role> roles,Pe
+         }
+ 
+         return permissions.stream()
+-                .map(permission -> new SimpleGrantedAuthority("ROLE_"+permission.getName()))
++                .map(permission -> new SimpleGrantedAuthority(permission.getName()))
+                 .collect(Collectors.toList());
+     }
+ }
+
+File: src/main/java/me/zhengjie/common/redis/RedisConfig.java
+Patch:
+@@ -76,7 +76,7 @@ public JedisPool redisPoolFactory(){
+     public RedisCacheConfiguration redisCacheConfiguration(){
+         FastJsonRedisSerializer<Object> fastJsonRedisSerializer = new FastJsonRedisSerializer<>(Object.class);
+         RedisCacheConfiguration configuration = RedisCacheConfiguration.defaultCacheConfig();
+-        configuration = configuration.serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(fastJsonRedisSerializer)).entryTtl(Duration.ofDays(30));
++        configuration = configuration.serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(fastJsonRedisSerializer)).entryTtl(Duration.ofHours(2));
+         return configuration;
+     }
+ 
+@@ -95,6 +95,7 @@ public RedisTemplate<Object, Object> redisTemplate(RedisConnectionFactory redisC
+         ParserConfig.getGlobalInstance().addAccept("me.zhengjie.system.service.dto");
+         ParserConfig.getGlobalInstance().addAccept("me.zhengjie.system.domain");
+         ParserConfig.getGlobalInstance().addAccept("me.zhengjie.tools.domain");
++        ParserConfig.getGlobalInstance().addAccept("me.zhengjie.quartz.domain");
+         // key的序列化采用StringRedisSerializer
+         template.setKeySerializer(new StringRedisSerializer());
+         template.setHashKeySerializer(new StringRedisSerializer());
+
+File: src/main/java/me/zhengjie/monitor/config/LoggerQueue.java
+Patch:
+@@ -27,7 +27,6 @@ public static LoggerQueue getInstance() {
+ 
+     /**
+      * 消息入队
+-     *
+      * @param log
+      * @return
+      */
+
+File: src/main/java/me/zhengjie/monitor/config/VisitsInitialization.java
+Patch:
+@@ -1,18 +1,17 @@
+ package me.zhengjie.monitor.config;
+ 
+-import lombok.extern.slf4j.Slf4j;
+ import me.zhengjie.monitor.service.VisitsService;
+ import org.springframework.context.annotation.Configuration;
+ 
+ /**
+  * 初始化站点统计
++ * @author jie
+  */
+-@Slf4j
+ @Configuration
+ public class VisitsInitialization {
+ 
+     public VisitsInitialization(VisitsService visitsService){
+-        log.info("--------------- 初始化站点统计，如果存在今日统计则跳过 ---------------");
++        System.out.println("--------------- 初始化站点统计，如果存在今日统计则跳过 ---------------");
+         visitsService.save();
+     }
+ }
+
+File: src/main/java/me/zhengjie/monitor/rest/RedisController.java
+Patch:
+@@ -46,10 +46,10 @@ public ResponseEntity update(@Validated @RequestBody RedisVo resources){
+     }
+ 
+     @Log(description = "删除Redis缓存")
+-    @DeleteMapping(value = "/redis/{key}")
++    @DeleteMapping(value = "/redis")
+     @PreAuthorize("hasAnyRole('ADMIN','REDIS_ALL','REDIS_DELETE')")
+-    public ResponseEntity delete(@PathVariable String key){
+-        redisService.delete(key);
++    public ResponseEntity delete(@RequestBody RedisVo resources){
++        redisService.delete(resources.getKey());
+         return new ResponseEntity(HttpStatus.OK);
+     }
+ 
+
+File: src/main/java/me/zhengjie/system/service/impl/VerificationCodeServiceImpl.java
+Patch:
+@@ -13,6 +13,7 @@
+ import org.springframework.transaction.annotation.Propagation;
+ import org.springframework.transaction.annotation.Transactional;
+ import java.util.Arrays;
++import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.Executors;
+ import java.util.concurrent.ScheduledExecutorService;
+ import java.util.concurrent.TimeUnit;
+

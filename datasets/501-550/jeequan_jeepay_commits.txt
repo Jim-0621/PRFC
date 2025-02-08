@@ -1,0 +1,440 @@
+File: jeepay-service/src/main/java/com/jeequan/jeepay/service/impl/MchInfoService.java
+Patch:
+@@ -85,7 +85,7 @@ public void addMch(MchInfo mchInfo, String loginUserName) {
+         sysUser.setBelongInfoId(mchInfo.getMchNo());
+         sysUser.setSex(CS.SEX_MALE);
+         sysUser.setIsAdmin(CS.YES);
+-        sysUser.setState(mchInfo.getState());
++        sysUser.setState(CS.YES);
+         sysUserService.addSysUser(sysUser, CS.SYS_TYPE.MCH);
+ 
+         // 插入商户默认应用
+
+File: jeepay-payment/src/main/java/com/jeequan/jeepay/pay/service/TransferOrderReissueService.java
+Patch:
+@@ -78,7 +78,7 @@ public ChannelRetMsg processOrder(TransferOrder transferOrder){
+ 
+             }else if(channelRetMsg.getChannelState() == ChannelRetMsg.ChannelState.CONFIRM_FAIL){
+                 // 转账失败
+-                transferOrderService.updateIng2Fail(transferId, channelRetMsg.getChannelOrderId(), channelRetMsg.getChannelUserId(), channelRetMsg.getChannelErrCode());
++                transferOrderService.updateIng2Fail(transferId, channelRetMsg.getChannelOrderId(), channelRetMsg.getChannelErrCode(),channelRetMsg.getChannelErrMsg());
+                 payMchNotifyService.transferOrderNotify(transferOrderService.getById(transferId));
+             }
+ 
+
+File: jeepay-payment/src/main/java/com/jeequan/jeepay/pay/channel/wxpay/WxpayTransferService.java
+Patch:
+@@ -124,7 +124,6 @@ public ChannelRetMsg transfer(TransferOrderRQ bizRQ, TransferOrder transferOrder
+                 }else{
+                     request.setBatchName(transferOrder.getTransferDesc());
+                 }
+-                request.setBatchName(transferOrder.getAccountName());
+                 request.setBatchRemark(transferOrder.getTransferDesc());
+                 request.setTotalAmount(transferOrder.getAmount().intValue());
+                 request.setTotalNum(1);
+
+File: jeepay-payment/src/main/java/com/jeequan/jeepay/pay/channel/AbstractPaymentService.java
+Patch:
+@@ -22,8 +22,6 @@
+ import com.jeequan.jeepay.service.impl.SysConfigService;
+ import org.springframework.beans.factory.annotation.Autowired;
+ 
+-import javax.jws.Oneway;
+-
+ /*
+ * 支付接口抽象类
+ *
+
+File: jeepay-payment/src/main/java/com/jeequan/jeepay/pay/channel/wxpay/WxpayRefundService.java
+Patch:
+@@ -84,8 +84,8 @@ public ChannelRetMsg refund(RefundOrderRQ bizRQ, RefundOrder refundOrder, PayOrd
+                 setCretPath(mchAppConfigContext, wxPayService); // 证书路径
+ 
+                 WxPayRefundResult result = wxPayService.refundV2(req);
+-                if("SUCCESS".equals(result.getResultCode())){ //支付成功
+-                    channelRetMsg.setChannelState(ChannelRetMsg.ChannelState.CONFIRM_SUCCESS);
++                if("SUCCESS".equals(result.getResultCode())){ // 退款发起成功,结果主动查询
++                    channelRetMsg.setChannelState(ChannelRetMsg.ChannelState.WAITING);
+                     channelRetMsg.setChannelOrderId(result.getRefundId());
+                 }else{
+                     channelRetMsg.setChannelState(ChannelRetMsg.ChannelState.CONFIRM_FAIL);
+
+File: jeepay-payment/src/main/java/com/jeequan/jeepay/pay/channel/alipay/AlipayTransferService.java
+Patch:
+@@ -81,7 +81,7 @@ public ChannelRetMsg transfer(TransferOrderRQ bizRQ, TransferOrder transferOrder
+ 
+         Participant accPayeeInfo = new Participant();
+         accPayeeInfo.setName(StringUtils.defaultString(transferOrder.getAccountName(), null)); //收款方真实姓名
+-        accPayeeInfo.setIdentityType("ALIPAY_LOGONID");    //ALIPAY_USERID： 支付宝用户ID      ALIPAY_LOGONID:支付宝登录账号
++        accPayeeInfo.setIdentityType("ALIPAY_LOGON_ID");    //ALIPAY_USERID： 支付宝用户ID      ALIPAY_LOGONID:支付宝登录账号
+         accPayeeInfo.setIdentity(transferOrder.getAccountNo()); //收款方账户
+         model.setPayeeInfo(accPayeeInfo);
+ 
+
+File: jeepay-service/src/main/java/com/jeequan/jeepay/service/impl/IsvInfoService.java
+Patch:
+@@ -52,7 +52,7 @@ public void removeByIsvNo(String isvNo) {
+         }
+ 
+         // 1.查询当前服务商下是否存在商户
+-        int mchCount = mchInfoService.count(MchInfo.gw().eq(MchInfo::getIsvNo, isvNo).eq(MchInfo::getType, CS.INFO_TYPE_ISV));
++        int mchCount = mchInfoService.count(MchInfo.gw().eq(MchInfo::getIsvNo, isvNo).eq(MchInfo::getType, CS.MCH_TYPE_ISVSUB));
+         if (mchCount > 0) {
+             throw new BizException("该服务商下存在商户，不可删除");
+         }
+
+File: jeepay-payment/src/main/java/com/jeequan/jeepay/pay/channel/wxpay/kits/WxpayV3Util.java
+Patch:
+@@ -283,15 +283,15 @@ public static String getPayInfo(String response, WxPayConfig wxPayConfig)  throw
+         }
+     }
+ 
+-    public static String processIsvPayer(String subAppId, String openId) {
++    public static JSONObject processIsvPayer(String subAppId, String openId) {
+         JSONObject payer = new JSONObject();
+         // 子商户subAppId不为空
+         if (StringUtils.isNotBlank(subAppId)) {
+             payer.put("sub_openid", openId); // 用户在子商户appid下的唯一标识
+         }else {
+             payer.put("sp_openid", openId); // 用户在服务商appid下的唯一标识
+         }
+-        return payer.toJSONString();
++        return payer;
+     }
+ 
+ }
+
+File: jeepay-payment/src/main/java/com/jeequan/jeepay/pay/ctrl/payorder/ChannelNoticeController.java
+Patch:
+@@ -81,7 +81,7 @@ public String doReturn(HttpServletRequest request, @PathVariable("ifCode") Strin
+             }
+ 
+             // 解析订单号 和 请求参数
+-            MutablePair<String, Object> mutablePair = payNotifyService.parseParams(request, urlOrderId, IChannelNoticeService.NoticeTypeEnum.DO_NOTIFY);
++            MutablePair<String, Object> mutablePair = payNotifyService.parseParams(request, urlOrderId, IChannelNoticeService.NoticeTypeEnum.DO_RETURN);
+             if(mutablePair == null){ // 解析数据失败， 响应已处理
+                 log.error("{}, mutablePair is null ", logPrefix);
+                 throw new BizException("解析数据异常！"); //需要实现类自行抛出ResponseException, 不应该在这抛此异常。
+
+File: jeepay-core/src/main/java/com/jeequan/jeepay/core/exception/BizExceptionResolver.java
+Patch:
+@@ -21,6 +21,7 @@
+ import org.apache.logging.log4j.Logger;
+ import org.springframework.context.annotation.Configuration;
+ import org.springframework.dao.DataAccessException;
++import org.springframework.http.MediaType;
+ import org.springframework.web.servlet.HandlerExceptionResolver;
+ import org.springframework.web.servlet.ModelAndView;
+ 
+@@ -80,7 +81,8 @@ public ModelAndView resolveException(HttpServletRequest request, HttpServletResp
+ 
+ 
+ 	public void outPutJson(HttpServletResponse res, String jsonStr) throws IOException {
+-		res.setContentType("text/json;charset=utf-8");
++
++		res.setContentType(MediaType.APPLICATION_JSON_UTF8_VALUE);
+ 		res.getWriter().write(jsonStr);
+ 		res.getWriter().flush();
+ 		res.getWriter().close();
+
+File: jeepay-manager/src/main/java/com/jeequan/jeepay/mgr/ctrl/order/RefundOrderController.java
+Patch:
+@@ -64,7 +64,6 @@ public ApiRes list() {
+         if (refundOrder.getMchType() != null) wrapper.eq(RefundOrder::getMchType, refundOrder.getMchType());
+         if (StringUtils.isNotEmpty(refundOrder.getMchRefundNo())) wrapper.eq(RefundOrder::getMchRefundNo, refundOrder.getMchRefundNo());
+         if (refundOrder.getState() != null) wrapper.eq(RefundOrder::getState, refundOrder.getState());
+-        if (StringUtils.isNotEmpty(refundOrder.getChannelPayOrderNo())) wrapper.eq(RefundOrder::getChannelPayOrderNo, refundOrder.getChannelPayOrderNo());
+         if (StringUtils.isNotEmpty(refundOrder.getAppId())) wrapper.eq(RefundOrder::getAppId, refundOrder.getAppId());
+         if (paramJSON != null) {
+             if (StringUtils.isNotEmpty(paramJSON.getString("createdStart"))) wrapper.ge(RefundOrder::getCreatedAt, paramJSON.getString("createdStart"));
+
+File: jeepay-merchant/src/main/java/com/jeequan/jeepay/mch/ctrl/order/PayOrderController.java
+Patch:
+@@ -66,9 +66,9 @@ public ApiRes list() {
+         JSONObject paramJSON = getReqParamJSON();
+ 
+         LambdaQueryWrapper<PayOrder> wrapper = PayOrder.gw();
+-        wrapper.eq(PayOrder::getMchNo, getCurrentUser().getSysUser().getBelongInfoId());
++        wrapper.eq(PayOrder::getMchNo, getCurrentMchNo());
+         if (StringUtils.isNotEmpty(payOrder.getPayOrderId())) wrapper.eq(PayOrder::getPayOrderId, payOrder.getPayOrderId());
+-        if (StringUtils.isNotEmpty(payOrder.getMchOrderNo())) wrapper.eq(PayOrder::getMchOrderNo, getCurrentMchNo());
++        if (StringUtils.isNotEmpty(payOrder.getMchOrderNo())) wrapper.eq(PayOrder::getMchOrderNo, payOrder.getMchOrderNo());
+         if (StringUtils.isNotEmpty(payOrder.getWayCode())) wrapper.eq(PayOrder::getWayCode, payOrder.getWayCode());
+         if (payOrder.getState() != null) wrapper.eq(PayOrder::getState, payOrder.getState());
+         if (payOrder.getNotifyState() != null) wrapper.eq(PayOrder::getNotifyState, payOrder.getNotifyState());
+
+File: jeepay-merchant/src/main/java/com/jeequan/jeepay/mch/ctrl/order/RefundOrderController.java
+Patch:
+@@ -56,10 +56,9 @@ public ApiRes list() {
+         RefundOrder refundOrder = getObject(RefundOrder.class);
+         JSONObject paramJSON = getReqParamJSON();
+         LambdaQueryWrapper<RefundOrder> wrapper = RefundOrder.gw();
+-        wrapper.eq(RefundOrder::getMchNo, getCurrentUser().getSysUser().getBelongInfoId());
++        wrapper.eq(RefundOrder::getMchNo, getCurrentMchNo());
+         if (StringUtils.isNotEmpty(refundOrder.getRefundOrderId())) wrapper.eq(RefundOrder::getRefundOrderId, refundOrder.getRefundOrderId());
+         if (StringUtils.isNotEmpty(refundOrder.getPayOrderId())) wrapper.eq(RefundOrder::getPayOrderId, refundOrder.getPayOrderId());
+-        if (StringUtils.isNotEmpty(refundOrder.getChannelPayOrderNo())) wrapper.eq(RefundOrder::getChannelPayOrderNo, refundOrder.getChannelPayOrderNo());
+         if (StringUtils.isNotEmpty(refundOrder.getMchRefundNo())) wrapper.eq(RefundOrder::getMchRefundNo, refundOrder.getMchRefundNo());
+         if (refundOrder.getState() != null) wrapper.eq(RefundOrder::getState, refundOrder.getState());
+         if (StringUtils.isNotEmpty(refundOrder.getChannelPayOrderNo())) wrapper.eq(RefundOrder::getChannelPayOrderNo, refundOrder.getChannelPayOrderNo());
+
+File: jeepay-payment/src/main/java/com/jeequan/jeepay/pay/channel/wxpay/WxpayChannelUserService.java
+Patch:
+@@ -65,7 +65,7 @@ public String buildUserRedirectUrl(String callbackUrlEncode, MchAppConfigContext
+             oauth2Url = DEFAULT_OAUTH_URL;
+         }
+ 
+-        return String.format(oauth2Url + "?appid=%s&scope=snsapi_base&state=&redirect_uri=%s", appId, callbackUrlEncode);
++        return String.format(oauth2Url + "?appid=%s&scope=snsapi_base&state=&redirect_uri=%s&response_type=code#wechat_redirect", appId, callbackUrlEncode);
+     }
+ 
+     @Override
+
+File: xxpay4dubbo/xxpay4dubbo-service/src/main/java/org/xxpay/dubbo/service/impl/NotifyPayServiceImpl.java
+Patch:
+@@ -246,7 +246,7 @@ public boolean verifyWxPayParams(Map<String, Object> payContext) {
+ 
+         //校验结果是否成功
+         if (!PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getResultCode())
+-                || !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getReturnCode())) {
++                && !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getReturnCode())) {
+             _log.error("returnCode={},resultCode={},errCode={},errCodeDes={}", params.getReturnCode(), params.getResultCode(), params.getErrCode(), params.getErrCodeDes());
+             payContext.put("retMsg", "notify data failed");
+             return false;
+
+File: xxpay4spring-boot/src/main/java/org/xxpay/boot/service/impl/NotifyPayServiceImpl.java
+Patch:
+@@ -251,7 +251,7 @@ public boolean verifyWxPayParams(Map<String, Object> payContext) {
+ 
+         //校验结果是否成功
+         if (!PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getResultCode())
+-                || !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getReturnCode())) {
++                && !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getReturnCode())) {
+             _log.error("returnCode={},resultCode={},errCode={},errCodeDes={}", params.getReturnCode(), params.getResultCode(), params.getErrCode(), params.getErrCodeDes());
+             payContext.put("retMsg", "notify data failed");
+             return false;
+
+File: xxpay4spring-cloud/xxpay-service/src/main/java/org/xxpay/service/controller/Notify4WxPayController.java
+Patch:
+@@ -114,7 +114,7 @@ public boolean verifyWxPayParams(Map<String, Object> payContext) {
+ 
+ 		//校验结果是否成功
+ 		if (!PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getResultCode())
+-				|| !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getReturnCode())) {
++				&& !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getReturnCode())) {
+ 			_log.error("returnCode={},resultCode={},errCode={},errCodeDes={}", params.getReturnCode(), params.getResultCode(), params.getErrCode(), params.getErrCodeDes());
+ 			payContext.put("retMsg", "notify data failed");
+ 			return false;
+
+File: xxpay4spring-cloud/xxpay-service/src/main/java/org/xxpay/service/controller/Notify4WxPayController.java
+Patch:
+@@ -114,7 +114,7 @@ public boolean verifyWxPayParams(Map<String, Object> payContext) {
+ 
+ 		//校验结果是否成功
+ 		if (!PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getResultCode())
+-				|| !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getResultCode())) {
++				|| !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getReturnCode())) {
+ 			_log.error("returnCode={},resultCode={},errCode={},errCodeDes={}", params.getReturnCode(), params.getResultCode(), params.getErrCode(), params.getErrCodeDes());
+ 			payContext.put("retMsg", "notify data failed");
+ 			return false;
+
+File: xxpay4spring-boot/src/main/java/org/xxpay/boot/service/impl/NotifyPayServiceImpl.java
+Patch:
+@@ -251,7 +251,7 @@ public boolean verifyWxPayParams(Map<String, Object> payContext) {
+ 
+         //校验结果是否成功
+         if (!PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getResultCode())
+-                || !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getResultCode())) {
++                || !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getReturnCode())) {
+             _log.error("returnCode={},resultCode={},errCode={},errCodeDes={}", params.getReturnCode(), params.getResultCode(), params.getErrCode(), params.getErrCodeDes());
+             payContext.put("retMsg", "notify data failed");
+             return false;
+
+File: xxpay4dubbo/xxpay4dubbo-service/src/main/java/org/xxpay/dubbo/service/impl/NotifyPayServiceImpl.java
+Patch:
+@@ -246,7 +246,7 @@ public boolean verifyWxPayParams(Map<String, Object> payContext) {
+ 
+         //校验结果是否成功
+         if (!PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getResultCode())
+-                || !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getResultCode())) {
++                || !PayConstant.RETURN_VALUE_SUCCESS.equalsIgnoreCase(params.getReturnCode())) {
+             _log.error("returnCode={},resultCode={},errCode={},errCodeDes={}", params.getReturnCode(), params.getResultCode(), params.getErrCode(), params.getErrCodeDes());
+             payContext.put("retMsg", "notify data failed");
+             return false;
+
+File: xxpay4spring-boot/src/main/java/org/xxpay/boot/service/BaseService.java
+Patch:
+@@ -81,10 +81,11 @@ public int baseUpdateStatus4Ing(String payOrderId, String channelOrderNo) {
+         return payOrderMapper.updateByExampleSelective(payOrder, example);
+     }
+ 
+-    public int baseUpdateStatus4Success(String payOrderId) {
++    public int baseUpdateStatus4Success(String payOrderId, String channelOrderNo) {
+         PayOrder payOrder = new PayOrder();
+         payOrder.setPayOrderId(payOrderId);
+         payOrder.setStatus(PayConstant.PAY_STATUS_SUCCESS);
++        if(channelOrderNo != null) payOrder.setChannelOrderNo(channelOrderNo);
+         payOrder.setPaySuccTime(System.currentTimeMillis());
+         PayOrderExample example = new PayOrderExample();
+         PayOrderExample.Criteria criteria = example.createCriteria();
+
+File: xxpay4spring-boot/src/main/java/org/xxpay/boot/service/impl/PayOrderServiceImpl.java
+Patch:
+@@ -230,7 +230,7 @@ public Map updateStatus4Success(String jsonParam) {
+             _log.warn("修改支付订单状态为支付成功失败, {}. jsonParam={}", RetEnum.RET_PARAM_INVALID.getMessage(), jsonParam);
+             return RpcUtil.createFailResult(baseParam, RetEnum.RET_PARAM_INVALID);
+         }
+-        int result = super.baseUpdateStatus4Success(payOrderId);
++        int result = super.baseUpdateStatus4Success(payOrderId, null);
+         return RpcUtil.createBizResult(baseParam, result);
+     }
+ 
+
+File: xxpay-shop/src/main/java/org/xxpay/shop/demo/MgrDemo.java
+Patch:
+@@ -17,7 +17,7 @@ public static void main(String[] args) {
+        addPayChannel();
+     }
+ 
+-    // 统一下单
++    // 添加商户
+     static void addMchInfo() {
+         JSONObject params = new JSONObject();
+         params.put("mchId", "20001226");
+@@ -33,7 +33,7 @@ static void addMchInfo() {
+ 
+     }
+ 
+-    // 统一下单
++    // 添加渠道
+     static void addPayChannel() {
+         JSONObject params = new JSONObject();
+         params.put("channelId", "WX_NATIVE");//WX_NATIVE
+
+File: xxpay4dubbo/xxpay4dubbo-service/src/main/java/org/xxpay/dubbo/service/mq/Mq4PayNotify.java
+Patch:
+@@ -11,6 +11,7 @@
+ import org.springframework.util.StringUtils;
+ import org.xxpay.common.util.MyLog;
+ import org.xxpay.dubbo.service.BaseService;
++import org.xxpay.dubbo.service.BaseService4PayOrder;
+ 
+ import javax.jms.*;
+ import javax.net.ssl.HttpsURLConnection;
+@@ -34,7 +35,7 @@
+  * @Copyright: www.xxpay.org
+  */
+ @Component
+-public class Mq4PayNotify extends BaseService {
++public class Mq4PayNotify extends BaseService4PayOrder {
+ 
+     @Autowired
+     private Queue payNotifyQueue;
+
+File: xxpay4dubbo/xxpay4dubbo-web/src/main/java/org/xxpay/dubbo/web/ctrl/QueryPayOrderController.java
+Patch:
+@@ -58,7 +58,7 @@ public String queryPayOrder(@RequestParam String params) {
+             String mchOrderNo = po.getString("mchOrderNo"); 	// 商户订单号
+             String payOrderId = po.getString("payOrderId"); 	// 支付订单号
+             String executeNotify = po.getString("executeNotify");   // 是否执行回调
+-            JSONObject payOrder = payOrderService.queryPayOrder(mchId, payOrderId, mchOrderNo, executeNotify);
++            JSONObject payOrder = payOrderService.query(mchId, payOrderId, mchOrderNo, executeNotify);
+             _log.info("{}查询支付订单,结果:{}", logPrefix, payOrder);
+             if (payOrder == null) {
+                 return XXPayUtil.makeRetFail(XXPayUtil.makeRetMap(PayConstant.RETURN_VALUE_FAIL, "支付订单不存在", null, null));
+
+File: xxpay4dubbo/xxpay4dubbo-web/src/main/java/org/xxpay/dubbo/web/service/PayOrderService.java
+Patch:
+@@ -47,7 +47,7 @@ public JSONObject queryPayOrder(String mchId, String payOrderId, String mchOrder
+             paramMap.put("mchId", mchId);
+             paramMap.put("mchOrderNo", mchOrderNo);
+             String jsonParam = RpcUtil.createBaseParam(paramMap);
+-            result = rpcCommonService.rpcPayOrderService.selectPayOrderByMchIdAndPayOrderId(jsonParam);
++            result = rpcCommonService.rpcPayOrderService.selectPayOrderByMchIdAndMchOrderNo(jsonParam);
+         }
+         String s = RpcUtil.mkRet(result);
+         if(s == null) return null;
+
+File: xxpay-shop/src/main/java/org/xxpay/shop/demo/PayOrderDemo.java
+Patch:
+@@ -19,7 +19,8 @@ public class PayOrderDemo {
+     // 验签key
+     static final String repKey = "Hpcl522AV6q613KIi46u6g6XuW8vM1N8bFgyv769770MdYe9u37M4y7rIpl8";
+ 
+-    static final String baseUrl = "http://api.xxpay.org/api";
++    //static final String baseUrl = "http://api.xxpay.org/api";
++    static final String baseUrl = "http://localhost:3020/api";
+     static final String notifyUrl = "http://www.baidu.com"; // 本地环境测试,可到ngrok.cc网站注册
+ 
+     public static void main(String[] args) {
+
+File: xxpay4spring-cloud/xxpay-service/src/main/java/org/xxpay/XxPayServiceApplication.java
+Patch:
+@@ -3,7 +3,6 @@
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ import org.springframework.boot.builder.SpringApplicationBuilder;
+ import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+-import org.springframework.context.annotation.Configuration;
+ 
+ /**
+  * @Description: xxpay支付核心服务,包括:各支付渠道接口,通知处理
+
+File: xxpay4spring-cloud/xxpay-service/src/test/java/org/xxpay/service/dal/ApplicationTests.java
+Patch:
+@@ -3,15 +3,12 @@
+ import org.junit.Before;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+-import org.springframework.boot.test.SpringApplicationConfiguration;
+-import org.springframework.mock.web.MockServletContext;
+ import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
+ import org.springframework.test.context.web.WebAppConfiguration;
+ import org.springframework.test.web.servlet.MockMvc;
+ 
+ 
+ @RunWith(SpringJUnit4ClassRunner.class)
+-@SpringApplicationConfiguration(classes = MockServletContext.class)
+ @WebAppConfiguration
+ public class ApplicationTests {
+ 
+
+File: xxpay4spring-cloud/xxpay-service/src/test/java/org/xxpay/service/dal/MchInfoTest.java
+Patch:
+@@ -4,8 +4,6 @@
+ import org.junit.Before;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+-import org.springframework.boot.test.SpringApplicationConfiguration;
+-import org.springframework.mock.web.MockServletContext;
+ import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
+ import org.springframework.test.context.web.WebAppConfiguration;
+ import org.springframework.test.web.servlet.MockMvc;
+@@ -15,7 +13,6 @@
+ 
+ 
+ @RunWith(SpringJUnit4ClassRunner.class)
+-@SpringApplicationConfiguration(classes = MockServletContext.class)
+ @WebAppConfiguration
+ public class MchInfoTest {
+ 
+
+File: xxpay4spring-cloud/xxpay-service/src/test/java/org/xxpay/service/dal/PayOrderTest.java
+Patch:
+@@ -4,8 +4,6 @@
+ import org.junit.Before;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+-import org.springframework.boot.test.SpringApplicationConfiguration;
+-import org.springframework.mock.web.MockServletContext;
+ import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
+ import org.springframework.test.context.web.WebAppConfiguration;
+ import org.springframework.test.web.servlet.MockMvc;
+@@ -15,7 +13,6 @@
+ 
+ 
+ @RunWith(SpringJUnit4ClassRunner.class)
+-@SpringApplicationConfiguration(classes = MockServletContext.class)
+ @WebAppConfiguration
+ public class PayOrderTest {
+ 
+

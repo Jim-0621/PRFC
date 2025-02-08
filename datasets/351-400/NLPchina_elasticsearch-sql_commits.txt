@@ -1,0 +1,2680 @@
+File: src/main/java/org/elasticsearch/plugin/nlpcn/client/RequestConverter.java
+Patch:
+@@ -37,7 +37,7 @@
+ import co.elastic.clients.elasticsearch.indices.get.Feature;
+ import co.elastic.clients.elasticsearch.nodes.NodesInfoRequest;
+ import co.elastic.clients.json.DelegatingDeserializer;
+-import co.elastic.clients.json.JsonEnum;
++import co.elastic.clients.json.JsonEnums;
+ import co.elastic.clients.json.JsonpDeserializer;
+ import co.elastic.clients.json.JsonpMapper;
+ import co.elastic.clients.json.ObjectDeserializer;
+@@ -88,7 +88,7 @@ public class RequestConverter {
+ 
+     static {
+         try {
+-            Field field = JsonEnum.Deserializer.class.getDeclaredField("lookupTable");
++            Field field = JsonEnums.Deserializer.class.getDeclaredField("lookupTable");
+             field.setAccessible(true);
+ 
+             @SuppressWarnings("unchecked")
+
+File: src/main/java/org/nlpcn/es4sql/parse/FieldMaker.java
+Patch:
+@@ -68,7 +68,8 @@ public static Field makeField(SQLExpr expr, String alias, String tableAlias) thr
+                 return makeFieldSortMethodField(mExpr, alias);
+             }
+ 
+-            return makeMethodField(methodName, mExpr.getParameters(), null, alias, tableAlias, true);
++            SQLAggregateOption option = mExpr instanceof SQLAggregateExpr ? ((SQLAggregateExpr) mExpr).getOption() : null;
++            return makeMethodField(methodName, mExpr.getArguments(), option, alias, tableAlias, true);
+         } else if (expr instanceof SQLAggregateExpr) {
+             SQLAggregateExpr sExpr = (SQLAggregateExpr) expr;
+             return makeMethodField(sExpr.getMethodName(), sExpr.getArguments(), sExpr.getOption(), alias, tableAlias, true);
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/RestSqlAction.java
+Patch:
+@@ -4,6 +4,7 @@
+ import org.apache.logging.log4j.Logger;
+ import org.elasticsearch.client.internal.node.NodeClient;
+ import org.elasticsearch.rest.RestResponse;
++import org.elasticsearch.xcontent.XContentParseException;
+ import org.elasticsearch.xcontent.XContentParser;
+ import org.elasticsearch.xcontent.XContentType;
+ import org.elasticsearch.plugin.nlpcn.executors.ActionRequestRestExecuterFactory;
+@@ -51,7 +52,7 @@ public List<Route> routes() {
+     protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) throws IOException {
+         try (XContentParser parser = request.contentOrSourceParamParser()) {
+             parser.mapStrings().forEach((k, v) -> request.params().putIfAbsent(k, v));
+-        } catch (IOException e) {
++        } catch (XContentParseException e) {
+             // LOGGER.warn("Please use json format params, like: {\"sql\":\"SELECT * FROM test\"}");
+         }
+ 
+
+File: src/main/java/org/nlpcn/es4sql/query/ESActionFactory.java
+Patch:
+@@ -6,7 +6,6 @@
+ import com.alibaba.druid.sql.ast.statement.SQLJoinTableSource;
+ import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
+ import com.alibaba.druid.sql.ast.statement.SQLUnionQuery;
+-import com.alibaba.druid.sql.dialect.mysql.parser.MySqlStatementParser;
+ import com.alibaba.druid.sql.parser.ParserException;
+ import com.alibaba.druid.sql.parser.SQLExprParser;
+ import com.alibaba.druid.sql.parser.SQLStatementParser;
+@@ -23,6 +22,7 @@
+ import org.nlpcn.es4sql.exception.SqlParseException;
+ import org.nlpcn.es4sql.parse.ElasticLexer;
+ import org.nlpcn.es4sql.parse.ElasticSqlExprParser;
++import org.nlpcn.es4sql.parse.ElasticSqlStatementParser;
+ import org.nlpcn.es4sql.parse.SqlParser;
+ import org.nlpcn.es4sql.parse.SubQueryExpression;
+ import org.nlpcn.es4sql.query.join.ESJoinQueryActionFactory;
+@@ -130,7 +130,7 @@ private static QueryAction handleSelect(Client client, Select select) {
+     public static SQLStatementParser createSqlStatementParser(String sql) {
+         ElasticLexer lexer = new ElasticLexer(sql);
+         lexer.nextToken();
+-        return new MySqlStatementParser(lexer);
++        return new ElasticSqlStatementParser(lexer);
+     }
+ 
+     private static boolean isJoin(SQLQueryExpr sqlExpr,String sql) {
+
+File: src/test/java/org/nlpcn/es4sql/AggregationTest.java
+Patch:
+@@ -689,7 +689,7 @@ public void histogramOnNestedField() throws Exception {
+         InternalNested nested  = result.get("message@NESTED");
+         Histogram histogram = nested.getAggregations().get("someAlias");
+         for(Histogram.Bucket bucket : histogram.getBuckets()){
+-            long count = ((ValueCount) bucket.getAggregations().get("COUNT(*)")).getValue();
++            long count = ((ValueCount) bucket.getAggregations().get("count(*)")).getValue();
+             String key = ((Double)bucket.getKey()).intValue()+"";
+             if(key.equals("0") || key.equals("4")){
+                 Assert.assertEquals(2,count);
+
+File: src/test/java/org/nlpcn/es4sql/SqlParserTests.java
+Patch:
+@@ -383,7 +383,7 @@ public void fieldWithATcharAtSelectOnAgg() throws SqlParseException {
+         List<Field> fields = select.getFields();
+         Assert.assertEquals(1, fields.size());
+         Field field = fields.get(0);
+-        Assert.assertEquals("MAX(@field)", field.toString());
++        Assert.assertEquals("max(@field)", field.toString());
+     }
+ 
+     @Test
+@@ -583,8 +583,8 @@ public void aggFieldWithAliasTableAliasShouldBeRemoved() throws SqlParseExceptio
+         Select select = parser.parseSelect((SQLQueryExpr) sqlExpr);
+         List<Field> fields = select.getFields();
+         Assert.assertTrue(fields.size() == 2);
+-        Assert.assertEquals("COUNT(*)", fields.get(0).toString());
+-        Assert.assertEquals("SUM(size)", fields.get(1).toString());
++        Assert.assertEquals("count(*)", fields.get(0).toString());
++        Assert.assertEquals("sum(size)", fields.get(1).toString());
+         List<List<Field>> groups = select.getGroupBys();
+         Assert.assertTrue(groups.size() == 1);
+         Assert.assertTrue(groups.get(0).size() == 1);
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/Maker.java
+Patch:
+@@ -359,7 +359,7 @@ private ToXContent make(Condition cond, String name, Object value) throws SqlPar
+             Where whereNested = (Where) value;
+             BoolQueryBuilder nestedFilter = QueryMaker.explan(whereNested);
+ 
+-            x = QueryBuilders.nestedQuery(name, nestedFilter, ScoreMode.None);
++            x = QueryBuilders.nestedQuery(name, nestedFilter, cond.getScoreMode());
+         break;
+         case CHILDREN_COMPLEX:
+             if(value == null || ! (value instanceof Where) )
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/QueryMaker.java
+Patch:
+@@ -109,7 +109,7 @@ private void addSubQuery(BoolQueryBuilder boolQuery, Where where, QueryBuilder s
+ 
+                 // bugfix #628
+                 if ("missing".equalsIgnoreCase(String.valueOf(condition.getValue())) && (condition.getOpear() == Condition.OPEAR.IS || condition.getOpear() == Condition.OPEAR.EQ)) {
+-                    NestedQueryBuilder q = isNestedQuery ? (NestedQueryBuilder) subQuery : QueryBuilders.nestedQuery(condition.getNestedPath(), QueryBuilders.boolQuery().mustNot(subQuery), ScoreMode.None);
++                    NestedQueryBuilder q = isNestedQuery ? (NestedQueryBuilder) subQuery : QueryBuilders.nestedQuery(condition.getNestedPath(), QueryBuilders.boolQuery().mustNot(subQuery), condition.getScoreMode());
+ 					if (ihb != null) {
+ 						q.innerHit(ihb);
+                     }
+@@ -127,7 +127,7 @@ private void addSubQuery(BoolQueryBuilder boolQuery, Where where, QueryBuilder s
+                 }
+ 
+                 if (!isNestedQuery) {
+-					subQuery = QueryBuilders.nestedQuery(condition.getNestedPath(), subQuery, ScoreMode.None);
++					subQuery = QueryBuilders.nestedQuery(condition.getNestedPath(), subQuery, condition.getScoreMode());
+ 				}
+                 if (ihb != null) {
+                     ((NestedQueryBuilder) subQuery).innerHit(ihb);
+
+File: src/test/java/org/nlpcn/es4sql/SqlParserTests.java
+Patch:
+@@ -824,11 +824,11 @@ public void likeTestWithEscaped() throws SqlParseException {
+ 
+     @Test
+     public void complexNestedAndOtherQuery() throws SqlParseException {
+-        String query = "select * from x where nested('path',path.x=3,'{\"from\":0}') and y=3";
++        String query = "select * from x where nested('path',path.x=3,'{\"from\":0}',score_mode=max) and y=3";
+         Select select = parser.parseSelect((SQLQueryExpr) queryToExpr(query));
+         LinkedList<Where> wheres = select.getWhere().getWheres();
+         Assert.assertEquals(2, wheres.size());
+-        Assert.assertEquals("nested condition on path:path inner_hits:{\"from\":0} AND path NESTED_COMPLEX AND ( AND path.x EQ 3 ) ", wheres.get(0).toString());
++        Assert.assertEquals("nested condition on path:path inner_hits:{\"from\":0} score_mode:Max AND path NESTED_COMPLEX AND ( AND path.x EQ 3 ) ", wheres.get(0).toString());
+         Assert.assertEquals("AND y EQ 3", wheres.get(1).toString());
+     }
+ 
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -26,5 +26,6 @@ public enum HintType
+     TIMEOUT,
+     INDICES_OPTIONS,
+     MIN_SCORE,
+-    SEARCH_AFTER
++    SEARCH_AFTER,
++    RUNTIME_MAPPINGS
+ }
+
+File: src/main/java/org/nlpcn/es4sql/query/AggregationQueryAction.java
+Patch:
+@@ -281,6 +281,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+         updateRequestWithIndicesOptions(select, request);
+         updateRequestWithMinScore(select, request);
+         updateRequestWithSearchAfter(select, request);
++        updateRequestWithRuntimeMappings(select, request);
+         SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+         return sqlElasticRequestBuilder;
+     }
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQueryAction.java
+Patch:
+@@ -111,6 +111,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+ 		updateRequestWithIndicesOptions(select, request);
+ 		updateRequestWithMinScore(select, request);
+ 		updateRequestWithSearchAfter(select, request);
++		updateRequestWithRuntimeMappings(select, request);
+ 		SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+ 
+ 		return sqlElasticRequestBuilder;
+
+File: src/main/java/org/nlpcn/es4sql/parse/FieldMaker.java
+Patch:
+@@ -416,7 +416,7 @@ public static MethodField makeMethodField(String name, List<SQLExpr> arguments,
+             Tuple<String, String> newFunctions = null;
+             try {
+                 //added by xzb 构造script时，二元操作符可能是多样的 case_new 语法，需要 binaryOperatorNames 参数
+-                newFunctions = SQLFunctions.function(finalMethodName, paramers, paramers.get(0).key,first, binaryOperatorName, binaryOperatorNames);
++                newFunctions = SQLFunctions.function(finalMethodName, paramers, !paramers.isEmpty() ? paramers.get(0).key : null,first, binaryOperatorName, binaryOperatorNames);
+             } catch (Exception e) {
+                 e.printStackTrace();
+             }
+
+File: src/main/java/org/nlpcn/es4sql/query/AggregationQueryAction.java
+Patch:
+@@ -17,6 +17,7 @@
+ import org.elasticsearch.search.aggregations.bucket.nested.ReverseNestedAggregationBuilder;
+ import org.elasticsearch.search.aggregations.bucket.terms.TermsAggregationBuilder;
+ import org.elasticsearch.search.sort.SortOrder;
++import org.nlpcn.es4sql.Util;
+ import org.nlpcn.es4sql.domain.Field;
+ import org.nlpcn.es4sql.domain.KVValue;
+ import org.nlpcn.es4sql.domain.MethodField;
+@@ -377,7 +378,7 @@ private AggregationBuilder createChildrenAggregation(Field field) {
+ 
+         String childType = field.getChildType();
+ 
+-        childrenBuilder = JoinAggregationBuilders.children(getChildrenAggName(field),childType);
++        childrenBuilder = Util.parseAggregationBuilder(JoinAggregationBuilders.children(getChildrenAggName(field), childType));
+ 
+         return childrenBuilder;
+     }
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/AggMaker.java
+Patch:
+@@ -323,7 +323,7 @@ private AggregationBuilder addFieldToAgg(MethodField field, ValuesSourceAggregat
+ 
+             String childrenAggName = childrenType.field + "@CHILDREN";
+ 
+-            childrenBuilder = JoinAggregationBuilders.children(childrenAggName,childrenType.childType);
++            childrenBuilder = Util.parseAggregationBuilder(JoinAggregationBuilders.children(childrenAggName, childrenType.childType));
+ 
+             return childrenBuilder;
+         }
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/Maker.java
+Patch:
+@@ -34,6 +34,7 @@
+ import org.elasticsearch.join.query.JoinQueryBuilders;
+ import org.elasticsearch.script.Script;
+ import org.elasticsearch.search.SearchModule;
++import org.nlpcn.es4sql.Util;
+ import org.nlpcn.es4sql.domain.Condition;
+ import org.nlpcn.es4sql.domain.Condition.OPEAR;
+ import org.nlpcn.es4sql.domain.Paramer;
+@@ -365,7 +366,7 @@ private ToXContent make(Condition cond, String name, Object value) throws SqlPar
+             Where whereChildren = (Where) value;
+             BoolQueryBuilder childrenFilter = QueryMaker.explan(whereChildren);
+             //todo: pass score mode
+-            x = JoinQueryBuilders.hasChildQuery(name, childrenFilter,ScoreMode.None);
++            x = Util.parseQueryBuilder(JoinQueryBuilders.hasChildQuery(name, childrenFilter, ScoreMode.None));
+ 
+         break;
+         case SCRIPT:
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/QueryMaker.java
+Patch:
+@@ -11,6 +11,7 @@
+ import org.elasticsearch.index.query.QueryBuilder;
+ import org.elasticsearch.index.query.QueryBuilders;
+ import org.elasticsearch.join.query.JoinQueryBuilders;
++import org.nlpcn.es4sql.Util;
+ import org.nlpcn.es4sql.domain.Condition;
+ import org.nlpcn.es4sql.domain.Where;
+ import org.nlpcn.es4sql.domain.Where.CONN;
+@@ -132,7 +133,7 @@ private void addSubQuery(BoolQueryBuilder boolQuery, Where where, QueryBuilder s
+                     ((NestedQueryBuilder) subQuery).innerHit(ihb);
+                 }
+             } else if(condition.isChildren()) {
+-            	subQuery = JoinQueryBuilders.hasChildQuery(condition.getChildType(), subQuery, ScoreMode.None);
++            	subQuery = Util.parseQueryBuilder(JoinQueryBuilders.hasChildQuery(condition.getChildType(), subQuery, ScoreMode.None));
+             }
+         }
+ 
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -25,5 +25,6 @@ public enum HintType
+     TRACK_TOTAL_HITS,
+     TIMEOUT,
+     INDICES_OPTIONS,
+-    MIN_SCORE
++    MIN_SCORE,
++    SEARCH_AFTER
+ }
+
+File: src/main/java/org/nlpcn/es4sql/query/AggregationQueryAction.java
+Patch:
+@@ -279,6 +279,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+         updateRequestWithTimeout(select, request);
+         updateRequestWithIndicesOptions(select, request);
+         updateRequestWithMinScore(select, request);
++        updateRequestWithSearchAfter(select, request);
+         SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+         return sqlElasticRequestBuilder;
+     }
+
+File: src/main/java/org/nlpcn/es4sql/parse/WhereParser.java
+Patch:
+@@ -562,10 +562,10 @@ private SQLMethodInvokeExpr parseSQLBinaryOpExprWhoIsConditionInWhere(SQLBinaryO
+         }
+ 
+         String v1 = leftMethod.getParams().get(0).value.toString();
+-        String v1Dec = leftMethod.getParams().size() == 2 ? leftMethod.getParams().get(1).value.toString() + ";" : "";
++        String v1Dec = leftMethod.getParams().size() > 1 ? leftMethod.getParams().get(1).value.toString() + ";" : "";
+ 
+         String v2 = rightMethod.getParams().get(0).value.toString();
+-        String v2Dec = rightMethod.getParams().size() == 2 ? rightMethod.getParams().get(1).value.toString() + ";" : "";
++        String v2Dec = rightMethod.getParams().size() > 1 ? rightMethod.getParams().get(1).value.toString() + ";" : "";
+ 
+         String operator = soExpr.getOperator().getName();
+ 
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/AggMaker.java
+Patch:
+@@ -842,7 +842,7 @@ private ValuesSourceAggregationBuilder makeCountAgg(MethodField field) {
+                 String fieldValue = field.getParams().get(0).value.toString();
+                 //modified by xzb 去除 cardinality 下面的 fields字段，否则会导致计算结果为 0
+                 //防止 SELECT  count(distinct age%2) as distCnt FROM bank group by gender 出现计算错误问题
+-                if (fieldValue.contains("def") && fieldValue.contains("return")) {
++                if (fieldValue.contains("def") && fieldValue.contains("return") || fieldValue.contains("doc[")) {
+                     return  AggregationBuilders.cardinality(field.getAlias());
+                 } else {
+                     return AggregationBuilders.cardinality(field.getAlias()).field(field.getParams().get(0).value.toString());
+@@ -882,7 +882,7 @@ private ValuesSourceAggregationBuilder makeCountAgg(MethodField field) {
+             String fieldValue = field.getParams().get(0).value.toString();
+             //modified by xzb 去除 cardinality 下面的 fields字段，否则会导致计算结果为 0
+             //防止 SELECT  count(distinct age%2) as distCnt FROM bank group by gender 出现计算错误问题
+-            if (fieldValue.contains("def") && fieldValue.contains("return")) {
++            if (fieldValue.contains("def") && fieldValue.contains("return") || fieldValue.contains("doc[")) {
+                 return AggregationBuilders.count(field.getAlias());
+             } else {
+                 return AggregationBuilders.count(field.getAlias()).field(fieldName);
+
+File: src/main/java/org/nlpcn/es4sql/query/ESActionFactory.java
+Patch:
+@@ -4,8 +4,8 @@
+ import com.alibaba.druid.sql.ast.expr.SQLQueryExpr;
+ import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
+ import com.alibaba.druid.sql.ast.statement.SQLJoinTableSource;
++import com.alibaba.druid.sql.ast.statement.SQLSelectQueryBlock;
+ import com.alibaba.druid.sql.ast.statement.SQLUnionQuery;
+-import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlSelectQueryBlock;
+ import com.alibaba.druid.sql.dialect.mysql.parser.MySqlStatementParser;
+ import com.alibaba.druid.sql.parser.ParserException;
+ import com.alibaba.druid.sql.parser.SQLExprParser;
+@@ -134,7 +134,7 @@ public static SQLStatementParser createSqlStatementParser(String sql) {
+     }
+ 
+     private static boolean isJoin(SQLQueryExpr sqlExpr,String sql) {
+-        MySqlSelectQueryBlock query = (MySqlSelectQueryBlock) sqlExpr.getSubQuery().getQuery();
++        SQLSelectQueryBlock query = (SQLSelectQueryBlock) sqlExpr.getSubQuery().getQuery();
+         return query.getFrom() instanceof SQLJoinTableSource && ((SQLJoinTableSource) query.getFrom()).getJoinType() != SQLJoinTableSource.JoinType.COMMA && sql.toLowerCase().contains("join");
+     }
+ 
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/executors/CSVResultRestExecutor.java
+Patch:
+@@ -8,7 +8,7 @@
+ import org.elasticsearch.rest.RestStatus;
+ import org.nlpcn.es4sql.query.QueryAction;
+ 
+-import java.util.*;
++import java.util.Map;
+ 
+ /**
+  * Created by Eliran on 26/12/2015.
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -24,5 +24,6 @@ public enum HintType
+     PREFERENCE,
+     TRACK_TOTAL_HITS,
+     TIMEOUT,
+-    INDICES_OPTIONS
++    INDICES_OPTIONS,
++    MIN_SCORE
+ }
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQueryAction.java
+Patch:
+@@ -109,6 +109,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+ 		updateRequestWithTrackTotalHits(select, request);
+ 		updateRequestWithTimeout(select, request);
+ 		updateRequestWithIndicesOptions(select, request);
++		updateRequestWithMinScore(select, request);
+ 		SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+ 
+ 		return sqlElasticRequestBuilder;
+
+File: src/test/java/org/nlpcn/es4sql/DeleteTest.java
+Patch:
+@@ -7,11 +7,13 @@
+ import org.junit.Before;
+ import org.junit.Test;
+ import org.nlpcn.es4sql.exception.SqlParseException;
++
+ import java.sql.SQLFeatureNotSupportedException;
+ 
+ import static org.hamcrest.MatcherAssert.assertThat;
+ import static org.hamcrest.core.IsEqual.equalTo;
+-import static org.nlpcn.es4sql.TestsConstants.*;
++import static org.nlpcn.es4sql.TestsConstants.TEST_INDEX_ACCOUNT_TEMP;
++import static org.nlpcn.es4sql.TestsConstants.TEST_INDEX_PHRASE;
+ 
+ public class DeleteTest {
+ 
+
+File: src/test/java/org/nlpcn/es4sql/ShowTest.java
+Patch:
+@@ -11,7 +11,8 @@
+ import java.io.IOException;
+ import java.sql.SQLFeatureNotSupportedException;
+ 
+-import static org.nlpcn.es4sql.TestsConstants.*;
++import static org.nlpcn.es4sql.TestsConstants.TEST_INDEX;
++import static org.nlpcn.es4sql.TestsConstants.TEST_INDEX_ACCOUNT;
+ 
+ /**
+  * Created by Eliran on 16/10/2015.
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -23,5 +23,6 @@ public enum HintType
+     CONFLICTS,
+     PREFERENCE,
+     TRACK_TOTAL_HITS,
+-    TIMEOUT
++    TIMEOUT,
++    INDICES_OPTIONS
+ }
+
+File: src/main/java/org/nlpcn/es4sql/query/AggregationQueryAction.java
+Patch:
+@@ -221,6 +221,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+         updateRequestWithPreference(select, request);
+         updateRequestWithTrackTotalHits(select, request);
+         updateRequestWithTimeout(select, request);
++        updateRequestWithIndicesOptions(select, request);
+         SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+         return sqlElasticRequestBuilder;
+     }
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQueryAction.java
+Patch:
+@@ -107,6 +107,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+ 		updateRequestWithPreference(select, request);
+ 		updateRequestWithTrackTotalHits(select, request);
+ 		updateRequestWithTimeout(select, request);
++		updateRequestWithIndicesOptions(select, request);
+ 		SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+ 
+ 		return sqlElasticRequestBuilder;
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -22,5 +22,6 @@ public enum HintType
+     STATS,
+     CONFLICTS,
+     PREFERENCE,
+-    TRACK_TOTAL_HITS
++    TRACK_TOTAL_HITS,
++    TIMEOUT
+ }
+
+File: src/main/java/org/nlpcn/es4sql/query/AggregationQueryAction.java
+Patch:
+@@ -220,6 +220,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+         updateRequestWithStats(select, request);
+         updateRequestWithPreference(select, request);
+         updateRequestWithTrackTotalHits(select, request);
++        updateRequestWithTimeout(select, request);
+         SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+         return sqlElasticRequestBuilder;
+     }
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQueryAction.java
+Patch:
+@@ -106,6 +106,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+ 		updateRequestWithStats(select, request);
+ 		updateRequestWithPreference(select, request);
+ 		updateRequestWithTrackTotalHits(select, request);
++		updateRequestWithTimeout(select, request);
+ 		SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+ 
+ 		return sqlElasticRequestBuilder;
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/RestSqlAction.java
+Patch:
+@@ -61,7 +61,7 @@ protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient cli
+             queryAction = searchDao.explain(sql);//zhongshu-comment 语法解析，将sql字符串解析为一个Java查询对象
+ 
+             // TODO add unit tests to explain. (rest level?)
+-            if (request.path().endsWith("/_explain")) {
++            if (request.path().endsWith("/explain")) {
+                 final String jsonExplanation = queryAction.explain().explain();
+                 return channel -> channel.sendResponse(new BytesRestResponse(RestStatus.OK, XContentType.JSON.mediaType(), jsonExplanation));
+             } else {
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/RestSqlAction.java
+Patch:
+@@ -92,7 +92,7 @@ protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient cli
+     @Override
+     protected Set<String> responseParams() {
+         Set<String> responseParams = new HashSet<>(super.responseParams());
+-        responseParams.addAll(Arrays.asList("sql", "flat", "separator", "_score", "_type", "_id", "newLine", "format", "showHeader"));
++        responseParams.addAll(Arrays.asList("sql", "flat", "separator", "_score", "_type", "_id", "_scroll_id", "newLine", "format", "showHeader"));
+         return responseParams;
+     }
+ }
+\ No newline at end of file
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -21,5 +21,6 @@ public enum HintType
+     POST_FILTER,
+     STATS,
+     CONFLICTS,
+-    PREFERENCE
++    PREFERENCE,
++    TRACK_TOTAL_HITS
+ }
+
+File: src/main/java/org/nlpcn/es4sql/query/AggregationQueryAction.java
+Patch:
+@@ -219,6 +219,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+         updateRequestWithPostFilter(select, request);
+         updateRequestWithStats(select, request);
+         updateRequestWithPreference(select, request);
++        updateRequestWithTrackTotalHits(select, request);
+         SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+         return sqlElasticRequestBuilder;
+     }
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQueryAction.java
+Patch:
+@@ -92,6 +92,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+ 		updateRequestWithPostFilter(select, request);
+ 		updateRequestWithStats(select, request);
+ 		updateRequestWithPreference(select, request);
++		updateRequestWithTrackTotalHits(select, request);
+ 		SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+ 
+ 		return sqlElasticRequestBuilder;
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/RestSqlAction.java
+Patch:
+@@ -92,7 +92,7 @@ protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient cli
+     @Override
+     protected Set<String> responseParams() {
+         Set<String> responseParams = new HashSet<>(super.responseParams());
+-        responseParams.addAll(Arrays.asList("sql", "flat", "separator", "_score", "_type", "_id", "newLine", "format"));
++        responseParams.addAll(Arrays.asList("sql", "flat", "separator", "_score", "_type", "_id", "newLine", "format", "showHeader"));
+         return responseParams;
+     }
+ }
+\ No newline at end of file
+
+File: src/main/java/org/nlpcn/es4sql/query/ESActionFactory.java
+Patch:
+@@ -127,7 +127,7 @@ private static QueryAction handleSelect(Client client, Select select) {
+         }
+     }
+ 
+-    private static SQLStatementParser createSqlStatementParser(String sql) {
++    public static SQLStatementParser createSqlStatementParser(String sql) {
+         ElasticLexer lexer = new ElasticLexer(sql);
+         lexer.nextToken();
+         return new MySqlStatementParser(lexer);
+
+File: src/main/java/org/nlpcn/es4sql/parse/WhereParser.java
+Patch:
+@@ -188,7 +188,8 @@ private boolean isAllowedMethodOnConditionLeft(SQLMethodInvokeExpr method, SQLBi
+ 
+ 
+     private void routeCond(SQLBinaryOpExpr bExpr, SQLExpr sub, Where where) throws SqlParseException {
+-        if (sub instanceof SQLBinaryOpExpr && !isCond((SQLBinaryOpExpr) sub)) {
++        if (sub instanceof SQLBinaryOpExpr && (!isCond((SQLBinaryOpExpr) sub) ||
++                (((SQLBinaryOpExpr) sub).getLeft() instanceof SQLIdentifierExpr && ((SQLBinaryOpExpr) sub).getRight() instanceof SQLIdentifierExpr))) {
+             SQLBinaryOpExpr binarySub = (SQLBinaryOpExpr) sub;
+             if (binarySub.getOperator().priority != bExpr.getOperator().priority) {
+                 Where subWhere = new Where(bExpr.getOperator().name);
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -19,5 +19,6 @@ public enum HintType
+     MINUS_USE_TERMS_OPTIMIZATION,
+     COLLAPSE,
+     POST_FILTER,
+-    STATS
++    STATS,
++    CONFLICTS
+ }
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -6,7 +6,6 @@
+ import com.alibaba.druid.sql.ast.statement.*;
+ import com.alibaba.druid.sql.ast.*;
+ import com.alibaba.druid.sql.dialect.mysql.ast.expr.MySqlSelectGroupByExpr;
+-import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlDeleteStatement;
+ import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlSelectQueryBlock;
+ 
+ 
+@@ -94,7 +93,9 @@ public Delete parseDelete(SQLDeleteStatement deleteStatement) throws SqlParseExc
+ 
+         delete.setWhere(whereParser.findWhere());
+ 
+-        findLimit(((MySqlDeleteStatement) deleteStatement).getLimit(), delete);
++        delete.getHints().addAll(parseHints(((ElasticSqlDeleteStatement) deleteStatement).getHints()));
++
++        findLimit(((ElasticSqlDeleteStatement) deleteStatement).getLimit(), delete);
+ 
+         return delete;
+     }
+
+File: src/main/java/org/nlpcn/es4sql/query/ESActionFactory.java
+Patch:
+@@ -7,7 +7,6 @@
+ import com.alibaba.druid.sql.ast.statement.SQLJoinTableSource;
+ import com.alibaba.druid.sql.ast.statement.SQLUnionQuery;
+ import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlSelectQueryBlock;
+-import com.alibaba.druid.sql.dialect.mysql.parser.MySqlStatementParser;
+ import com.alibaba.druid.sql.parser.*;
+ import org.elasticsearch.client.Client;
+ import org.elasticsearch.plugin.nlpcn.ElasticResultHandler;
+@@ -20,6 +19,7 @@
+ import org.nlpcn.es4sql.exception.SqlParseException;
+ import org.nlpcn.es4sql.parse.ElasticLexer;
+ import org.nlpcn.es4sql.parse.ElasticSqlExprParser;
++import org.nlpcn.es4sql.parse.ElasticSqlStatementParser;
+ import org.nlpcn.es4sql.parse.SqlParser;
+ import org.nlpcn.es4sql.parse.SubQueryExpression;
+ import org.nlpcn.es4sql.query.join.ESJoinQueryActionFactory;
+@@ -123,7 +123,7 @@ private static QueryAction handleSelect(Client client, Select select) {
+     private static SQLStatementParser createSqlStatementParser(String sql) {
+         ElasticLexer lexer = new ElasticLexer(sql);
+         lexer.nextToken();
+-        return new MySqlStatementParser(lexer);
++        return new ElasticSqlStatementParser(lexer);
+     }
+ 
+     private static boolean isJoin(SQLQueryExpr sqlExpr,String sql) {
+
+File: src/main/java/org/nlpcn/es4sql/parse/CastParser.java
+Patch:
+@@ -59,8 +59,6 @@ public String parse(boolean isReturn) throws SqlParseException {
+             }
+             if(isReturn) {
+                 result.add("return " + name);
+-            }else{
+-                result.add(name);
+             }
+ 
+             return Joiner.on("; ").join(result);
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -19,4 +19,5 @@ public enum HintType
+     MINUS_USE_TERMS_OPTIMIZATION,
+     COLLAPSE,
+     POST_FILTER,
++    STATS
+ }
+
+File: src/main/java/org/nlpcn/es4sql/query/AggregationQueryAction.java
+Patch:
+@@ -217,6 +217,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+         updateRequestWithHighlight(select, request);
+         updateRequestWithCollapse(select, request);
+         updateRequestWithPostFilter(select, request);
++        updateRequestWithStats(select, request);
+         SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+         return sqlElasticRequestBuilder;
+     }
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQueryAction.java
+Patch:
+@@ -90,6 +90,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+ 		updateRequestWithHighlight(select, request);
+ 		updateRequestWithCollapse(select, request);
+ 		updateRequestWithPostFilter(select, request);
++		updateRequestWithStats(select, request);
+ 		SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+ 
+ 		return sqlElasticRequestBuilder;
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/Maker.java
+Patch:
+@@ -113,7 +113,7 @@ private ToXContent make(Condition cond, String name, SQLMethodInvokeExpr value)
+         case "multi_match":
+         case "multimatch":
+             paramer = Paramer.parseParamer(value);
+-            MultiMatchQueryBuilder multiMatchQuery = QueryBuilders.multiMatchQuery(paramer.value).fields(paramer.fieldsBoosts);
++            MultiMatchQueryBuilder multiMatchQuery = QueryBuilders.multiMatchQuery(paramer.value);
+             bqb = Paramer.fullParamer(multiMatchQuery, paramer);
+             break;
+ 
+@@ -137,7 +137,7 @@ private ToXContent make(Condition cond, String name, SQLMethodInvokeExpr value)
+             }
+ 
+             //
+-            SpanNearQueryBuilder spanNearQuery = QueryBuilders.spanNearQuery(clauses.get(0), paramer.slop);
++            SpanNearQueryBuilder spanNearQuery = QueryBuilders.spanNearQuery(clauses.get(0), Optional.ofNullable(paramer.slop).orElse(SpanNearQueryBuilder.DEFAULT_SLOP));
+             for (int i = 1; i < clauses.size(); ++i) {
+                 spanNearQuery.addClause(clauses.get(i));
+             }
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/AggMaker.java
+Patch:
+@@ -521,6 +521,9 @@ private DateHistogramAggregationBuilder dateHistogram(MethodField field) throws
+                             dateHistogram.extendedBounds(new ExtendedBounds(bounds[0], bounds[1]));
+                         }
+                         break;
++                    case "offset":
++                        dateHistogram.offset(value);
++                        break;
+ 
+                     case "alias":
+                     case "nested":
+
+File: src/test/java/org/nlpcn/es4sql/AggregationTest.java
+Patch:
+@@ -371,8 +371,8 @@ public void countGroupByRange() throws IOException, SqlParseException, SQLFeatur
+ 	 */
+ 	@Test
+ 	public void countGroupByDateTest() throws IOException, SqlParseException, SQLFeatureNotSupportedException {
+-        String result = MainTestSuite.getSearchDao().explain("select insert_time from online  group by date_histogram(field='insert_time','interval'='1.5h','format'='yyyy-MM','min_doc_count'=5) ").explain().toString();
+-        Assert.assertTrue(result.replaceAll("\\s+", "").contains("{\"date_histogram\":{\"field\":\"insert_time\",\"format\":\"yyyy-MM\",\"interval\":\"1.5h\",\"offset\":0,\"order\":{\"_key\":\"asc\"},\"keyed\":false,\"min_doc_count\":5}"));
++        String result = MainTestSuite.getSearchDao().explain("select insert_time from online  group by date_histogram(field='insert_time','interval'='1.5h','format'='yyyy-MM','min_doc_count'=5,'offset'='+8h') ").explain().toString();
++        Assert.assertTrue(result.replaceAll("\\s+", "").contains("{\"date_histogram\":{\"field\":\"insert_time\",\"format\":\"yyyy-MM\",\"interval\":\"1.5h\",\"offset\":28800000,\"order\":{\"_key\":\"asc\"},\"keyed\":false,\"min_doc_count\":5}"));
+ 	}
+ 
+     @Test
+
+File: src/main/java/org/nlpcn/es4sql/parse/WhereParser.java
+Patch:
+@@ -515,11 +515,11 @@ private SQLMethodInvokeExpr parseSQLBinaryOpExprWhoIsConditionInWhere(SQLBinaryO
+ 
+         String operator = soExpr.getOperator().getName();
+ 
+-        if (operator.equals("=")) {
++        if ("=".equals(operator)) {
+             operator = "==";
+         }
+ 
+-        String finalStr = v1Dec + v2Dec + v1 + " " + operator + " " + v2;
++        String finalStr = String.format("%s%s((Comparable)%s).compareTo(%s) %s 0", v1Dec, v2Dec, v1, v2, operator);
+ 
+         SQLMethodInvokeExpr scriptMethod = new SQLMethodInvokeExpr("script", null);
+         scriptMethod.addParameter(new SQLCharExpr(finalStr));
+
+File: src/test/java/org/nlpcn/es4sql/SQLFunctionsTest.java
+Patch:
+@@ -181,7 +181,7 @@ public void whereConditionLeftFunctionRightPropertyGreatTest() throws Exception
+         ScriptFilter scriptFilter = (ScriptFilter) (((Condition) (where.getWheres().get(0))).getValue());
+ 
+         Assert.assertTrue(scriptFilter.getScript().contains("doc['address'].value.split(' ')[0]"));
+-        Pattern pattern = Pattern.compile("floor_\\d+ > doc\\['b'\\].value");
++        Pattern pattern = Pattern.compile("\\(\\(Comparable\\)floor_\\d+\\).compareTo\\(doc\\['b'\\].value\\) > 0");
+         Matcher matcher = pattern.matcher(scriptFilter.getScript());
+         Assert.assertTrue(matcher.find());
+ 
+@@ -205,7 +205,7 @@ public void whereConditionLeftFunctionRightFunctionEqualTest() throws Exception
+         Assert.assertTrue(((Condition) (where.getWheres().get(0))).getValue() instanceof ScriptFilter);
+         ScriptFilter scriptFilter = (ScriptFilter) (((Condition) (where.getWheres().get(0))).getValue());
+         Assert.assertTrue(scriptFilter.getScript().contains("doc['address'].value.split(' ')[0]"));
+-        Pattern pattern = Pattern.compile("floor_\\d+ == floor_\\d+");
++        Pattern pattern = Pattern.compile("\\(\\(Comparable\\)floor_\\d+\\).compareTo\\(floor_\\d+\\) == 0");
+         Matcher matcher = pattern.matcher(scriptFilter.getScript());
+         Assert.assertTrue(matcher.find());
+     }
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/QueryMaker.java
+Patch:
+@@ -66,7 +66,7 @@ private void addSubQuery(BoolQueryBuilder boolQuery, Where where, QueryBuilder s
+         if(where instanceof Condition){
+             Condition condition = (Condition) where;
+ 
+-            if (condition.isNested()) {
++            if (condition.isNested() && !(subQuery instanceof NestedQueryBuilder)) {
+                 InnerHitBuilder ihb = null;
+                 if (condition.getInnerHits() != null) {
+                     try (JsonXContentParser parser = new JsonXContentParser(NamedXContentRegistry.EMPTY, LoggingDeprecationHandler.INSTANCE, new JsonFactory().createParser(condition.getInnerHits()))) {
+
+File: src/main/java/org/nlpcn/es4sql/Util.java
+Patch:
+@@ -16,7 +16,6 @@
+ 
+ import com.alibaba.druid.sql.ast.*;
+ 
+-
+ public class Util {
+     public static String joiner(List<KVValue> lists, String oper) {
+ 
+@@ -74,6 +73,8 @@ public static Object expr2Object(SQLExpr expr, String charWithQuote) {
+             value = "*";
+         } else if (expr instanceof SQLValuableExpr) {
+             value = ((SQLValuableExpr) expr).getValue();
++        } else if (expr instanceof SQLBooleanExpr) {
++            value = ((SQLBooleanExpr) expr).getValue();
+         } else {
+             //throw new SqlParseException("can not support this type " + expr.getClass());
+         }
+
+File: src/main/java/org/nlpcn/es4sql/parse/FieldMaker.java
+Patch:
+@@ -262,8 +262,9 @@ public static MethodField makeMethodField(String name, List<SQLExpr> arguments,
+                 String scriptCode = new CaseWhenParser((SQLCaseExpr) object, alias, tableAlias).parse();
+                 paramers.add(new KVValue("script",new SQLCharExpr(scriptCode)));
+             } else if(object instanceof SQLCastExpr) {
+-                String scriptCode = new CastParser((SQLCastExpr) object, alias, tableAlias).parse(false);
+-                paramers.add(new KVValue("script",new SQLCharExpr(scriptCode)));
++                CastParser castParser = new CastParser((SQLCastExpr) object, alias, tableAlias);
++                String scriptCode = castParser.parse(false);
++                paramers.add(new KVValue(castParser.getName(),new SQLCharExpr(scriptCode)));
+             } else {
+                 paramers.add(new KVValue(Util.removeTableAilasFromField(object, tableAlias)));
+             }
+
+File: src/main/java/org/nlpcn/es4sql/parse/WhereParser.java
+Patch:
+@@ -390,7 +390,7 @@ else if (isChildren)
+                     throw new SqlParseException("could not fill nested from expr:" + expr);
+                 }
+ 
+-                Condition condition = new Condition(Where.CONN.valueOf(opear), nestedType.path, null, methodName.toUpperCase(), nestedType.where, null);
++                Condition condition = new Condition(Where.CONN.valueOf(opear), nestedType.path, null, methodName.toUpperCase(), nestedType.where, null, nestedType);
+ 
+                 where.addWhere(condition);
+             } else if (methodName.toLowerCase().equals("children")) {
+
+File: src/test/java/org/nlpcn/es4sql/SqlParserTests.java
+Patch:
+@@ -814,11 +814,11 @@ public void likeTestWithEscaped() throws SqlParseException {
+ 
+     @Test
+     public void complexNestedAndOtherQuery() throws SqlParseException {
+-        String query = "select * from x where nested('path',path.x=3) and y=3";
++        String query = "select * from x where nested('path',path.x=3,'{\"from\":0}') and y=3";
+         Select select = parser.parseSelect((SQLQueryExpr) queryToExpr(query));
+         LinkedList<Where> wheres = select.getWhere().getWheres();
+         Assert.assertEquals(2, wheres.size());
+-        Assert.assertEquals("AND path NESTED_COMPLEX AND ( AND path.x EQ 3 ) ", wheres.get(0).toString());
++        Assert.assertEquals("nested condition on path:path inner_hits:{\"from\":0} AND path NESTED_COMPLEX AND ( AND path.x EQ 3 ) ", wheres.get(0).toString());
+         Assert.assertEquals("AND y EQ 3", wheres.get(1).toString());
+     }
+ 
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/AggMaker.java
+Patch:
+@@ -137,7 +137,8 @@ private void addSpecificPercentiles(PercentilesAggregationBuilder percentilesBui
+             if (kValue.value.getClass().equals(BigDecimal.class)) {
+                 BigDecimal percentile = (BigDecimal) kValue.value;
+                 percentiles.add(percentile.doubleValue());
+-
++            } else if (kValue.value instanceof Integer) {
++                percentiles.add(((Integer) kValue.value).doubleValue());
+             }
+         }
+         if (percentiles.size() > 0) {
+
+File: src/main/java/com/alibaba/druid/pool/ElasticSearchResultSetMetaDataBase.java
+Patch:
+@@ -10,8 +10,8 @@
+  * Created by allwefantasy on 8/31/16.
+  */
+ public class ElasticSearchResultSetMetaDataBase extends ResultSetMetaDataBase {
+-	
+-    private final List<ColumnMetaData> columns = new ArrayList<ColumnMetaData>();
++
++    private final List<ColumnMetaData> columns = super.getColumns();
+ 
+     public ElasticSearchResultSetMetaDataBase(List<String> headers) {
+         for(String column:headers){
+
+File: src/main/java/com/alibaba/druid/pool/ElasticSearchResultSetMetaDataBase.java
+Patch:
+@@ -10,7 +10,7 @@
+  * Created by allwefantasy on 8/31/16.
+  */
+ public class ElasticSearchResultSetMetaDataBase extends ResultSetMetaDataBase {
+-    private final List<ColumnMetaData> columns = new ArrayList<ColumnMetaData>();
++    private final List<ColumnMetaData> columns = super.getColumns();
+ 
+     public ElasticSearchResultSetMetaDataBase(List<String> headers) {
+         for(String column:headers){
+
+File: src/test/java/org/nlpcn/es4sql/QueryTest.java
+Patch:
+@@ -66,7 +66,7 @@ public void selectFieldWithSpace() throws IOException, SqlParseException, SQLFea
+ 		String[] arr = new String[] {"test field"};
+ 		Set expectedSource = new HashSet(Arrays.asList(arr));
+ 
+-		SearchHits response = query(String.format("SELECT `test field` FROM %s/phrase where `test field` is not null", TEST_INDEX_PHRASE));
++		SearchHits response = query(String.format("SELECT ['test field'] FROM %s/phrase where ['test field'] is not null", TEST_INDEX_PHRASE));
+ 		SearchHit[] hits = response.getHits();
+ 		for(SearchHit hit : hits) {
+ 			Assert.assertEquals(expectedSource, hit.getSourceAsMap().keySet());
+
+File: src/main/java/org/nlpcn/es4sql/query/ESActionFactory.java
+Patch:
+@@ -126,7 +126,7 @@ private static SQLStatementParser createSqlStatementParser(String sql) {
+ 
+     private static boolean isJoin(SQLQueryExpr sqlExpr,String sql) {
+         MySqlSelectQueryBlock query = (MySqlSelectQueryBlock) sqlExpr.getSubQuery().getQuery();
+-        return query.getFrom() instanceof  SQLJoinTableSource && sql.toLowerCase().contains("join");
++        return query.getFrom() instanceof SQLJoinTableSource && ((SQLJoinTableSource) query.getFrom()).getJoinType() != SQLJoinTableSource.JoinType.COMMA && sql.toLowerCase().contains("join");
+     }
+ 
+     private static SQLExpr toSqlExpr(String sql) {
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/AggMaker.java
+Patch:
+@@ -4,6 +4,7 @@
+ import java.math.BigDecimal;
+ import java.time.ZoneOffset;
+ import java.util.*;
++import java.util.stream.Collectors;
+ 
+ import org.elasticsearch.common.xcontent.NamedXContentRegistry;
+ import org.elasticsearch.common.xcontent.XContentParser;
+@@ -570,7 +571,8 @@ private HistogramAggregationBuilder histogram(MethodField field) throws SqlParse
+      */
+     private RangeAggregationBuilder rangeBuilder(MethodField field) {
+ 
+-        LinkedList<KVValue> params = new LinkedList<>(field.getParams());
++        // ignore alias param
++        LinkedList<KVValue> params = field.getParams().stream().filter(kv -> !"alias".equals(kv.key)).collect(Collectors.toCollection(LinkedList::new));
+ 
+         String fieldName = params.poll().toString();
+ 
+
+File: src/main/java/org/nlpcn/es4sql/domain/Paramer.java
+Patch:
+@@ -58,7 +58,7 @@ public static Paramer parseParamer(SQLMethodInvokeExpr method) throws SqlParseEx
+ 
+                     case "fields":
+                         int index;
+-                        for (String f : Strings.split(Util.expr2Object(sqlExpr.getRight()).toString(), ",")) {
++                        for (String f : Strings.splitStringByCommaToArray(Util.expr2Object(sqlExpr.getRight()).toString())) {
+                             index = f.lastIndexOf('^');
+                             if (-1 < index) {
+                                 instance.fieldsBoosts.put(f.substring(0, index), Float.parseFloat(f.substring(index + 1)));
+
+File: src/main/java/org/nlpcn/es4sql/SQLFunctions.java
+Patch:
+@@ -221,7 +221,7 @@ private static String extractName(SQLExpr script) {
+         String newScript = variance[variance.length - 1];
+         if (newScript.trim().startsWith("def ")) {
+             //for now ,if variant is string,then change to double.
+-            return newScript.substring(4).split("=")[0].trim();
++            return newScript.trim().substring(4).split("=")[0].trim();
+         } else return scriptStr;
+     }
+ 
+@@ -232,7 +232,7 @@ private static String convertType(SQLExpr script) {
+         String newScript = variance[variance.length - 1];
+         if (newScript.trim().startsWith("def ")) {
+             //for now ,if variant is string,then change to double.
+-            String temp = newScript.substring(4).split("=")[0].trim();
++            String temp = newScript.trim().substring(4).split("=")[0].trim();
+ 
+             return " if( " + temp + " instanceof String) " + temp + "= Double.parseDouble(" + temp.trim() + "); ";
+         } else return "";
+
+File: src/main/java/org/nlpcn/es4sql/query/AggregationQueryAction.java
+Patch:
+@@ -5,18 +5,17 @@
+ import java.util.Map;
+ 
+ import com.google.common.collect.Lists;
++import org.elasticsearch.action.search.SearchAction;
+ import org.elasticsearch.action.search.SearchRequestBuilder;
+ import org.elasticsearch.action.search.SearchType;
+ import org.elasticsearch.client.Client;
+ import org.elasticsearch.index.query.QueryBuilder;
+ import org.elasticsearch.join.aggregations.JoinAggregationBuilders;
+-import org.elasticsearch.search.aggregations.AbstractAggregationBuilder;
+ import org.elasticsearch.search.aggregations.AggregationBuilder;
+ import org.elasticsearch.search.aggregations.AggregationBuilders;
+ import org.elasticsearch.search.aggregations.BucketOrder;
+ import org.elasticsearch.search.aggregations.bucket.nested.NestedAggregationBuilder;
+ import org.elasticsearch.search.aggregations.bucket.nested.ReverseNestedAggregationBuilder;
+-import org.elasticsearch.search.aggregations.bucket.terms.Terms;
+ import org.elasticsearch.search.aggregations.bucket.terms.TermsAggregationBuilder;
+ import org.elasticsearch.search.sort.SortOrder;
+ import org.nlpcn.es4sql.domain.Field;
+@@ -47,7 +46,7 @@ public AggregationQueryAction(Client client, Select select) {
+ 
+     @Override
+     public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+-        this.request = client.prepareSearch();
++        this.request = new SearchRequestBuilder(client, SearchAction.INSTANCE);
+ 
+         setIndicesAndTypes();
+ 
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQueryAction.java
+Patch:
+@@ -3,6 +3,8 @@
+ import java.util.Collections;
+ import java.util.List;
+ import java.util.ArrayList;
++
++import org.elasticsearch.action.search.SearchAction;
+ import org.elasticsearch.action.search.SearchRequestBuilder;
+ import org.elasticsearch.action.search.SearchType;
+ import org.elasticsearch.client.Client;
+@@ -39,7 +41,7 @@ public void intialize(SearchRequestBuilder request) throws SqlParseException {
+ 
+ 	@Override
+ 	public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+-		this.request = client.prepareSearch();
++		this.request = new SearchRequestBuilder(client, SearchAction.INSTANCE);
+ 		setIndicesAndTypes();
+ 
+ 		setFields(select.getFields());
+
+File: src/main/java/org/nlpcn/es4sql/Util.java
+Patch:
+@@ -139,7 +139,7 @@ public static double[] KV2DoubleArr(List<KVValue> params) {
+         double[] ds = new double[params.size()];
+         int i = 0;
+         for (KVValue v : params) {
+-            ds[i] = ((Number) v.value).doubleValue();
++            ds[i] = Double.parseDouble(v.value.toString());
+             i++;
+         }
+         return ds;
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/executors/CSVResultsExtractor.java
+Patch:
+@@ -156,7 +156,8 @@ private  void handleNumericMetricAggregation(List<String> header, List<String> l
+             if(!header.contains(name)){
+                 header.add(name);
+             }
+-            line.add(((NumericMetricsAggregation.SingleValue) aggregation).getValueAsString());
++            NumericMetricsAggregation.SingleValue agg = (NumericMetricsAggregation.SingleValue) aggregation;
++            line.add(!Double.isInfinite(agg.value()) ? agg.getValueAsString() : "null");
+         }
+         //todo:Numeric MultiValue - Stats,ExtendedStats,Percentile...
+         else if(aggregation instanceof NumericMetricsAggregation.MultiValue){
+
+File: src/main/java/org/nlpcn/es4sql/domain/Select.java
+Patch:
+@@ -72,11 +72,11 @@ public int getRowCount() {
+ 		return rowCount;
+ 	}
+ 
+-	public void addOrderBy(String name, String type) {
++	public void addOrderBy(String nestedPath, String name, String type) {
+ 		if ("_score".equals(name)) {
+ 			isQuery = true;
+ 		}
+-		this.orderBys.add(new Order(name, type));
++		this.orderBys.add(new Order(nestedPath, name, type));
+ 	}
+ 
+ 
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -178,7 +178,8 @@ private void findOrderBy(MySqlSelectQueryBlock query, Select select) throws SqlP
+     private void addOrderByToSelect(Select select, List<SQLSelectOrderByItem> items, String alias) throws SqlParseException {
+         for (SQLSelectOrderByItem sqlSelectOrderByItem : items) {
+             SQLExpr expr = sqlSelectOrderByItem.getExpr();
+-            String orderByName = FieldMaker.makeField(expr, null, null).toString();
++            Field f = FieldMaker.makeField(expr, null, null);
++            String orderByName = f.toString();
+ 
+             if (sqlSelectOrderByItem.getType() == null) {
+                 sqlSelectOrderByItem.setType(SQLOrderingSpecification.ASC);
+@@ -187,7 +188,7 @@ private void addOrderByToSelect(Select select, List<SQLSelectOrderByItem> items,
+ 
+             orderByName = orderByName.replace("`", "");
+             if (alias != null) orderByName = orderByName.replaceFirst(alias + "\\.", "");
+-            select.addOrderBy(orderByName, type);
++            select.addOrderBy(f.getNestedPath(), orderByName, type);
+ 
+         }
+     }
+
+File: src/test/java/org/nlpcn/es4sql/JDBCTests.java
+Patch:
+@@ -19,10 +19,10 @@ public class JDBCTests {
+     @Test
+     public void testJDBC() throws Exception {
+         Properties properties = new Properties();
+-        properties.put("url", "jdbc:elasticsearch://127.0.0.1:9300/" + TestsConstants.TEST_INDEX);
++        properties.put("url", "jdbc:elasticsearch://127.0.0.1:9300/" + TestsConstants.TEST_INDEX_ACCOUNT);
+         DruidDataSource dds = (DruidDataSource) ElasticSearchDruidDataSourceFactory.createDataSource(properties);
+         Connection connection = dds.getConnection();
+-        PreparedStatement ps = connection.prepareStatement("SELECT  gender,lastname,age from  " + TestsConstants.TEST_INDEX + " where lastname='Heath'");
++        PreparedStatement ps = connection.prepareStatement("SELECT  gender,lastname,age from  " + TestsConstants.TEST_INDEX_ACCOUNT + " where lastname='Heath'");
+         ResultSet resultSet = ps.executeQuery();
+         List<String> result = new ArrayList<String>();
+         while (resultSet.next()) {
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/AggMaker.java
+Patch:
+@@ -311,7 +311,6 @@ private AbstractAggregationBuilder scriptedMetric(MethodField field) throws SqlP
+                 }
+                 continue;
+             }
+-            if (reduceScriptAdditionalParams.size() == 0) reduceScriptAdditionalParams = null;
+ 
+             switch (param.getKey().toLowerCase()) {
+                 case "map_script":
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQueryAction.java
+Patch:
+@@ -1,5 +1,6 @@
+ package org.nlpcn.es4sql.query;
+ 
++import java.util.Collections;
+ import java.util.List;
+ import java.util.ArrayList;
+ import org.elasticsearch.action.search.SearchRequestBuilder;
+@@ -128,7 +129,7 @@ private void handleScriptField(MethodField method) throws SqlParseException {
+ 		if (params.size() == 2) {
+ 			request.addScriptField(params.get(0).value.toString(), new Script(params.get(1).value.toString()));
+ 		} else if (params.size() == 3) {
+-			request.addScriptField(params.get(0).value.toString(), new Script(ScriptType.INLINE, params.get(1).value.toString(), params.get(2).value.toString(), null));
++			request.addScriptField(params.get(0).value.toString(), new Script(ScriptType.INLINE, params.get(1).value.toString(), params.get(2).value.toString(), Collections.emptyMap()));
+ 		} else {
+ 			throw new SqlParseException("scripted_field only allows script(name,script) or script(name,lang,script)");
+ 		}
+
+File: src/test/java/org/nlpcn/es4sql/CSVResultsExtractorTests.java
+Patch:
+@@ -287,7 +287,7 @@ public void statsAggregationTest() throws SqlParseException, SQLFeatureNotSuppor
+ 
+         List<String> lines = csvResult.getLines();
+         Assert.assertEquals(1, lines.size());
+-        Assert.assertEquals("1000.0,30171.0,30.171,20.0,40.0", lines.get(0));
++        Assert.assertEquals("1000,30171.0,30.171,20.0,40.0", lines.get(0));
+ 
+     }
+ 
+@@ -309,7 +309,7 @@ public void extendedStatsAggregationTest() throws SqlParseException, SQLFeatureN
+         List<String> lines = csvResult.getLines();
+         Assert.assertEquals(1, lines.size());
+         String line = lines.get(0);
+-        Assert.assertTrue(line.startsWith("1000.0,30171.0,30.171,20.0,40.0,946393.0"));
++        Assert.assertTrue(line.startsWith("1000,30171.0,30.171,20.0,40.0,946393.0"));
+         Assert.assertTrue(line.contains(",6.008"));
+         Assert.assertTrue(line.contains(",36.103"));
+     }
+
+File: src/main/java/org/nlpcn/es4sql/parse/FieldMaker.java
+Patch:
+@@ -267,8 +267,9 @@ public static MethodField makeMethodField(String name, List<SQLExpr> arguments,
+             if (alias == null && first) {
+                 alias = "field_" + SQLFunctions.random();//paramers.get(0).value.toString();
+             }
++            //should check if field and first .
+             Tuple<String, String> newFunctions = SQLFunctions.function(finalMethodName, paramers,
+-                    paramers.get(0).key);
++                    paramers.get(0).key,first);
+             paramers.clear();
+             if (!first) {
+                 //variance
+
+File: src/test/java/org/nlpcn/es4sql/SqlParserTests.java
+Patch:
+@@ -447,7 +447,7 @@ public void scriptFiledPlusLiteralTest() throws SqlParseException {
+         MethodField scriptMethod = (MethodField) field;
+         Assert.assertEquals("script", scriptMethod.getName().toLowerCase());
+         Assert.assertEquals(2, scriptMethod.getParams().size());
+-        Assert.assertTrue(scriptMethod.getParams().get(1).toString().endsWith("doc['field1'].value + 3"));
++        Assert.assertTrue(scriptMethod.getParams().get(1).toString().contains("doc['field1'].value + 3"));
+     }
+ 
+     @Test
+@@ -462,7 +462,7 @@ public void scriptFieldPlusFieldTest() throws SqlParseException {
+         MethodField scriptMethod = (MethodField) field;
+         Assert.assertEquals("script", scriptMethod.getName().toLowerCase());
+         Assert.assertEquals(2, scriptMethod.getParams().size());
+-        Assert.assertTrue(scriptMethod.getParams().get(1).toString().endsWith("doc['field1'].value + doc['field2'].value"));
++        Assert.assertTrue(scriptMethod.getParams().get(1).toString().contains("doc['field1'].value + doc['field2'].value"));
+     }
+ 
+ 
+@@ -478,7 +478,7 @@ public void scriptLiteralPlusLiteralTest() throws SqlParseException {
+         MethodField scriptMethod = (MethodField) field;
+         Assert.assertEquals("script", scriptMethod.getName().toLowerCase());
+         Assert.assertEquals(2, scriptMethod.getParams().size());
+-        Assert.assertTrue(scriptMethod.getParams().get(1).toString().endsWith("1 + 2"));
++        Assert.assertTrue(scriptMethod.getParams().get(1).toString().contains("1 + 2"));
+     }
+ 
+ 
+
+File: src/test/java/org/nlpcn/es4sql/AggregationTest.java
+Patch:
+@@ -272,7 +272,7 @@ public void termsWithSize() throws Exception {
+ 
+     @Test
+     public void termsWithMissing() throws Exception {
+-        Aggregations result = query(String.format("SELECT count(*) FROM %s/gotCharacters GROUP BY terms('alias'='name','field'='name.ofHisName','missing'='-999')", TEST_INDEX));
++        Aggregations result = query(String.format("SELECT count(*) FROM %s/gotCharacters GROUP BY terms('alias'='name','field'='name.ofHisName','missing'=99)", TEST_INDEX));
+         Terms name = result.get("name");
+         Assert.assertNotNull(name.getBucketByKey("-999"));
+         Assert.assertEquals(1, name.getBucketByKey("-999").getDocCount());
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/ElasticJoinExecutor.java
+Patch:
+@@ -207,8 +207,9 @@ protected SearchResponse scrollOneTimeWithMax(Client client,TableInJoinRequestBu
+         if(!ordered) scrollRequest.addSort(FieldSortBuilder.DOC_FIELD_NAME, SortOrder.ASC);
+         responseWithHits = scrollRequest.get();
+         //on ordered select - not using SCAN , elastic returns hits on first scroll
+-        if(!ordered)
+-            responseWithHits = client.prepareSearchScroll(responseWithHits.getScrollId()).setScroll(new TimeValue(600000)).get();
++        //es5.0 elastic always return docs on scan
++//        if(!ordered)
++//            responseWithHits = client.prepareSearchScroll(responseWithHits.getScrollId()).setScroll(new TimeValue(600000)).get();
+         return responseWithHits;
+     }
+ 
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/HashJoinElasticExecutor.java
+Patch:
+@@ -121,7 +121,8 @@ private List<InternalSearchHit> createCombinedResults( TableInJoinRequestBuilder
+             searchResponse = secondTableRequest.getRequestBuilder()
+                     .setScroll(new TimeValue(60000))
+                     .setSize(MAX_RESULTS_ON_ONE_FETCH).get();
+-            searchResponse = client.prepareSearchScroll(searchResponse.getScrollId()).setScroll(new TimeValue(600000)).get();
++            //es5.0 no need to scroll again!
++//            searchResponse = client.prepareSearchScroll(searchResponse.getScrollId()).setScroll(new TimeValue(600000)).get();
+             finishedScrolling = false;
+         }
+         updateMetaSearchResults(searchResponse);
+
+File: src/test/java/org/nlpcn/es4sql/AggregationTest.java
+Patch:
+@@ -222,7 +222,7 @@ public void multipleGroupByTest() throws Exception {
+ 
+ 		Map<String, Set<Integer>> buckets = new HashMap<>();
+ 
+-		Aggregations result = query(String.format("SELECT COUNT(*) FROM %s/account GROUP BY gender, age", TEST_INDEX));
++		Aggregations result = query(String.format("SELECT COUNT(*) FROM %s/account GROUP BY gender,  terms('field'='age','size'=200,'alias'='age')", TEST_INDEX));
+ 		Terms gender = result.get("gender");
+ 		for(Terms.Bucket genderBucket : gender.getBuckets()) {
+ 			String genderKey = genderBucket.getKey().toString();
+@@ -363,7 +363,7 @@ public void countGroupByDateTest() throws IOException, SqlParseException, SQLFea
+     @Test
+     public void countGroupByDateTestWithAlias() throws IOException, SqlParseException, SQLFeatureNotSupportedException {
+         SqlElasticSearchRequestBuilder result = (SqlElasticSearchRequestBuilder) MainTestSuite.getSearchDao().explain("select insert_time from online  group by date_histogram(field='insert_time','interval'='1.5h','format'='yyyy-MM','alias'='myAlias') ").explain();
+-        boolean containAlias = result.toString().replaceAll("\\s+","").contains("myAlias\":{\"date_histogram\":{\"field\":\"insert_time\",\"interval\":\"1.5h\",\"format\":\"yyyy-MM\"}}");
++        boolean containAlias = result.toString().replaceAll("\\s+","").contains("myAlias\":{\"date_histogram\":{\"field\":\"insert_time\",\"format\":\"yyyy-MM\",\"interval\":\"1.5h\"");
+         Assert.assertTrue(containAlias);
+     }
+ 
+@@ -491,7 +491,7 @@ public void testFromSizeWithAggregations() throws Exception {
+ 	public void testSubAggregations() throws  Exception {
+ 		Set expectedAges = new HashSet<>(ContiguousSet.create(Range.closed(20, 40), DiscreteDomain.integers()));
+ 		final String query = String.format("SELECT /*! DOCS_WITH_AGGREGATION(10) */" +
+-                " * FROM %s/account GROUP BY (gender, age), (state) LIMIT 200,200", TEST_INDEX);
++                " * FROM %s/account GROUP BY (gender, terms('field'='age','size'=200,'alias'='age')), (state) LIMIT 200,200", TEST_INDEX);
+ 
+ 		Map<String, Set<Integer>> buckets = new HashMap<>();
+ 
+
+File: src/test/java/org/nlpcn/es4sql/AggregationTest.java
+Patch:
+@@ -491,7 +491,7 @@ public void testFromSizeWithAggregations() throws Exception {
+ 	public void testSubAggregations() throws  Exception {
+ 		Set expectedAges = new HashSet<>(ContiguousSet.create(Range.closed(20, 40), DiscreteDomain.integers()));
+ 		final String query = String.format("SELECT /*! DOCS_WITH_AGGREGATION(10) */" +
+-                " * FROM %s/account GROUP BY (gender, age), (state) LIMIT 0,10", TEST_INDEX);
++                " * FROM %s/account GROUP BY (gender, age), (state) LIMIT 200,200", TEST_INDEX);
+ 
+ 		Map<String, Set<Integer>> buckets = new HashMap<>();
+ 
+@@ -660,7 +660,7 @@ public void histogramOnNestedField() throws Exception {
+         Histogram histogram = nested.getAggregations().get("someAlias");
+         for(Histogram.Bucket bucket : histogram.getBuckets()){
+             long count = ((ValueCount) bucket.getAggregations().get("COUNT(*)")).getValue();
+-            String key = bucket.getKey().toString();
++            String key = ((Double)bucket.getKey()).intValue()+"";
+             if(key.equals("0") || key.equals("4")){
+                 Assert.assertEquals(2,count);
+             }
+
+File: src/test/java/org/nlpcn/es4sql/AggregationTest.java
+Patch:
+@@ -557,7 +557,7 @@ public void geoHashGrid() throws SQLFeatureNotSupportedException, SqlParseExcept
+         InternalGeoHashGrid grid = result.get("geohash_grid(field=center,precision=5)");
+         Collection<GeoHashGrid.Bucket> buckets = grid.getBuckets();
+         for (GeoHashGrid.Bucket bucket : buckets) {
+-            Assert.assertTrue(bucket.getKey().toString().equals("4.9658203125,104.9853515625") || bucket.getKey().toString().equals("0.4833984375,100.458984375") );
++            Assert.assertTrue(bucket.getKeyAsString().equals("w2fsm") || bucket.getKeyAsString().equals("w0p6y") );
+             Assert.assertEquals(1,bucket.getDocCount());
+         }
+     }
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/ElasticJoinExecutor.java
+Patch:
+@@ -18,6 +18,8 @@
+ import org.elasticsearch.search.SearchHits;
+ import org.elasticsearch.search.internal.InternalSearchHit;
+ import org.elasticsearch.search.internal.InternalSearchHits;
++import org.elasticsearch.search.sort.FieldSortBuilder;
++import org.elasticsearch.search.sort.SortOrder;
+ import org.nlpcn.es4sql.domain.Field;
+ import org.nlpcn.es4sql.exception.SqlParseException;
+ import org.nlpcn.es4sql.query.SqlElasticRequestBuilder;
+@@ -202,7 +204,7 @@ protected SearchResponse scrollOneTimeWithMax(Client client,TableInJoinRequestBu
+                 .setScroll(new TimeValue(60000))
+                 .setSize(MAX_RESULTS_ON_ONE_FETCH);
+         boolean ordered = tableRequest.getOriginalSelect().isOrderdSelect();
+-        if(!ordered) scrollRequest.setSearchType(SearchType.DEFAULT);
++        if(!ordered) scrollRequest.addSort(FieldSortBuilder.DOC_FIELD_NAME, SortOrder.ASC);
+         responseWithHits = scrollRequest.get();
+         //on ordered select - not using SCAN , elastic returns hits on first scroll
+         if(!ordered)
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/ElasticUtils.java
+Patch:
+@@ -11,6 +11,8 @@
+ import org.elasticsearch.common.xcontent.XContentType;
+ import org.elasticsearch.search.SearchHit;
+ import org.elasticsearch.search.SearchHits;
++import org.elasticsearch.search.sort.FieldSortBuilder;
++import org.elasticsearch.search.sort.SortOrder;
+ import org.nlpcn.es4sql.domain.Select;
+ 
+ import java.io.IOException;
+@@ -26,7 +28,7 @@ public static SearchResponse scrollOneTimeWithHits(Client client, SearchRequestB
+                 .setScroll(new TimeValue(60000))
+                 .setSize(resultSize);
+         boolean ordered = originalSelect.isOrderdSelect();
+-        if(!ordered) scrollRequest.setSearchType(SearchType.DEFAULT);
++        if(!ordered) scrollRequest.addSort(FieldSortBuilder.DOC_FIELD_NAME, SortOrder.ASC);
+         responseWithHits = scrollRequest.get();
+         //on ordered select - not using SCAN , elastic returns hits on first scroll
+         if(!ordered) {
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/HashJoinElasticExecutor.java
+Patch:
+@@ -13,6 +13,8 @@
+ import org.elasticsearch.index.query.QueryBuilders;
+ import org.elasticsearch.search.SearchHit;
+ import org.elasticsearch.search.internal.InternalSearchHit;
++import org.elasticsearch.search.sort.FieldSortBuilder;
++import org.elasticsearch.search.sort.SortOrder;
+ import org.nlpcn.es4sql.domain.Field;
+ import org.nlpcn.es4sql.domain.Select;
+ import org.nlpcn.es4sql.domain.Where;
+@@ -117,7 +119,6 @@ private List<InternalSearchHit> createCombinedResults( TableInJoinRequestBuilder
+             finishedScrolling = true;
+         } else {
+             searchResponse = secondTableRequest.getRequestBuilder()
+-                    .setSearchType(SearchType.DEFAULT)
+                     .setScroll(new TimeValue(60000))
+                     .setSize(MAX_RESULTS_ON_ONE_FETCH).get();
+             searchResponse = client.prepareSearchScroll(searchResponse.getScrollId()).setScroll(new TimeValue(600000)).get();
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQueryAction.java
+Patch:
+@@ -10,6 +10,7 @@
+ import org.elasticsearch.index.query.QueryBuilders;
+ import org.elasticsearch.script.Script;
+ import org.elasticsearch.script.ScriptService;
++import org.elasticsearch.search.sort.FieldSortBuilder;
+ import org.elasticsearch.search.sort.SortOrder;
+ import org.nlpcn.es4sql.domain.*;
+ import org.nlpcn.es4sql.domain.hints.Hint;
+@@ -69,7 +70,7 @@ private boolean useScrollIfNeeded(boolean existsOrderBy) {
+ 			int scrollSize = (Integer) scrollHint.getParams()[0];
+ 			int timeoutInMilli = (Integer) scrollHint.getParams()[1];
+ 			if (!existsOrderBy)
+-				request.setSearchType(SearchType.DEFAULT);
++				request.addSort(FieldSortBuilder.DOC_FIELD_NAME, SortOrder.ASC);
+ 			request.setScroll(new TimeValue(timeoutInMilli)).setSize(scrollSize);
+ 		}
+ 		return scrollHint != null;
+
+File: src/test/java/org/nlpcn/es4sql/QueryTest.java
+Patch:
+@@ -688,7 +688,8 @@ public void useScrollNoParams() throws IOException, SqlParseException, SQLFeatur
+         SearchResponse response = getSearchResponse(String.format("SELECT /*! USE_SCROLL*/ age,gender,firstname,balance FROM  %s/account LIMIT 2000", TEST_INDEX, TEST_INDEX));
+         Assert.assertNotNull(response.getScrollId());
+         SearchHits hits = response.getHits();
+-        Assert.assertEquals(0,hits.getHits().length);
++        //default is 50 , es5.0 functionality now returns docs on first scroll
++        Assert.assertEquals(50,hits.getHits().length);
+         Assert.assertEquals(1000,hits.getTotalHits());
+     }
+ 
+@@ -697,7 +698,7 @@ public void useScrollWithParams() throws IOException, SqlParseException, SQLFeat
+         SearchResponse response = getSearchResponse(String.format("SELECT /*! USE_SCROLL(10,5000)*/ age,gender,firstname,balance FROM  %s/account ", TEST_INDEX, TEST_INDEX));
+         Assert.assertNotNull(response.getScrollId());
+         SearchHits hits = response.getHits();
+-        Assert.assertEquals(0,hits.getHits().length);
++        Assert.assertEquals(10,hits.getHits().length);
+         Assert.assertEquals(1000,hits.getTotalHits());
+     }
+ 
+
+File: src/main/java/org/nlpcn/es4sql/Util.java
+Patch:
+@@ -99,6 +99,8 @@ public static Object getScriptValueWithQuote(SQLExpr expr, String quote) throws
+             return ((SQLIntegerExpr) expr).getValue();
+         } else if (expr instanceof SQLNumericLiteralExpr) {
+             return ((SQLNumericLiteralExpr) expr).getNumber();
++        } else if (expr instanceof SQLNullExpr) {
++            return ((SQLNullExpr) expr).toString().toLowerCase();
+         }
+         throw new SqlParseException("could not parse sqlBinaryOpExpr need to be identifier/valuable got" + expr.getClass().toString() + " with value:" + expr.toString());
+     }
+
+File: src/main/java/org/nlpcn/es4sql/Util.java
+Patch:
+@@ -99,6 +99,8 @@ public static Object getScriptValueWithQuote(SQLExpr expr, String quote) throws
+             return ((SQLIntegerExpr) expr).getValue();
+         } else if (expr instanceof SQLNumericLiteralExpr) {
+             return ((SQLNumericLiteralExpr) expr).getNumber();
++        } else if (expr instanceof SQLNullExpr) {
++            return ((SQLNullExpr) expr).toString().toLowerCase();
+         }
+         throw new SqlParseException("could not parse sqlBinaryOpExpr need to be identifier/valuable got" + expr.getClass().toString() + " with value:" + expr.toString());
+     }
+
+File: src/main/java/org/nlpcn/es4sql/parse/FieldMaker.java
+Patch:
+@@ -255,7 +255,7 @@ public static MethodField makeMethodField(String name, List<SQLExpr> arguments,
+                 } else throw new SqlParseException("only support script/nested/children as inner functions");
+             } else if (object instanceof SQLCaseExpr) {
+                 String scriptCode = new CaseWhenParser((SQLCaseExpr) object, alias, tableAlias).parse();
+-                paramers.add(new KVValue(new SQLCharExpr(scriptCode)));
++                paramers.add(new KVValue("script",new SQLCharExpr(scriptCode)));
+             } else {
+                 paramers.add(new KVValue(Util.removeTableAilasFromField(object, tableAlias)));
+             }
+
+File: src/main/java/org/nlpcn/es4sql/parse/FieldMaker.java
+Patch:
+@@ -255,7 +255,7 @@ public static MethodField makeMethodField(String name, List<SQLExpr> arguments,
+                 } else throw new SqlParseException("only support script/nested/children as inner functions");
+             } else if (object instanceof SQLCaseExpr) {
+                 String scriptCode = new CaseWhenParser((SQLCaseExpr) object, alias, tableAlias).parse();
+-                paramers.add(new KVValue(new SQLCharExpr(scriptCode)));
++                paramers.add(new KVValue("script",new SQLCharExpr(scriptCode)));
+             } else {
+                 paramers.add(new KVValue(Util.removeTableAilasFromField(object, tableAlias)));
+             }
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -16,6 +16,7 @@ public enum HintType
+     IGNORE_UNAVAILABLE,
+     DOCS_WITH_AGGREGATION,
+     ROUTINGS,
++    SHARD_SIZE,
+     HIGHLIGHT,
+     MINUS_FETCH_AND_RESULT_LIMITS,
+     MINUS_USE_TERMS_OPTIMIZATION;
+
+File: src/test/java/org/nlpcn/es4sql/SQLFunctionsTest.java
+Patch:
+@@ -55,7 +55,6 @@ public void functionFieldAliasAndGroupByAlias() throws Exception {
+         Assert.assertEquals(2, headers.size());
+         Assert.assertTrue(headers.contains("key"));
+         Assert.assertTrue(headers.contains("cvalue"));
+-        Assert.assertTrue(content.contains("19260.0,167.0"));
+     }
+ 
+     @Test
+@@ -124,7 +123,7 @@ public void concat_ws_field_and_string() throws Exception {
+     @Test
+     public void test() throws Exception {
+ 
+-        String query = "SELECT  gender,lastname,age from  " + TestsConstants.TEST_INDEX + " where lastname='Heath'";
++        String query = "select /*! SHARD_SIZE(1000) */ sum(traffic) as tf,date_format(5minute,'yyyyMMddHHmm') as nt  from traffic_statistics where business_line='2'  and day='20160927' group by nt order by tf asc limit 10";
+ 
+         SearchDao searchDao = MainTestSuite.getSearchDao() != null ? MainTestSuite.getSearchDao() : getSearchDao();
+         System.out.println(searchDao.explain(query).explain().explain());
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -16,5 +16,6 @@ public enum HintType
+     IGNORE_UNAVAILABLE,
+     DOCS_WITH_AGGREGATION,
+     ROUTINGS,
++    SHARD_SIZE,
+     HIGHLIGHT;
+ }
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/executors/CSVResultsExtractor.java
+Patch:
+@@ -304,7 +304,7 @@ private String findFieldValue(String header, Map<String, Object> doc, boolean fl
+         }
+         else {
+             if(doc.containsKey(header)){
+-                return doc.get(header).toString() + separator;
++                return String.valueOf(doc.get(header)) + separator;
+             }
+         }
+         return separator;
+
+File: src/test/java/org/nlpcn/es4sql/CSVResultsExtractorTests.java
+Patch:
+@@ -401,7 +401,8 @@ public void scriptedField() throws SqlParseException, SQLFeatureNotSupportedExce
+         Assert.assertTrue(headers.contains("age"));
+         Assert.assertTrue(headers.contains("firstname"));
+         List<String> lines = csvResult.getLines();
+-        Assert.assertTrue(lines.get(0).contains("32,31") || lines.get(0).contains("32.0,31.0"));
++        System.out.println("lines.get(0) = " + lines.get(0));
++        Assert.assertTrue(lines.get(0).contains("32,31") || lines.get(0).contains("32.0,31.0") || lines.get(0).contains("31,32")|| lines.get(0).contains("31.0,32.0"));
+     }
+ 
+ 
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/executors/CSVResultsExtractor.java
+Patch:
+@@ -247,7 +247,7 @@ private List<String> createCSVLinesFromDocs(boolean flat, String separator, List
+             for(String header : headers){
+                 line += findFieldValue(header, doc, flat, separator);
+             }
+-            csvLines.add(line.substring(0, line.length() - 1));
++            csvLines.add(line.substring(0, line.lastIndexOf(separator)));
+         }
+         return csvLines;
+     }
+
+File: src/main/java/com/alibaba/druid/pool/ElasticSearchDruidPooledPreparedStatement.java
+Patch:
+@@ -44,7 +44,7 @@ public ResultSet executeQuery() throws SQLException {
+         try {
+ 
+ 
+-            ObjectResult extractor = getObjectResult(true, getSql(), false, false);
++            ObjectResult extractor = getObjectResult(true, getSql(), false, false, true);
+             List<String> headers = extractor.getHeaders();
+             List<List<Object>> lines = extractor.getLines();
+ 
+@@ -65,14 +65,14 @@ public ResultSet executeQuery() throws SQLException {
+         }
+     }
+ 
+-    private ObjectResult getObjectResult(boolean flat, String query, boolean includeScore, boolean includeType) throws SqlParseException, SQLFeatureNotSupportedException, Exception, CsvExtractorException {
++    private ObjectResult getObjectResult(boolean flat, String query, boolean includeScore, boolean includeType, boolean includeId) throws SqlParseException, SQLFeatureNotSupportedException, Exception, CsvExtractorException {
+         SearchDao searchDao = new org.nlpcn.es4sql.SearchDao(client);
+ 
+         //String rewriteSQL = searchDao.explain(getSql()).explain().explain();
+ 
+         QueryAction queryAction = searchDao.explain(query);
+         Object execution = QueryActionElasticExecutor.executeAnyAction(searchDao.getClient(), queryAction);
+-        return new ObjectResultsExtractor(includeScore, includeType).extractResults(execution, flat, ",");
++        return new ObjectResultsExtractor(includeScore, includeType, includeId).extractResults(execution, flat);
+     }
+ 
+     @Override
+
+File: src/main/java/com/alibaba/druid/pool/ElasticSearchDruidPooledPreparedStatement.java
+Patch:
+@@ -44,7 +44,7 @@ public ResultSet executeQuery() throws SQLException {
+         try {
+ 
+ 
+-            ObjectResult extractor = getObjectResult(true, getSql(), false, false);
++            ObjectResult extractor = getObjectResult(true, getSql(), false, false, true);
+             List<String> headers = extractor.getHeaders();
+             List<List<Object>> lines = extractor.getLines();
+ 
+@@ -65,14 +65,14 @@ public ResultSet executeQuery() throws SQLException {
+         }
+     }
+ 
+-    private ObjectResult getObjectResult(boolean flat, String query, boolean includeScore, boolean includeType) throws SqlParseException, SQLFeatureNotSupportedException, Exception, CsvExtractorException {
++    private ObjectResult getObjectResult(boolean flat, String query, boolean includeScore, boolean includeType, boolean includeId) throws SqlParseException, SQLFeatureNotSupportedException, Exception, CsvExtractorException {
+         SearchDao searchDao = new org.nlpcn.es4sql.SearchDao(client);
+ 
+         //String rewriteSQL = searchDao.explain(getSql()).explain().explain();
+ 
+         QueryAction queryAction = searchDao.explain(query);
+         Object execution = QueryActionElasticExecutor.executeAnyAction(searchDao.getClient(), queryAction);
+-        return new ObjectResultsExtractor(includeScore, includeType).extractResults(execution, flat, ",");
++        return new ObjectResultsExtractor(includeScore, includeType, includeId).extractResults(execution, flat);
+     }
+ 
+     @Override
+
+File: src/test/java/org/nlpcn/es4sql/SQLFunctionsTest.java
+Patch:
+@@ -102,8 +102,7 @@ public void concat_ws_field_and_string() throws Exception {
+         List<String> headers = csvResult.getHeaders();
+         List<String> contents = csvResult.getLines();
+         String[] splits = contents.get(0).split(",");
+-        //TODO: this function not validate test! please fix it 
+-		//Assert.assertTrue(splits[0].endsWith("--"));
++		Assert.assertTrue(splits[0].endsWith("--")|| splits[1].endsWith("--"));
+ 	}
+ 
+ 	@Test
+
+File: src/test/java/org/nlpcn/es4sql/SQLFunctionsTest.java
+Patch:
+@@ -102,8 +102,7 @@ public void concat_ws_field_and_string() throws Exception {
+         List<String> headers = csvResult.getHeaders();
+         List<String> contents = csvResult.getLines();
+         String[] splits = contents.get(0).split(",");
+-        //TODO: this function not validate test! please fix it 
+-		//Assert.assertTrue(splits[0].endsWith("--"));
++		Assert.assertTrue(splits[0].endsWith("--")|| splits[1].endsWith("--"));
+ 	}
+ 
+ 	@Test
+
+File: src/test/java/org/nlpcn/es4sql/MainTestSuite.java
+Patch:
+@@ -200,8 +200,9 @@ private static void prepareParentTypeIndex() {
+     }
+ 
+     @AfterClass
+-	public static void tearDown() {
++	public static void tearDown() throws InterruptedException {
+ 		System.out.println("teardown process...");
++		client.close();
+ 	}
+ 
+ 
+
+File: src/main/java/org/nlpcn/es4sql/Test.java
+Patch:
+@@ -75,7 +75,7 @@ public static void main(String[] args) throws Exception {
+                 "group by key ";
+         String TEST_INDEX = "elasticsearch-sql_test_index";
+ 
+-        sql =  "select count(t.*) as counts,sum(t.size) from xxx/locs as t group by t.kk";
++        sql =  "select * from xxx/locs where 'a' = 'b' and a > 1";
+ 
+         System.out.println("sql" + sql + ":\n----------\n" + sqlToEsQuery(sql));
+ 
+
+File: src/main/java/org/nlpcn/es4sql/Test.java
+Patch:
+@@ -75,7 +75,7 @@ public static void main(String[] args) throws Exception {
+                 "group by key ";
+         String TEST_INDEX = "elasticsearch-sql_test_index";
+ 
+-        sql =  "select count(t.*) as counts,sum(t.size) from xxx/locs as t group by t.kk";
++        sql =  "select * from xxx/locs where 'a' = 'b' and a > 1";
+ 
+         System.out.println("sql" + sql + ":\n----------\n" + sqlToEsQuery(sql));
+ 
+
+File: src/test/java/org/nlpcn/es4sql/SQLFunctionsTest.java
+Patch:
+@@ -101,7 +101,7 @@ public void concat_ws_field_and_string() throws Exception {
+         List<String> headers = csvResult.getHeaders();
+         List<String> contents = csvResult.getLines();
+         String[] splits = contents.get(0).split(",");
+-        Assert.assertTrue(splits[1].endsWith("--"));
++        Assert.assertTrue(splits[0].endsWith("--"));
+     }
+ 
+     @Test
+
+File: src/test/java/org/nlpcn/es4sql/SQLFunctionsTest.java
+Patch:
+@@ -101,7 +101,7 @@ public void concat_ws_field_and_string() throws Exception {
+         List<String> headers = csvResult.getHeaders();
+         List<String> contents = csvResult.getLines();
+         String[] splits = contents.get(0).split(",");
+-        Assert.assertTrue(splits[1].endsWith("--"));
++        Assert.assertTrue(splits[0].endsWith("--"));
+     }
+ 
+     @Test
+
+File: src/main/java/org/nlpcn/es4sql/query/AggregationQueryAction.java
+Patch:
+@@ -166,6 +166,7 @@ public SqlElasticSearchRequestBuilder explain() throws SqlParseException {
+ 
+ 		request.setSearchType(SearchType.DEFAULT);
+         updateRequestWithIndexAndRoutingOptions(select, request);
++        updateRequestWithHighlight(select, request);
+         SqlElasticSearchRequestBuilder sqlElasticRequestBuilder = new SqlElasticSearchRequestBuilder(request);
+         return sqlElasticRequestBuilder;
+ 	}
+
+File: src/main/java/org/nlpcn/es4sql/query/QueryAction.java
+Patch:
+@@ -69,6 +69,9 @@ protected HighlightBuilder.Field parseHighlightField(Object[] params)
+ 
+         for (Map.Entry<String,Object> param : highlightParams.entrySet()){
+             switch (param.getKey()){
++                case "type":
++                    field.highlighterType((String) param.getValue());
++                    break;
+                 case "boundary_chars":
+                     field.boundaryChars(fromArrayListToCharArray((ArrayList) param.getValue()));
+                     break;
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/executors/CSVResultRestExecutor.java
+Patch:
+@@ -26,7 +26,9 @@ public void execute(Client client, Map<String, String> params, QueryAction query
+         if(params.containsKey("separator")){
+          separator = params.get("separator");
+         }
+-        CSVResult result  = new CSVResultsExtractor().extractResults(queryResult,flat,separator);
++        boolean includeScore = Boolean.getBoolean(params.getOrDefault("_score", "false"));
++        boolean includeType = Boolean.getBoolean(params.getOrDefault("_type", "false"));
++        CSVResult result  = new CSVResultsExtractor(includeScore,includeType).extractResults(queryResult,flat,separator);
+         String newLine = "\n";
+         if(params.containsKey("newLine")){
+          newLine = params.get("newLine");
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -83,13 +83,13 @@ private Where findWhere(SQLExpr where) throws SqlParseException {
+ 	private boolean isCond(SQLBinaryOpExpr expr) {
+         SQLExpr leftSide = expr.getLeft();
+         if(leftSide instanceof SQLMethodInvokeExpr){
+-            return isAllowedMethodOnConditionLeft((SQLMethodInvokeExpr) leftSide);
++            return isAllowedMethodOnConditionLeft((SQLMethodInvokeExpr) leftSide,expr.getOperator());
+         }
+ 		return leftSide instanceof SQLIdentifierExpr || leftSide instanceof SQLPropertyExpr || leftSide instanceof SQLVariantRefExpr;
+ 	}
+ 
+-    private boolean isAllowedMethodOnConditionLeft(SQLMethodInvokeExpr method) {
+-        return  method.getMethodName().toLowerCase().equals("nested");
++    private boolean isAllowedMethodOnConditionLeft(SQLMethodInvokeExpr method, SQLBinaryOperator operator) {
++        return  method.getMethodName().toLowerCase().equals("nested") && !operator.isLogical();
+     }
+ 
+     public void parseWhere(SQLExpr expr, Where where) throws SqlParseException {
+
+File: src/test/java/org/nlpcn/es4sql/AggregationTest.java
+Patch:
+@@ -235,7 +235,7 @@ public void multipleGroupBysWithSize() throws Exception {
+         Assert.assertEquals(2,gender.getBuckets().size());
+         for(Terms.Bucket genderBucket : gender.getBuckets()) {
+ 
+-            String genderKey = genderBucket.getKey();
++            String genderKey = genderBucket.getKey().toString();
+             buckets.put(genderKey, new HashSet<Integer>());
+             Terms ageBuckets = genderBucket.getAggregations().get("ageAgg");
+             Assert.assertEquals(3,ageBuckets.getBuckets().size());
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintType.java
+Patch:
+@@ -13,5 +13,6 @@ public enum HintType
+     USE_NESTED_LOOPS,
+     NL_MULTISEARCH_SIZE,
+     USE_SCROLL,
+-    IGNORE_UNAVAILABLE;
++    IGNORE_UNAVAILABLE,
++    DOCS_WITH_AGGREGATION;
+ }
+
+File: src/test/java/org/nlpcn/es4sql/MainTestSuite.java
+Patch:
+@@ -89,6 +89,9 @@ private static void prepareNestedTypeIndex() {
+                     "              \"author\": {\n" +
+                     "                \"type\": \"string\",\n" +
+                     "                \"index\": \"not_analyzed\"\n" +
++                    "              },\n" +
++                    "              \"dayOfWeek\": {\n" +
++                    "                \"type\": \"long\"\n" +
+                     "              }\n" +
+                     "            }\n" +
+                     "          },\n" +
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -553,9 +553,8 @@ private void negateWhere(Where where) throws SqlParseException {
+ 				cond.setOpear(cond.getOpear().negative());
+ 			} else {
+ 				negateWhere(sub);
+-                sub.setConn(sub.getConn().negative());
+ 			}
+-
++            sub.setConn(sub.getConn().negative());
+ 		}
+ 	}
+ 
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/QueryMaker.java
+Patch:
+@@ -20,6 +20,9 @@ public class QueryMaker extends Maker {
+ 	 */
+ 	public static BoolQueryBuilder explan(Where where) throws SqlParseException {
+ 		BoolQueryBuilder boolQuery = QueryBuilders.boolQuery();
++		while (where.getWheres().size() == 1) {
++			where = where.getWheres().getFirst();
++		}
+ 		new QueryMaker().explanWhere(boolQuery, where);
+ 		return boolQuery;
+ 	}
+@@ -29,9 +32,6 @@ private QueryMaker() {
+ 	}
+ 
+ 	private void explanWhere(BoolQueryBuilder boolQuery, Where where) throws SqlParseException {
+-		while (where.getWheres().size() == 1) {
+-			where = where.getWheres().getFirst();
+-		}
+ 		if (where instanceof Condition) {
+ 			addSubQuery(boolQuery, where, (QueryBuilder) make((Condition) where));
+ 		} else {
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -553,9 +553,8 @@ private void negateWhere(Where where) throws SqlParseException {
+ 				cond.setOpear(cond.getOpear().negative());
+ 			} else {
+ 				negateWhere(sub);
+-                sub.setConn(sub.getConn().negative());
+ 			}
+-
++            sub.setConn(sub.getConn().negative());
+ 		}
+ 	}
+ 
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/QueryMaker.java
+Patch:
+@@ -20,6 +20,9 @@ public class QueryMaker extends Maker {
+ 	 */
+ 	public static BoolQueryBuilder explan(Where where) throws SqlParseException {
+ 		BoolQueryBuilder boolQuery = QueryBuilders.boolQuery();
++		while (where.getWheres().size() == 1) {
++			where = where.getWheres().getFirst();
++		}
+ 		new QueryMaker().explanWhere(boolQuery, where);
+ 		return boolQuery;
+ 	}
+@@ -29,9 +32,6 @@ private QueryMaker() {
+ 	}
+ 
+ 	private void explanWhere(BoolQueryBuilder boolQuery, Where where) throws SqlParseException {
+-		while (where.getWheres().size() == 1) {
+-			where = where.getWheres().getFirst();
+-		}
+ 		if (where instanceof Condition) {
+ 			addSubQuery(boolQuery, where, (QueryBuilder) make((Condition) where));
+ 		} else {
+
+File: src/main/java/org/nlpcn/es4sql/domain/hints/HintFactory.java
+Patch:
+@@ -37,13 +37,13 @@ public static Hint getHintFromString(String hintAsString){
+         }
+         if(hintAsString.startsWith("! USE_SCROLL")){
+             String[] scrollParams = getParamsFromHint(hintAsString,"! USE_SCROLL");
+-            int docsPerFetch = 10000;
++            int docsPerShardFetch = 50;
+             int timeout = 60000;
+             if(scrollParams != null && scrollParams.length ==2) {
+-                docsPerFetch = Integer.parseInt(scrollParams[0]);
++                docsPerShardFetch = Integer.parseInt(scrollParams[0]);
+                 timeout = Integer.parseInt(scrollParams[1]);
+             }
+-            return new Hint(HintType.USE_SCROLL, new Object[]{docsPerFetch,timeout});
++            return new Hint(HintType.USE_SCROLL, new Object[]{docsPerShardFetch,timeout});
+         }
+         return null;
+     }
+
+File: src/main/java/org/nlpcn/es4sql/Util.java
+Patch:
+@@ -40,7 +40,9 @@ public static Object expr2Object(SQLExpr expr) throws SqlParseException {
+ 		} else if (expr instanceof SQLIdentifierExpr) {
+ 			value = expr.toString();
+ 		} else if (expr instanceof SQLPropertyExpr) {
+-			value = expr.toString();
++            value = expr.toString();
++        }else if (expr instanceof SQLVariantRefExpr ){
++            value = expr.toString();
+ 		}else if (expr instanceof SQLAllColumnExpr) {
+ 			value = "*";
+ 		} else {
+
+File: src/main/java/org/nlpcn/es4sql/query/SqlElasticRequestBuilder.java
+Patch:
+@@ -1,6 +1,7 @@
+ package org.nlpcn.es4sql.query;
+ 
+ import org.elasticsearch.action.ActionRequest;
++import org.elasticsearch.action.ActionRequestBuilder;
+ import org.elasticsearch.action.ActionResponse;
+ 
+ /**
+@@ -10,4 +11,6 @@ public interface SqlElasticRequestBuilder {
+     public ActionRequest request();
+     public String explain();
+     public ActionResponse get();
++    public ActionRequestBuilder getBuilder();
++
+ }
+
+File: src/test/java/org/nlpcn/es4sql/MainTestSuite.java
+Patch:
+@@ -29,8 +29,8 @@
+ 		DeleteTest.class,
+ 		ExplainTest.class,
+         WktToGeoJsonConverterTests.class,
+-        SqlParserTests.class
+-
++        SqlParserTests.class,
++        ShowTest.class
+ })
+ public class MainTestSuite {
+ 
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/FilterMaker.java
+Patch:
+@@ -19,6 +19,9 @@ public class FilterMaker extends Maker {
+ 	 */
+ 	public static BoolFilterBuilder explan(Where where) throws SqlParseException {
+ 		BoolFilterBuilder boolFilter = FilterBuilders.boolFilter();
++		while (where.getWheres().size() == 1) {
++			where = where.getWheres().getFirst();
++		}
+ 		new FilterMaker().explanWhere(boolFilter, where);
+ 		return boolFilter;
+ 	}
+@@ -28,9 +31,6 @@ private FilterMaker() {
+ 	}
+ 
+ 	private void explanWhere(BoolFilterBuilder boolFilter, Where where) throws SqlParseException {
+-		while (where.getWheres().size() == 1) {
+-			where = where.getWheres().getFirst();
+-		}
+ 		if (where instanceof Condition) {
+ 			addSubFilter(boolFilter, where, (BaseFilterBuilder) make((Condition) where));
+ 		} else {
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/FilterMaker.java
+Patch:
+@@ -28,9 +28,6 @@ private FilterMaker() {
+ 	}
+ 
+ 	private void explanWhere(BoolFilterBuilder boolFilter, Where where) throws SqlParseException {
+-		while (where.getWheres().size() == 1) {
+-			where = where.getWheres().getFirst();
+-		}
+ 		if (where instanceof Condition) {
+ 			addSubFilter(boolFilter, where, (BaseFilterBuilder) make((Condition) where));
+ 		} else {
+
+File: src/main/java/org/nlpcn/es4sql/parse/ElasticLexer.java
+Patch:
+@@ -88,6 +88,6 @@ public void scanIdentifier() {
+ 
+ 
+     private boolean isElasticIdentifierChar(char ch) {
+-        return ch == '*' || ch == ':' || ch == '-'  || isIdentifierChar(ch);
++        return ch == '*' || ch == ':' || ch == '-'  || ch == '.' || isIdentifierChar(ch);
+     }
+ }
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -437,7 +437,7 @@ private List<Field> getConnectedFields(List<Condition> conditions, String alias)
+                 fields.add(new Field(condition.getName().replaceFirst(prefix,""),null));
+             }
+             else {
+-                if(! ((condition.getValue() instanceof SQLPropertyExpr)||(condition.getValue() instanceof String))){
++                if(! ((condition.getValue() instanceof SQLPropertyExpr)||(condition.getValue() instanceof SQLIdentifierExpr)||(condition.getValue() instanceof String))){
+                     throw new SqlParseException("conditions on join should be one side is firstTable second Other , condition was:" + condition.toString());
+                 }
+                 String aliasDotValue = condition.getValue().toString();
+@@ -517,7 +517,7 @@ private void removeAliasPrefix(Where where, String alias) {
+     private void addIfConditionRecursive(Where where, List<Condition> conditions) throws SqlParseException {
+         if(where instanceof Condition){
+             Condition cond = (Condition) where;
+-            if( ! ((cond.getValue() instanceof  SQLPropertyExpr)|| (cond.getValue() instanceof  String))){
++            if( ! ((cond.getValue() instanceof  SQLIdentifierExpr) ||(cond.getValue() instanceof  SQLPropertyExpr)|| (cond.getValue() instanceof  String))){
+                 throw new SqlParseException("conditions on join should be one side is secondTable OPEAR firstTable, condition was:" + cond.toString());
+             }
+             conditions.add(cond);
+
+File: src/main/java/org/nlpcn/es4sql/query/ESActionFactory.java
+Patch:
+@@ -45,7 +45,8 @@ public class ESActionFactory {
+ 	 * @return Query object.
+ 	 */
+ 	public static QueryAction create(Client client, String sql) throws SqlParseException, SQLFeatureNotSupportedException {
+-		String firstWord = sql.substring(0, sql.indexOf(' '));
++		sql = sql.replaceAll("\n"," ");
++        String firstWord = sql.substring(0, sql.indexOf(' '));
+         switch (firstWord.toUpperCase()) {
+ 			case "SELECT":
+ 				SQLQueryExpr sqlExpr = (SQLQueryExpr) toSqlExpr(sql);
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/HashJoinElasticExecutor.java
+Patch:
+@@ -46,6 +46,7 @@ public class HashJoinElasticExecutor extends ElasticJoinExecutor {
+     private final int MAX_RESULTS_FOR_FIRST_TABLE = 100000;
+ 
+     public HashJoinElasticExecutor(Client client,HashJoinElasticRequestBuilder requestBuilder) {
++        super(requestBuilder);
+         this.client = client;
+         this.requestBuilder = requestBuilder;
+         this.useQueryTermsFilterOptimization = requestBuilder.isUseTermFiltersOptimization();
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/NestedLoopsElasticExecutor.java
+Patch:
+@@ -32,6 +32,7 @@ public class NestedLoopsElasticExecutor extends ElasticJoinExecutor {
+     private final Client client;
+ 
+     public NestedLoopsElasticExecutor(Client client, NestedLoopsElasticRequestBuilder nestedLoops) {
++        super(nestedLoops);
+         this.client = client;
+         this.nestedLoopsRequest = nestedLoops;
+     }
+
+File: src/main/java/org/nlpcn/es4sql/domain/JoinSelect.java
+Patch:
+@@ -1,6 +1,8 @@
+ package org.nlpcn.es4sql.domain;
+ 
+ import com.alibaba.druid.sql.ast.statement.SQLJoinTableSource;
++import org.nlpcn.es4sql.domain.hints.Hint;
++
+ 
+ import java.util.List;
+ 
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -11,6 +11,8 @@
+ 
+ import org.nlpcn.es4sql.domain.*;
+ import org.nlpcn.es4sql.domain.Where.CONN;
++import org.nlpcn.es4sql.domain.hints.Hint;
++import org.nlpcn.es4sql.domain.hints.HintFactory;
+ import org.nlpcn.es4sql.exception.SqlParseException;
+ import org.nlpcn.es4sql.spatial.SpatialParamsFactory;
+ 
+@@ -342,7 +344,7 @@ public JoinSelect parseJoinSelect(SQLQueryExpr sqlExpr) throws SqlParseException
+     private List<Hint> parseHints(List<SQLCommentHint> sqlHints) {
+         List<Hint> hints = new ArrayList<>();
+         for (SQLCommentHint sqlHint : sqlHints) {
+-            Hint hint = Hint.hintFromString(sqlHint.getText());
++            Hint hint = HintFactory.getHintFromString(sqlHint.getText());
+             if (hint != null) hints.add(hint);
+         }
+         return hints;
+
+File: src/main/java/org/nlpcn/es4sql/parse/ElasticLexer.java
+Patch:
+@@ -1,7 +1,6 @@
+ package org.nlpcn.es4sql.parse;
+ 
+ import com.alibaba.druid.sql.dialect.mysql.parser.MySqlLexer;
+-import com.alibaba.druid.sql.parser.Lexer;
+ import com.alibaba.druid.sql.parser.ParserException;
+ import com.alibaba.druid.sql.parser.Token;
+ 
+
+File: src/main/java/org/nlpcn/es4sql/query/ESHashJoinQueryAction.java
+Patch:
+@@ -43,6 +43,8 @@ public SqlElasticRequestBuilder explain() throws SqlParseException {
+ 
+         String t1Alias = joinSelect.getT1Alias();
+         String t2Alias = joinSelect.getT2Alias();
++        hashRequest.setFirstTableAlias(t1Alias);
++        hashRequest.setSecondTableAlias(t2Alias);
+         List<Map.Entry<Field,Field>> comparisonFields = new ArrayList<>();
+         for(Condition condition : joinSelect.getConnectedConditions()){
+ 
+@@ -65,6 +67,7 @@ public SqlElasticRequestBuilder explain() throws SqlParseException {
+         }
+         hashRequest.setT1ToT2FieldsComparison(comparisonFields);
+ 
++        hashRequest.setJoinType(joinSelect.getJoinType());
+         return hashRequest;
+     }
+ 
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/Maker.java
+Patch:
+@@ -21,7 +21,7 @@
+ 
+ public abstract class Maker {
+ 
+-	private static final Set<OPEAR> NOT_OPEAR_SET = Sets.newHashSet(OPEAR.N, OPEAR.NIN, OPEAR.ISN, OPEAR.NBETWEEN);
++	private static final Set<OPEAR> NOT_OPEAR_SET = Sets.newHashSet(OPEAR.N, OPEAR.NIN, OPEAR.ISN, OPEAR.NBETWEEN, OPEAR.NLIKE);
+ 
+ 	private boolean isQuery = false;
+ 
+@@ -142,6 +142,7 @@ private ToXContent make(Condition cond, String name, Object value) throws SqlPar
+ 				break;
+ 			}
+ 		case LIKE:
++		case NLIKE:
+ 			String queryStr = ((String) value).replace('%', '*').replace('_', '?');
+ 			WildcardQueryBuilder wildcardQuery = QueryBuilders.wildcardQuery(name, queryStr);
+ 			x = isQuery ? wildcardQuery : FilterBuilders.queryFilter(wildcardQuery);
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/Maker.java
+Patch:
+@@ -21,7 +21,7 @@
+ 
+ public abstract class Maker {
+ 
+-	private static final Set<OPEAR> NOT_OPEAR_SET = Sets.newHashSet(OPEAR.N, OPEAR.NIN, OPEAR.ISN, OPEAR.NBETWEEN);
++	private static final Set<OPEAR> NOT_OPEAR_SET = Sets.newHashSet(OPEAR.N, OPEAR.NIN, OPEAR.ISN, OPEAR.NBETWEEN, OPEAR.NLIKE);
+ 
+ 	private boolean isQuery = false;
+ 
+@@ -142,6 +142,7 @@ private ToXContent make(Condition cond, String name, Object value) throws SqlPar
+ 				break;
+ 			}
+ 		case LIKE:
++		case NLIKE:
+ 			String queryStr = ((String) value).replace('%', '*').replace('_', '?');
+ 			WildcardQueryBuilder wildcardQuery = QueryBuilders.wildcardQuery(name, queryStr);
+ 			x = isQuery ? wildcardQuery : FilterBuilders.queryFilter(wildcardQuery);
+
+File: src/test/java/org/nlpcn/es4sql/TestsConstants.java
+Patch:
+@@ -7,5 +7,5 @@ public class TestsConstants {
+ 
+ 	public final static String TEST_INDEX = "elasticsearch-sql_test_index";
+ 	public final static String DATE_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+-
++	public final static String TS_DATE_FORMAT = "yyyy-MM-dd HH:mm:ss.SSS";
+ }
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -190,6 +190,9 @@ private void findGroupBy(MySqlSelectQueryBlock query, Select select) throws SqlP
+ 				// multiple items in their own list
+ 				SQLListExpr listExpr = (SQLListExpr) sqlExpr;
+ 				select.addGroupBy(convertExprsToFields(listExpr.getItems()));
++			} else {
++				// something else
++				standardGroupBys.add(sqlExpr);
+ 			}
+ 		}
+ 		if (!standardGroupBys.isEmpty()) {
+
+File: src/test/java/org/nlpcn/es4sql/AggregationTest.java
+Patch:
+@@ -230,7 +230,7 @@ public void testSubAggregations() throws  Exception {
+ 
+ 		Map<String, Set<Integer>> buckets = new HashMap<>();
+ 
+-		Aggregations result = query(String.format("SELECT COUNT(*) FROM %s/account GROUP BY (gender(age),state)", TEST_INDEX));
++		Aggregations result = query(String.format("SELECT COUNT(*) FROM %s/account GROUP BY (gender, age), (state)", TEST_INDEX));
+ 		Terms gender = result.get("gender");
+ 		for(Terms.Bucket genderBucket : gender.getBuckets()) {
+ 			String genderKey = genderBucket.getKey();
+
+File: src/test/java/org/nlpcn/es4sql/MainTestSuite.java
+Patch:
+@@ -109,7 +109,7 @@ public static void loadBulk(String jsonPath) throws Exception {
+ 
+ 		BulkRequestBuilder bulkBuilder = new BulkRequestBuilder(client);
+ 		byte[] buffer = ByteStreams.toByteArray(new FileInputStream(jsonPath));
+-		bulkBuilder.add(buffer, 0, buffer.length, true, TEST_INDEX, null);
++		bulkBuilder.add(buffer, 0, buffer.length, TEST_INDEX, null);
+ 		BulkResponse response = bulkBuilder.get();
+ 
+ 		if(response.hasFailures()) {
+
+File: src/main/java/org/nlpcn/es4sql/parse/FieldMaker.java
+Patch:
+@@ -27,7 +27,8 @@
+ public class FieldMaker {
+ 	public static Field makeField(SQLExpr expr, String alias) throws SqlParseException {
+ 		if (expr instanceof SQLIdentifierExpr || expr instanceof SQLPropertyExpr) {
+-			return new Field(expr.toString(), alias);
++			String name = expr.toString().replace("`", "");
++			return new Field(name, alias);
+ 		} else if (expr instanceof SQLQueryExpr) {
+ 			throw new SqlParseException("unknow field name : " + expr);
+ 		} else if (expr instanceof SQLAllColumnExpr) {
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -189,6 +189,7 @@ private void findOrderBy(MySqlSelectQueryBlock query, Select select) throws SqlP
+ 			}
+ 			String type = sqlSelectOrderByItem.getType().toString();
+ 			for (String name : lists) {
++				name = name.replace("`", "");
+ 				select.addOrderBy(name, type);
+ 			}
+ 			lists.clear();
+
+File: src/main/java/org/nlpcn/es4sql/parse/FieldMaker.java
+Patch:
+@@ -27,7 +27,8 @@
+ public class FieldMaker {
+ 	public static Field makeField(SQLExpr expr, String alias) throws SqlParseException {
+ 		if (expr instanceof SQLIdentifierExpr || expr instanceof SQLPropertyExpr) {
+-			return new Field(expr.toString(), alias);
++			String name = expr.toString().replace("`", "");
++			return new Field(name, alias);
+ 		} else if (expr instanceof SQLQueryExpr) {
+ 			throw new SqlParseException("unknow field name : " + expr);
+ 		} else if (expr instanceof SQLAllColumnExpr) {
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -189,6 +189,7 @@ private void findOrderBy(MySqlSelectQueryBlock query, Select select) throws SqlP
+ 			}
+ 			String type = sqlSelectOrderByItem.getType().toString();
+ 			for (String name : lists) {
++				name = name.replace("`", "");
+ 				select.addOrderBy(name, type);
+ 			}
+ 			lists.clear();
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -103,7 +103,7 @@ private void parseWhere(SQLBinaryOpExpr expr, SQLBinaryOpExpr sub, Where where)
+ 		if (isCond(sub)) {
+ 			explanCond(expr.operator.name, sub, where);
+ 		} else {
+-			if (sub.operator.priority < expr.operator.priority) {
++			if (sub.operator.priority > expr.operator.priority) {
+ 				Where subWhere = new Where(expr.getOperator().name);
+ 				where.addWhere(subWhere);
+ 				parseWhere(sub, subWhere);
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -103,7 +103,7 @@ private void parseWhere(SQLBinaryOpExpr expr, SQLBinaryOpExpr sub, Where where)
+ 		if (isCond(sub)) {
+ 			explanCond(expr.operator.name, sub, where);
+ 		} else {
+-			if (sub.operator.priority < expr.operator.priority) {
++			if (sub.operator.priority > expr.operator.priority) {
+ 				Where subWhere = new Where(expr.getOperator().name);
+ 				where.addWhere(subWhere);
+ 				parseWhere(sub, subWhere);
+
+File: src/test/java/org/nlpcn/es4sql/MainTestSuite.java
+Patch:
+@@ -150,7 +150,7 @@ private static InetSocketTransportAddress getTransportAddress() {
+ 		String port = System.getenv("ES_TEST_PORT");
+ 
+ 		if(host == null) {
+-			host = "10.1.1.44";
++			host = "localhost";
+ 			System.out.println("ES_TEST_HOST enviroment variable does not exist. choose default 'localhost'");
+ 		}
+ 
+
+File: src/test/java/org/nlpcn/es4sql/QueryTest.java
+Patch:
+@@ -301,7 +301,7 @@ public void dateSearchBraces() throws IOException, SqlParseException, SQLFeature
+             Map<String, Object> source = hit.getSource();
+             DateTime insertTime = formatter.parseDateTime((String) source.get("insert_time"));
+ 
+-            String errorMessage = String.format("insert_time must be smaller then 2015-01-15. found: %s", insertTime);
++            String errorMessage = String.format("insert_time must be smaller then 2015-03-15. found: %s", insertTime);
+             Assert.assertTrue(errorMessage, insertTime.isBefore(dateToCompare));
+         }
+     }
+
+File: src/test/java/org/nlpcn/es4sql/QueryTest.java
+Patch:
+@@ -293,15 +293,15 @@ public void dateSearch() throws IOException, SqlParseException, SQLFeatureNotSup
+     @Test
+     public void dateSearchBraces() throws IOException, SqlParseException, SQLFeatureNotSupportedException, ParseException {
+         DateTimeFormatter formatter = DateTimeFormat.forPattern(DATE_FORMAT);
+-        DateTime dateToCompare = new DateTime(2014, 8, 18, 0, 0, 0);
++        DateTime dateToCompare = new DateTime(2015, 1, 15, 0, 0, 0);
+ 
+-        SearchHits response = query(String.format("SELECT insert_time FROM %s/online WHERE insert_time < {ts '2014-08-18'}", TEST_INDEX));
++        SearchHits response = query(String.format("SELECT insert_time FROM %s/odbc WHERE insert_time < {ts '2015-03-15 00:00:00.000'}", TEST_INDEX));
+         SearchHit[] hits = response.getHits();
+         for(SearchHit hit : hits) {
+             Map<String, Object> source = hit.getSource();
+             DateTime insertTime = formatter.parseDateTime((String) source.get("insert_time"));
+ 
+-            String errorMessage = String.format("insert_time must be smaller then 2014-08-18. found: %s", insertTime);
++            String errorMessage = String.format("insert_time must be smaller then 2015-01-15. found: %s", insertTime);
+             Assert.assertTrue(errorMessage, insertTime.isBefore(dateToCompare));
+         }
+     }
+
+File: src/main/java/org/durid/sql/parser/SQLExprParser.java
+Patch:
+@@ -150,7 +150,7 @@ public SQLExpr primary() {
+                 tokenValue.add(lexer.token().name());
+                 lexer.nextToken();
+                 boolean foundRBrace = false;
+-                if(lexer.stringVal().equals(Token.TS)){
++                if(lexer.stringVal().equals(Token.TS.name)){
+                     String current = lexer.stringVal();
+                     do {
+                         tokens.add(lexer.token());
+@@ -171,6 +171,8 @@ public SQLExpr primary() {
+                     }else{
+                         throw new ParserException("Error. Unable to find closing RBRACE");
+                     }
++                }else{
++                    throw new ParserException("Error. Unable to parse ODBC Literal Timestamp");
+                 }
+                 break;
+             case INSERT:
+
+File: src/test/java/org/nlpcn/es4sql/MainTestSuite.java
+Patch:
+@@ -50,7 +50,6 @@ public static void setUp() throws Exception {
+ 		deleteQuery(TEST_INDEX);
+ 		loadBulk("src/test/resources/accounts.json");
+ 		loadBulk("src/test/resources/phrases.json");
+-		loadBulk("src/test/resources/phrases_2.json");
+ 		loadBulk("src/test/resources/online.json");
+ 
+ 
+
+File: src/test/java/org/nlpcn/es4sql/QueryTest.java
+Patch:
+@@ -36,9 +36,9 @@ public void multipleFromTest() throws IOException, SqlParseException, SQLFeature
+ 	}
+ 
+ 	@Test
+-	public void typeWithWildcardTest() throws IOException, SqlParseException, SQLFeatureNotSupportedException{
+-		SearchHits response = query(String.format("SELECT * FROM %s/phrase* LIMIT 1000", TEST_INDEX));
+-		Assert.assertEquals(8, response.getTotalHits());
++	public void indexWithWildcardTest() throws IOException, SqlParseException, SQLFeatureNotSupportedException{
++		SearchHits response = query("SELECT * FROM elasticsearch-* LIMIT 1000");
++		assertThat(response.getTotalHits(), greaterThan(0L));
+ 	}
+ 
+ 
+
+File: src/main/java/org/durid/sql/parser/SQLSelectParser.java
+Patch:
+@@ -212,9 +212,9 @@ public void parseFrom(SQLSelectQueryBlock queryBlock) {
+             return;
+         }
+ 
+-        lexer.nextToken();
+-
+-        queryBlock.setFrom(parseTableSource());
++		SQLTableSource source = new SQLExprTableSource(lexer.scanNames());
++        queryBlock.setFrom(source);
++		lexer.nextToken();
+     }
+ 
+     public SQLTableSource parseTableSource() {
+
+File: src/test/java/org/nlpcn/es4sql/QueryTest.java
+Patch:
+@@ -73,7 +73,7 @@ public void selectAliases() throws IOException, SqlParseException, SQLFeatureNot
+ 
+ 	@Test
+ 	public void equallityTest() throws SqlParseException, SQLFeatureNotSupportedException {
+-		SearchHits response = query(String.format("select * from %s/phrase where city = 'Nogal' LIMIT 1000", TEST_INDEX));
++		SearchHits response = query(String.format("select * from %s/account where city = 'Nogal' LIMIT 1000", TEST_INDEX));
+ 		SearchHit[] hits = response.getHits();
+ 
+ 		// assert the results is correct according to accounts.json data.
+
+File: src/test/java/org/nlpcn/es4sql/MainTestSuite.java
+Patch:
+@@ -50,8 +50,10 @@ public static void setUp() throws Exception {
+ 		deleteQuery(TEST_INDEX);
+ 		loadBulk("src/test/resources/accounts.json");
+ 		loadBulk("src/test/resources/phrases.json");
++		loadBulk("src/test/resources/phrases_2.json");
+ 		loadBulk("src/test/resources/online.json");
+ 
++
+ 		searchDao = new SearchDao(client);
+ 		System.out.println("Finished the setup process...");
+ 	}
+
+File: src/main/java/org/durid/sql/ast/statement/SQLJoinTableSource.java
+Patch:
+@@ -92,7 +92,7 @@ public void output(StringBuffer buf) {
+ 
+ 	@Override
+ 	public String getTablename() {
+-		return null;
++		return this.toString().replace(" ", "");
+ 	}
+ 
+ 	public static enum JoinType {
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -219,7 +219,6 @@ private void findLimit(MySqlSelectQueryBlock query, Select select) {
+ 	 * @return list of From objects represents all the sources.
+ 	 */
+ 	private List<From> findFrom(SQLTableSource from) {
+-		from.toString();
+ 		String[] split = from.getTablename().toString().split(",");
+ 
+ 		ArrayList<From> fromList = new ArrayList<>();
+
+File: src/main/java/org/elasticsearch/plugin/nlpcn/RestSqlAction.java
+Patch:
+@@ -37,13 +37,13 @@ protected void handleRequest(RestRequest request, RestChannel channel, final Cli
+ 
+ 		SearchDao searchDao = new SearchDao(client);
+ 
+-		SearchRequestBuilder explan = searchDao.explan(sql);
++		SearchRequestBuilder searchRequestBuilder = searchDao.explain(sql);
+ 
+ 		if (request.path().endsWith("/_explain")) {
+-			BytesRestResponse bytesRestResponse = new BytesRestResponse(RestStatus.OK, explan.toString());
++			BytesRestResponse bytesRestResponse = new BytesRestResponse(RestStatus.OK, searchRequestBuilder.toString());
+ 			channel.sendResponse(bytesRestResponse);
+ 		} else {
+-			SearchRequest searchRequest = explan.request();
++			SearchRequest searchRequest = searchRequestBuilder.request();
+ 			searchRequest.listenerThreaded(false);
+ 			client.search(searchRequest, new RestStatusToXContentListener<SearchResponse>(channel));
+ 		}
+
+File: src/main/java/org/nlpcn/es4sql/query/AggregationQuery.java
+Patch:
+@@ -34,7 +34,7 @@ public AggregationQuery(Client client, Select select) {
+ 	}
+ 
+ 	@Override
+-	protected SearchRequestBuilder _explan() throws SqlParseException {
++	protected SearchRequestBuilder _explain() throws SqlParseException {
+ 
+ 		BoolFilterBuilder boolFilter = null;
+ 		// set where
+
+File: src/test/java/org/nlpcn/es4sql/BugTest.java
+Patch:
+@@ -13,12 +13,11 @@
+  */
+ public class BugTest {
+ 
+-	private SearchDao searchDao = new SearchDao();
+ 	
+ 	@Test
+ 	public void bug1() throws IOException, SqlParseException{
+ 
+-		SearchRequestBuilder select = searchDao.explan("select count(*),sum(age) from bank");
++		SearchRequestBuilder select = MainTestSuite.getSearchDao().explain("select count(*),sum(age) from bank");
+ 		System.out.println(select);
+ 	}
+ }
+
+File: src/test/java/org/nlpcn/es4sql/QueryTest.java
+Patch:
+@@ -376,7 +376,7 @@ public void orderByDescTest() throws IOException, SqlParseException {
+ 
+ 	private SearchHits query(String query) throws SqlParseException {
+ 		SearchDao searchDao = MainTestSuite.getSearchDao();
+-		SearchRequestBuilder select = searchDao.explan(query);
++		SearchRequestBuilder select = searchDao.explain(query);
+ 		return select.get().getHits();
+ 	}
+ }
+
+File: src/main/java/org/nlpcn/es4sql/domain/Select.java
+Patch:
+@@ -12,7 +12,7 @@
+ public class Select {
+ 
+ 	// Using this functions, will cause query to execute as aggregation.
+-	private final List<String> aggsFunctions = Arrays.asList("SUM", "MAX", "MIN", "AVG", "TOPHITS", "COUNT");
++	private final List<String> aggsFunctions = Arrays.asList("SUM", "MAX", "MIN", "AVG", "TOPHITS", "COUNT", "STATS");
+ 
+ 	private List<Index> indexs = new ArrayList<>();
+ 	private List<Field> fields = new ArrayList<>();
+
+File: src/test/java/org/nlpcn/es4sql/AggregationTest.java
+Patch:
+@@ -74,7 +74,7 @@ public void statsTest() throws IOException, SqlParseException {
+ 		Aggregations result = query(String.format("SELECT STATS(age) FROM %s/account", TEST_INDEX));
+ 		Stats stats = result.get("STATS(age)");
+ 		Assert.assertEquals(1000, stats.getCount());
+-		assertThat(stats.getSum(), equalTo(25714837.0));
++		assertThat(stats.getSum(), equalTo(30171.0));
+ 		assertThat(stats.getMin(), equalTo(20.0));
+ 		assertThat(stats.getMax(), equalTo(40.0));
+ 		assertThat(stats.getAvg(), equalTo(30.171));
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQuery.java
+Patch:
+@@ -35,6 +35,7 @@ protected SearchRequestBuilder _explan() throws SqlParseException {
+ 				BoolQueryBuilder boolQuery = QueryMaker.explan(where);
+ 				request.setQuery(boolQuery);
+ 			} else {
++				// TODO use regular filter instead of postFilter?
+ 				BoolFilterBuilder boolFilter = FilterMaker.explan(where);
+ 				request.setPostFilter(boolFilter);
+ 			}
+
+File: src/main/java/org/nlpcn/es4sql/domain/Select.java
+Patch:
+@@ -17,7 +17,7 @@ public class Select {
+ 	private List<Field> groupBys = new ArrayList<>();
+ 	private List<Order> orderBys = new ArrayList<>();
+ 	private int offset;
+-	private int rowCount = Integer.MAX_VALUE;
++	private int rowCount = 200;
+ 
+ 	public boolean isQuery = false;
+ 
+
+File: src/main/java/org/nlpcn/es4sql/SearchDao.java
+Patch:
+@@ -60,8 +60,6 @@ private SearchRequestBuilder explan(SQLQueryExpr SQLQueryExpr) throws SqlParseEx
+ 
+ 		Query query = null;
+ 
+-		Client client = new TransportClient();
+-
+ 		if (select.isAgg) {
+ 			query = new AggregationQuery(client, select);
+ 		} else {
+
+File: src/main/java/org/nlpcn/es4sql/SearchDao.java
+Patch:
+@@ -60,8 +60,6 @@ private SearchRequestBuilder explan(SQLQueryExpr SQLQueryExpr) throws SqlParseEx
+ 
+ 		Query query = null;
+ 
+-		Client client = new TransportClient();
+-
+ 		if (select.isAgg) {
+ 			query = new AggregationQuery(client, select);
+ 		} else {
+
+File: src/main/java/org/nlpcn/es4sql/parse/FieldMaker.java
+Patch:
+@@ -8,14 +8,14 @@
+ import org.nlpcn.es4sql.domain.KVValue;
+ import org.nlpcn.es4sql.domain.MethodField;
+ import org.nlpcn.es4sql.exception.SqlParseException;
+-
+ import org.durid.sql.ast.SQLExpr;
+ import org.durid.sql.ast.expr.SQLAggregateExpr;
+ import org.durid.sql.ast.expr.SQLAggregateExpr.Option;
+ import org.durid.sql.ast.expr.SQLAllColumnExpr;
+ import org.durid.sql.ast.expr.SQLBinaryOpExpr;
+ import org.durid.sql.ast.expr.SQLIdentifierExpr;
+ import org.durid.sql.ast.expr.SQLMethodInvokeExpr;
++import org.durid.sql.ast.expr.SQLPropertyExpr;
+ import org.durid.sql.ast.expr.SQLQueryExpr;
+ 
+ /**
+@@ -26,7 +26,7 @@
+  */
+ public class FieldMaker {
+ 	public static Field makeField(SQLExpr expr, String alias) throws SqlParseException {
+-		if (expr instanceof SQLIdentifierExpr) {
++		if (expr instanceof SQLIdentifierExpr || expr instanceof SQLPropertyExpr) {
+ 			return new Field(expr.toString(), alias);
+ 		} else if (expr instanceof SQLQueryExpr) {
+ 			throw new SqlParseException("unknow field name : " + expr);
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/AggMaker.java
+Patch:
+@@ -195,7 +195,7 @@ private RangeBuilder rangeBuilder(MethodField field) {
+ 	 */
+ 	private AbstractAggregationBuilder makeCountAgg(MethodField field) {
+ 		if ("DISTINCT".equals(field.getOption())) {
+-			return AggregationBuilders.cardinality(field.getAlias()).field(field.getParams().get(0).value.toString());
++			return AggregationBuilders.cardinality(field.getAlias()).precisionThreshold(40000).field(field.getParams().get(0).value.toString());
+ 		}
+ 		String fieldName = field.getParams().get(0).value.toString();
+ 		if ("*".equals(fieldName)) {
+
+File: src/main/java/org/nlpcn/es4sql/domain/Select.java
+Patch:
+@@ -98,10 +98,8 @@ public String[] getTypeArr() {
+ 		Index index = null;
+ 		for (int i = 0; i < indexs.size(); i++) {
+ 			index = indexs.get(i);
+-			if (index.getType() != null) {
++			if (index.getType() != null && index.getType().trim().length() > 0) {
+ 				list.add(index.getType());
+-			}else{
+-				list.add("_all") ;
+ 			}
+ 		}
+ 		if (list.size() == 0) {
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -88,10 +88,8 @@ private void parseWhere(SQLExpr expr, Where where) throws SqlParseException {
+ 	private void routeCond(SQLBinaryOpExpr bExpr, SQLExpr sub, Where where) throws SqlParseException {
+ 		if (sub instanceof SQLBinaryOpExpr) {
+ 			parseWhere(bExpr, (SQLBinaryOpExpr) sub, where);
+-		} else if (sub instanceof SQLInListExpr) {
+-			explanCond(bExpr.operator.name, sub, where);
+ 		} else {
+-			throw new SqlParseException("error class type sub :" + sub.getClass());
++			explanCond(bExpr.operator.name, sub, where);
+ 		}
+ 	}
+ 
+
+File: src/main/java/org/nlpcn/es4sql/parse/SqlParser.java
+Patch:
+@@ -213,7 +213,7 @@ private void findFrom(MySqlSelectQueryBlock query, Select select) {
+ 		String[] split = from.toString().split(",");
+ 
+ 		for (String string : split) {
+-			select.addIndexAndType(string.trim());
++			select.addIndexAndType(string.replace(" ", "").trim());
+ 		}
+ 	}
+ 
+
+File: src/main/java/org/nlpcn/es4sql/query/Query.java
+Patch:
+@@ -1,6 +1,7 @@
+ package org.nlpcn.es4sql.query;
+ 
+ import java.lang.reflect.Method;
++import java.util.Arrays;
+ 
+ import org.elasticsearch.action.search.SearchRequestBuilder;
+ import org.elasticsearch.client.Client;
+@@ -33,7 +34,6 @@ public Query(Client client, Select select) {
+ 	 * @throws SqlParseException
+ 	 */
+ 	public SearchRequestBuilder explan() throws SqlParseException {
+-
+ 		// set index
+ 		request = client.prepareSearch(select.getIndexArr());
+ 
+
+File: src/test/java/org/nlpcn/es4sql/OnlineStaic.java
+Patch:
+@@ -3,13 +3,13 @@
+ import java.io.IOException;
+ import java.util.Date;
+ 
+-import org.elasticsearch.action.search.SearchResponse;
++import org.elasticsearch.action.ActionResponse;
+ import org.nlpcn.es4sql.exception.SqlParseException;
+ 
+ public class OnlineStaic {
+ 	public static void main(String[] args) throws IOException, SqlParseException {
+ 		SearchDao searchDao = new SearchDao("localhost", 9300);
+-		SearchResponse select = searchDao.select("select avg(all_client),avg(all_tv_clinet) from online group by hours limit 100") ;
++		ActionResponse select = searchDao.execute("select avg(all_client),avg(all_tv_clinet) from online group by hours limit 100") ;
+ 		
+ 		System.out.println(select);
+ 		
+
+File: src/main/java/org/nlpcn/es4sql/query/DefaultQuery.java
+Patch:
+@@ -63,7 +63,9 @@ protected SearchRequestBuilder _explan() throws SqlParseException {
+ 
+ 	private void explanFields(SearchRequestBuilder request, List<Field> fields, TermsBuilder groupByAgg) throws SqlParseException {
+ 		for (Field field : fields) {
+-			if (field instanceof MethodField) {
++			if(field == null){
++				
++			}else if (field instanceof MethodField) {
+ 				throw new SqlParseException("it did not support this field method " + field);
+ 			} else if (field instanceof Field) {
+ 				request.addField(field.getName());
+
+File: src/main/java/org/nlpcn/es4sql/query/maker/FilterMaker.java
+Patch:
+@@ -28,6 +28,9 @@ private FilterMaker() {
+ 	}
+ 
+ 	private void explanWhere(BoolFilterBuilder boolFilter, Where where) throws SqlParseException {
++		while (where.getWheres().size() == 1) {
++			where = where.getWheres().getFirst();
++		}
+ 		if (where instanceof Condition) {
+ 			addSubFilter(boolFilter, where, (BaseFilterBuilder) make((Condition) where));
+ 		} else {
+

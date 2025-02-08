@@ -1,0 +1,476 @@
+File: app/src/main/java/io/github/trojan_gfw/igniter/common/constants/Constants.java
+Patch:
+@@ -11,4 +11,5 @@ public abstract class Constants {
+     public static final String PREFERENCE_KEY_FIRST_START = "first_start";
+     public static final String PREFERENCE_KEY_PROXY_IN_ALLOW_MODE = "proxy_allow_mode";
+     public static final String PREFERENCE_KEY_EXTRA_DNS = "extra_dns";
++    public static final String PREFERENCE_KEY_FIXED_PORT = "fixed_port";
+ }
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/settings/contract/SettingsContract.java
+Patch:
+@@ -12,7 +12,7 @@ public interface SettingsContract {
+     interface Presenter extends BasePresenter {
+         void addDNSInput();
+         void removeDNSInput(int viewIndex);
+-        void saveDNSList(@NonNull List<String> dnsList);
++        void saveSettings(@NonNull List<String> dnsList, String port);
+         void exit();
+     }
+     interface View extends BaseView<Presenter> {
+@@ -24,6 +24,7 @@ interface View extends BaseView<Presenter> {
+         void appendDNSInput();
+         void removeDNSInput(int index);
+         void showExitConfirm();
++        void showPortNumberError();
+         @AnyThread
+         void showLoading();
+         @AnyThread
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/exempt/data/ExemptAppDataManager.java
+Patch:
+@@ -135,7 +135,7 @@ private List<ApplicationInfo> queryCurrentInstalledApps() {
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+             flags |= PackageManager.MATCH_UNINSTALLED_PACKAGES | PackageManager.MATCH_DISABLED_COMPONENTS;
+         } else { // These flags are deprecated since Nougat.
+-            flags |= PackageManager.GET_UNINSTALLED_PACKAGES | PackageManager.GET_DISABLED_COMPONENTS;
++            flags |= PackageManager.GET_UNINSTALLED_PACKAGES;
+         }
+         return mPackageManager.getInstalledApplications(flags);
+     }
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/qrcode/QRCodeDecoder.java
+Patch:
+@@ -5,7 +5,7 @@
+ 
+ import androidx.annotation.NonNull;
+ 
+-import com.google.mlkit.vision.barcode.Barcode;
++import com.google.mlkit.vision.barcode.common.Barcode;
+ import com.google.mlkit.vision.barcode.BarcodeScanner;
+ import com.google.mlkit.vision.barcode.BarcodeScannerOptions;
+ import com.google.mlkit.vision.barcode.BarcodeScanning;
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/qrcode/ScanQRCodeFragment.java
+Patch:
+@@ -24,7 +24,7 @@
+ import androidx.core.content.ContextCompat;
+ 
+ import com.google.common.util.concurrent.ListenableFuture;
+-import com.google.mlkit.vision.barcode.Barcode;
++import com.google.mlkit.vision.barcode.common.Barcode;
+ import com.google.mlkit.vision.barcode.BarcodeScanner;
+ import com.google.mlkit.vision.barcode.BarcodeScannerOptions;
+ import com.google.mlkit.vision.barcode.BarcodeScanning;
+@@ -105,9 +105,10 @@ private void startCamera() {
+         }, mMainExecutor);
+     }
+ 
++    @androidx.camera.core.ExperimentalGetImage
+     @Override
+     public void analyze(@NonNull ImageProxy imageProxy) {
+-        @SuppressLint("UnsafeExperimentalUsageError") Image image = imageProxy.getImage();
++        Image image = imageProxy.getImage();
+         if (image == null) {
+             imageProxy.close();
+             return;
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/TrojanURLHelper.java
+Patch:
+@@ -69,7 +69,7 @@ public static List<TrojanURLParseResult> ParseMultipleTrojanURL(String inputStr)
+     }
+ 
+     public static List<TrojanConfig> ParseTrojanConfigsFromContent(String content) {
+-        List<TrojanConfig> ret = Collections.emptyList();
++        ArrayList<TrojanConfig> ret = new ArrayList<TrojanConfig>(5);
+         List<TrojanURLParseResult> parseResults = ParseMultipleTrojanURL(content);
+         for (TrojanURLParseResult singleParseResult : parseResults) {
+             TrojanConfig newConfig = CombineTrojanURLParseResultToTrojanConfig(singleParseResult, Globals.getTrojanConfigInstance());
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/TrojanURLHelper.java
+Patch:
+@@ -12,12 +12,12 @@ public static String GenerateTrojanURL(TrojanConfig trojanConfig) {
+                     trojanConfig.getRemoteAddr(),
+                     trojanConfig.getRemotePort(),
+                     null, null, null);
+-        } catch (java.net.URISyntaxException e) {
++        } catch (Exception e) {
+             e.printStackTrace();
+             return null;
+         }
+ 
+-        return trojanUri.toString();
++        return trojanUri.toASCIIString();
+     }
+ 
+     public static TrojanURLParseResult ParseTrojanURL(String trojanURLStr) {
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/connection/TrojanConnection.java
+Patch:
+@@ -7,6 +7,7 @@
+ import android.os.Binder;
+ import android.os.Handler;
+ import android.os.IBinder;
++import android.os.Looper;
+ import android.os.RemoteException;
+ 
+ import androidx.annotation.NonNull;
+@@ -28,7 +29,7 @@
+  * @see ITrojanServiceCallback
+  */
+ public class TrojanConnection implements ServiceConnection, Binder.DeathRecipient {
+-    private final Handler mHandler = new Handler();
++    private final Handler mHandler = new Handler(Looper.getMainLooper());
+     private ITrojanService mTrojanService;
+     private Callback mCallback;
+     private boolean mServiceCallbackRegistered;
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/servers/data/ServerListDataManager.java
+Patch:
+@@ -37,10 +37,12 @@
+ 
+ import javax.net.ssl.HttpsURLConnection;
+ 
++import io.github.trojan_gfw.igniter.Globals;
+ import io.github.trojan_gfw.igniter.LogHelper;
+ import io.github.trojan_gfw.igniter.TrojanConfig;
+ import io.github.trojan_gfw.igniter.TrojanHelper;
+ import io.github.trojan_gfw.igniter.TrojanURLHelper;
++import io.github.trojan_gfw.igniter.TrojanURLParseResult;
+ import io.github.trojan_gfw.igniter.common.constants.ConfigFileConstants;
+ import io.github.trojan_gfw.igniter.common.utils.DecodeUtils;
+ 
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/servers/presenter/ServerListPresenter.java
+Patch:
+@@ -164,6 +164,7 @@ public void selectAll(List<TrojanConfig> configList) {
+     @Override
+     public void exitServerListBatchOperation() {
+         mView.hideServerListBatchOperation();
++        mBatchDeleteConfigSet.clear();
+     }
+ 
+     @Override
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/common/constants/Constants.java
+Patch:
+@@ -1,7 +1,9 @@
+ package io.github.trojan_gfw.igniter.common.constants;
+ 
++import io.github.trojan_gfw.igniter.BuildConfig;
++
+ public abstract class Constants {
+-    public static final String PREFERENCE_AUTHORITY = "io.github.trojan_gfw.igniter";
++    public static final String PREFERENCE_AUTHORITY = BuildConfig.APPLICATION_ID;
+     public static final String PREFERENCE_PATH = "preferences";
+     public static final String PREFERENCE_URI = "content://" + PREFERENCE_AUTHORITY + "/" + PREFERENCE_PATH;
+     public static final String PREFERENCE_KEY_ENABLE_CLASH = "enable_clash";
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/servers/presenter/ServerListPresenter.java
+Patch:
+@@ -82,7 +82,6 @@ private String getExportContent() throws JSONException {
+             jsonObject.put("password", trojanConfig.getPassword());
+             jsonObject.put("verify", trojanConfig.getVerifyCert());
+             // for future
+-            // jsonObject.put("type", "trojan");
+             // jsonObject.put("enable_ipv6", trojanConfig.getEnableIpv6());
+             // jsonObject.put("enable_clash", trojanConfig.getEnableClash());
+             array.put(index++, jsonObject);
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/servers/fragment/ServerListAdapter.java
+Patch:
+@@ -43,7 +43,6 @@ public void replaceData(List<TrojanConfig> data) {
+     public void removeItemOnPosition(int pos) {
+         mData.remove(pos);
+         notifyItemRemoved(pos);
+-        notifyDataSetChanged();
+     }
+ 
+     @Override
+@@ -86,8 +85,9 @@ public void onClick(View v) {
+         itemView.findViewById(R.id.deleteServerBtn).setOnClickListener(new View.OnClickListener() {
+             @Override
+             public void onClick(View v) {
+-                if (itemClickListener != null) {
+-                    itemClickListener.onItemDelete(mConfig, getBindingAdapterPosition());
++                int position = getBindingAdapterPosition();
++                if (position != RecyclerView.NO_POSITION && itemClickListener != null) {
++                    itemClickListener.onItemDelete(mConfig, position);
+                 }
+             }
+         });
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/servers/fragment/ServerListAdapter.java
+Patch:
+@@ -43,6 +43,7 @@ public void replaceData(List<TrojanConfig> data) {
+     public void removeItemOnPosition(int pos) {
+         mData.remove(pos);
+         notifyItemRemoved(pos);
++        notifyDataSetChanged();
+     }
+ 
+     @Override
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/ProxyService.java
+Patch:
+@@ -412,7 +412,7 @@ public int onStartCommand(Intent intent, int flags, int startId) {
+                 .setAutoCancel(false)
+                 .setOngoing(true);
+         startForeground(IGNITER_STATUS_NOTIFY_MSG_ID, builder.build());
+-        return START_REDELIVER_INTENT;
++        return START_STICKY;
+     }
+ 
+     private void shutdown() {
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/ProxyService.java
+Patch:
+@@ -401,7 +401,7 @@ public int onStartCommand(Intent intent, int flags, int startId) {
+                 .setAutoCancel(false)
+                 .setOngoing(true);
+         startForeground(IGNITER_STATUS_NOTIFY_MSG_ID, builder.build());
+-        return START_STICKY;
++        return START_REDELIVER_INTENT;
+     }
+ 
+     private void shutdown() {
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/exempt/fragment/ExemptAppFragment.java
+Patch:
+@@ -164,7 +164,7 @@ public void showAppList(final List<AppInfo> appInfoList) {
+     @Override
+     public void showLoading() {
+         if (mLoadingDialog == null) {
+-            mLoadingDialog = new LoadingDialog(Objects.requireNonNull(getContext()));
++            mLoadingDialog = new LoadingDialog(requireContext());
+             mLoadingDialog.setMsg(getString(R.string.exempt_app_loading_tip));
+         }
+         mLoadingDialog.show();
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/tile/ProxyHelper.java
+Patch:
+@@ -36,7 +36,7 @@ public static boolean isTrojanConfigValid() {
+     }
+ 
+     public static boolean isVPNServiceConsented(Context context) {
+-        return VpnService.prepare(context.getApplicationContext()) != null;
++        return VpnService.prepare(context.getApplicationContext()) == null;
+     }
+ 
+     public static void startProxyService(Context context) {
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/MainActivity.java
+Patch:
+@@ -377,7 +377,7 @@ private void showTestConnectionResult(String testUrl, boolean connected, long de
+             LogHelper.e(TAG, "TestError: " + error);
+             Toast.makeText(getApplicationContext(),
+                     getString(R.string.failed_to_connect_to__,
+-                            testUrl, "Please start igniter before testing"),
++                            testUrl, error),
+                     Toast.LENGTH_LONG).show();
+         }
+     }
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/common/os/MultiProcessSP.java
+Patch:
+@@ -9,7 +9,7 @@
+ public class MultiProcessSP {
+     private static final String SP_NAME = "MultiProcessSP";
+     private static final String FIRST_START = "first_start";
+-    private static final String ENABLE_CLASH = "enb_clash";
++    private static final String ENABLE_CLASH = "enable_clash";
+     private static Context sContext;
+ 
+     public static void init(Context context) {
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/servers/fragment/ServerListFragment.java
+Patch:
+@@ -10,7 +10,6 @@
+ import android.support.annotation.IdRes;
+ import android.support.annotation.NonNull;
+ import android.support.annotation.Nullable;
+-import android.support.v4.app.ActivityCompat;
+ import android.support.v4.app.Fragment;
+ import android.support.v4.app.FragmentActivity;
+ import android.support.v4.content.ContextCompat;
+@@ -127,7 +126,7 @@ public void gotoScanQRCode() {
+         if (PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(getContext(), Manifest.permission.CAMERA)) {
+             gotoScanQRCodeInner();
+         } else {
+-            ActivityCompat.requestPermissions(getActivity(), new String[] {Manifest.permission.CAMERA}, REQUEST_CAMERA_CODE);
++            requestPermissions(new String[] {Manifest.permission.CAMERA}, REQUEST_CAMERA_CODE);
+         }
+     }
+ 
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/servers/data/ServerListDataManager.java
+Patch:
+@@ -26,10 +26,10 @@ public void deleteServerConfig(TrojanConfig config) {
+         for (int i = trojanConfigs.size() - 1; i >= 0; i--) {
+             if (trojanConfigs.get(i).getRemoteAddr().equals(config.getRemoteAddr())) {
+                 trojanConfigs.remove(i);
++                replaceServerConfigs(trojanConfigs);
+                 break;
+             }
+         }
+-
+     }
+ 
+     @Override
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/TrojanConfig.java
+Patch:
+@@ -22,7 +22,7 @@ public class TrojanConfig implements Parcelable {
+     private String tls13CipherList;
+ 
+ 
+-    TrojanConfig() {
++    public TrojanConfig() {
+         // defaults
+         this.localAddr = "127.0.0.1";
+         this.localPort = 1081;
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/servers/activity/ServerListActivity.java
+Patch:
+@@ -34,6 +34,9 @@ public boolean onOptionsItemSelected(MenuItem item) {
+         if (R.id.action_scan_qr_code == item.getItemId()) {
+             mPresenter.gotoScanQRCode();
+             return true;
++        } else if (R.id.action_import_from_file == item.getItemId()) {
++            mPresenter.importConfigFromFile();
++            return true;
+         }
+         return super.onOptionsItemSelected(item);
+     }
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/TestConnection.java
+Patch:
+@@ -1,7 +1,6 @@
+ package io.github.trojan_gfw.igniter;
+ 
+ import android.os.AsyncTask;
+-import android.util.Log;
+ import android.widget.Toast;
+ 
+ import java.lang.ref.WeakReference;
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/TrojanHelper.java
+Patch:
+@@ -1,7 +1,5 @@
+ package io.github.trojan_gfw.igniter;
+ 
+-import android.util.Log;
+-
+ import org.json.JSONObject;
+ 
+ import java.io.File;
+@@ -53,7 +51,7 @@ public static void ShowConfig(String trojanConfigPath) {
+             try (FileInputStream fis = new FileInputStream(file)) {
+                 byte[] content = new byte[(int) file.length()];
+                 fis.read(content);
+-                Log.i(TAG, new String(content));
++                LogHelper.i(TAG, new String(content));
+             }
+         } catch (Exception e) {
+             e.printStackTrace();
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/TestConnection.java
+Patch:
+@@ -1,6 +1,7 @@
+ package io.github.trojan_gfw.igniter;
+ 
+ import android.os.AsyncTask;
++import android.util.Log;
+ import android.widget.Toast;
+ 
+ import java.lang.ref.WeakReference;
+@@ -62,9 +63,10 @@ protected void onPostExecute(TestConnectionResult result) {
+                                 result.url, String.valueOf(result.time)),
+                         Toast.LENGTH_LONG).show();
+             } else {
++                result.error.printStackTrace();
+                 Toast.makeText(activity,
+                         activity.getString(R.string.failed_to_connect_to__,
+-                                result.url, result.error.getMessage()),
++                                result.url, "Please start igniter before testing"),
+                         Toast.LENGTH_LONG).show();
+             }
+         }
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/TrojanConfig.java
+Patch:
+@@ -24,6 +24,7 @@ public class TrojanConfig {
+         this.localAddr = "127.0.0.1";
+         this.localPort = 1081;
+         this.remotePort = 443;
++        this.verifyCert = true;
+         this.cipherList = "ECDHE-ECDSA-AES128-GCM-SHA256:"
+                 + "ECDHE-RSA-AES128-GCM-SHA256:"
+                 + "ECDHE-ECDSA-CHACHA20-POLY1305:"
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/ProxyService.java
+Patch:
+@@ -24,6 +24,7 @@ public class ProxyService extends VpnService {
+     public static final int STOPPED = 3;
+     public static final String STATUS_EXTRA_NAME = "service_state";
+     public static final String CLASH_EXTRA_NAME = "enable_clash";
++    public long tun2socksPort;
+ 
+     private static final int VPN_MTU = 1500;
+     private static final String PRIVATE_VLAN4_CLIENT = "172.19.0.1";
+@@ -153,7 +154,6 @@ public int onStartCommand(Intent intent, int flags, int startId) {
+ 
+         JNIHelper.trojan(Constants.getTrojanConfigPath());
+ 
+-        long tun2socksPort;
+         long clashSocksPort = 1080; // default value in case fail to get free port
+         if (enable_clash) {
+             try {
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/ProxyService.java
+Patch:
+@@ -114,6 +114,8 @@ public int onStartCommand(Intent intent, int flags, int startId) {
+                 String[] parts = route.split("/", 2);
+                 b.addRoute(parts[0], Integer.parseInt(parts[1]));
+             }
++            // fake ip range for clash
++            b.addRoute("255.0.128.0", 20);
+         } else {
+             b.addRoute("0.0.0.0", 0);
+         }
+
+File: app/src/androidTest/java/io/github/trojan_gfw/igniter/ExampleInstrumentedTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package trojan_gfw.github.io.igniter;
++package io.github.trojan_gfw.igniter;
+ 
+ import android.content.Context;
+ import android.support.test.InstrumentationRegistry;
+@@ -21,6 +21,6 @@ public void useAppContext() {
+         // Context of the app under test.
+         Context appContext = InstrumentationRegistry.getTargetContext();
+ 
+-        assertEquals("trojan_gfw.github.io.igniter", appContext.getPackageName());
++        assertEquals("io.github.trojan_gfw.igniter", appContext.getPackageName());
+     }
+ }
+
+File: app/src/main/java/io/github/trojan_gfw/igniter/MainActivity.java
+Patch:
+@@ -1,4 +1,4 @@
+-package trojan_gfw.github.io.igniter;
++package io.github.trojan_gfw.igniter;
+ 
+ import android.support.v7.app.AppCompatActivity;
+ import android.os.Bundle;
+
+File: app/src/test/java/io/github/trojan_gfw/igniter/ExampleUnitTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package trojan_gfw.github.io.igniter;
++package io.github.trojan_gfw.igniter;
+ 
+ import org.junit.Test;
+ 
+

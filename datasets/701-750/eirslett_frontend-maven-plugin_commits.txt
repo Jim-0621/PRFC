@@ -1,0 +1,2560 @@
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/FileDownloader.java
+Patch:
+@@ -54,9 +54,6 @@ public DefaultFileDownloader(ProxyConfig proxyConfig){
+ 
+     @Override
+     public void download(String downloadUrl, String destination, String userName, String password, Map<String, String> httpHeaders) throws DownloadException {
+-        // force tls to 1.2 since github removed weak cryptographic standards
+-        // https://blog.github.com/2018-02-02-weak-cryptographic-standards-removal-notice/
+-        System.setProperty("https.protocols", "TLSv1.2");
+         String fixedDownloadUrl = downloadUrl;
+         try {
+             fixedDownloadUrl = FilenameUtils.separatorsToUnix(fixedDownloadUrl);
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/BunInstaller.java
+Patch:
+@@ -111,9 +111,10 @@ private void installBunDefault() throws InstallationException {
+ 
+             // We need to delete the existing bun directory first so we clean out any old files, and
+             // so we can rename the package directory below.
++            File bunExtractDirectory = new File(installDirectory, createBunTargetArchitecturePath());
+             try {
+-                if (installDirectory.isDirectory()) {
+-                    FileUtils.deleteDirectory(installDirectory);
++                if (bunExtractDirectory.isDirectory()) {
++                    FileUtils.deleteDirectory(bunExtractDirectory);
+                 }
+             } catch (IOException e) {
+                 logger.warn("Failed to delete existing Bun installation.");
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/FrontendPluginFactory.java
+Patch:
+@@ -64,8 +64,8 @@ public NpxRunner getNpxRunner(ProxyConfig proxy, String npmRegistryURL) {
+         return new DefaultNpxRunner(getExecutorConfig(), proxy, npmRegistryURL);
+     }
+ 
+-    public YarnRunner getYarnRunner(ProxyConfig proxy, String npmRegistryURL) {
+-        return new DefaultYarnRunner(new InstallYarnExecutorConfig(getInstallConfig()), proxy, npmRegistryURL);
++    public YarnRunner getYarnRunner(ProxyConfig proxy, String npmRegistryURL, boolean isYarnBerry) {
++        return new DefaultYarnRunner(new InstallYarnExecutorConfig(getInstallConfig(), isYarnBerry), proxy, npmRegistryURL);
+     }
+ 
+     public GruntRunner getGruntRunner(){
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/YarnInstaller.java
+Patch:
+@@ -82,7 +82,7 @@ public void install() throws InstallationException {
+ 
+     private boolean yarnIsAlreadyInstalled() {
+         try {
+-            YarnExecutorConfig executorConfig = new InstallYarnExecutorConfig(config);
++            YarnExecutorConfig executorConfig = new InstallYarnExecutorConfig(config, isYarnBerry);
+             File nodeFile = executorConfig.getYarnPath();
+             if (nodeFile.exists()) {
+                 final String version =
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NodeTaskExecutor.java
+Patch:
+@@ -6,7 +6,6 @@
+ 
+ import java.io.File;
+ import java.util.ArrayList;
+-import java.util.Arrays;
+ import java.util.Collections;
+ import java.util.HashMap;
+ import java.util.List;
+@@ -47,7 +46,7 @@ public NodeTaskExecutor(NodeExecutorConfig config, String taskName, String taskL
+         this.config = config;
+         this.taskName = taskName;
+         this.taskLocation = taskLocation;
+-        this.additionalArguments = additionalArguments;
++        this.argumentsParser = new ArgumentsParser(additionalArguments);
+         this.proxy = proxy;
+     }
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/BowerMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ 
+ import java.util.Collections;
+ 
+-@Mojo(name = "bower", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name = "bower", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class BowerMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -42,7 +42,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    protected void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    protected synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         ProxyConfig proxyConfig = getProxyConfig();
+         factory.getBowerRunner(proxyConfig).execute(arguments, environmentVariables);
+     }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/EmberMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="ember", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="ember", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class EmberMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getEmberRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GruntMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="grunt", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="grunt", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class GruntMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getGruntRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GulpMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="gulp", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="gulp", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class GulpMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getGulpRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndNpmMojo.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.github.eirslett.maven.plugins.frontend.lib.FrontendPluginFactory;
+ import com.github.eirslett.maven.plugins.frontend.lib.InstallationException;
+ import com.github.eirslett.maven.plugins.frontend.lib.NPMInstaller;
+-import com.github.eirslett.maven.plugins.frontend.lib.NodeInstaller;
+ import com.github.eirslett.maven.plugins.frontend.lib.ProxyConfig;
+ import org.apache.maven.execution.MavenSession;
+ import org.apache.maven.plugins.annotations.Component;
+@@ -19,7 +18,7 @@ public final class InstallNodeAndNpmMojo extends AbstractFrontendMojo {
+     /**
+      * Where to download Node.js binary from. Defaults to https://nodejs.org/dist/
+      */
+-    @Parameter(property = "nodeDownloadRoot", required = false, defaultValue = NodeInstaller.DEFAULT_NODEJS_DOWNLOAD_ROOT)
++    @Parameter(property = "nodeDownloadRoot", required = false)
+     private String nodeDownloadRoot;
+ 
+     /**
+@@ -108,7 +107,7 @@ public void execute(FrontendPluginFactory factory) throws InstallationException
+     }
+ 
+     private String getNodeDownloadRoot() {
+-        if (downloadRoot != null && !"".equals(downloadRoot) && NodeInstaller.DEFAULT_NODEJS_DOWNLOAD_ROOT.equals(nodeDownloadRoot)) {
++        if (downloadRoot != null && !"".equals(downloadRoot) && nodeDownloadRoot == null) {
+             return downloadRoot;
+         }
+         return nodeDownloadRoot;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/JspmMojo.java
+Patch:
+@@ -11,7 +11,7 @@
+ 
+ import java.io.File;
+ 
+-@Mojo(name="jspm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="jspm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public class JspmMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -32,7 +32,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    protected void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    protected synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         factory.getJspmRunner().execute(arguments, environmentVariables);
+     }
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/KarmaRunMojo.java
+Patch:
+@@ -7,7 +7,7 @@
+ import org.apache.maven.plugins.annotations.Parameter;
+ 
+ 
+-@Mojo(name="karma",  defaultPhase = LifecyclePhase.TEST)
++@Mojo(name="karma",  defaultPhase = LifecyclePhase.TEST, threadSafe = true)
+ public final class KarmaRunMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -28,7 +28,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         factory.getKarmaRunner().execute("start " + karmaConfPath, environmentVariables);
+     }
+ }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/NpmMojo.java
+Patch:
+@@ -14,7 +14,7 @@
+ import java.io.File;
+ import java.util.Collections;
+ 
+-@Mojo(name="npm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="npm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class NpmMojo extends AbstractFrontendMojo {
+ 
+     private static final String NPM_REGISTRY_URL = "npmRegistryURL";
+@@ -55,7 +55,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         File packageJson = new File(workingDirectory, "package.json");
+         if (buildContext == null || buildContext.hasDelta(packageJson) || !buildContext.isIncremental()) {
+             ProxyConfig proxyConfig = getProxyConfig();
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/WebpackMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="webpack", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="webpack", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class WebpackMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getWebpackRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/YarnMojo.java
+Patch:
+@@ -15,7 +15,7 @@
+ import com.github.eirslett.maven.plugins.frontend.lib.ProxyConfig;
+ import com.github.eirslett.maven.plugins.frontend.lib.TaskRunnerException;
+ 
+-@Mojo(name = "yarn", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name = "yarn", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class YarnMojo extends AbstractFrontendMojo {
+ 
+     private static final String NPM_REGISTRY_URL = "npmRegistryURL";
+@@ -57,7 +57,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         File packageJson = new File(this.workingDirectory, "package.json");
+         if (this.buildContext == null || this.buildContext.hasDelta(packageJson)
+             || !this.buildContext.isIncremental()) {
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/PnpmMojo.java
+Patch:
+@@ -18,7 +18,7 @@
+ public final class PnpmMojo extends AbstractFrontendMojo {
+ 
+     private static final String PNPM_REGISTRY_URL = "npmRegistryURL";
+-    
++
+     /**
+      * pnpm arguments. Default is "install".
+      */
+@@ -29,11 +29,11 @@ public final class PnpmMojo extends AbstractFrontendMojo {
+     private boolean pnpmInheritsProxyConfigFromMaven;
+ 
+     /**
+-     * Registry override, passed as the registry option during npm install if set.
++     * Registry override, passed as the registry option during pnpm install if set.
+      */
+     @Parameter(property = PNPM_REGISTRY_URL, required = false, defaultValue = "")
+     private String pnpmRegistryURL;
+-    
++
+     @Parameter(property = "session", defaultValue = "${session}", readonly = true)
+     private MavenSession session;
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/PnpmMojo.java
+Patch:
+@@ -18,7 +18,7 @@
+ public final class PnpmMojo extends AbstractFrontendMojo {
+ 
+     private static final String PNPM_REGISTRY_URL = "npmRegistryURL";
+-    
++
+     /**
+      * pnpm arguments. Default is "install".
+      */
+@@ -29,11 +29,11 @@ public final class PnpmMojo extends AbstractFrontendMojo {
+     private boolean pnpmInheritsProxyConfigFromMaven;
+ 
+     /**
+-     * Registry override, passed as the registry option during npm install if set.
++     * Registry override, passed as the registry option during pnpm install if set.
+      */
+     @Parameter(property = PNPM_REGISTRY_URL, required = false, defaultValue = "")
+     private String pnpmRegistryURL;
+-    
++
+     @Parameter(property = "session", defaultValue = "${session}", readonly = true)
+     private MavenSession session;
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/Platform.java
+Patch:
+@@ -34,7 +34,7 @@ public static OS guess() {
+         return  osName.contains("Windows") ? OS.Windows :
+                 osName.contains("Mac") ? OS.Mac :
+                         osName.contains("SunOS") ? OS.SunOS :
+-                            osName.contains("Aix") ? OS.AIX :
++                            osName.toUpperCase().contains("AIX") ? OS.AIX :
+                                 OS.Linux;
+     }
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/Platform.java
+Patch:
+@@ -34,7 +34,7 @@ public static OS guess() {
+         return  osName.contains("Windows") ? OS.Windows :
+                 osName.contains("Mac") ? OS.Mac :
+                         osName.contains("SunOS") ? OS.SunOS :
+-                            osName.contains("Aix") ? OS.AIX :
++                            osName.toUpperCase().contains("AIX") ? OS.AIX :
+                                 OS.Linux;
+     }
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndNpmMojo.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.github.eirslett.maven.plugins.frontend.lib.FrontendPluginFactory;
+ import com.github.eirslett.maven.plugins.frontend.lib.InstallationException;
+ import com.github.eirslett.maven.plugins.frontend.lib.NPMInstaller;
+-import com.github.eirslett.maven.plugins.frontend.lib.NodeInstaller;
+ import com.github.eirslett.maven.plugins.frontend.lib.ProxyConfig;
+ import org.apache.maven.execution.MavenSession;
+ import org.apache.maven.plugins.annotations.Component;
+@@ -19,7 +18,7 @@ public final class InstallNodeAndNpmMojo extends AbstractFrontendMojo {
+     /**
+      * Where to download Node.js binary from. Defaults to https://nodejs.org/dist/
+      */
+-    @Parameter(property = "nodeDownloadRoot", required = false, defaultValue = NodeInstaller.DEFAULT_NODEJS_DOWNLOAD_ROOT)
++    @Parameter(property = "nodeDownloadRoot", required = false)
+     private String nodeDownloadRoot;
+ 
+     /**
+@@ -108,7 +107,7 @@ public void execute(FrontendPluginFactory factory) throws InstallationException
+     }
+ 
+     private String getNodeDownloadRoot() {
+-        if (downloadRoot != null && !"".equals(downloadRoot) && NodeInstaller.DEFAULT_NODEJS_DOWNLOAD_ROOT.equals(nodeDownloadRoot)) {
++        if (downloadRoot != null && !"".equals(downloadRoot) && nodeDownloadRoot == null) {
+             return downloadRoot;
+         }
+         return nodeDownloadRoot;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndYarnMojo.java
+Patch:
+@@ -10,7 +10,6 @@
+ 
+ import com.github.eirslett.maven.plugins.frontend.lib.FrontendPluginFactory;
+ import com.github.eirslett.maven.plugins.frontend.lib.InstallationException;
+-import com.github.eirslett.maven.plugins.frontend.lib.NodeInstaller;
+ import com.github.eirslett.maven.plugins.frontend.lib.ProxyConfig;
+ import com.github.eirslett.maven.plugins.frontend.lib.YarnInstaller;
+ 
+@@ -20,8 +19,7 @@ public final class InstallNodeAndYarnMojo extends AbstractFrontendMojo {
+     /**
+      * Where to download Node.js binary from. Defaults to https://nodejs.org/dist/
+      */
+-    @Parameter(property = "nodeDownloadRoot", required = false,
+-        defaultValue = NodeInstaller.DEFAULT_NODEJS_DOWNLOAD_ROOT)
++    @Parameter(property = "nodeDownloadRoot", required = false)
+     private String nodeDownloadRoot;
+ 
+     /**
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NodeInstaller.java
+Patch:
+@@ -16,8 +16,6 @@ public class NodeInstaller {
+ 
+     public static final String INSTALL_PATH = "/node";
+ 
+-    public static final String DEFAULT_NODEJS_DOWNLOAD_ROOT = "https://nodejs.org/dist/";
+-
+     private static final Object LOCK = new Object();
+ 
+     private String npmVersion, nodeVersion, nodeDownloadRoot, userName, password;
+@@ -80,7 +78,7 @@ public void install() throws InstallationException {
+         // use static lock object for a synchronized block
+         synchronized (LOCK) {
+             if (this.nodeDownloadRoot == null || this.nodeDownloadRoot.isEmpty()) {
+-                this.nodeDownloadRoot = DEFAULT_NODEJS_DOWNLOAD_ROOT;
++                this.nodeDownloadRoot = this.config.getPlatform().getNodeDownloadRoot();
+             }
+             if (!nodeIsAlreadyInstalled()) {
+                 this.logger.info("Installing node version {}", this.nodeVersion);
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NpmRunner.java
+Patch:
+@@ -41,7 +41,7 @@ static List<String> buildArguments(ProxyConfig proxyConfig, String npmRegistryUR
+ 
+             final String nonProxyHosts = proxy.getNonProxyHosts();
+             if (nonProxyHosts != null && !nonProxyHosts.isEmpty()) {
+-                arguments.add("--noproxy=" + nonProxyHosts);
++                arguments.add("--noproxy=" + nonProxyHosts.replace('|',','));
+             }
+         }
+         
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/BowerMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ 
+ import java.util.Collections;
+ 
+-@Mojo(name = "bower", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name = "bower", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class BowerMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -42,7 +42,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    protected void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    protected synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         ProxyConfig proxyConfig = getProxyConfig();
+         factory.getBowerRunner(proxyConfig).execute(arguments, environmentVariables);
+     }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/EmberMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="ember", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="ember", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class EmberMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getEmberRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GruntMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="grunt", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="grunt", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class GruntMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getGruntRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GulpMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="gulp", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="gulp", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class GulpMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getGulpRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/JspmMojo.java
+Patch:
+@@ -11,7 +11,7 @@
+ 
+ import java.io.File;
+ 
+-@Mojo(name="jspm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="jspm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public class JspmMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -32,7 +32,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    protected void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    protected synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         factory.getJspmRunner().execute(arguments, environmentVariables);
+     }
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/KarmaRunMojo.java
+Patch:
+@@ -7,7 +7,7 @@
+ import org.apache.maven.plugins.annotations.Parameter;
+ 
+ 
+-@Mojo(name="karma",  defaultPhase = LifecyclePhase.TEST)
++@Mojo(name="karma",  defaultPhase = LifecyclePhase.TEST, threadSafe = true)
+ public final class KarmaRunMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -28,7 +28,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         factory.getKarmaRunner().execute("start " + karmaConfPath, environmentVariables);
+     }
+ }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/NpmMojo.java
+Patch:
+@@ -14,7 +14,7 @@
+ import java.io.File;
+ import java.util.Collections;
+ 
+-@Mojo(name="npm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="npm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class NpmMojo extends AbstractFrontendMojo {
+ 
+     private static final String NPM_REGISTRY_URL = "npmRegistryURL";
+@@ -55,7 +55,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         File packageJson = new File(workingDirectory, "package.json");
+         if (buildContext == null || buildContext.hasDelta(packageJson) || !buildContext.isIncremental()) {
+             ProxyConfig proxyConfig = getProxyConfig();
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/WebpackMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="webpack", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="webpack", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class WebpackMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getWebpackRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/YarnMojo.java
+Patch:
+@@ -15,7 +15,7 @@
+ import com.github.eirslett.maven.plugins.frontend.lib.ProxyConfig;
+ import com.github.eirslett.maven.plugins.frontend.lib.TaskRunnerException;
+ 
+-@Mojo(name = "yarn", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name = "yarn", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class YarnMojo extends AbstractFrontendMojo {
+ 
+     private static final String NPM_REGISTRY_URL = "npmRegistryURL";
+@@ -57,7 +57,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         File packageJson = new File(this.workingDirectory, "package.json");
+         if (this.buildContext == null || this.buildContext.hasDelta(packageJson)
+             || !this.buildContext.isIncremental()) {
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/BowerMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ 
+ import java.util.Collections;
+ 
+-@Mojo(name = "bower", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name = "bower", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class BowerMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -42,7 +42,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    protected void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    protected synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         ProxyConfig proxyConfig = getProxyConfig();
+         factory.getBowerRunner(proxyConfig).execute(arguments, environmentVariables);
+     }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/EmberMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="ember", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="ember", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class EmberMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getEmberRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GruntMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="grunt", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="grunt", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class GruntMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getGruntRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GulpMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="gulp", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="gulp", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class GulpMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getGulpRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/JspmMojo.java
+Patch:
+@@ -11,7 +11,7 @@
+ 
+ import java.io.File;
+ 
+-@Mojo(name="jspm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="jspm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public class JspmMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -32,7 +32,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    protected void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    protected synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         factory.getJspmRunner().execute(arguments, environmentVariables);
+     }
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/KarmaRunMojo.java
+Patch:
+@@ -7,7 +7,7 @@
+ import org.apache.maven.plugins.annotations.Parameter;
+ 
+ 
+-@Mojo(name="karma",  defaultPhase = LifecyclePhase.TEST)
++@Mojo(name="karma",  defaultPhase = LifecyclePhase.TEST, threadSafe = true)
+ public final class KarmaRunMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -28,7 +28,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         factory.getKarmaRunner().execute("start " + karmaConfPath, environmentVariables);
+     }
+ }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/NpmMojo.java
+Patch:
+@@ -14,7 +14,7 @@
+ import java.io.File;
+ import java.util.Collections;
+ 
+-@Mojo(name="npm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="npm",  defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class NpmMojo extends AbstractFrontendMojo {
+ 
+     private static final String NPM_REGISTRY_URL = "npmRegistryURL";
+@@ -55,7 +55,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         File packageJson = new File(workingDirectory, "package.json");
+         if (buildContext == null || buildContext.hasDelta(packageJson) || !buildContext.isIncremental()) {
+             ProxyConfig proxyConfig = getProxyConfig();
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/WebpackMojo.java
+Patch:
+@@ -12,7 +12,7 @@
+ import java.util.Arrays;
+ import java.util.List;
+ 
+-@Mojo(name="webpack", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name="webpack", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class WebpackMojo extends AbstractFrontendMojo {
+ 
+     /**
+@@ -59,7 +59,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         if (shouldExecute()) {
+             factory.getWebpackRunner().execute(arguments, environmentVariables);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/YarnMojo.java
+Patch:
+@@ -15,7 +15,7 @@
+ import com.github.eirslett.maven.plugins.frontend.lib.ProxyConfig;
+ import com.github.eirslett.maven.plugins.frontend.lib.TaskRunnerException;
+ 
+-@Mojo(name = "yarn", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
++@Mojo(name = "yarn", defaultPhase = LifecyclePhase.GENERATE_RESOURCES, threadSafe = true)
+ public final class YarnMojo extends AbstractFrontendMojo {
+ 
+     private static final String NPM_REGISTRY_URL = "npmRegistryURL";
+@@ -57,7 +57,7 @@ protected boolean skipExecution() {
+     }
+ 
+     @Override
+-    public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
++    public synchronized void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+         File packageJson = new File(this.workingDirectory, "package.json");
+         if (this.buildContext == null || this.buildContext.hasDelta(packageJson)
+             || !this.buildContext.isIncremental()) {
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ArchiveExtractor.java
+Patch:
+@@ -104,15 +104,15 @@ public void extract(String archive, String destinationDirectory) throws ArchiveE
+                     tarIn = new TarArchiveInputStream(new GzipCompressorInputStream(fis));
+ 
+                     TarArchiveEntry tarEntry = tarIn.getNextTarEntry();
++                    String canonicalDestinationDirectory = new File(destinationDirectory).getCanonicalPath();
+                     while (tarEntry != null) {
+                         // Create a file for this tarEntry
+                         final File destPath = new File(destinationDirectory + File.separator + tarEntry.getName());
+                         prepDestination(destPath, tarEntry.isDirectory());
+ 
+-
+-                        if (!startsWithPath(destPath.getCanonicalPath(), destinationDirectory)) {
++                        if (!startsWithPath(destPath.getCanonicalPath(), canonicalDestinationDirectory)) {
+                             throw new IOException(
+-                                    "Expanding " + tarEntry.getName() + " would create file outside of " + destinationDirectory
++                                    "Expanding " + tarEntry.getName() + " would create file outside of " + canonicalDestinationDirectory
+                             );
+                         }
+ 
+
+File: frontend-plugin-core/src/test/java/com/github/eirslett/maven/plugins/frontend/lib/DefaultArchiveExtractorTest.java
+Patch:
+@@ -57,10 +57,10 @@ public void extractBadTarFileSymlink() throws Exception {
+         extractor.extract(BAD_TAR, link.toString());
+     }
+ 
+-    private Path createSymlinkOrSkipTest(Path link, Path target) throws IOException {
++    private Path createSymlinkOrSkipTest(Path link, Path target) {
+         try {
+             return Files.createSymbolicLink(link, target);
+-        } catch (UnsupportedOperationException e) {
++        } catch (UnsupportedOperationException | IOException e) {
+             assumeTrue("symlinks not supported", false);
+             return null;
+         }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ArchiveExtractor.java
+Patch:
+@@ -104,15 +104,15 @@ public void extract(String archive, String destinationDirectory) throws ArchiveE
+                     tarIn = new TarArchiveInputStream(new GzipCompressorInputStream(fis));
+ 
+                     TarArchiveEntry tarEntry = tarIn.getNextTarEntry();
++                    String canonicalDestinationDirectory = new File(destinationDirectory).getCanonicalPath();
+                     while (tarEntry != null) {
+                         // Create a file for this tarEntry
+                         final File destPath = new File(destinationDirectory + File.separator + tarEntry.getName());
+                         prepDestination(destPath, tarEntry.isDirectory());
+ 
+-
+-                        if (!startsWithPath(destPath.getCanonicalPath(), destinationDirectory)) {
++                        if (!startsWithPath(destPath.getCanonicalPath(), canonicalDestinationDirectory)) {
+                             throw new IOException(
+-                                    "Expanding " + tarEntry.getName() + " would create file outside of " + destinationDirectory
++                                    "Expanding " + tarEntry.getName() + " would create file outside of " + canonicalDestinationDirectory
+                             );
+                         }
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ArchiveExtractor.java
+Patch:
+@@ -104,13 +104,14 @@ public void extract(String archive, String destinationDirectory) throws ArchiveE
+                     tarIn = new TarArchiveInputStream(new GzipCompressorInputStream(fis));
+ 
+                     TarArchiveEntry tarEntry = tarIn.getNextTarEntry();
++                    String canonicalDestinationDirectory = new File(destinationDirectory).getCanonicalPath();
+                     while (tarEntry != null) {
+                         // Create a file for this tarEntry
+                         final File destPath = new File(destinationDirectory + File.separator + tarEntry.getName());
+                         prepDestination(destPath, tarEntry.isDirectory());
+-                        if (!destPath.getCanonicalPath().startsWith(destinationDirectory)) {
++                        if (!destPath.getCanonicalPath().startsWith(canonicalDestinationDirectory)) {
+                              throw new IOException(
+-                                 "Expanding " + tarEntry.getName() + " would create file outside of " + destinationDirectory
++                                 "Expanding " + tarEntry.getName() + " would create file outside of " + canonicalDestinationDirectory
+                              );
+                         }
+                         if (!tarEntry.isDirectory()) {
+
+File: frontend-plugin-core/src/test/java/com/github/eirslett/maven/plugins/frontend/lib/ArgumentsParserTest.java
+Patch:
+@@ -43,7 +43,7 @@ public void testMultipleArgumentsWithQuotes() {
+     public void testArgumentsWithMixedQuotes() {
+         ArgumentsParser parser = new ArgumentsParser();
+ 
+-        assertArrayEquals(new Object[] { "foo", "\"bar 'foobar'\"" }, parser.parse("foo \"bar 'foobar'\"").toArray());
++        assertArrayEquals(new Object[] { "foo", "\"bar 'foo bar'\"" }, parser.parse("foo \"bar 'foo bar'\"").toArray());
+         assertArrayEquals(new Object[] { "foo", "\"bar 'foo\"", "'bar " }, parser.parse("foo \"bar 'foo\" 'bar ").toArray());
+     }
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ProxyConfig.java
+Patch:
+@@ -33,7 +33,7 @@ public Proxy getProxyForUrl(String requestUrl) {
+                 return proxy;
+             }
+         }
+-        LOGGER.info("Could not find matching proxy for host: {}" + uri.getHost());
++        LOGGER.info("Could not find matching proxy for host: {}", uri.getHost());
+         return null;
+     }
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ProxyConfig.java
+Patch:
+@@ -33,7 +33,7 @@ public Proxy getProxyForUrl(String requestUrl) {
+                 return proxy;
+             }
+         }
+-        LOGGER.info("Could not find matching proxy for host: {}" + uri.getHost());
++        LOGGER.info("Could not find matching proxy for host: {}", uri.getHost());
+         return null;
+     }
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/BowerMojo.java
+Patch:
+@@ -51,7 +51,7 @@ private ProxyConfig getProxyConfig() {
+         if (bowerInheritsProxyConfigFromMaven) {
+             return MojoUtils.getProxyConfig(session, decrypter);
+         } else {
+-            getLog().info("npm not inheriting proxy config from Maven");
++            getLog().info("bower not inheriting proxy config from Maven");
+             return new ProxyConfig(Collections.<ProxyConfig.Proxy>emptyList());
+         }
+     }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/BowerMojo.java
+Patch:
+@@ -51,7 +51,7 @@ private ProxyConfig getProxyConfig() {
+         if (bowerInheritsProxyConfigFromMaven) {
+             return MojoUtils.getProxyConfig(session, decrypter);
+         } else {
+-            getLog().info("npm not inheriting proxy config from Maven");
++            getLog().info("bower not inheriting proxy config from Maven");
+             return new ProxyConfig(Collections.<ProxyConfig.Proxy>emptyList());
+         }
+     }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndNpmMojo.java
+Patch:
+@@ -17,13 +17,13 @@
+ public final class InstallNodeAndNpmMojo extends AbstractFrontendMojo {
+ 
+     /**
+-     * Where to download Node.js binary from. Defaults to http://nodejs.org/dist/
++     * Where to download Node.js binary from. Defaults to https://nodejs.org/dist/
+      */
+     @Parameter(property = "nodeDownloadRoot", required = false, defaultValue = NodeInstaller.DEFAULT_NODEJS_DOWNLOAD_ROOT)
+     private String nodeDownloadRoot;
+ 
+     /**
+-     * Where to download NPM binary from. Defaults to http://registry.npmjs.org/npm/-/
++     * Where to download NPM binary from. Defaults to https://registry.npmjs.org/npm/-/
+      */
+     @Parameter(property = "npmDownloadRoot", required = false, defaultValue = NPMInstaller.DEFAULT_NPM_DOWNLOAD_ROOT)
+     private String npmDownloadRoot;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndYarnMojo.java
+Patch:
+@@ -18,7 +18,7 @@
+ public final class InstallNodeAndYarnMojo extends AbstractFrontendMojo {
+ 
+     /**
+-     * Where to download Node.js binary from. Defaults to http://nodejs.org/dist/
++     * Where to download Node.js binary from. Defaults to https://nodejs.org/dist/
+      */
+     @Parameter(property = "nodeDownloadRoot", required = false,
+         defaultValue = NodeInstaller.DEFAULT_NODEJS_DOWNLOAD_ROOT)
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NPMInstaller.java
+Patch:
+@@ -14,7 +14,7 @@ public class NPMInstaller {
+ 
+     private static final String VERSION = "version";
+ 
+-    public static final String DEFAULT_NPM_DOWNLOAD_ROOT = "http://registry.npmjs.org/npm/-/";
++    public static final String DEFAULT_NPM_DOWNLOAD_ROOT = "https://registry.npmjs.org/npm/-/";
+ 
+     private static final Object LOCK = new Object();
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndNpmMojo.java
+Patch:
+@@ -17,13 +17,13 @@
+ public final class InstallNodeAndNpmMojo extends AbstractFrontendMojo {
+ 
+     /**
+-     * Where to download Node.js binary from. Defaults to http://nodejs.org/dist/
++     * Where to download Node.js binary from. Defaults to https://nodejs.org/dist/
+      */
+     @Parameter(property = "nodeDownloadRoot", required = false, defaultValue = NodeInstaller.DEFAULT_NODEJS_DOWNLOAD_ROOT)
+     private String nodeDownloadRoot;
+ 
+     /**
+-     * Where to download NPM binary from. Defaults to http://registry.npmjs.org/npm/-/
++     * Where to download NPM binary from. Defaults to https://registry.npmjs.org/npm/-/
+      */
+     @Parameter(property = "npmDownloadRoot", required = false, defaultValue = NPMInstaller.DEFAULT_NPM_DOWNLOAD_ROOT)
+     private String npmDownloadRoot;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndYarnMojo.java
+Patch:
+@@ -18,7 +18,7 @@
+ public final class InstallNodeAndYarnMojo extends AbstractFrontendMojo {
+ 
+     /**
+-     * Where to download Node.js binary from. Defaults to http://nodejs.org/dist/
++     * Where to download Node.js binary from. Defaults to https://nodejs.org/dist/
+      */
+     @Parameter(property = "nodeDownloadRoot", required = false,
+         defaultValue = NodeInstaller.DEFAULT_NODEJS_DOWNLOAD_ROOT)
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NPMInstaller.java
+Patch:
+@@ -14,7 +14,7 @@ public class NPMInstaller {
+ 
+     private static final String VERSION = "version";
+ 
+-    public static final String DEFAULT_NPM_DOWNLOAD_ROOT = "http://registry.npmjs.org/npm/-/";
++    public static final String DEFAULT_NPM_DOWNLOAD_ROOT = "https://registry.npmjs.org/npm/-/";
+ 
+     private static final Object LOCK = new Object();
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/YarnInstaller.java
+Patch:
+@@ -96,11 +96,12 @@ private void installYarn() throws InstallationException {
+         try {
+             logger.info("Installing Yarn version {}", yarnVersion);
+             String downloadUrl = yarnDownloadRoot + yarnVersion;
+-            String fileending = "/yarn-" + yarnVersion + ".tar.gz";
++            String extension = "tar.gz";
++            String fileending = "/yarn-" + yarnVersion + "." + extension;
+ 
+             downloadUrl += fileending;
+ 
+-            CacheDescriptor cacheDescriptor = new CacheDescriptor("yarn", yarnVersion, fileending);
++            CacheDescriptor cacheDescriptor = new CacheDescriptor("yarn", yarnVersion, extension);
+ 
+             File archive = config.getCacheResolver().resolve(cacheDescriptor);
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/YarnInstaller.java
+Patch:
+@@ -100,7 +100,7 @@ private void installYarn() throws InstallationException {
+ 
+             downloadUrl += fileending;
+ 
+-            CacheDescriptor cacheDescriptor = new CacheDescriptor("yarn", yarnVersion, fileending);
++            CacheDescriptor cacheDescriptor = new CacheDescriptor("yarn", yarnVersion, "tar.gz");
+ 
+             File archive = config.getCacheResolver().resolve(cacheDescriptor);
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/BowerMojo.java
+Patch:
+@@ -24,8 +24,8 @@ public final class BowerMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.bower", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.bower", defaultValue = "${skip.bower}")
++    private boolean skip;
+ 
+     @Parameter(property = "session", defaultValue = "${session}", readonly = true)
+     private MavenSession session;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/EmberMojo.java
+Patch:
+@@ -47,8 +47,8 @@ public final class EmberMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.ember", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.ember", defaultValue = "${skip.ember}")
++    private boolean skip;
+ 
+     @Component
+     private BuildContext buildContext;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GruntMojo.java
+Patch:
+@@ -47,8 +47,8 @@ public final class GruntMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.grunt", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.grunt", defaultValue = "${skip.grunt}")
++    private boolean skip;
+ 
+     @Component
+     private BuildContext buildContext;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GulpMojo.java
+Patch:
+@@ -47,8 +47,8 @@ public final class GulpMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.gulp", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.gulp", defaultValue = "${skip.gulp}")
++    private boolean skip;
+ 
+     @Component
+     private BuildContext buildContext;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndNpmMojo.java
+Patch:
+@@ -61,8 +61,8 @@ public final class InstallNodeAndNpmMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.installnodenpm", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.installnodenpm", defaultValue = "${skip.installnodenpm}")
++    private boolean skip;
+ 
+     @Component(role = SettingsDecrypter.class)
+     private SettingsDecrypter decrypter;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndYarnMojo.java
+Patch:
+@@ -56,8 +56,8 @@ public final class InstallNodeAndYarnMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.installyarn", alias = "skip.installyarn", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.installyarn", alias = "skip.installyarn", defaultValue = "${skip.installyarn}")
++    private boolean skip;
+ 
+     @Component(role = SettingsDecrypter.class)
+     private SettingsDecrypter decrypter;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/JspmMojo.java
+Patch:
+@@ -23,8 +23,8 @@ public class JspmMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.jspm", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.jspm", defaultValue = "${skip.jspm}")
++    private boolean skip;
+ 
+     @Override
+     protected boolean skipExecution() {
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/KarmaRunMojo.java
+Patch:
+@@ -19,8 +19,8 @@ public final class KarmaRunMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.karma", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.karma", defaultValue = "${skip.karma}")
++    private boolean skip;
+ 
+     @Override
+     protected boolean skipExecution() {
+@@ -29,6 +29,6 @@ protected boolean skipExecution() {
+ 
+     @Override
+     public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+-	factory.getKarmaRunner().execute("start " + karmaConfPath, environmentVariables);
++        factory.getKarmaRunner().execute("start " + karmaConfPath, environmentVariables);
+     }
+ }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/WebpackMojo.java
+Patch:
+@@ -47,8 +47,8 @@ public final class WebpackMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.webpack", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.webpack", defaultValue = "${skip.webpack}")
++    private boolean skip;
+ 
+     @Component
+     private BuildContext buildContext;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/YarnMojo.java
+Patch:
+@@ -48,8 +48,8 @@ public final class YarnMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.yarn", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.yarn", defaultValue = "${skip.yarn}")
++    private boolean skip;
+ 
+     @Override
+     protected boolean skipExecution() {
+@@ -74,7 +74,7 @@ private ProxyConfig getProxyConfig() {
+             return MojoUtils.getProxyConfig(this.session, this.decrypter);
+         } else {
+             getLog().info("yarn not inheriting proxy config from Maven");
+-            return new ProxyConfig(Collections.<ProxyConfig.Proxy> emptyList());
++            return new ProxyConfig(Collections.<ProxyConfig.Proxy>emptyList());
+         }
+     }
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/BowerMojo.java
+Patch:
+@@ -24,8 +24,8 @@ public final class BowerMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.bower", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.bower", defaultValue = "${skip.bower}")
++    private boolean skip;
+ 
+     @Parameter(property = "session", defaultValue = "${session}", readonly = true)
+     private MavenSession session;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/EmberMojo.java
+Patch:
+@@ -47,8 +47,8 @@ public final class EmberMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.ember", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.ember", defaultValue = "${skip.ember}")
++    private boolean skip;
+ 
+     @Component
+     private BuildContext buildContext;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GruntMojo.java
+Patch:
+@@ -47,8 +47,8 @@ public final class GruntMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.grunt", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.grunt", defaultValue = "${skip.grunt}")
++    private boolean skip;
+ 
+     @Component
+     private BuildContext buildContext;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GulpMojo.java
+Patch:
+@@ -47,8 +47,8 @@ public final class GulpMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.gulp", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.gulp", defaultValue = "${skip.gulp}")
++    private boolean skip;
+ 
+     @Component
+     private BuildContext buildContext;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndNpmMojo.java
+Patch:
+@@ -61,8 +61,8 @@ public final class InstallNodeAndNpmMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.installnodenpm", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.installnodenpm", defaultValue = "${skip.installnodenpm}")
++    private boolean skip;
+ 
+     @Component(role = SettingsDecrypter.class)
+     private SettingsDecrypter decrypter;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndYarnMojo.java
+Patch:
+@@ -56,8 +56,8 @@ public final class InstallNodeAndYarnMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.installyarn", alias = "skip.installyarn", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.installyarn", alias = "skip.installyarn", defaultValue = "${skip.installyarn}")
++    private boolean skip;
+ 
+     @Component(role = SettingsDecrypter.class)
+     private SettingsDecrypter decrypter;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/JspmMojo.java
+Patch:
+@@ -23,8 +23,8 @@ public class JspmMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.jspm", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.jspm", defaultValue = "${skip.jspm}")
++    private boolean skip;
+ 
+     @Override
+     protected boolean skipExecution() {
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/KarmaRunMojo.java
+Patch:
+@@ -19,8 +19,8 @@ public final class KarmaRunMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.karma", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.karma", defaultValue = "${skip.karma}")
++    private boolean skip;
+ 
+     @Override
+     protected boolean skipExecution() {
+@@ -29,6 +29,6 @@ protected boolean skipExecution() {
+ 
+     @Override
+     public void execute(FrontendPluginFactory factory) throws TaskRunnerException {
+-	factory.getKarmaRunner().execute("start " + karmaConfPath, environmentVariables);
++        factory.getKarmaRunner().execute("start " + karmaConfPath, environmentVariables);
+     }
+ }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/WebpackMojo.java
+Patch:
+@@ -47,8 +47,8 @@ public final class WebpackMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.webpack", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.webpack", defaultValue = "${skip.webpack}")
++    private boolean skip;
+ 
+     @Component
+     private BuildContext buildContext;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/YarnMojo.java
+Patch:
+@@ -48,8 +48,8 @@ public final class YarnMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.yarn", defaultValue = "false")
+-    private Boolean skip;
++    @Parameter(property = "skip.yarn", defaultValue = "${skip.yarn}")
++    private boolean skip;
+ 
+     @Override
+     protected boolean skipExecution() {
+@@ -74,7 +74,7 @@ private ProxyConfig getProxyConfig() {
+             return MojoUtils.getProxyConfig(this.session, this.decrypter);
+         } else {
+             getLog().info("yarn not inheriting proxy config from Maven");
+-            return new ProxyConfig(Collections.<ProxyConfig.Proxy> emptyList());
++            return new ProxyConfig(Collections.<ProxyConfig.Proxy>emptyList());
+         }
+     }
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/GulpRunner.java
+Patch:
+@@ -3,7 +3,7 @@
+ public interface GulpRunner  extends NodeTaskRunner {}
+ 
+ final class DefaultGulpRunner extends NodeTaskExecutor implements GulpRunner {
+-    private static final String TASK_LOCATION = "node_modules/gulp/bin/gulp.js";
++    private static final String TASK_LOCATION = "node_modules/gulp/bin/gulp";
+ 
+     DefaultGulpRunner(NodeExecutorConfig config) {
+         super(config, TASK_LOCATION);
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/MojoUtils.java
+Patch:
+@@ -24,7 +24,8 @@ class MojoUtils {
+     private static final Logger LOGGER = LoggerFactory.getLogger(MojoUtils.class);
+ 
+     static <E extends Throwable> MojoFailureException toMojoFailureException(E e) {
+-        return new MojoFailureException(e.getMessage() + ": " + e.getCause().getMessage(), e);
++        String causeMessage = e.getCause() != null ? ": " + e.getCause().getMessage() : "";
++        return new MojoFailureException(e.getMessage() + causeMessage, e);
+     }
+ 
+     static ProxyConfig getProxyConfig(MavenSession mavenSession, SettingsDecrypter decrypter) {
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/MojoUtils.java
+Patch:
+@@ -24,7 +24,8 @@ class MojoUtils {
+     private static final Logger LOGGER = LoggerFactory.getLogger(MojoUtils.class);
+ 
+     static <E extends Throwable> MojoFailureException toMojoFailureException(E e) {
+-        return new MojoFailureException(e.getMessage() + ": " + e.getCause().getMessage(), e);
++        String causeMessage = e.getCause() != null ? ": " + e.getCause().getMessage() : "";
++        return new MojoFailureException(e.getMessage() + causeMessage, e);
+     }
+ 
+     static ProxyConfig getProxyConfig(MavenSession mavenSession, SettingsDecrypter decrypter) {
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/InputStreamHandler.java
+Patch:
+@@ -53,8 +53,8 @@ private static LogLevelAgnosticLogger errorLoggerFor(final Logger logger){
+         return new LogLevelAgnosticLogger() {
+             @Override
+             public void log(String value) {
+-                // fix #343
+-                if (value.startsWith("npm WARN ")) {
++                // fix #343 and #515
++                if (value.startsWith("npm WARN ") || value.startsWith("warning ")) {
+                     logger.warn(value);
+                 } else {
+                     logger.error(value);
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/InputStreamHandler.java
+Patch:
+@@ -53,8 +53,8 @@ private static LogLevelAgnosticLogger errorLoggerFor(final Logger logger){
+         return new LogLevelAgnosticLogger() {
+             @Override
+             public void log(String value) {
+-                // fix #343
+-                if (value.startsWith("npm WARN ")) {
++                // fix #343 and #515
++                if (value.startsWith("npm WARN ") || value.startsWith("warning ")) {
+                     logger.warn(value);
+                 } else {
+                     logger.error(value);
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/YarnExecutorConfig.java
+Patch:
+@@ -18,7 +18,7 @@ final class InstallYarnExecutorConfig implements YarnExecutorConfig {
+     private static final String YARN_WINDOWS =
+         YarnInstaller.INSTALL_PATH.replaceAll("/", "\\\\") + "\\Yarn\\bin\\yarn.cmd";
+ 
+-    private static final String YARN_DEFAULT = YarnInstaller.INSTALL_PATH + "/dist/bin/yarn";
++    private static final String YARN_DEFAULT = YarnInstaller.INSTALL_PATH + "/dist/bin/yarn.js";
+ 
+     private File nodePath;
+ 
+@@ -36,8 +36,8 @@ public File getNodePath() {
+ 
+     @Override
+     public File getYarnPath() {
+-        String yarnExecutable = getPlatform().isWindows() ? YARN_WINDOWS : YARN_DEFAULT;
+-        return new File(installConfig.getInstallDirectory() + yarnExecutable);
++        //String yarnExecutable = getPlatform().isWindows() ? YARN_WINDOWS : YARN_DEFAULT;
++        return new File(installConfig.getInstallDirectory() + YARN_DEFAULT);
+     }
+ 
+     @Override
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/YarnInstaller.java
+Patch:
+@@ -75,7 +75,7 @@ private boolean yarnIsAlreadyInstalled() {
+             File nodeFile = executorConfig.getYarnPath();
+             if (nodeFile.exists()) {
+                 final String version =
+-                    new YarnExecutor(executorConfig, Arrays.asList("--version"), null).executeAndGetResult();
++                    new YarnExecutor(executorConfig, Arrays.asList("--version"), null).executeAndGetResult().trim();
+ 
+                 if (version.equals(yarnVersion.replaceFirst("^v", ""))) {
+                     logger.info("Yarn {} is already installed.", version);
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndYarnMojo.java
+Patch:
+@@ -56,7 +56,7 @@ public final class InstallNodeAndYarnMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.installyarn", defaultValue = "false")
++    @Parameter(property = "skip.installyarn", alias = "skip.installyarn", defaultValue = "false")
+     private Boolean skip;
+ 
+     @Component(role = SettingsDecrypter.class)
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndYarnMojo.java
+Patch:
+@@ -56,7 +56,7 @@ public final class InstallNodeAndYarnMojo extends AbstractFrontendMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.installyarn", defaultValue = "false")
++    @Parameter(property = "skip.installyarn", alias = "skip.installyarn", defaultValue = "false")
+     private Boolean skip;
+ 
+     @Component(role = SettingsDecrypter.class)
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/YarnInstaller.java
+Patch:
+@@ -77,7 +77,7 @@ private boolean yarnIsAlreadyInstalled() {
+                 final String version =
+                     new YarnExecutor(executorConfig, Arrays.asList("--version"), null).executeAndGetResult();
+ 
+-                if (version.equals(yarnVersion)) {
++                if (version.equals(yarnVersion.replaceFirst("^v", ""))) {
+                     logger.info("Yarn {} is already installed.", version);
+                     return true;
+                 } else {
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/YarnInstaller.java
+Patch:
+@@ -77,7 +77,7 @@ private boolean yarnIsAlreadyInstalled() {
+                 final String version =
+                     new YarnExecutor(executorConfig, Arrays.asList("--version"), null).executeAndGetResult();
+ 
+-                if (version.equals(yarnVersion)) {
++                if (version.equals(yarnVersion.replaceFirst("^v", ""))) {
+                     logger.info("Yarn {} is already installed.", version);
+                     return true;
+                 } else {
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndNpmMojo.java
+Patch:
+@@ -45,7 +45,7 @@ public final class InstallNodeAndNpmMojo extends AbstractFrontendMojo {
+     /**
+      * The version of NPM to install.
+      */
+-    @Parameter(property = "npmVersion", required = true)
++    @Parameter(property = "npmVersion", required = false, defaultValue = "provided")
+     private String npmVersion;
+ 
+     /**
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndNpmMojo.java
+Patch:
+@@ -45,7 +45,7 @@ public final class InstallNodeAndNpmMojo extends AbstractFrontendMojo {
+     /**
+      * The version of NPM to install.
+      */
+-    @Parameter(property = "npmVersion", required = true)
++    @Parameter(property = "npmVersion", required = false, defaultValue = "provided")
+     private String npmVersion;
+ 
+     /**
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/FrontendPluginFactory.java
+Patch:
+@@ -22,7 +22,7 @@ public FrontendPluginFactory(File workingDirectory, File installDirectory, Cache
+     }
+ 
+     public NodeAndNPMInstaller getNodeAndNPMInstaller(ProxyConfig proxy){
+-        return new DefaultNodeAndNPMInstaller(
++        return new NodeAndNPMInstaller(
+                 getInstallConfig(),
+                 new DefaultArchiveExtractor(),
+                 new DefaultFileDownloader(proxy));
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ProxyConfig.java
+Patch:
+@@ -16,7 +16,6 @@ public class ProxyConfig {
+ 
+     public ProxyConfig(List<Proxy> proxies) {
+         this.proxies = proxies;
+-        LOGGER.info("Found proxies: {}", proxies);
+     }
+ 
+     public boolean isEmpty() {
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ProxyConfig.java
+Patch:
+@@ -16,7 +16,6 @@ public class ProxyConfig {
+ 
+     public ProxyConfig(List<Proxy> proxies) {
+         this.proxies = proxies;
+-        LOGGER.info("Found proxies: {}", proxies);
+     }
+ 
+     public boolean isEmpty() {
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ProxyConfig.java
+Patch:
+@@ -30,11 +30,11 @@ public Proxy getProxyForUrl(String requestUrl) {
+         }
+         final URI uri = URI.create(requestUrl);
+         for (Proxy proxy : proxies) {
+-            if (proxy.protocol.equals(uri.getScheme()) && !proxy.isNonProxyHost(uri.getHost())) {
++            if (!proxy.isNonProxyHost(uri.getHost())) {
+                 return proxy;
+             }
+         }
+-        LOGGER.info("Could not find matching proxy for protocol {}", uri.getScheme());
++        LOGGER.info("Could not find matching proxy for host: {}" + uri.getHost());
+         return null;
+     }
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/FileDownloader.java
+Patch:
+@@ -114,6 +114,7 @@ private CloseableHttpResponse executeViaProxy(Proxy proxy, String requestUrl) th
+     private CloseableHttpClient buildHttpClient(CredentialsProvider credentialsProvider) {
+     	return HttpClients.custom()
+     			.disableContentCompression()
++    			.useSystemProperties()
+     			.setDefaultCredentialsProvider(credentialsProvider)
+     			.build();
+     }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/GruntRunner.java
+Patch:
+@@ -1,14 +1,12 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import java.util.Arrays;
+-
+ public interface GruntRunner extends NodeTaskRunner {}
+ 
+ final class DefaultGruntRunner extends NodeTaskExecutor implements GruntRunner {
+ 
+     private static final String TASK_LOCATION = "node_modules/grunt-cli/bin/grunt";
+ 
+     DefaultGruntRunner(NodeExecutorConfig config) {
+-        super(config, TASK_LOCATION, Arrays.asList("--no-color"));
++        super(config, TASK_LOCATION);
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/GulpRunner.java
+Patch:
+@@ -1,13 +1,11 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import java.util.Arrays;
+-
+ public interface GulpRunner  extends NodeTaskRunner {}
+ 
+ final class DefaultGulpRunner extends NodeTaskExecutor implements GulpRunner {
+     private static final String TASK_LOCATION = "node_modules/gulp/bin/gulp.js";
+ 
+     DefaultGulpRunner(NodeExecutorConfig config) {
+-        super(config, TASK_LOCATION, Arrays.asList("--no-color"));
++        super(config, TASK_LOCATION);
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/KarmaRunner.java
+Patch:
+@@ -1,14 +1,12 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import java.util.Arrays;
+-
+ public interface KarmaRunner extends NodeTaskRunner {}
+ 
+ final class DefaultKarmaRunner extends NodeTaskExecutor implements KarmaRunner {
+ 
+     static final String TASK_LOCATION = "node_modules/karma/bin/karma";
+ 
+     DefaultKarmaRunner(NodeExecutorConfig config) {
+-        super(config, TASK_LOCATION, Arrays.asList("--no-colors"));
++        super(config, TASK_LOCATION);
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NpmRunner.java
+Patch:
+@@ -16,7 +16,6 @@ public DefaultNpmRunner(NodeExecutorConfig config, ProxyConfig proxyConfig) {
+ 
+     private static List<String> buildArguments(ProxyConfig proxyConfig) {
+         List<String> arguments = new ArrayList<String>();
+-        arguments.add("--color=false");
+ 
+         String npmRegistryURL = System.getProperty("npmRegistryURL");
+         if (npmRegistryURL != null)
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/WebpackRunner.java
+Patch:
+@@ -1,14 +1,12 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import java.util.ArrayList;
+-
+ public interface WebpackRunner extends NodeTaskRunner {}
+ 
+ final class DefaultWebpackRunner extends NodeTaskExecutor implements WebpackRunner {
+ 
+     private static final String TASK_LOCATION = "node_modules/webpack/bin/webpack.js";
+ 
+     DefaultWebpackRunner(NodeExecutorConfig config) {
+-        super(config, TASK_LOCATION, new ArrayList<String>());
++        super(config, TASK_LOCATION);
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/WebpackRunner.java
+Patch:
+@@ -1,14 +1,12 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import java.util.ArrayList;
+-
+ public interface WebpackRunner extends NodeTaskRunner {}
+ 
+ final class DefaultWebpackRunner extends NodeTaskExecutor implements WebpackRunner {
+ 
+     private static final String TASK_LOCATION = "node_modules/webpack/bin/webpack.js";
+ 
+     DefaultWebpackRunner(NodeExecutorConfig config) {
+-        super(config, TASK_LOCATION, new ArrayList<String>());
++        super(config, TASK_LOCATION);
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/GruntRunner.java
+Patch:
+@@ -1,14 +1,12 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import java.util.Arrays;
+-
+ public interface GruntRunner extends NodeTaskRunner {}
+ 
+ final class DefaultGruntRunner extends NodeTaskExecutor implements GruntRunner {
+ 
+     private static final String TASK_LOCATION = "node_modules/grunt-cli/bin/grunt";
+ 
+     DefaultGruntRunner(NodeExecutorConfig config) {
+-        super(config, TASK_LOCATION, Arrays.asList("--no-color"));
++        super(config, TASK_LOCATION);
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/GulpRunner.java
+Patch:
+@@ -1,13 +1,11 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import java.util.Arrays;
+-
+ public interface GulpRunner  extends NodeTaskRunner {}
+ 
+ final class DefaultGulpRunner extends NodeTaskExecutor implements GulpRunner {
+     private static final String TASK_LOCATION = "node_modules/gulp/bin/gulp.js";
+ 
+     DefaultGulpRunner(NodeExecutorConfig config) {
+-        super(config, TASK_LOCATION, Arrays.asList("--no-color"));
++        super(config, TASK_LOCATION);
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/KarmaRunner.java
+Patch:
+@@ -1,14 +1,12 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import java.util.Arrays;
+-
+ public interface KarmaRunner extends NodeTaskRunner {}
+ 
+ final class DefaultKarmaRunner extends NodeTaskExecutor implements KarmaRunner {
+ 
+     static final String TASK_LOCATION = "node_modules/karma/bin/karma";
+ 
+     DefaultKarmaRunner(NodeExecutorConfig config) {
+-        super(config, TASK_LOCATION, Arrays.asList("--no-colors"));
++        super(config, TASK_LOCATION);
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NpmRunner.java
+Patch:
+@@ -16,7 +16,6 @@ public DefaultNpmRunner(NodeExecutorConfig config, ProxyConfig proxyConfig) {
+ 
+     private static List<String> buildArguments(ProxyConfig proxyConfig) {
+         List<String> arguments = new ArrayList<String>();
+-        arguments.add("--color=false");
+ 
+         String npmRegistryURL = System.getProperty("npmRegistryURL");
+         if (npmRegistryURL != null)
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/FileDownloader.java
+Patch:
+@@ -101,7 +101,7 @@ private CloseableHttpResponse executeViaProxy(Proxy proxy, String requestUrl) th
+             proxyClient = buildHttpClient(null);
+         }
+ 
+-        final HttpHost proxyHttpHost = new HttpHost(proxy.host, proxy.port, proxy.protocol);
++        final HttpHost proxyHttpHost = new HttpHost(proxy.host, proxy.port);
+ 
+         final RequestConfig requestConfig = RequestConfig.custom().setProxy(proxyHttpHost).build();
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/FileDownloader.java
+Patch:
+@@ -101,7 +101,7 @@ private CloseableHttpResponse executeViaProxy(Proxy proxy, String requestUrl) th
+             proxyClient = buildHttpClient(null);
+         }
+ 
+-        final HttpHost proxyHttpHost = new HttpHost(proxy.host, proxy.port, proxy.protocol);
++        final HttpHost proxyHttpHost = new HttpHost(proxy.host, proxy.port);
+ 
+         final RequestConfig requestConfig = RequestConfig.custom().setProxy(proxyHttpHost).build();
+ 
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/AbstractFrontendMojo.java
+Patch:
+@@ -47,7 +47,7 @@ private boolean skipTestPhase() {
+    */
+   private boolean isTestingPhase() {
+     String phase = execution.getLifecyclePhase();
+-    return phase.equals("test") || phase.equals("integration-test");
++    return phase!=null && (phase.equals("test") || phase.equals("integration-test"));
+   }
+ 
+   protected abstract void execute(FrontendPluginFactory factory) throws FrontendException;
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/AbstractFrontendMojo.java
+Patch:
+@@ -47,7 +47,7 @@ private boolean skipTestPhase() {
+    */
+   private boolean isTestingPhase() {
+     String phase = execution.getLifecyclePhase();
+-    return phase.equals("test") || phase.equals("integration-test");
++    return phase!=null && (phase.equals("test") || phase.equals("integration-test"));
+   }
+ 
+   protected abstract void execute(FrontendPluginFactory factory) throws FrontendException;
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/Platform.java
+Patch:
+@@ -66,14 +66,15 @@ public String getLongNodeFilename(String nodeVersion) {
+ 
+     public String getNodeDownloadFilename(String nodeVersion) {
+         if(isWindows()) {
++			int versionCompare = nodeVersion.compareTo("v4.0.0");
+             if(architecture == Architecture.x64){
+-                if ("v4.0.0".equals(nodeVersion)) {
++				if (versionCompare >= 0) {
+                     return nodeVersion+"/win-x64/node.exe";    
+                 } else {
+                     return nodeVersion+"/x64/node.exe";
+                 }
+             } else {
+-                if ("v4.0.0".equals(nodeVersion)) {
++                if (versionCompare < 0) {
+                     return nodeVersion+"/win-x86/node.exe";    
+                 } else {
+                     return nodeVersion + "/node.exe";
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/Platform.java
+Patch:
+@@ -67,13 +67,13 @@ public String getLongNodeFilename(String nodeVersion) {
+     public String getNodeDownloadFilename(String nodeVersion) {
+         if(isWindows()) {
+             if(architecture == Architecture.x64){
+-                if (nodeVersion.equals("v4.0.0")) {
++                if ("v4.0.0".equals(nodeVersion)) {
+                     return nodeVersion+"/win-x64/node.exe";    
+                 } else {
+                     return nodeVersion+"/x64/node.exe";
+                 }
+             } else {
+-                if (nodeVersion.equals("v4.0.0")) {
++                if ("v4.0.0".equals(nodeVersion)) {
+                     return nodeVersion+"/win-x86/node.exe";    
+                 } else {
+                     return nodeVersion + "/node.exe";
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/Platform.java
+Patch:
+@@ -67,13 +67,13 @@ public String getLongNodeFilename(String nodeVersion) {
+     public String getNodeDownloadFilename(String nodeVersion) {
+         if(isWindows()) {
+             if(architecture == Architecture.x64){
+-                if (nodeVersion == "v4.0.0") {
++                if (nodeVersion.equals("v4.0.0")) {
+                     return nodeVersion+"/win-x64/node.exe";    
+                 } else {
+                     return nodeVersion+"/x64/node.exe";
+                 }
+             } else {
+-                if (nodeVersion == "v4.0.0") {
++                if (nodeVersion.equals("v4.0.0")) {
+                     return nodeVersion+"/win-x86/node.exe";    
+                 } else {
+                     return nodeVersion + "/node.exe";
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/Platform.java
+Patch:
+@@ -67,13 +67,13 @@ public String getLongNodeFilename(String nodeVersion) {
+     public String getNodeDownloadFilename(String nodeVersion) {
+         if(isWindows()) {
+             if(architecture == Architecture.x64){
+-                if (nodeVersion == 'v4.0.0') {
++                if (nodeVersion == "v4.0.0") {
+                     return nodeVersion+"/win-x64/node.exe";    
+                 } else {
+                     return nodeVersion+"/x64/node.exe";
+                 }
+             } else {
+-                if (nodeVersion == 'v4.0.0') {
++                if (nodeVersion == "v4.0.0") {
+                     return nodeVersion+"/win-x86/node.exe";    
+                 } else {
+                     return nodeVersion + "/node.exe";
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NodeExecutor.java
+Patch:
+@@ -12,7 +12,6 @@ public NodeExecutor(NodeExecutorConfig config, List<String> arguments){
+         final String node = config.getNodePath().getAbsolutePath();
+         List<String> localPaths = new ArrayList<String>();
+         localPaths.add(config.getNodePath().getParent());
+-        localPaths.add(config.getNpmPath().getParent());
+         this.executor = new ProcessExecutor(
+             config.getWorkingDirectory(),
+             localPaths,
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NodeExecutorConfig.java
+Patch:
+@@ -13,7 +13,7 @@ final class InstallNodeExecutorConfig implements NodeExecutorConfig {
+ 
+   private static final String NODE_WINDOWS = "\\node\\node.exe";
+   private static final String NODE_DEFAULT = "/node/node";
+-  private static final String NPM = "/node/npm/bin/npm-cli.js";
++  private static final String NPM = "/node/node_modules/npm/bin/npm-cli.js";
+ 
+   private final InstallConfig installConfig;
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/WebpackRunner.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import java.util.Arrays;
++import java.util.ArrayList;
+ 
+ public interface WebpackRunner {
+     void execute(String args) throws TaskRunnerException;
+@@ -11,6 +11,6 @@ final class DefaultWebpackRunner extends NodeTaskExecutor implements WebpackRunn
+     private static final String TASK_LOCATION = "node_modules/webpack/bin/webpack.js";
+ 
+     DefaultWebpackRunner(NodeExecutorConfig config) {
+-        super(config, TASK_LOCATION, Arrays.asList("--no-color"));
++        super(config, TASK_LOCATION, new ArrayList<String>());
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/WebpackRunner.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import java.util.Arrays;
++import java.util.ArrayList;
+ 
+ public interface WebpackRunner {
+     void execute(String args) throws TaskRunnerException;
+@@ -11,6 +11,6 @@ final class DefaultWebpackRunner extends NodeTaskExecutor implements WebpackRunn
+     private static final String TASK_LOCATION = "node_modules/webpack/bin/webpack.js";
+ 
+     DefaultWebpackRunner(NodeExecutorConfig config) {
+-        super(config, TASK_LOCATION, Arrays.asList("--no-color"));
++        super(config, TASK_LOCATION, new ArrayList<String>());
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/InstallationException.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-public final class InstallationException extends Exception {
++public final class InstallationException extends FrontendException {
+     InstallationException(String message){
+         super(message);
+     }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/TaskRunnerException.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-public class TaskRunnerException extends Exception {
++public class TaskRunnerException extends FrontendException {
+     TaskRunnerException(String message) {
+         super(message);
+     }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/KarmaRunMojo.java
+Patch:
+@@ -43,7 +43,7 @@ public final class KarmaRunMojo extends AbstractMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip.karma", defaultValue = "${skipTests}")
++    @Parameter(property = "skip.karma", defaultValue = "false")
+     private Boolean skip;
+ 
+     @Override
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GruntMojo.java
+Patch:
+@@ -56,7 +56,7 @@ public final class GruntMojo extends AbstractMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip", defaultValue = "false")
++    @Parameter(property = "skip.grunt", defaultValue = "false")
+     private Boolean skip;
+ 
+     @Component
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GulpMojo.java
+Patch:
+@@ -56,7 +56,7 @@ public final class GulpMojo extends AbstractMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip", defaultValue = "false")
++    @Parameter(property = "skip.gulp", defaultValue = "false")
+     private Boolean skip;
+ 
+     @Component
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/InstallNodeAndNpmMojo.java
+Patch:
+@@ -63,7 +63,7 @@ public final class InstallNodeAndNpmMojo extends AbstractMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip", defaultValue = "false")
++    @Parameter(property = "skip.installnodenpm", defaultValue = "false")
+     private Boolean skip;
+ 
+     @Override
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/KarmaRunMojo.java
+Patch:
+@@ -43,7 +43,7 @@ public final class KarmaRunMojo extends AbstractMojo {
+     /**
+      * Skips execution of this mojo.
+      */
+-    @Parameter(property = "skip", defaultValue = "${skipTests}")
++    @Parameter(property = "skip.karma", defaultValue = "${skipTests}")
+     private Boolean skip;
+ 
+     @Override
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/NpmMojo.java
+Patch:
+@@ -39,6 +39,9 @@ public final class NpmMojo extends AbstractMojo {
+     @Component
+     private BuildContext buildContext;
+ 
++    /**
++     * Skips execution of this mojo.
++     */
+     @Parameter(property = "skip.npm", defaultValue = "false")
+     private Boolean skip;
+ 
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ProcessExecutor.java
+Patch:
+@@ -54,7 +54,6 @@ public String executeAndGetResult() throws ProcessExecutionException {
+ 
+     public int executeAndRedirectOutput(final Logger logger) throws ProcessExecutionException {
+         try {
+-            processBuilder.redirectErrorStream(true);
+             final Process process = processBuilder.start();
+ 
+             final Thread infoLogThread = InputStreamHandler.logInfo(process.getInputStream(), logger);
+@@ -97,10 +96,10 @@ private ProcessBuilder createProcessBuilder(){
+ 
+     private static String readString(InputStream processInputStream) throws IOException {
+         BufferedReader inputStream = new BufferedReader(new InputStreamReader(processInputStream));
+-        StringBuffer result = new StringBuffer();
++        StringBuilder result = new StringBuilder();
+         String line;
+         while((line = inputStream.readLine()) != null) {
+-            result.append(line + "\n");
++            result.append(line).append("\n");
+         }
+         return result.toString().trim();
+     }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ProcessExecutor.java
+Patch:
+@@ -37,7 +37,7 @@ public String executeAndGetResult() throws ProcessExecutionException {
+         try {
+             final Process process = processBuilder.start();
+             final String result = readString(process.getInputStream());
+-            final String error = readString(process.getInputStream());
++            final String error = readString(process.getErrorStream());
+             final int exitValue = process.waitFor();
+ 
+             if(exitValue == 0){
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ProcessExecutor.java
+Patch:
+@@ -37,7 +37,7 @@ public String executeAndGetResult() throws ProcessExecutionException {
+         try {
+             final Process process = processBuilder.start();
+             final String result = readString(process.getInputStream());
+-            final String error = readString(process.getInputStream());
++            final String error = readString(process.getErrorStream());
+             final int exitValue = process.waitFor();
+ 
+             if(exitValue == 0){
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/BowerMojo.java
+Patch:
+@@ -21,9 +21,9 @@ public final class BowerMojo extends AbstractMojo {
+     private File workingDirectory;
+ 
+     /**
+-     * Bower arguments. Default is empty (runs just the "bower" command).
++     * Bower arguments. Default is "install".
+      */
+-    @Parameter(property = "arguments")
++    @Parameter(defaultValue = "install", property = "arguments", required = false)
+     private String arguments; 
+ 
+     @Override
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ArchiveExtractor.java
+Patch:
+@@ -37,6 +37,9 @@ public void extract(String archive, String destinationDirectory) throws ArchiveE
+                 if (tarEntry.isDirectory()) {
+                     destPath.mkdirs();
+                 } else {
++                    if (!destPath.getParentFile().exists()) {
++                        destPath.getParentFile().mkdirs();
++                    }
+                     destPath.createNewFile();
+                     boolean isExecutable = (tarEntry.getMode() & 0100) > 0;
+                     destPath.setExecutable(isExecutable);
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GruntMojo.java
+Patch:
+@@ -10,7 +10,6 @@
+ import org.apache.maven.plugins.annotations.LifecyclePhase;
+ import org.apache.maven.plugins.annotations.Mojo;
+ import org.apache.maven.plugins.annotations.Parameter;
+-import org.slf4j.Logger;
+ 
+ @Mojo(name="grunt", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
+ public final class GruntMojo extends AbstractMojo {
+@@ -34,7 +33,7 @@ public void execute() throws MojoExecutionException, MojoFailureException {
+             new FrontendPluginFactory(workingDirectory).getGruntRunner()
+                     .execute(arguments);
+         } catch (TaskRunnerException e) {
+-            throw new MojoFailureException(e.getMessage());
++            throw new MojoFailureException("Failed to run task", e);
+         }
+     }
+ }
+\ No newline at end of file
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GulpMojo.java
+Patch:
+@@ -10,7 +10,6 @@
+ import org.apache.maven.plugins.annotations.LifecyclePhase;
+ import org.apache.maven.plugins.annotations.Mojo;
+ import org.apache.maven.plugins.annotations.Parameter;
+-import org.slf4j.Logger;
+ 
+ @Mojo(name="gulp", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
+ public final class GulpMojo extends AbstractMojo {
+@@ -34,7 +33,7 @@ public void execute() throws MojoExecutionException, MojoFailureException {
+             new FrontendPluginFactory(workingDirectory).getGulpRunner()
+                     .execute(arguments);
+         } catch (TaskRunnerException e) {
+-            throw new MojoFailureException(e.getMessage());
++            throw new MojoFailureException("Failed to run task", e);
+         }
+     }
+ }
+\ No newline at end of file
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/KarmaRunMojo.java
+Patch:
+@@ -54,7 +54,7 @@ public void execute() throws MojoExecutionException, MojoFailureException {
+ 			if (testFailureIgnore) {
+ 				LoggerFactory.getLogger(KarmaRunMojo.class).warn("There are ignored test failures/errors for: " + workingDirectory);
+ 			} else {
+-            	throw new MojoFailureException(e.getMessage());
++                throw new MojoFailureException("Failed to run task", e);
+ 			}
+         }
+     }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/MojoUtils.java
+Patch:
+@@ -9,7 +9,7 @@
+ 
+ class MojoUtils {
+     static <E extends Throwable> MojoFailureException toMojoFailureException(E e){
+-        return new MojoFailureException(e.getMessage()+": "+e.getCause().getMessage());
++        return new MojoFailureException(e.getMessage()+": "+e.getCause().getMessage(), e);
+     }
+ 
+     static void setSLF4jLogger(Log log){
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/NpmMojo.java
+Patch:
+@@ -42,7 +42,7 @@ public void execute() throws MojoExecutionException, MojoFailureException {
+             new FrontendPluginFactory(workingDirectory, proxyConfig).getNpmRunner()
+                     .execute(arguments);
+         } catch (TaskRunnerException e) {
+-            throw new MojoFailureException(e.getMessage());
++            throw new MojoFailureException("Failed to run task", e);
+         }
+     }
+ }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GruntMojo.java
+Patch:
+@@ -10,7 +10,6 @@
+ import org.apache.maven.plugins.annotations.LifecyclePhase;
+ import org.apache.maven.plugins.annotations.Mojo;
+ import org.apache.maven.plugins.annotations.Parameter;
+-import org.slf4j.Logger;
+ 
+ @Mojo(name="grunt", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
+ public final class GruntMojo extends AbstractMojo {
+@@ -34,7 +33,7 @@ public void execute() throws MojoExecutionException, MojoFailureException {
+             new FrontendPluginFactory(workingDirectory).getGruntRunner()
+                     .execute(arguments);
+         } catch (TaskRunnerException e) {
+-            throw new MojoFailureException(e.getMessage());
++            throw new MojoFailureException("Failed to run task", e);
+         }
+     }
+ }
+\ No newline at end of file
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/GulpMojo.java
+Patch:
+@@ -10,7 +10,6 @@
+ import org.apache.maven.plugins.annotations.LifecyclePhase;
+ import org.apache.maven.plugins.annotations.Mojo;
+ import org.apache.maven.plugins.annotations.Parameter;
+-import org.slf4j.Logger;
+ 
+ @Mojo(name="gulp", defaultPhase = LifecyclePhase.GENERATE_RESOURCES)
+ public final class GulpMojo extends AbstractMojo {
+@@ -34,7 +33,7 @@ public void execute() throws MojoExecutionException, MojoFailureException {
+             new FrontendPluginFactory(workingDirectory).getGulpRunner()
+                     .execute(arguments);
+         } catch (TaskRunnerException e) {
+-            throw new MojoFailureException(e.getMessage());
++            throw new MojoFailureException("Failed to run task", e);
+         }
+     }
+ }
+\ No newline at end of file
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/KarmaRunMojo.java
+Patch:
+@@ -54,7 +54,7 @@ public void execute() throws MojoExecutionException, MojoFailureException {
+ 			if (testFailureIgnore) {
+ 				LoggerFactory.getLogger(KarmaRunMojo.class).warn("There are ignored test failures/errors for: " + workingDirectory);
+ 			} else {
+-            	throw new MojoFailureException(e.getMessage());
++                throw new MojoFailureException("Failed to run task", e);
+ 			}
+         }
+     }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/MojoUtils.java
+Patch:
+@@ -9,7 +9,7 @@
+ 
+ class MojoUtils {
+     static <E extends Throwable> MojoFailureException toMojoFailureException(E e){
+-        return new MojoFailureException(e.getMessage()+": "+e.getCause().getMessage());
++        return new MojoFailureException(e.getMessage()+": "+e.getCause().getMessage(), e);
+     }
+ 
+     static void setSLF4jLogger(Log log){
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/NpmMojo.java
+Patch:
+@@ -42,7 +42,7 @@ public void execute() throws MojoExecutionException, MojoFailureException {
+             new FrontendPluginFactory(workingDirectory, proxyConfig).getNpmRunner()
+                     .execute(arguments);
+         } catch (TaskRunnerException e) {
+-            throw new MojoFailureException(e.getMessage());
++            throw new MojoFailureException("Failed to run task", e);
+         }
+     }
+ }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/mojo/KarmaRunMojo.java
+Patch:
+@@ -37,7 +37,7 @@ public final class KarmaRunMojo extends AbstractMojo {
+     /**
+      * Whether you should continue build when some test will fail (default is false)
+      */
+-    @Parameter(property = "maven-frontend-plugin.testFailureIgnore", required = false, defaultValue = "false")
++    @Parameter(property = "testFailureIgnore", required = false, defaultValue = "false")
+     private Boolean testFailureIgnore;
+ 
+     @Override
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/ProcessExecutor.java
+Patch:
+@@ -87,11 +87,11 @@ private List<String> getPlatformIndependentCommand(){
+ 
+     private static String readString(InputStream processInputStream) throws IOException {
+         BufferedReader inputStream = new BufferedReader(new InputStreamReader(processInputStream));
+-        String result = "";
++        StringBuffer result = new StringBuffer();
+         String line;
+         while((line = inputStream.readLine()) != null) {
+-            result += line + "\n";
++            result.append(line + "\n");
+         }
+-        return result.trim();
++        return result.toString().trim();
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/FileDownloader.java
+Patch:
+@@ -41,7 +41,7 @@ public DefaultFileDownloader(ProxyConfig proxy){
+     public void download(String downloadUrl, String destination) throws DownloadException {
+         try {
+             CloseableHttpResponse response = execute(downloadUrl);
+-            new File(FilenameUtils.getPath(destination)).mkdirs();
++            new File(FilenameUtils.getFullPathNoEndSeparator(destination)).mkdirs();
+             ReadableByteChannel rbc = Channels.newChannel(response.getEntity().getContent());
+             FileOutputStream fos = new FileOutputStream(destination);
+             fos.getChannel().transferFrom(rbc, 0, Long.MAX_VALUE);
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/FileDownloader.java
+Patch:
+@@ -41,7 +41,7 @@ public DefaultFileDownloader(ProxyConfig proxy){
+     public void download(String downloadUrl, String destination) throws DownloadException {
+         try {
+             CloseableHttpResponse response = execute(downloadUrl);
+-            new File(FilenameUtils.getPath(destination)).mkdirs();
++            new File(FilenameUtils.getFullPathNoEndSeparator(destination)).mkdirs();
+             ReadableByteChannel rbc = Channels.newChannel(response.getEntity().getContent());
+             FileOutputStream fos = new FileOutputStream(destination);
+             fos.getChannel().transferFrom(rbc, 0, Long.MAX_VALUE);
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/GruntRunner.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+ import java.io.File;
++import java.util.Arrays;
+ 
+ public interface GruntRunner {
+     public void execute(String args) throws TaskRunnerException;
+@@ -11,6 +12,6 @@ final class DefaultGruntRunner extends NodeTaskExecutor implements GruntRunner {
+     private static final String TASK_LOCATION = "/node_modules/grunt-cli/bin/grunt";
+ 
+     DefaultGruntRunner(Platform platform, File workingDirectory) {
+-        super(TASK_NAME, TASK_LOCATION, workingDirectory, platform);
++        super(TASK_NAME, TASK_LOCATION, workingDirectory, platform, Arrays.asList("--no-color"));
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/KarmaRunner.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+ import java.io.File;
++import java.util.Arrays;
+ 
+ public interface KarmaRunner {
+     public void execute(String args) throws TaskRunnerException;
+@@ -11,6 +12,6 @@ final class DefaultKarmaRunner extends NodeTaskExecutor implements KarmaRunner {
+     static final String TASK_LOCATION = "/node_modules/karma/bin/karma";
+ 
+     DefaultKarmaRunner(Platform platform, File workingDirectory) {
+-        super(TASK_NAME, TASK_LOCATION, workingDirectory, platform);
++        super(TASK_NAME, TASK_LOCATION, workingDirectory, platform, Arrays.asList("--no-colors"));
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NpmRunner.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+ import java.io.File;
++import java.util.Arrays;
+ 
+ public interface NpmRunner {
+     public void execute(String args) throws TaskRunnerException;
+@@ -11,6 +12,6 @@ final class DefaultNpmRunner extends NodeTaskExecutor implements NpmRunner {
+     static final String TASK_LOCATION = "/node/npm/bin/npm-cli.js";
+ 
+     public DefaultNpmRunner(Platform platform, File workingDirectory) {
+-        super(TASK_NAME, TASK_LOCATION, workingDirectory, platform);
++        super(TASK_NAME, TASK_LOCATION, workingDirectory, platform, Arrays.asList("--color=false"));
+     }
+ }
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NodeAndNPMInstaller.java
+Patch:
+@@ -223,9 +223,9 @@ private void createShortcutScripts() throws InstallationException {
+         try {
+             File script = new File(workingDirectory+normalize("/node/with_new_path.sh"));
+             PrintWriter pw = new PrintWriter(new BufferedWriter(new FileWriter(script)));
+-            pw.print("#!/bin/sh");
+-            pw.print("export PATH=\"$(dirname $(readlink -f $0)):$PATH\"");
+-            pw.print("$@");
++            pw.println("#!/bin/sh");
++            pw.println("export PATH=\"$(dirname $(readlink -f $0)):$PATH\"");
++            pw.println("\"$@\"");
+             pw.close();
+             logger.info("Created npm script "+script);
+         } catch (IOException e) {
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/FileDownloader.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.github.eirslett.maven.plugins.frontend.lib;
+ 
+-import org.codehaus.plexus.util.FileUtils;
++import org.apache.commons.io.FilenameUtils;
+ 
+ import java.io.File;
+ import java.io.FileOutputStream;
+@@ -22,7 +22,7 @@ interface FileDownloader {
+ final class DefaultFileDownloader implements FileDownloader {
+     public void download(String downloadUrl, String destination) throws DownloadException {
+         try {
+-            new File(FileUtils.dirname(destination)).mkdirs();
++            new File(FilenameUtils.getPath(destination)).mkdirs();
+             URL link = new URL(downloadUrl);
+             ReadableByteChannel rbc = Channels.newChannel(link.openStream());
+             FileOutputStream fos = new FileOutputStream(destination);
+
+File: frontend-plugin-core/src/main/java/com/github/eirslett/maven/plugins/frontend/lib/NodeAndNPMInstaller.java
+Patch:
+@@ -6,8 +6,8 @@
+ import java.util.Arrays;
+ import java.util.HashMap;
+ 
++import org.apache.commons.io.FileUtils;
+ import org.codehaus.jackson.map.ObjectMapper;
+-import org.codehaus.plexus.util.FileUtils;
+ import org.slf4j.Logger;
+ 
+ public interface NodeAndNPMInstaller {
+
+File: src/main/java/com/github/eirslett/maven/plugins/frontend/NodeAndNPMInstaller.java
+Patch:
+@@ -144,7 +144,7 @@ private void installNodeDefault() throws MojoFailureException {
+         String downloadUrl = "";
+         try {
+             log.info("Installing node version " + nodeVersion);
+-            final String longNodeFilename = DOWNLOAD_ROOT + platform.getLongNodeFilename(nodeVersion);
++            final String longNodeFilename = platform.getLongNodeFilename(nodeVersion);
+             downloadUrl = DOWNLOAD_ROOT + platform.getNodeDownloadFilename(nodeVersion);
+ 
+             final File tmpDirectory = new File(workingDirectory + File.separator + "node_tmp");
+
+File: src/main/java/com/github/eirslett/maven/plugins/frontend/NodeAndNPMInstaller.java
+Patch:
+@@ -144,7 +144,7 @@ private void installNodeDefault() throws MojoFailureException {
+         String downloadUrl = "";
+         try {
+             log.info("Installing node version " + nodeVersion);
+-            final String longNodeFilename = DOWNLOAD_ROOT + platform.getLongNodeFilename(nodeVersion);
++            final String longNodeFilename = platform.getLongNodeFilename(nodeVersion);
+             downloadUrl = DOWNLOAD_ROOT + platform.getNodeDownloadFilename(nodeVersion);
+ 
+             final File tmpDirectory = new File(workingDirectory + File.separator + "node_tmp");
+
+File: src/main/java/com/github/eirslett/maven/plugins/frontend/NodeAndNPMInstaller.java
+Patch:
+@@ -140,8 +140,7 @@ private void installNodeDefault() throws MojoFailureException {
+         try {
+             log.info("Installing node version " + nodeVersion);
+             final String osName = getOsCodeName();
+-            final String architecture = this.architecture.toString();
+-            final String longNodeFilename = "node-" + nodeVersion + "-" + osName + "-" + architecture;
++            final String longNodeFilename = "node-" + nodeVersion + "-" + osName + "-" + architecture.toString();
+             downloadUrl = DOWNLOAD_ROOT + nodeVersion + "/" + longNodeFilename + ".tar.gz";
+ 
+             final File tmpDirectory = new File(workingDirectory + File.separator + "node_tmp");
+
+File: src/main/java/com/github/eirslett/maven/plugins/frontend/NodeAndNPMInstaller.java
+Patch:
+@@ -28,7 +28,7 @@ final class NodeAndNPMInstaller {
+     public NodeAndNPMInstaller(String nodeVersion, String npmVersion, File workingDirectory, Log log) {
+         this.workingDirectory = workingDirectory;
+         this.log = log;
+-        this.architecture = Architecture.x86;
++        this.architecture = Architecture.guess();
+         this.nodeVersion = nodeVersion;
+         this.npmVersion = npmVersion;
+     }
+
+File: frontend-maven-plugin/src/main/java/com/github/eirslett/maven/plugins/frontend/Utils.java
+Patch:
+@@ -47,12 +47,10 @@ private InputStreamHandler(InputStream inputStream, Log log) {
+ 
+         public void run(){
+             BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
+-            String result = "";
+             String line;
+             try {
+                 while((line = reader.readLine()) != null) {
+-                    result += line + "\n";
+-                    log.info(result);
++                    log.info(line);
+                 }
+             } catch (IOException e) {
+ 
+
+File: frontend-maven-plugin/src/test/java/com.github.eirslett.maven.plugins.frontend/InstallNodeAndNpmMojoTest.java
+Patch:
+@@ -9,7 +9,7 @@ public class InstallNodeAndNpmMojoTest {
+     @Test
+     @Ignore
+     public void testExecute() throws Exception {
+-//        new InstallNodeAndNpmMojo("v0.10.18").execute();
+-        new NodeAndNPMInstaller("v0.9.6", "1.1.69", "D:\\workspace\\frontend-maven-plugin\\hello\\world", new DefaultLog(new ConsoleLogger(0, "FOO")), OS.Windows, Architecture.x64).install();
++//        new InstallNodeAndNpmMojo("v0.10.18", "1.3.8", "D:\\workspace\\frontend-maven-plugin\\example", new DefaultLog(new ConsoleLogger(0, "FOO")), OS.Windows, Architecture.x64).execute();
++        new NodeAndNPMInstaller("v0.9.6", "1.1.69", "D:\\workspace\\frontend-maven-plugin\\example", new DefaultLog(new ConsoleLogger(0, "FOO")), OS.Mac, Architecture.x64).install();
+     }
+ }
+

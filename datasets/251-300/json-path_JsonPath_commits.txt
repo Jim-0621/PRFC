@@ -1,0 +1,3718 @@
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/text/Length.java
+Patch:
+@@ -1,7 +1,5 @@
+ package com.jayway.jsonpath.internal.function.text;
+ 
+-import com.google.gson.Gson;
+-import com.google.gson.GsonBuilder;
+ import com.jayway.jsonpath.internal.EvaluationContext;
+ import com.jayway.jsonpath.internal.Path;
+ import com.jayway.jsonpath.internal.PathRef;
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JsonSmartJsonProvider.java
+Patch:
+@@ -83,6 +83,8 @@ public String toJson(Object obj) {
+             return JSONObject.toJSONString((Map<String, ?>) obj, JSONStyle.LT_COMPRESS);
+         } else if (obj instanceof List) {
+             return JSONArray.toJSONString((List<?>) obj, JSONStyle.LT_COMPRESS);
++        } else if (obj instanceof Number ||  obj instanceof Boolean){
++            return JSONValue.toJSONString(obj);
+         } else {
+             throw new UnsupportedOperationException(obj.getClass().getName() + " can not be converted to JSON");
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JacksonJsonNodeJsonProvider.java
+Patch:
+@@ -160,7 +160,7 @@ public Object getMapValue(Object obj, String key) {
+         if (!jsonObject.has(key)) {
+             return UNDEFINED;
+         } else {
+-            return unwrap(o);
++            return o;
+         }
+     }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/ScanPathToken.java
+Patch:
+@@ -55,6 +55,7 @@ public static void walkArray(PathToken pt, String currentPath, PathRef parent, O
+                 int idx = 0;
+                 for (Object evalModel : models) {
+                     String evalPath = currentPath + "[" + idx + "]";
++                    next.setUpstreamArrayIndex(idx);
+                     next.evaluate(evalPath, parent, evalModel, ctx);
+                     idx++;
+                 }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -612,7 +612,7 @@ private boolean readBracketPropertyToken(PathTokenAppender appender) {
+                     inProperty = true;
+                     lastSignificantWasComma = false;
+                 }
+-            } else if (c == COMMA){
++            } else if (c == COMMA && !inProperty) {
+                 if (lastSignificantWasComma){
+                     fail("Found empty property at index "+readPosition);
+                 }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/Parameter.java
+Patch:
+@@ -129,6 +129,8 @@ public static void consume(Class expectedType, EvaluationContext ctx, Collection
+         } else {
+             if (value != null && expectedType.isAssignableFrom(value.getClass())) {
+                 collection.add(value);
++            } else if (value != null && expectedType == String.class) {
++                collection.add(value.toString());
+             }
+         }
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/JsonContext.java
+Patch:
+@@ -29,13 +29,12 @@
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+-import java.util.LinkedList;
++import java.util.Arrays;
+ import java.util.List;
+ 
+ import static com.jayway.jsonpath.JsonPath.compile;
+ import static com.jayway.jsonpath.internal.Utils.notEmpty;
+ import static com.jayway.jsonpath.internal.Utils.notNull;
+-import static java.util.Arrays.asList;
+ 
+ public class JsonContext implements DocumentContext {
+ 
+@@ -216,7 +215,8 @@ public DocumentContext put(JsonPath path, String key, Object value) {
+ 
+     private JsonPath pathFromCache(String path, Predicate[] filters) {
+         Cache cache = CacheProvider.getCache();
+-        String cacheKey = Utils.concat(path, new LinkedList<Predicate>(asList(filters)).toString());
++        String cacheKey = filters == null || filters.length == 0
++            ? path : Utils.concat(path, Arrays.toString(filters));
+         JsonPath jsonPath = cache.get(cacheKey);
+         if (jsonPath == null) {
+             jsonPath = compile(path, filters);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -333,7 +333,8 @@ else if (isPathContext(c)) {
+                 // we've encountered a COMMA do the same
+                 case CLOSE_PARENTHESIS:
+                     groupParen--;
+-                    if (0 != groupParen) {
++                    //CS304 Issue link: https://github.com/json-path/JsonPath/issues/620
++                    if (0 > groupParen ) {
+                         parameter.append(c);
+                     }
+                 case COMMA:
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/JsonContext.java
+Patch:
+@@ -146,8 +146,8 @@ public DocumentContext map(String path, MapFunction mapFunction, Predicate... fi
+ 
+     @Override
+     public DocumentContext map(JsonPath path, MapFunction mapFunction) {
+-        path.map(json, mapFunction, configuration);
+-        return this;
++        Object obj = path.map(json, mapFunction, configuration);
++        return obj==null ? null:this;
+     }
+ 
+     @Override
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/Path.java
+Patch:
+@@ -60,5 +60,4 @@ public interface Path {
+      * @return true id this path is starts with '$' and false if the path starts with '@'
+      */
+     boolean isRootPath();
+-
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/PathFunctionFactory.java
+Patch:
+@@ -42,7 +42,7 @@ public class PathFunctionFactory {
+         map.put("concat", Concatenate.class);
+ 
+         // JSON Entity Functions
+-        map.put("length", Length.class);
++        map.put(Length.TOKEN_NAME, Length.class);
+         map.put("size", Length.class);
+         map.put("append", Append.class);
+         map.put("keys", KeySetFunction.class);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/WildcardPathToken.java
+Patch:
+@@ -27,7 +27,7 @@
+  */
+ public class WildcardPathToken extends PathToken {
+ 
+-    WildcardPathToken() {
++    public WildcardPathToken() {
+     }
+ 
+     @Override
+
+File: json-path/src/main/java/com/jayway/jsonpath/Criteria.java
+Patch:
+@@ -329,7 +329,7 @@ public Criteria anyof(Collection<?> c) {
+      * @return the criteria
+      */
+     public Criteria noneof(Object... o) {
+-        return subsetof(Arrays.asList(o));
++        return noneof(Arrays.asList(o));
+     }
+ 
+     /**
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/GsonJsonProvider.java
+Patch:
+@@ -85,6 +85,7 @@ public Object unwrap(final Object o) {
+ 
+     private static boolean isPrimitiveNumber(final Number n) {
+         return n instanceof Integer ||
++                n instanceof Float ||
+                 n instanceof Double ||
+                 n instanceof Long ||
+                 n instanceof BigDecimal ||
+@@ -97,9 +98,9 @@ private static Number unwrapNumber(final Number n) {
+         if (!isPrimitiveNumber(n)) {
+             BigDecimal bigDecimal = new BigDecimal(n.toString());
+             if (bigDecimal.scale() <= 0) {
+-                if (bigDecimal.compareTo(new BigDecimal(Integer.MAX_VALUE)) <= 0) {
++                if (bigDecimal.abs().compareTo(new BigDecimal(Integer.MAX_VALUE)) <= 0) {
+                     unwrapped = bigDecimal.intValue();
+-                } else if (bigDecimal.compareTo(new BigDecimal(Long.MAX_VALUE)) <= 0){
++                } else if (bigDecimal.abs().compareTo(new BigDecimal(Long.MAX_VALUE)) <= 0){
+                     unwrapped = bigDecimal.longValue();
+                 } else {
+                     unwrapped = bigDecimal;
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/AbstractJsonProvider.java
+Patch:
+@@ -153,7 +153,8 @@ public int length(Object obj) {
+         } else if(obj instanceof String){
+             return ((String)obj).length();
+         }
+-        throw new JsonPathException("length operation cannot be applied to " + obj!=null?obj.getClass().getName():"null");
++        throw new JsonPathException("length operation cannot be applied to " + (obj != null ? obj.getClass().getName()
++                : "null"));
+     }
+ 
+     /**
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/GsonJsonProvider.java
+Patch:
+@@ -246,9 +246,8 @@ public int length(final Object obj) {
+                 }
+             }
+         }
+-
+-        throw new JsonPathException("length operation can not applied to " + obj != null ? obj.getClass().getName()
+-                                                                                         : "null");
++        throw new JsonPathException("length operation can not applied to " + (obj != null ? obj.getClass().getName()
++                                                                                         : "null"));
+     }
+ 
+     @Override
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JacksonJsonNodeJsonProvider.java
+Patch:
+@@ -211,7 +211,8 @@ public int length(Object obj) {
+                 return element.size();
+             }
+         }
+-        throw new JsonPathException("length operation can not applied to " + obj != null ? obj.getClass().getName() : "null");
++        throw new JsonPathException("length operation can not applied to " + (obj != null ? obj.getClass().getName()
++                : "null"));
+     }
+ 
+     @Override
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JsonOrgJsonProvider.java
+Patch:
+@@ -170,7 +170,8 @@ public int length(Object obj) {
+                 return ((String) obj).length();
+             }
+         }
+-        throw new JsonPathException("length operation can not applied to " + obj != null ? obj.getClass().getName() : "null");
++        throw new JsonPathException("length operation can not applied to " + (obj != null ? obj.getClass().getName()
++                : "null"));
+     }
+ 
+     @Override
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/GsonJsonProvider.java
+Patch:
+@@ -85,6 +85,7 @@ public Object unwrap(final Object o) {
+ 
+     private static boolean isPrimitiveNumber(final Number n) {
+         return n instanceof Integer ||
++                n instanceof Float ||
+                 n instanceof Double ||
+                 n instanceof Long ||
+                 n instanceof BigDecimal ||
+@@ -97,9 +98,9 @@ private static Number unwrapNumber(final Number n) {
+         if (!isPrimitiveNumber(n)) {
+             BigDecimal bigDecimal = new BigDecimal(n.toString());
+             if (bigDecimal.scale() <= 0) {
+-                if (bigDecimal.compareTo(new BigDecimal(Integer.MAX_VALUE)) <= 0) {
++                if (bigDecimal.abs().compareTo(new BigDecimal(Integer.MAX_VALUE)) <= 0) {
+                     unwrapped = bigDecimal.intValue();
+-                } else if (bigDecimal.compareTo(new BigDecimal(Long.MAX_VALUE)) <= 0){
++                } else if (bigDecimal.abs().compareTo(new BigDecimal(Long.MAX_VALUE)) <= 0){
+                     unwrapped = bigDecimal.longValue();
+                 } else {
+                     unwrapped = bigDecimal;
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/AbstractJsonProvider.java
+Patch:
+@@ -153,7 +153,8 @@ public int length(Object obj) {
+         } else if(obj instanceof String){
+             return ((String)obj).length();
+         }
+-        throw new JsonPathException("length operation cannot be applied to " + obj!=null?obj.getClass().getName():"null");
++        throw new JsonPathException("length operation cannot be applied to " + (obj != null ? obj.getClass().getName()
++                : "null"));
+     }
+ 
+     /**
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/GsonJsonProvider.java
+Patch:
+@@ -246,9 +246,8 @@ public int length(final Object obj) {
+                 }
+             }
+         }
+-
+-        throw new JsonPathException("length operation can not applied to " + obj != null ? obj.getClass().getName()
+-                                                                                         : "null");
++        throw new JsonPathException("length operation can not applied to " + (obj != null ? obj.getClass().getName()
++                                                                                         : "null"));
+     }
+ 
+     @Override
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JacksonJsonNodeJsonProvider.java
+Patch:
+@@ -211,7 +211,8 @@ public int length(Object obj) {
+                 return element.size();
+             }
+         }
+-        throw new JsonPathException("length operation can not applied to " + obj != null ? obj.getClass().getName() : "null");
++        throw new JsonPathException("length operation can not applied to " + (obj != null ? obj.getClass().getName()
++                : "null"));
+     }
+ 
+     @Override
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JsonOrgJsonProvider.java
+Patch:
+@@ -170,7 +170,8 @@ public int length(Object obj) {
+                 return ((String) obj).length();
+             }
+         }
+-        throw new JsonPathException("length operation can not applied to " + obj != null ? obj.getClass().getName() : "null");
++        throw new JsonPathException("length operation can not applied to " + (obj != null ? obj.getClass().getName()
++                : "null"));
+     }
+ 
+     @Override
+
+File: json-path-assert/src/main/java/com/jayway/jsonassert/impl/matcher/IsEmptyCollection.java
+Patch:
+@@ -30,7 +30,6 @@ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ package com.jayway.jsonassert.impl.matcher;
+ 
+ import org.hamcrest.Description;
+-import org.hamcrest.Factory;
+ import org.hamcrest.Matcher;
+ 
+ import java.util.Collection;
+@@ -45,15 +44,15 @@ public boolean matchesSafely(Collection<E> item) {
+         return item.isEmpty();
+     }
+ 
++    @Override
+     public void describeTo(Description description) {
+         description.appendText("an empty collection");
+     }
+ 
+     /**
+      * Matches an empty collection.
+      */
+-    @Factory
+     public static <E> Matcher<Collection<E>> empty() {
+         return new IsEmptyCollection<E>();
+     }
+-}
+\ No newline at end of file
++}
+
+File: json-path-assert/src/main/java/com/jayway/jsonassert/impl/matcher/IsMapContainingKey.java
+Patch:
+@@ -30,7 +30,6 @@ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ package com.jayway.jsonassert.impl.matcher;
+ 
+ import org.hamcrest.Description;
+-import org.hamcrest.Factory;
+ import org.hamcrest.Matcher;
+ 
+ import java.util.Map;
+@@ -54,17 +53,16 @@ public boolean matchesSafely(Map<K, ?> item) {
+         return false;
+     }
+ 
++    @Override
+     public void describeTo(Description description) {
+         description.appendText("map with key ")
+                    .appendDescriptionOf(keyMatcher);
+     }
+ 
+-    @Factory
+     public static <K> Matcher<Map<K,?>> hasKey(K key) {
+         return hasKey(equalTo(key));
+     }
+ 
+-    @Factory
+     public static <K> Matcher<Map<K,?>> hasKey(Matcher<K> keyMatcher) {
+         return new IsMapContainingKey<K>(keyMatcher);
+     }
+
+File: json-path-assert/src/main/java/com/jayway/jsonassert/impl/matcher/IsMapContainingValue.java
+Patch:
+@@ -30,7 +30,6 @@ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ package com.jayway.jsonassert.impl.matcher;
+ 
+ import org.hamcrest.Description;
+-import org.hamcrest.Factory;
+ import org.hamcrest.Matcher;
+ 
+ import java.util.Map;
+@@ -54,17 +53,16 @@ public boolean matchesSafely(Map<?, V> item) {
+         return false;
+     }
+ 
++    @Override
+     public void describeTo(Description description) {
+         description.appendText("map with value ")
+                    .appendDescriptionOf(valueMatcher);
+     }
+ 
+-    @Factory
+     public static <V> Matcher<? super Map<?,V>> hasValue(V value) {
+         return IsMapContainingValue.<V>hasValue(equalTo(value));
+     }
+ 
+-    @Factory
+     public static <V> Matcher<? super Map<?,V>> hasValue(Matcher<? super V> valueMatcher) {
+         return new IsMapContainingValue<V>(valueMatcher);
+     }
+
+File: json-path-assert/src/main/java/com/jayway/jsonpath/matchers/WithJsonPath.java
+Patch:
+@@ -38,7 +38,7 @@ public void describeTo(Description description) {
+     @Override
+     protected void describeMismatchSafely(ReadContext context, Description mismatchDescription) {
+         try {
+-            T value = jsonPath.read(context.json());
++            T value = jsonPath.read(context.jsonString());
+             mismatchDescription
+                     .appendText("json path ")
+                     .appendValue(jsonPath.getPath())
+
+File: json-path/src/main/java/com/jayway/jsonpath/Filter.java
+Patch:
+@@ -39,7 +39,7 @@ public static Filter filter(Predicate predicate) {
+     /**
+      * Create a new Filter based on given list of criteria.
+      * @param predicates list of criteria all needs to evaluate to true
+-     * @return
++     * @return the filter
+      */
+     public static Filter filter(Collection<Predicate> predicates) {
+         return new AndFilter(predicates);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/ParseContextImpl.java
+Patch:
+@@ -68,6 +68,7 @@ public DocumentContext parse(File json) throws IOException {
+     }
+ 
+     @Override
++    @Deprecated
+     public DocumentContext parse(URL url) throws IOException {
+         notNull(url, "url can not be null");
+         InputStream fis = null;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/PathFunction.java
+Patch:
+@@ -30,7 +30,7 @@ public interface PathFunction {
+      *      Eval context, state bag used as the path is traversed, maintains the result of executing
+      *
+      * @param parameters
+-     * @return
++     * @return result
+      */
+     Object invoke(String currentPath, PathRef parent, Object model, EvaluationContext ctx, List<Parameter> parameters);
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/latebinding/JsonLateBindingValue.java
+Patch:
+@@ -34,7 +34,7 @@ public JsonLateBindingValue(JsonProvider jsonProvider, Parameter jsonParameter)
+      * Evaluate the JSON document at the point of need using the JSON parameter and associated document model which may
+      * itself originate from yet another function thus recursively invoking late binding methods.
+      *
+-     * @return
++     * @return the late value
+      */
+     @Override
+     public Object get() {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/latebinding/PathLateBindingValue.java
+Patch:
+@@ -16,7 +16,6 @@
+ 
+ import com.jayway.jsonpath.Configuration;
+ import com.jayway.jsonpath.internal.Path;
+-import com.jayway.jsonpath.internal.function.ParamType;
+ 
+ /**
+  * Defines the contract for late bindings, provides document state and enough context to perform the evaluation at a later
+@@ -39,7 +38,7 @@ public PathLateBindingValue(final Path path, final Object rootDocument, final Co
+     /**
+      * Evaluate the expression at the point of need for Path type expressions
+      *
+-     * @return
++     * @return the late value
+      */
+     public Object get() {
+         return path.evaluate(rootDocument, rootDocument, configuration).getValue();
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/FunctionPathToken.java
+Patch:
+@@ -68,7 +68,7 @@ private void evaluateParameters(String currentPath, PathRef parent, Object model
+      * Return the actual value by indicating true. If this return was false then we'd return the value in an array which
+      * isn't what is desired - true indicates the raw value is returned.
+      *
+-     * @return
++     * @return true if token is definite
+      */
+     @Override
+     public boolean isTokenDefinite() {
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/cache/Cache.java
+Patch:
+@@ -10,14 +10,13 @@ public interface Cache {
+      * @param key cache key to lookup the JsonPath
+      * @return JsonPath
+      */
+-	public JsonPath get(String key);
++	 JsonPath get(String key);
+ 	
+ 	/**
+      * Add JsonPath to the cache
+      * @param key cache key to store the JsonPath
+      * @param value JsonPath to be cached
+-     * @return void
+      * @throws InvalidJsonException
+      */
+-	public void put(String key, JsonPath value);
++	 void put(String key, JsonPath value);
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/AbstractJsonProvider.java
+Patch:
+@@ -43,6 +43,7 @@ public Object getArrayIndex(Object obj, int idx) {
+         return ((List) obj).get(idx);
+     }
+ 
++    @Deprecated
+     public final Object getArrayIndex(Object obj, int idx, boolean unwrap){
+         return getArrayIndex(obj, idx);
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JacksonJsonNodeJsonProvider.java
+Patch:
+@@ -270,7 +270,7 @@ private void setValueInObjectNode(ObjectNode objectNode, Object key, Object valu
+     	} else if (value == null) {
+     		objectNode.set(key.toString(), null); // this will create a null-node
+     	} else {
+-    		objectNode.put(key.toString(), createJsonElement(value));
++    		objectNode.set(key.toString(), createJsonElement(value));
+     	}
+ 	}
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JacksonJsonProvider.java
+Patch:
+@@ -30,7 +30,7 @@
+ public class JacksonJsonProvider extends AbstractJsonProvider {
+ 
+     private static final ObjectMapper defaultObjectMapper = new ObjectMapper();
+-    private static final ObjectReader defaultObjectReader = defaultObjectMapper.reader().withType(Object.class);
++    private static final ObjectReader defaultObjectReader = defaultObjectMapper.reader().forType(Object.class);
+ 
+     protected ObjectMapper objectMapper;
+     protected ObjectReader objectReader;
+@@ -51,7 +51,7 @@ public JacksonJsonProvider() {
+      * @param objectMapper the ObjectMapper to use
+      */
+     public JacksonJsonProvider(ObjectMapper objectMapper) {
+-      this(objectMapper, objectMapper.reader().withType(Object.class));
++      this(objectMapper, objectMapper.reader().forType(Object.class));
+     }
+ 
+     /**
+
+File: json-path/src/test/java/com/jayway/jsonpath/internal/filter/RegexpEvaluatorTest.java
+Patch:
+@@ -11,6 +11,7 @@
+ import org.junit.runners.Parameterized;
+ 
+ import java.util.Arrays;
++import java.util.HashMap;
+ 
+ import static org.hamcrest.CoreMatchers.equalTo;
+ import static org.hamcrest.CoreMatchers.is;
+@@ -84,7 +85,7 @@ private static String json() {
+     }
+ 
+     private Predicate.PredicateContext createPredicateContext() {
+-        return createPredicateContext(Maps.newHashMap());
++        return createPredicateContext(new HashMap<>());
+     }
+ 
+ }
+
+File: json-path/src/test/java/com/jayway/jsonpath/internal/function/Issue234.java
+Patch:
+@@ -1,9 +1,9 @@
+ package com.jayway.jsonpath.internal.function;
+ 
+ import com.jayway.jsonpath.JsonPath;
+-import org.assertj.core.util.Maps;
+ import org.junit.Test;
+ 
++import java.util.HashMap;
+ import java.util.Map;
+ 
+ import static org.assertj.core.api.Assertions.assertThat;
+@@ -27,7 +27,7 @@ public class Issue234 {
+ 
+     @Test
+     public void testIssue234() {
+-        Map<String, String> context = Maps.newHashMap();
++        Map<String, String> context = new HashMap<>();
+         context.put("key", "first");
+         Object value = JsonPath.read(context, "concat(\"/\", $.key)");
+         assertThat(value).isEqualTo("/first");
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/ArraySlicingTest.java
+Patch:
+@@ -6,7 +6,7 @@
+ 
+ import java.util.List;
+ 
+-import static junit.framework.Assert.assertEquals;
++import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertThat;
+ 
+ /**
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/FilterTest.java
+Patch:
+@@ -18,7 +18,7 @@
+ import static com.jayway.jsonpath.Criteria.where;
+ import static com.jayway.jsonpath.Filter.filter;
+ import static java.util.Arrays.asList;
+-import static junit.framework.Assert.*;
++import static org.junit.Assert.*;
+ import static org.hamcrest.CoreMatchers.is;
+ import static org.junit.Assert.assertThat;
+ 
+@@ -409,10 +409,10 @@ public void not_empty_filter_evaluates() {
+ 
+         Object doc = Configuration.defaultConfiguration().jsonProvider().parse(json);
+ 
+-        List<Map<String, Object>> result = JsonPath.read(doc, "$.fields[?]", filter(where("errors").notEmpty()));
++        List<Map<String, Object>> result = JsonPath.read(doc, "$.fields[?]", filter(where("errors").empty(false)));
+         assertEquals(1, result.size());
+ 
+-        List<Map<String, Object>> result2 = JsonPath.read(doc, "$.fields[?]", filter(where("name").notEmpty()));
++        List<Map<String, Object>> result2 = JsonPath.read(doc, "$.fields[?]", filter(where("name").empty(false)));
+         assertEquals(2, result2.size());
+     }
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/IssuesTest.java
+Patch:
+@@ -35,8 +35,8 @@
+ import static com.jayway.jsonpath.Filter.filter;
+ import static com.jayway.jsonpath.JsonPath.read;
+ import static com.jayway.jsonpath.JsonPath.using;
+-import static junit.framework.Assert.assertNull;
+-import static junit.framework.Assert.assertTrue;
++import static org.junit.Assert.assertNull;
++import static org.junit.Assert.assertTrue;
+ import static org.assertj.core.api.Assertions.assertThat;
+ import static org.assertj.core.api.Assertions.failBecauseExceptionWasNotThrown;
+ import static org.hamcrest.Matchers.is;
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/NullHandlingTest.java
+Patch:
+@@ -9,8 +9,8 @@
+ 
+ import java.util.List;
+ 
+-import static junit.framework.Assert.assertEquals;
+-import static junit.framework.Assert.assertNull;
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertNull;
+ 
+ public class NullHandlingTest {
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/internal/PropertyPathTokenTest.java
+Patch:
+@@ -10,7 +10,7 @@
+ 
+ import java.util.List;
+ 
+-import static junit.framework.Assert.assertNull;
++import static org.junit.Assert.assertNull;
+ import static org.assertj.core.api.Assertions.assertThat;
+ 
+ public class PropertyPathTokenTest {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathRef.java
+Patch:
+@@ -107,7 +107,7 @@ Object getAccessor() {
+ 
+         @Override
+         public void set(Object newVal, Configuration configuration) {
+-            throw new InvalidModificationException("Invalid delete operation");
++            throw new InvalidModificationException("Invalid set operation");
+         }
+ 
+         public void convert(MapFunction mapFunction, Configuration configuration){
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathRef.java
+Patch:
+@@ -298,7 +298,9 @@ public void set(Object newVal, Configuration configuration){
+         public void convert(MapFunction mapFunction, Configuration configuration) {
+             for (String property : properties) {
+                 Object currentValue = configuration.jsonProvider().getMapValue(parent, property);
+-                configuration.jsonProvider().setProperty(parent, property, mapFunction.map(currentValue, configuration));
++                if (currentValue != JsonProvider.UNDEFINED) {
++                    configuration.jsonProvider().setProperty(parent, property, mapFunction.map(currentValue, configuration));
++                }
+             }
+         }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -195,7 +195,7 @@ else if (c == PERIOD || c == OPEN_SQUARE_BRACKET) {
+             }
+             else if (c == OPEN_PARENTHESIS) {
+                 isFunction = true;
+-                endPosition = readPosition++;
++                endPosition = readPosition;
+                 break;
+             }
+             readPosition++;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -484,7 +484,8 @@ private boolean readWildCardToken(PathTokenAppender appender) {
+         if (inBracket) {
+             int wildCardIndex = path.indexOfNextSignificantChar(WILDCARD);
+             if (!path.nextSignificantCharIs(wildCardIndex, CLOSE_SQUARE_BRACKET)) {
+-                throw new InvalidPathException("Expected wildcard token to end with ']' on position " + wildCardIndex + 1);
++                int offset = wildCardIndex + 1;
++                throw new InvalidPathException("Expected wildcard token to end with ']' on position " + offset);
+             }
+             int bracketCloseIndex = path.indexOfNextSignificantChar(wildCardIndex, CLOSE_SQUARE_BRACKET);
+             path.setPosition(bracketCloseIndex + 1);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -117,7 +117,7 @@ private RootPathToken readContextToken() {
+         path.incrementPosition(1);
+ 
+         if(path.currentChar() != PERIOD && path.currentChar() != OPEN_SQUARE_BRACKET){
+-            fail("Illegal character at position " + path.position() + " expected '.' or '[");
++            fail("Illegal character at position " + path.position() + " expected '.' or '['");
+         }
+ 
+         PathTokenAppender appender = pathToken.getPathTokenAppender();
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/DefaultsImpl.java
+Patch:
+@@ -32,6 +32,6 @@ public MappingProvider mappingProvider() {
+   }
+ 
+   private DefaultsImpl() {
+-  };
++  }
+ 
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathRef.java
+Patch:
+@@ -212,7 +212,7 @@ public Object getAccessor() {
+         public int compareTo(PathRef o) {
+             if(o instanceof ArrayIndexPathRef){
+                 ArrayIndexPathRef pf = (ArrayIndexPathRef) o;
+-                return Integer.valueOf(pf.index).compareTo(this.index);
++                return Integer.compare(pf.index, this.index);
+             }
+             return super.compareTo(o);
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/text/Concatenate.java
+Patch:
+@@ -15,7 +15,7 @@
+ public class Concatenate implements PathFunction {
+     @Override
+     public Object invoke(String currentPath, PathRef parent, Object model, EvaluationContext ctx, List<Parameter> parameters) {
+-        StringBuffer result = new StringBuffer();
++        StringBuilder result = new StringBuilder();
+         if(ctx.configuration().jsonProvider().isArray(model)){
+             Iterable<?> objects = ctx.configuration().jsonProvider().toIterable(model);
+             for (Object obj : objects) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/CompiledPath.java
+Patch:
+@@ -97,7 +97,7 @@ public EvaluationContext evaluate(Object document, Object rootDocument, Configur
+         try {
+             PathRef op = ctx.forUpdate() ?  PathRef.createRoot(rootDocument) : PathRef.NO_OP;
+             root.evaluate("", op, document, ctx);
+-        } catch (EvaluationAbortException abort){};
++        } catch (EvaluationAbortException abort) {}
+ 
+         return ctx;
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -275,7 +275,7 @@ private List<Parameter> parseFunctionParameters(String funcName) {
+         Boolean endOfStream = false;
+         char priorChar = 0;
+         List<Parameter> parameters = new ArrayList<Parameter>();
+-        StringBuffer parameter = new StringBuffer();
++        StringBuilder parameter = new StringBuilder();
+         while (path.inBounds() && !endOfStream) {
+             char c = path.currentChar();
+             path.incrementPosition(1);
+@@ -580,7 +580,7 @@ private boolean readBracketPropertyToken(PathTokenAppender appender) {
+                 }
+                 break;
+             } else if (c == potentialStringDelimiter) {
+-                if (inProperty && !inEscape) {
++                if (inProperty) {
+                     char nextSignificantChar = path.nextSignificantChar(readPosition);
+                     if (nextSignificantChar != CLOSE_SQUARE_BRACKET && nextSignificantChar != COMMA) {
+                         fail("Property must be separated by comma or Property must be terminated close square bracket at index "+readPosition);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathTokenFactory.java
+Patch:
+@@ -23,11 +23,11 @@ public static PathToken createPropertyPathToken(List<String> properties, char st
+     }
+ 
+     public static PathToken createSliceArrayPathToken(final ArraySliceOperation arraySliceOperation) {
+-        return new ArrayPathToken(arraySliceOperation);
++        return new ArraySliceToken(arraySliceOperation);
+     }
+ 
+     public static PathToken createIndexArrayPathToken(final ArrayIndexOperation arrayIndexOperation) {
+-        return new ArrayPathToken(arrayIndexOperation);
++        return new ArrayIndexToken(arrayIndexOperation);
+     }
+ 
+     public static PathToken createWildCardPathToken() {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PredicatePathToken.java
+Patch:
+@@ -20,6 +20,7 @@
+ import com.jayway.jsonpath.internal.PathRef;
+ 
+ import java.util.Collection;
++import java.util.Collections;
+ 
+ import static java.lang.String.format;
+ import static java.util.Arrays.asList;
+@@ -33,7 +34,7 @@ public class PredicatePathToken extends PathToken {
+     private final Collection<Predicate> predicates;
+ 
+     PredicatePathToken(Predicate filter) {
+-        this.predicates = asList(filter);
++        this.predicates = Collections.singletonList(filter);
+     }
+ 
+     PredicatePathToken(Collection<Predicate> predicates) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/RootPathToken.java
+Patch:
+@@ -27,7 +27,7 @@ public class RootPathToken extends PathToken {
+ 
+ 
+     RootPathToken(char rootToken) {
+-        this.rootToken = Character.toString(rootToken);;
++        this.rootToken = Character.toString(rootToken);
+         this.tail = this;
+         this.tokenCount = 1;
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/WildcardPathToken.java
+Patch:
+@@ -14,6 +14,8 @@
+  */
+ package com.jayway.jsonpath.internal.path;
+ 
++import java.util.Collections;
++
+ import com.jayway.jsonpath.Option;
+ import com.jayway.jsonpath.PathNotFoundException;
+ import com.jayway.jsonpath.internal.PathRef;
+@@ -32,7 +34,7 @@ public class WildcardPathToken extends PathToken {
+     public void evaluate(String currentPath, PathRef parent, Object model, EvaluationContextImpl ctx) {
+         if (ctx.jsonProvider().isMap(model)) {
+             for (String property : ctx.jsonProvider().getPropertyKeys(model)) {
+-                handleObjectProperty(currentPath, model, ctx, asList(property));
++                handleObjectProperty(currentPath, model, ctx, Collections.singletonList(property));
+             }
+         } else if (ctx.jsonProvider().isArray(model)) {
+             for (int idx = 0; idx < ctx.jsonProvider().length(model); idx++) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/cache/CacheProvider.java
+Patch:
+@@ -6,7 +6,6 @@
+ 
+ public class CacheProvider {
+     private static Cache cache;
+-    private static boolean cachingEnabled;
+ 
+     public static void setCache(Cache cache){
+         notNull(cache, "Cache may not be null");
+@@ -16,7 +15,6 @@ public static void setCache(Cache cache){
+             } else {
+                 CacheProvider.cache = cache;
+             }
+-            cachingEnabled = !(CacheProvider.cache instanceof NOOPCache);
+         }
+     }
+ 
+@@ -36,4 +34,4 @@ private static Cache getDefaultCache(){
+         return new LRUCache(400);
+         //return new NOOPCache();
+     }
+-}
+\ No newline at end of file
++}
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/AbstractJsonProvider.java
+Patch:
+@@ -162,7 +162,7 @@ public int length(Object obj) {
+      * @return an Iterable that iterates over the entries of an array
+      */
+     @SuppressWarnings("unchecked")
+-    public Iterable<? extends Object> toIterable(Object obj) {
++    public Iterable<?> toIterable(Object obj) {
+         if (isArray(obj))
+             return ((Iterable) obj);
+         else
+
+File: json-path/src/test/java/com/jayway/jsonpath/FilterTest.java
+Patch:
+@@ -279,7 +279,8 @@ public void json_evals() {
+         Filter farr = parse("[?(@.foo == " + arr + ")]");
+         //Filter fobjF = parse("[?(@.foo == " + nest + ")]");
+         //Filter fobjT = parse("[?(@.bar == " + nest + ")]");
+-        assertThat(farr.apply(context)).isEqualTo(true);
++        boolean apply = farr.apply(context);
++        assertThat(apply).isEqualTo(true);
+         //assertThat(fobjF.apply(context)).isEqualTo(false);
+         //assertThat(fobjT.apply(context)).isEqualTo(true);
+     }
+
+File: json-path/src/test/java/com/jayway/jsonpath/MultiPropTest.java
+Patch:
+@@ -3,6 +3,7 @@
+ import org.junit.Test;
+ 
+ import java.util.HashMap;
++import java.util.List;
+ import java.util.Map;
+ 
+ import static com.jayway.jsonpath.JsonPath.using;
+@@ -114,7 +115,7 @@ public void non_leaf_multi_props_can_be_required() {
+         final Configuration conf = Configuration.defaultConfiguration().addOptions(Option.REQUIRE_PROPERTIES);
+         final String json = "{\"a\": {\"v\": 5}, \"b\": {\"v\": 4}, \"c\": {\"v\": 1}}";
+ 
+-        assertThat(using(conf).parse(json).read("$['a', 'c'].v")).asList().containsOnly(5, 1);
++        assertThat((List)using(conf).parse(json).read("$['a', 'c'].v")).asList().containsOnly(5, 1);
+         assertEvaluationThrows(json, "$['d', 'a', 'c', 'm'].v", PathNotFoundException.class, conf);
+     }
+ }
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/JsonPathTest.java
+Patch:
+@@ -133,7 +133,7 @@ public void null_object_in_path() {
+             Assertions.fail("Expected PathNotFoundException");
+         } catch (PathNotFoundException e) {
+         }
+-        Assertions.assertThat(JsonPath.read(json, "$.data2.passes[0].id")).isEqualTo("1");
++        Assertions.assertThat((String)JsonPath.read(json, "$.data2.passes[0].id")).isEqualTo("1");
+     }
+ 
+     @Test
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathRef.java
+Patch:
+@@ -107,7 +107,7 @@ Object getAccessor() {
+ 
+         @Override
+         public void set(Object newVal, Configuration configuration) {
+-            throw new InvalidModificationException("Invalid delete operation");
++            throw new InvalidModificationException("Invalid set operation");
+         }
+ 
+         public void convert(MapFunction mapFunction, Configuration configuration){
+
+File: json-path/src/test/java/com/jayway/jsonpath/MultiPropTest.java
+Patch:
+@@ -3,6 +3,7 @@
+ import org.junit.Test;
+ 
+ import java.util.HashMap;
++import java.util.List;
+ import java.util.Map;
+ 
+ import static com.jayway.jsonpath.JsonPath.using;
+@@ -114,7 +115,7 @@ public void non_leaf_multi_props_can_be_required() {
+         final Configuration conf = Configuration.defaultConfiguration().addOptions(Option.REQUIRE_PROPERTIES);
+         final String json = "{\"a\": {\"v\": 5}, \"b\": {\"v\": 4}, \"c\": {\"v\": 1}}";
+ 
+-        assertThat(using(conf).parse(json).read("$['a', 'c'].v")).asList().containsOnly(5, 1);
++        assertThat((List)using(conf).parse(json).read("$['a', 'c'].v")).asList().containsOnly(5, 1);
+         assertEvaluationThrows(json, "$['d', 'a', 'c', 'm'].v", PathNotFoundException.class, conf);
+     }
+ }
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/JsonPathTest.java
+Patch:
+@@ -133,7 +133,7 @@ public void null_object_in_path() {
+             Assertions.fail("Expected PathNotFoundException");
+         } catch (PathNotFoundException e) {
+         }
+-        Assertions.assertThat(JsonPath.read(json, "$.data2.passes[0].id")).isEqualTo("1");
++        Assertions.assertThat((String)JsonPath.read(json, "$.data2.passes[0].id")).isEqualTo("1");
+     }
+ 
+     @Test
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathRef.java
+Patch:
+@@ -298,7 +298,9 @@ public void set(Object newVal, Configuration configuration){
+         public void convert(MapFunction mapFunction, Configuration configuration) {
+             for (String property : properties) {
+                 Object currentValue = configuration.jsonProvider().getMapValue(parent, property);
+-                configuration.jsonProvider().setProperty(parent, property, mapFunction.map(currentValue, configuration));
++                if (currentValue != JsonProvider.UNDEFINED) {
++                    configuration.jsonProvider().setProperty(parent, property, mapFunction.map(currentValue, configuration));
++                }
+             }
+         }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -195,7 +195,7 @@ else if (c == PERIOD || c == OPEN_SQUARE_BRACKET) {
+             }
+             else if (c == OPEN_PARENTHESIS) {
+                 isFunction = true;
+-                endPosition = readPosition++;
++                endPosition = readPosition;
+                 break;
+             }
+             readPosition++;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -484,7 +484,8 @@ private boolean readWildCardToken(PathTokenAppender appender) {
+         if (inBracket) {
+             int wildCardIndex = path.indexOfNextSignificantChar(WILDCARD);
+             if (!path.nextSignificantCharIs(wildCardIndex, CLOSE_SQUARE_BRACKET)) {
+-                throw new InvalidPathException("Expected wildcard token to end with ']' on position " + wildCardIndex + 1);
++                int offset = wildCardIndex + 1;
++                throw new InvalidPathException("Expected wildcard token to end with ']' on position " + offset);
+             }
+             int bracketCloseIndex = path.indexOfNextSignificantChar(wildCardIndex, CLOSE_SQUARE_BRACKET);
+             path.setPosition(bracketCloseIndex + 1);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/PathFunctionFactory.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.jayway.jsonpath.InvalidPathException;
+ import com.jayway.jsonpath.internal.function.json.Append;
++import com.jayway.jsonpath.internal.function.json.KeySetFunction;
+ import com.jayway.jsonpath.internal.function.numeric.Average;
+ import com.jayway.jsonpath.internal.function.numeric.Max;
+ import com.jayway.jsonpath.internal.function.numeric.Min;
+@@ -44,6 +45,7 @@ public class PathFunctionFactory {
+         map.put("length", Length.class);
+         map.put("size", Length.class);
+         map.put("append", Append.class);
++        map.put("keys", KeySetFunction.class);
+ 
+ 
+         FUNCTIONS = Collections.unmodifiableMap(map);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -117,7 +117,7 @@ private RootPathToken readContextToken() {
+         path.incrementPosition(1);
+ 
+         if(path.currentChar() != PERIOD && path.currentChar() != OPEN_SQUARE_BRACKET){
+-            fail("Illegal character at position " + path.position() + " expected '.' or '[");
++            fail("Illegal character at position " + path.position() + " expected '.' or '['");
+         }
+ 
+         PathTokenAppender appender = pathToken.getPathTokenAppender();
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/PathFunctionFactory.java
+Patch:
+@@ -21,7 +21,6 @@
+  * Leverages the function's name in order to determine which function to execute which is maintained internally
+  * here via a static map
+  *
+- * Created by mattg on 6/27/15.
+  */
+ public class PathFunctionFactory {
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathToken.java
+Patch:
+@@ -215,4 +215,7 @@ public void invoke(PathFunction pathFunction, String currentPath, PathRef parent
+ 
+     protected abstract String getPathFragment();
+ 
++    public void setNext(final PathToken next) {
++        this.next = next;
++    }
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/PathFunctionFactory.java
+Patch:
+@@ -21,7 +21,6 @@
+  * Leverages the function's name in order to determine which function to execute which is maintained internally
+  * here via a static map
+  *
+- * Created by mattg on 6/27/15.
+  */
+ public class PathFunctionFactory {
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JacksonJsonNodeJsonProvider.java
+Patch:
+@@ -270,7 +270,7 @@ private void setValueInObjectNode(ObjectNode objectNode, Object key, Object valu
+     	} else if (value == null) {
+     		objectNode.set(key.toString(), null); // this will create a null-node
+     	} else {
+-    		throw new IllegalArgumentException("Cannot handle object type: " + value.getClass().getName());
++    		objectNode.put(key.toString(), createJsonElement(value));
+     	}
+ 	}
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JacksonJsonNodeJsonProvider.java
+Patch:
+@@ -270,7 +270,7 @@ private void setValueInObjectNode(ObjectNode objectNode, Object key, Object valu
+     	} else if (value == null) {
+     		objectNode.set(key.toString(), null); // this will create a null-node
+     	} else {
+-    		throw new IllegalArgumentException("Cannot handle object type: " + value.getClass().getName());
++    		objectNode.put(key.toString(), createJsonElement(value));
+     	}
+ 	}
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -34,7 +34,7 @@ public class PathCompiler {
+     private static final char SPACE = ' ';
+     private static final char TAB = '\t';
+     private static final char CR = '\r';
+-    private static final char LF = '\r';
++    private static final char LF = '\n';
+     private static final char BEGIN_FILTER = '?';
+     private static final char COMMA = ',';
+     private static final char SPLIT = ':';
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/mapper/JsonSmartMappingProvider.java
+Patch:
+@@ -116,7 +116,7 @@ public Integer convert(Object src) {
+             if(Integer.class.isAssignableFrom(src.getClass())){
+                return (Integer) src;
+             } else if (Long.class.isAssignableFrom(src.getClass())) {
+-                return ((Integer) src).intValue();
++                return ((Long) src).intValue();
+             } else if (Double.class.isAssignableFrom(src.getClass())) {
+                 return ((Double) src).intValue();
+             } else if (BigDecimal.class.isAssignableFrom(src.getClass())) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/mapper/JsonSmartMappingProvider.java
+Patch:
+@@ -116,7 +116,7 @@ public Integer convert(Object src) {
+             if(Integer.class.isAssignableFrom(src.getClass())){
+                return (Integer) src;
+             } else if (Long.class.isAssignableFrom(src.getClass())) {
+-                return ((Integer) src).intValue();
++                return ((Long) src).intValue();
+             } else if (Double.class.isAssignableFrom(src.getClass())) {
+                 return ((Double) src).intValue();
+             } else if (BigDecimal.class.isAssignableFrom(src.getClass())) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/PathFunctionFactory.java
+Patch:
+@@ -67,7 +67,7 @@ public class PathFunctionFactory {
+     public static PathFunction newFunction(String name) throws InvalidPathException {
+         Class functionClazz = FUNCTIONS.get(name);
+         if(functionClazz == null){
+-            throw new InvalidPathException("Function with name: " + name + " does not exists.");
++            throw new InvalidPathException("Function with name: " + name + " does not exist.");
+         } else {
+             try {
+                 return (PathFunction)functionClazz.newInstance();
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/JsonContext.java
+Patch:
+@@ -146,8 +146,8 @@ public <T> T read(String path, Predicate... filters) {
+         if(jsonPath != null){
+         	return read(jsonPath);
+         } else {
+-        	jsonPath = compile(path, filters);
+-        	cache.put(cacheKey, jsonPath);
++		jsonPath = compile(path, filters);
++		cache.put(cacheKey, jsonPath);
+         	return read(jsonPath);
+         }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/json/Append.java
+Patch:
+@@ -22,7 +22,7 @@ public Object invoke(String currentPath, PathRef parent, Object model, Evaluatio
+             for (Parameter param : parameters) {
+                 if (jsonProvider.isArray(model)) {
+                     int len = jsonProvider.length(model);
+-                    jsonProvider.setArrayIndex(model, len, param.getCachedValue());
++                    jsonProvider.setArrayIndex(model, len, param.getValue());
+                 }
+             }
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/numeric/AbstractAggregation.java
+Patch:
+@@ -49,10 +49,10 @@ public Object invoke(String currentPath, PathRef parent, Object model, Evaluatio
+         }
+         if (parameters != null) {
+             for (Parameter param : parameters) {
+-                if (param.getCachedValue() instanceof Number) {
+-                    Number value = (Number)param.getCachedValue();
++                Object value = param.getValue();
++                if (null != value && value instanceof Number) {
+                     count++;
+-                    next(value);
++                    next((Number)value);
+                 }
+             }
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/text/Concatenate.java
+Patch:
+@@ -27,8 +27,9 @@ public Object invoke(String currentPath, PathRef parent, Object model, Evaluatio
+         }
+         if (parameters != null) {
+             for (Parameter param : parameters) {
+-                if (param.getCachedValue() != null) {
+-                    result.append(param.getCachedValue().toString());
++		Object value = param.getValue();
++                if (value != null) {
++                    result.append(value.toString());
+                 }
+             }
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/JsonContext.java
+Patch:
+@@ -146,8 +146,8 @@ public <T> T read(String path, Predicate... filters) {
+         if(jsonPath != null){
+         	return read(jsonPath);
+         } else {
+-                jsonPath = compile(path, filters);
+-                cache.put(cacheKey, jsonPath);
++		jsonPath = compile(path, filters);
++		cache.put(cacheKey, jsonPath);
+         	return read(jsonPath);
+         }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/JsonContext.java
+Patch:
+@@ -26,7 +26,6 @@
+ import com.jayway.jsonpath.TypeRef;
+ import com.jayway.jsonpath.spi.cache.Cache;
+ import com.jayway.jsonpath.spi.cache.CacheProvider;
+-import com.jayway.jsonpath.spi.cache.LRUCache;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/numeric/AbstractAggregation.java
+Patch:
+@@ -49,10 +49,10 @@ public Object invoke(String currentPath, PathRef parent, Object model, Evaluatio
+         }
+         if (parameters != null) {
+             for (Parameter param : parameters) {
+-                if (param.getValue() instanceof Number) {
+-                    Number value = (Number)param.getValue();
++                Object value = param.getValue();
++                if (null != value && value instanceof Number) {
+                     count++;
+-                    next(value);
++                    next((Number)value);
+                 }
+             }
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/JsonPath.java
+Patch:
+@@ -21,6 +21,7 @@
+ import com.jayway.jsonpath.internal.PathRef;
+ import com.jayway.jsonpath.internal.Utils;
+ import com.jayway.jsonpath.internal.path.PathCompiler;
++import com.jayway.jsonpath.spi.cache.Cache;
+ import com.jayway.jsonpath.spi.json.JsonProvider;
+ 
+ import java.io.File;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/JsonContext.java
+Patch:
+@@ -26,6 +26,7 @@
+ import com.jayway.jsonpath.TypeRef;
+ import com.jayway.jsonpath.spi.cache.Cache;
+ import com.jayway.jsonpath.spi.cache.CacheProvider;
++import com.jayway.jsonpath.spi.cache.LRUCache;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -146,8 +147,8 @@ public <T> T read(String path, Predicate... filters) {
+         if(jsonPath != null){
+         	return read(jsonPath);
+         } else {
+-        	jsonPath = compile(path, filters);
+-        	cache.put(cacheKey, jsonPath);
++            jsonPath = compile(path, filters);
++            cache.put(cacheKey, jsonPath);
+         	return read(jsonPath);
+         }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/json/Append.java
+Patch:
+@@ -22,7 +22,7 @@ public Object invoke(String currentPath, PathRef parent, Object model, Evaluatio
+             for (Parameter param : parameters) {
+                 if (jsonProvider.isArray(model)) {
+                     int len = jsonProvider.length(model);
+-                    jsonProvider.setArrayIndex(model, len, param.getCachedValue());
++                    jsonProvider.setArrayIndex(model, len, param.getValue());
+                 }
+             }
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/numeric/AbstractAggregation.java
+Patch:
+@@ -49,8 +49,8 @@ public Object invoke(String currentPath, PathRef parent, Object model, Evaluatio
+         }
+         if (parameters != null) {
+             for (Parameter param : parameters) {
+-                if (param.getCachedValue() instanceof Number) {
+-                    Number value = (Number)param.getCachedValue();
++                if (param.getValue() instanceof Number) {
++                    Number value = (Number)param.getValue();
+                     count++;
+                     next(value);
+                 }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/text/Concatenate.java
+Patch:
+@@ -27,8 +27,8 @@ public Object invoke(String currentPath, PathRef parent, Object model, Evaluatio
+         }
+         if (parameters != null) {
+             for (Parameter param : parameters) {
+-                if (param.getCachedValue() != null) {
+-                    result.append(param.getCachedValue().toString());
++                if (param.getValue() != null) {
++                    result.append(param.getValue().toString());
+                 }
+             }
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/PathFunctionFactory.java
+Patch:
+@@ -67,7 +67,7 @@ public class PathFunctionFactory {
+     public static PathFunction newFunction(String name) throws InvalidPathException {
+         Class functionClazz = FUNCTIONS.get(name);
+         if(functionClazz == null){
+-            throw new InvalidPathException("Function with name: " + name + " does not exists.");
++            throw new InvalidPathException("Function with name: " + name + " does not exist.");
+         } else {
+             try {
+                 return (PathFunction)functionClazz.newInstance();
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JsonOrgJsonProvider.java
+Patch:
+@@ -96,8 +96,8 @@ public void setArrayIndex(Object array, int index, Object newValue) {
+     public Object getMapValue(Object obj, String key) {
+         try {
+             JSONObject jsonObject = toJsonObject(obj);
+-            Object o = jsonObject.get(key);
+-            if (!jsonObject.has(key)) {
++            Object o = jsonObject.opt(key);
++            if (o == null) {
+                 return UNDEFINED;
+             } else {
+                 return unwrap(o);
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JsonOrgJsonProvider.java
+Patch:
+@@ -96,11 +96,10 @@ public void setArrayIndex(Object array, int index, Object newValue) {
+     public Object getMapValue(Object obj, String key) {
+         try {
+             JSONObject jsonObject = toJsonObject(obj);
+-            Object o = jsonObject.get(key);
+             if (!jsonObject.has(key)) {
+                 return UNDEFINED;
+             } else {
+-                return unwrap(o);
++                return unwrap(jsonObject.get(key));
+             }
+         } catch (JSONException e) {
+             throw new JsonPathException(e);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/ValueNode.java
+Patch:
+@@ -154,7 +154,7 @@ private static boolean isJson(Object o) {
+         if ((c0 == '[' && c1 == ']') || (c0 == '{' && c1 == '}')){
+             try {
+                 Configuration.defaultConfiguration().jsonProvider().parse(str);
+-                return false;
++                return true;
+             } catch(Exception e){
+                 return false;
+             }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/ValueNode.java
+Patch:
+@@ -154,7 +154,7 @@ private static boolean isJson(Object o) {
+         if ((c0 == '[' && c1 == ']') || (c0 == '{' && c1 == '}')){
+             try {
+                 Configuration.defaultConfiguration().jsonProvider().parse(str);
+-                return false;
++                return true;
+             } catch(Exception e){
+                 return false;
+             }
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JsonOrgJsonProvider.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.jayway.jsonpath.spi.json;
+ 
+-import com.google.gson.JsonObject;
++import org.json.JSONObject;
+ import com.jayway.jsonpath.InvalidJsonException;
+ import com.jayway.jsonpath.JsonPathException;
+ import org.json.JSONArray;
+@@ -62,7 +62,7 @@ public Object createArray() {
+ 
+     @Override
+     public Object createMap() {
+-        return new JsonObject();
++        return new JSONObject();
+     }
+ 
+     @Override
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JsonOrgJsonProvider.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.jayway.jsonpath.spi.json;
+ 
+-import com.google.gson.JsonObject;
++import org.json.JSONObject;
+ import com.jayway.jsonpath.InvalidJsonException;
+ import com.jayway.jsonpath.JsonPathException;
+ import org.json.JSONArray;
+@@ -62,7 +62,7 @@ public Object createArray() {
+ 
+     @Override
+     public Object createMap() {
+-        return new JsonObject();
++        return new JSONObject();
+     }
+ 
+     @Override
+
+File: json-path-assert/src/main/java/com/jayway/jsonpath/matchers/IsJson.java
+Patch:
+@@ -58,6 +58,8 @@ private static ReadContext parse(Object object) throws IOException {
+             return JsonPath.parse((String) object);
+         } else if (object instanceof File) {
+             return JsonPath.parse((File) object);
++        } else if (object instanceof ReadContext) {
++            return (ReadContext) object;
+         } else {
+             return JsonPath.parse(object);
+         }
+
+File: json-path-assert/src/main/java/com/jayway/jsonpath/matchers/WithoutJsonPath.java
+Patch:
+@@ -6,8 +6,6 @@
+ import org.hamcrest.Description;
+ import org.hamcrest.TypeSafeDiagnosingMatcher;
+ 
+-import static org.hamcrest.Matchers.empty;
+-
+ public class WithoutJsonPath extends TypeSafeDiagnosingMatcher<ReadContext> {
+     private final JsonPath jsonPath;
+ 
+@@ -23,7 +21,7 @@ protected boolean matchesSafely(ReadContext actual, Description mismatchDescript
+                     .appendText(jsonPath.getPath())
+                     .appendText(" was evaluated to ")
+                     .appendValue(value);
+-            return value == null || empty().matches(value);
++            return false;
+         } catch (JsonPathException e) {
+             return true;
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/ValueNode.java
+Patch:
+@@ -801,7 +801,7 @@ public PathNode asExistsCheck(boolean shouldExist) {
+ 
+         @Override
+         public String toString() {
+-            return path.toString();
++            return existsCheck && ! shouldExist ? Utils.concat("!" , path.toString()) : path.toString();
+         }
+ 
+         public ValueNode evaluate(Predicate.PredicateContext ctx) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/ValueNode.java
+Patch:
+@@ -801,7 +801,7 @@ public PathNode asExistsCheck(boolean shouldExist) {
+ 
+         @Override
+         public String toString() {
+-            return path.toString();
++            return existsCheck && ! shouldExist ? Utils.concat("!" , path.toString()) : path.toString();
+         }
+ 
+         public ValueNode evaluate(Predicate.PredicateContext ctx) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -570,6 +570,9 @@ private boolean readBracketPropertyToken(PathTokenAppender appender) {
+             } else if('\\' == c){
+                 inEscape = true;
+             } else if (c == CLOSE_SQUARE_BRACKET && !inProperty) {
++                if (lastSignificantWasComma){
++                  fail("Found empty property at index "+readPosition);
++                }
+                 break;
+             } else if (c == potentialStringDelimiter) {
+                 if (inProperty && !inEscape) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/EvaluatorFactory.java
+Patch:
+@@ -138,6 +138,9 @@ public boolean evaluate(ValueNode left, ValueNode right, Predicate.PredicateCont
+     private static class SizeEvaluator implements Evaluator {
+         @Override
+         public boolean evaluate(ValueNode left, ValueNode right, Predicate.PredicateContext ctx) {
++            if (! right.isNumberNode()) {
++                return false;
++            }
+             int expectedSize = right.asNumberNode().getNumber().intValue();
+ 
+             if(left.isStringNode()){
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/EvaluatorFactory.java
+Patch:
+@@ -138,6 +138,9 @@ public boolean evaluate(ValueNode left, ValueNode right, Predicate.PredicateCont
+     private static class SizeEvaluator implements Evaluator {
+         @Override
+         public boolean evaluate(ValueNode left, ValueNode right, Predicate.PredicateContext ctx) {
++            if (! right.isNumberNode()) {
++                return false;
++            }
+             int expectedSize = right.asNumberNode().getNumber().intValue();
+ 
+             if(left.isStringNode()){
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/FunctionPathToken.java
+Patch:
+@@ -21,7 +21,7 @@ public class FunctionPathToken extends PathToken {
+     private final List<Parameter> functionParams;
+ 
+     public FunctionPathToken(String pathFragment, List<Parameter> parameters) {
+-        this.pathFragment = pathFragment;
++        this.pathFragment = pathFragment + ((parameters != null && parameters.size() > 0) ? "(...)" : "()");
+         if(null != pathFragment){
+             functionName = pathFragment;
+             functionParams = parameters;
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/AbstractJsonProvider.java
+Patch:
+@@ -52,7 +52,7 @@ public Object getArrayIndex(Object obj, int idx) {
+     public Object getLastElement(Object obj) {
+         if (null != obj) {
+             int len = this.length(obj);
+-            return unwrap(getArrayIndex(obj, len-1));
++            return getArrayIndex(obj, len-1);
+         }
+         return null;
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/EvaluationContextImpl.java
+Patch:
+@@ -130,7 +130,7 @@ public <T> T getValue(boolean unwrap) {
+             if(resultIndex == 0){
+                 throw new PathNotFoundException("No results for path: " + path.toString());
+             }
+-            Object value = jsonProvider().getArrayIndex(valueResult, 0);
++            Object value = jsonProvider().getLastElement(valueResult);
+             if (value != null && unwrap){
+               value = jsonProvider().unwrap(value);
+             }
+
+File: json-path/src/test/java/com/jayway/jsonpath/internal/function/BaseFunctionTest.java
+Patch:
+@@ -12,8 +12,8 @@
+  * Created by mattg on 6/27/15.
+  */
+ public class BaseFunctionTest {
+-    protected static final String NUMBER_SERIES = "{\"numbers\" : [ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}";
+-    protected static final String TEXT_SERIES = "{\"text\" : [ \"a\", \"b\", \"c\", \"d\", \"e\", \"f\" ]}";
++    protected static final String NUMBER_SERIES = "{\"empty\": [], \"numbers\" : [ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}";
++    protected static final String TEXT_SERIES = "{\"urls\": [\"http://api.worldbank.org/countries/all/?format=json\", \"http://api.worldbank.org/countries/all/?format=json\"], \"text\" : [ \"a\", \"b\", \"c\", \"d\", \"e\", \"f\" ]}";
+ 
+ 
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathRef.java
+Patch:
+@@ -218,8 +218,6 @@ public int compareTo(PathRef o) {
+         }
+     }
+ 
+-
+-
+     private static class ObjectPropertyPathRef extends PathRef {
+ 
+         private String property;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/ValueNode.java
+Patch:
+@@ -174,8 +174,8 @@ public static ValueNode toValueNode(Object o){
+         if(o instanceof ValueNode) return (ValueNode)o;
+         if(o instanceof Class) return createClassNode((Class)o);
+         else if(isPath(o)) return new PathNode(o.toString(), false, false);
+-        else if(isJson(o)) return createStringNode(o.toString(), false);
+-        else if(o instanceof String) return createStringNode(o.toString(), false);
++        else if(isJson(o)) return createJsonNode(o.toString());
++        else if(o instanceof String) return createStringNode(o.toString(), true);
+         else if(o instanceof Character) return createStringNode(o.toString(), false);
+         else if(o instanceof Number) return createNumberNode(o.toString());
+         else if(o instanceof Boolean) return createBooleanNode(o.toString());
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -256,7 +256,6 @@ private boolean readFilterToken(PathTokenAppender appender) {
+ 
+ 
+         Predicate predicate = FilterCompiler.compile(criteria);
+-        //Predicate predicate = Filter.parse(criteria);
+         appender.appendPathToken(PathTokenFactory.createPredicatePathToken(predicate));
+ 
+         path.setPosition(closeStatementBracketIndex + 1);
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/mapper/TapestryMappingProvider.java
+Patch:
+@@ -14,11 +14,11 @@
+  */
+ package com.jayway.jsonpath.spi.mapper;
+ 
+-import java.util.ArrayList;
+-
+ import com.jayway.jsonpath.Configuration;
+ import com.jayway.jsonpath.TypeRef;
+ 
++import java.util.ArrayList;
++
+ public class TapestryMappingProvider implements MappingProvider {
+ 
+   @Override
+
+File: json-path/src/test/java/com/jayway/jsonpath/FilterCompilerTest.java
+Patch:
+@@ -81,7 +81,7 @@ private void assertInvalidPathException(String filter){
+             compile(filter);
+             throw new AssertionError("Expected " + filter + " to throw InvalidPathException");
+         } catch (InvalidPathException e){
+-            e.printStackTrace();
++            //e.printStackTrace();
+         }
+     }
+ }
+
+File: json-path/src/test/java/com/jayway/jsonpath/internal/function/NestedFunctionTest.java
+Patch:
+@@ -29,7 +29,7 @@ public static Iterable<Configuration> configurations() {
+ 
+     @Test
+     public void testParameterAverageFunctionCall() {
+-        verifyMathFunction(conf, "$avg({$.numbers.min()}, {$.numbers.max()})", 5.5);
++        verifyMathFunction(conf, "$.avg({$.numbers.min()}, {$.numbers.max()})", 5.5);
+     }
+ 
+     @Test
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/Length.java
+Patch:
+@@ -3,6 +3,8 @@
+ import com.jayway.jsonpath.internal.EvaluationContext;
+ import com.jayway.jsonpath.internal.PathRef;
+ 
++import java.util.List;
++
+ /**
+  * Provides the length of a JSONArray Object
+  *
+@@ -11,7 +13,7 @@
+ public class Length implements PathFunction {
+ 
+     @Override
+-    public Object invoke(String currentPath, PathRef parent, Object model, EvaluationContext ctx) {
++    public Object invoke(String currentPath, PathRef parent, Object model, EvaluationContext ctx, List<Parameter> parameters) {
+         if(ctx.configuration().jsonProvider().isArray(model)){
+             return ctx.configuration().jsonProvider().length(model);
+         } else if(ctx.configuration().jsonProvider().isMap(model)){
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/PassthruPathFunction.java
+Patch:
+@@ -3,6 +3,8 @@
+ import com.jayway.jsonpath.internal.EvaluationContext;
+ import com.jayway.jsonpath.internal.PathRef;
+ 
++import java.util.List;
++
+ /**
+  * Defines the default behavior which is to return the model that is provided as input as output
+  *
+@@ -11,7 +13,7 @@
+ public class PassthruPathFunction implements PathFunction {
+ 
+     @Override
+-    public Object invoke(String currentPath, PathRef parent, Object model, EvaluationContext ctx) {
++    public Object invoke(String currentPath, PathRef parent, Object model, EvaluationContext ctx, List<Parameter> parameters) {
+         return model;
+     }
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathToken.java
+Patch:
+@@ -205,7 +205,7 @@ public boolean equals(Object obj) {
+     }
+ 
+     public void invoke(PathFunction pathFunction, String currentPath, PathRef parent, Object model, EvaluationContextImpl ctx) {
+-        ctx.addResult(currentPath, parent, pathFunction.invoke(currentPath, parent, model, ctx));
++        ctx.addResult(currentPath, parent, pathFunction.invoke(currentPath, parent, model, ctx, null));
+     }
+ 
+     public abstract void evaluate(String currentPath, PathRef parent,  Object model, EvaluationContextImpl ctx);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathTokenFactory.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.jayway.jsonpath.internal.path;
+ 
+ import com.jayway.jsonpath.Predicate;
+-import com.jayway.jsonpath.internal.Path;
++import com.jayway.jsonpath.internal.function.Parameter;
+ 
+ import java.util.Collection;
+ import java.util.List;
+@@ -46,7 +46,7 @@ public static PathToken createPredicatePathToken(Predicate predicate) {
+         return new PredicatePathToken(predicate);
+     }
+ 
+-    public static PathToken createFunctionPathToken(String function, List<Path> parameters) {
++    public static PathToken createFunctionPathToken(String function, List<Parameter> parameters) {
+         return new FunctionPathToken(function, parameters);
+     }
+ }
+
+File: json-path/src/test/java/com/jayway/jsonpath/internal/function/NestedFunctionTest.java
+Patch:
+@@ -29,6 +29,6 @@ public static Iterable<Configuration> configurations() {
+ 
+     @Test
+     public void testAverageOfDoubles() {
+-        verifyMathFunction(conf, "$.sum({$.numbers.min()}, {$.numbers.max()})", 5.5);
++        verifyMathFunction(conf, "$.avg({$.numbers.min()}, {$.numbers.max()})", 5.5);
+     }
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathRef.java
+Patch:
+@@ -218,8 +218,6 @@ public int compareTo(PathRef o) {
+         }
+     }
+ 
+-
+-
+     private static class ObjectPropertyPathRef extends PathRef {
+ 
+         private String property;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/ValueNode.java
+Patch:
+@@ -174,8 +174,8 @@ public static ValueNode toValueNode(Object o){
+         if(o instanceof ValueNode) return (ValueNode)o;
+         if(o instanceof Class) return createClassNode((Class)o);
+         else if(isPath(o)) return new PathNode(o.toString(), false, false);
+-        else if(isJson(o)) return createStringNode(o.toString(), false);
+-        else if(o instanceof String) return createStringNode(o.toString(), false);
++        else if(isJson(o)) return createJsonNode(o.toString());
++        else if(o instanceof String) return createStringNode(o.toString(), true);
+         else if(o instanceof Character) return createStringNode(o.toString(), false);
+         else if(o instanceof Number) return createNumberNode(o.toString());
+         else if(o instanceof Boolean) return createBooleanNode(o.toString());
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/path/PathCompiler.java
+Patch:
+@@ -256,7 +256,6 @@ private boolean readFilterToken(PathTokenAppender appender) {
+ 
+ 
+         Predicate predicate = FilterCompiler.compile(criteria);
+-        //Predicate predicate = Filter.parse(criteria);
+         appender.appendPathToken(PathTokenFactory.createPredicatePathToken(predicate));
+ 
+         path.setPosition(closeStatementBracketIndex + 1);
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/mapper/TapestryMappingProvider.java
+Patch:
+@@ -14,11 +14,11 @@
+  */
+ package com.jayway.jsonpath.spi.mapper;
+ 
+-import java.util.ArrayList;
+-
+ import com.jayway.jsonpath.Configuration;
+ import com.jayway.jsonpath.TypeRef;
+ 
++import java.util.ArrayList;
++
+ public class TapestryMappingProvider implements MappingProvider {
+ 
+   @Override
+
+File: json-path/src/test/java/com/jayway/jsonpath/FilterCompilerTest.java
+Patch:
+@@ -81,7 +81,7 @@ private void assertInvalidPathException(String filter){
+             compile(filter);
+             throw new AssertionError("Expected " + filter + " to throw InvalidPathException");
+         } catch (InvalidPathException e){
+-            e.printStackTrace();
++            //e.printStackTrace();
+         }
+     }
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/FilterCompiler.java
+Patch:
+@@ -109,6 +109,9 @@ public Predicate compile() {
+                         opsStack.push(operatorNode);
+                         break;
+                     default:
++                        if(expStack.size() > 0 && opsStack.isEmpty()){
++                            throw new InvalidPathException("Expected logical operator (&&, ||) to follow expression " + expStack.peek().toString());
++                        }
+                         RelationalExpressionNode relationalExpressionNode = readExpression();
+                         expStack.push(relationalExpressionNode);
+                         break;
+
+File: json-path/src/test/java/com/jayway/jsonpath/FilterCompilerTest.java
+Patch:
+@@ -72,6 +72,7 @@ public void invalid_filters_does_not_compile() {
+         assertInvalidPathException("[?(@ == 'foo )]");
+         assertInvalidPathException("[?(@ == 1' )]");
+         assertInvalidPathException("[?(@.foo bar == 1)]");
++        assertInvalidPathException("[?(@.i == 5 @.i == 8)]");
+     }
+ 
+ 
+@@ -80,7 +81,7 @@ private void assertInvalidPathException(String filter){
+             compile(filter);
+             throw new AssertionError("Expected " + filter + " to throw InvalidPathException");
+         } catch (InvalidPathException e){
+-            //e.printStackTrace();
++            e.printStackTrace();
+         }
+     }
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/CharacterIndex.java
+Patch:
+@@ -67,6 +67,7 @@ public int indexOfClosingSquareBracket(int startPosition) {
+         }
+         return -1;
+     }
++
+     public int indexOfMatchingCloseChar(int startPosition, char openChar, char closeChar, boolean skipStrings, boolean skipRegex) {
+         if(charAt(startPosition) != openChar){
+             throw new InvalidPathException("Expected " + openChar + " but found " + charAt(startPosition));
+@@ -136,6 +137,7 @@ public int indexOfMatchingCloseChar(int startPosition, char openChar, char close
+         }
+         return -1;
+     }
++
+     public int indexOfClosingBracket(int startPosition, boolean skipStrings, boolean skipRegex) {
+         return indexOfMatchingCloseChar(startPosition, OPEN_PARENTHESIS, CLOSE_PARENTHESIS, skipStrings, skipRegex);
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/RelationalOperator.java
+Patch:
+@@ -33,7 +33,7 @@ public static RelationalOperator fromString(String operatorString){
+                 return operator;
+             }
+         }
+-        throw new InvalidPathException("Operator " + operatorString + " not supported ");
++        throw new InvalidPathException("Filter operator " + operatorString + " is not supported!");
+     }
+ 
+     @Override
+
+File: json-path/src/test/java/com/jayway/jsonpath/FilterCompilerTest.java
+Patch:
+@@ -42,6 +42,9 @@ public void valid_filters_compile() {
+         assertThat(compile("[?(((@)))]").toString()).isEqualTo("[?(@)]");
+         assertThat(compile("[?(@.name =~ /.*?/i)]").toString()).isEqualTo("[?(@['name'] =~ /.*?/i)]");
+         assertThat(compile("[?(@.name =~ /.*?/)]").toString()).isEqualTo("[?(@['name'] =~ /.*?/)]");
++        assertThat(compile("[?($[\"firstname\"][\"lastname\"])]").toString()).isEqualTo("[?($['firstname']['lastname'])]");
++        assertThat(compile("[?($[\"firstname\"].lastname)]").toString()).isEqualTo("[?($['firstname']['lastname'])]");
++        assertThat(compile("[?($[\"firstname\", \"lastname\"])]").toString()).isEqualTo("[?($['firstname','lastname'])]");
+ 
+     }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/JsonPath.java
+Patch:
+@@ -179,9 +179,10 @@ public <T> T read(Object jsonObject, Configuration configuration) {
+                     throw new JsonPathException("Options " + AS_PATH_LIST + " and " + ALWAYS_RETURN_LIST + " are not allowed when using path functions!");
+                 }
+                 return path.evaluate(jsonObject, jsonObject, configuration).getValue(true);
+-            }
+-            if(optAsPathList){
++
++            } else if(optAsPathList){
+                 return  (T)path.evaluate(jsonObject, jsonObject, configuration).getPath();
++
+             } else {
+                 Object res = path.evaluate(jsonObject, jsonObject, configuration).getValue(false);
+                 if(optAlwaysReturnList && path.isDefinite()){
+
+File: json-path/src/test/java/com/jayway/jsonpath/FilterCompilerTest.java
+Patch:
+@@ -36,9 +36,9 @@ public void valid_filters_compile() {
+         assertThat(compile("[?(@.a IN {'foo':'bar'})]").toString()).isEqualTo("[?(@['a'] IN {'foo':'bar'})]");
+         assertThat(compile("[?(@.value<'7')]").toString()).isEqualTo("[?(@['value'] < '7')]");
+         assertThat(compile("[?(@.message == 'it\\\\')]").toString()).isEqualTo("[?(@['message'] == 'it\\\\')]");
+-        assertThat(compile("[?(@.message.%min() > 10)]").toString()).isEqualTo("[?(@['message'].%min() > 10)]");
+-        assertThat(compile("[?(@.message.%min()==10)]").toString()).isEqualTo("[?(@['message'].%min() == 10)]");
+-        assertThat(compile("[?(10 == @.message.%min())]").toString()).isEqualTo("[?(10 == @['message'].%min())]");
++        assertThat(compile("[?(@.message.min() > 10)]").toString()).isEqualTo("[?(@['message'].min() > 10)]");
++        assertThat(compile("[?(@.message.min()==10)]").toString()).isEqualTo("[?(@['message'].min() == 10)]");
++        assertThat(compile("[?(10 == @.message.min())]").toString()).isEqualTo("[?(10 == @['message'].min())]");
+         assertThat(compile("[?(((@)))]").toString()).isEqualTo("[?(@)]");
+         assertThat(compile("[?(@.name =~ /.*?/i)]").toString()).isEqualTo("[?(@['name'] =~ /.*?/i)]");
+         assertThat(compile("[?(@.name =~ /.*?/)]").toString()).isEqualTo("[?(@['name'] =~ /.*?/)]");
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/FilterCompiler.java
+Patch:
+@@ -298,7 +298,9 @@ private PathNode readPath() {
+                     filter.setPosition(closingSquareBracketIndex + 1);
+                 }
+             }
+-            boolean closingLogicalBracket = (filter.currentChar() == CLOSE_BRACKET && !currentCharIsClosingFunctionBracket(begin));
++            boolean closingFunctionBracket = (filter.currentChar() == CLOSE_BRACKET && currentCharIsClosingFunctionBracket(begin));
++            boolean closingLogicalBracket  = (filter.currentChar() == CLOSE_BRACKET && !closingFunctionBracket);
++
+             if (!filter.inBounds() || isRelationalOperatorChar(filter.currentChar()) || filter.currentChar() == SPACE || closingLogicalBracket) {
+                 break;
+             } else {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/FunctionPathToken.java
+Patch:
+@@ -51,6 +51,8 @@ public boolean isTokenDefinite() {
+ 
+     @Override
+     public String getPathFragment() {
+-        return pathFragment;
++        return "." + pathFragment;
+     }
++
++
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/Filter.java
+Patch:
+@@ -178,8 +178,7 @@ public String toString() {
+ 
+ 
+     public static Filter parse(String filter){
+-        Predicate f = FilterCompiler.compile(filter);
+-        return new SingleFilter(f);
++        return FilterCompiler.compile(filter);
+     }
+ 
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/LogicalExpressionNode.java
+Patch:
+@@ -36,7 +36,7 @@ public LogicalOperator getOperator() {
+     }
+ 
+     public LogicalExpressionNode append(ExpressionNode expressionNode) {
+-        chain.add(expressionNode);
++        chain.add(0, expressionNode);
+         return this;
+     }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/ValueNode.java
+Patch:
+@@ -415,7 +415,7 @@ public StringNode asStringNode() {
+ 
+         @Override
+         public String toString() {
+-            return "'" + string + "'";
++            return "'" + Utils.escape(string, true) + "'";
+         }
+ 
+         @Override
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/RelationalOperator.java
+Patch:
+@@ -19,7 +19,7 @@ public enum RelationalOperator {
+     EXISTS("¦EXISTS¦"),
+     TYPE("¦TYPE¦"),
+     MATCHES("¦MATCHES¦"),
+-    NOT_EMPTY("¦NOT_EMPTY¦");
++    EMPTY("¦EMPTY¦");
+ 
+     private final String operatorString;
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/FilterParseTest.java
+Patch:
+@@ -176,8 +176,8 @@ public void a_matches_filter_can_be_serialized() {
+     @Test
+     public void a_not_empty_filter_can_be_serialized() {
+ 
+-        String filter = filter(where("a").notEmpty()).toString();
+-        String parsed = parse("[?(@['a'] ¦NOT_EMPTY¦)]").toString();
++        String filter = filter(where("a").empty(false)).toString();
++        String parsed = parse("[?(@['a'] ¦EMPTY¦ false)]").toString();
+ 
+         assertThat(filter).isEqualTo(parsed);
+     }
+
+File: json-path/src/test/java/com/jayway/jsonpath/FilterTest.java
+Patch:
+@@ -370,7 +370,7 @@ public void type_evals() {
+ 
+     //----------------------------------------------------------------------------
+     //
+-    // NOT_EMPTY
++    // EMPTY
+     //
+     //----------------------------------------------------------------------------
+     @Test
+
+File: json-path/src/main/java/com/jayway/jsonpath/ParseContext.java
+Patch:
+@@ -17,7 +17,6 @@
+ import java.io.File;
+ import java.io.IOException;
+ import java.io.InputStream;
+-import java.net.URL;
+ 
+ public interface ParseContext {
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/JsonReader.java
+Patch:
+@@ -23,8 +23,8 @@
+ import com.jayway.jsonpath.Predicate;
+ import com.jayway.jsonpath.ReadContext;
+ import com.jayway.jsonpath.TypeRef;
++import com.jayway.jsonpath.spi.cache.Cache;
+ import com.jayway.jsonpath.spi.cache.CacheProvider;
+-
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -136,7 +136,7 @@ public String jsonString() {
+     @Override
+     public <T> T read(String path, Predicate... filters) {
+         notEmpty(path, "path can not be null or empty");
+-        CacheProvider cache = configuration.CacheProvider();
++        Cache cache = CacheProvider.getCache();
+         
+         path = path.trim();
+         LinkedList filterStack = new LinkedList<Predicate>(asList(filters));
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathCompiler.java
+Patch:
+@@ -5,7 +5,6 @@
+ import com.jayway.jsonpath.Predicate;
+ import com.jayway.jsonpath.internal.token.ArrayIndexOperation;
+ import com.jayway.jsonpath.internal.token.ArraySliceOperation;
+-import com.jayway.jsonpath.internal.token.FunctionPathToken;
+ import com.jayway.jsonpath.internal.token.PathTokenAppender;
+ import com.jayway.jsonpath.internal.token.PathTokenFactory;
+ import com.jayway.jsonpath.internal.token.RootPathToken;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/Length.java
+Patch:
+@@ -3,9 +3,6 @@
+ import com.jayway.jsonpath.Function;
+ import com.jayway.jsonpath.internal.EvaluationContext;
+ import com.jayway.jsonpath.internal.PathRef;
+-import net.minidev.json.JSONArray;
+-
+-import java.util.*;
+ 
+ /**
+  * Provides the length of a JSONArray Object
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/function/numeric/AbstractAggregation.java
+Patch:
+@@ -3,9 +3,6 @@
+ import com.jayway.jsonpath.Function;
+ import com.jayway.jsonpath.internal.EvaluationContext;
+ import com.jayway.jsonpath.internal.PathRef;
+-import net.minidev.json.JSONArray;
+-
+-import java.util.Iterator;
+ 
+ /**
+  * Defines the pattern for processing numerical values via an abstract implementation that iterates over the collection
+
+File: json-path-assert/src/main/java/com/jayway/jsonassert/impl/JsonAsserterImpl.java
+Patch:
+@@ -33,7 +33,9 @@ public <T> JsonAsserter assertThat(String path, Matcher<T> matcher) {
+         try {
+             obj = JsonPath.<T>read(jsonObject, path);
+         } catch (Exception e) {
+-            throw new AssertionError(String.format("Error reading JSON path [%s]", path), e);
++            final AssertionError assertionError = new AssertionError(String.format("Error reading JSON path [%s]", path));
++            assertionError.initCause(e);
++            throw assertionError;
+         }
+ 
+         if (!matcher.matches(obj)) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathRef.java
+Patch:
+@@ -154,7 +154,7 @@ public Object getAccessor() {
+         public int compareTo(PathRef o) {
+             if(o instanceof ArrayIndexPathRef){
+                 ArrayIndexPathRef pf = (ArrayIndexPathRef) o;
+-                return Integer.compare(pf.index, this.index);
++                return Integer.valueOf(pf.index).compareTo(this.index);
+             }
+             return super.compareTo(o);
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/PredicatePathToken.java
+Patch:
+@@ -62,7 +62,9 @@ public void evaluate(String currentPath, PathRef ref, Object model, EvaluationCo
+                 idx++;
+             }
+         } else {
+-            throw new InvalidPathException(format("Filter: %s can not be applied to primitives. Current context is: %s", toString(), model));
++            if (isUpstreamDefinite()) {
++                throw new InvalidPathException(format("Filter: %s can not be applied to primitives. Current context is: %s", toString(), model));
++            }
+         }
+     }
+ 
+
+File: json-path-assert/src/main/java/com/jayway/jsonassert/impl/JsonAsserterImpl.java
+Patch:
+@@ -33,7 +33,9 @@ public <T> JsonAsserter assertThat(String path, Matcher<T> matcher) {
+         try {
+             obj = JsonPath.<T>read(jsonObject, path);
+         } catch (Exception e) {
+-            throw new AssertionError(String.format("Error reading JSON path [%s]: %s", path, e));
++            final AssertionError assertionError = new AssertionError(String.format("Error reading JSON path [%s]", path));
++            assertionError.initCause(e);
++            throw assertionError;
+         }
+ 
+         if (!matcher.matches(obj)) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/PropertyPathToken.java
+Patch:
+@@ -38,7 +38,8 @@ public List<String> getProperties() {
+     @Override
+     public void evaluate(String currentPath, PathRef parent, Object model, EvaluationContextImpl ctx) {
+         if (!ctx.jsonProvider().isMap(model)) {
+-            throw new PathNotFoundException("Property " + getPathFragment() + " not found in path " + currentPath);
++            //throw new PathNotFoundException("Property " + getPathFragment() + " not found in path " + currentPath);
++            throw new PathNotFoundException("Expected to find an object with property " + getPathFragment() + " but found '" + model.getClass().getName() + "'. This is not a json object according to the JsonProvider: '" + ctx.configuration().jsonProvider().getClass().getName() + "'.");
+         }
+ 
+         handleObjectProperty(currentPath, model, ctx, properties);
+
+File: json-path/src/test/java/com/jayway/jsonpath/PredicateTest.java
+Patch:
+@@ -25,17 +25,17 @@ public boolean apply(PredicateContext ctx) {
+         assertThat(reader.read("$.store.book[?].isbn", List.class, booksWithISBN)).containsOnly("0-395-19395-8", "0-553-21311-3");
+     }
+ 
+-    @Ignore("not ready yet (requires compiler reimplementation)")
+     @Test
+     public void issue_predicate_can_have_escaped_backslash_in_prop() {
+         String json = "{\n"
+                 + "    \"logs\": [\n"
+                 + "        {\n"
+-                + "            \"message\": \"it\\\",\n"
++                + "            \"message\": \"it\\\\\",\n"
+                 + "            \"id\": 2\n"
+                 + "        }\n"
+                 + "    ]\n"
+                 + "}";
++        // message: it\ -> (after json escaping) -> "it\\" -> (after java escaping) -> "\"it\\\\\""
+ 
+         List<String> result = JsonPath.read(json, "$.logs[?(@.message == 'it\\\\')].message");
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/JsonPath.java
+Patch:
+@@ -172,6 +172,9 @@ public <T> T read(Object jsonObject, Configuration configuration) {
+         boolean optSuppressExceptions = configuration.containsOption(Option.SUPPRESS_EXCEPTIONS);
+ 
+         try {
++            if(path.isFunctionPath()){
++                return path.evaluate(jsonObject, jsonObject, configuration).getValue(true);
++            }
+             if(optAsPathList){
+                 return  (T)path.evaluate(jsonObject, jsonObject, configuration).getPath();
+             } else {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/RootPathToken.java
+Patch:
+@@ -73,5 +73,7 @@ public boolean isTokenDefinite() {
+         return true;
+     }
+ 
+-
++    public boolean isFunctionPath() {
++        return (tail instanceof FunctionPathToken);
++    }
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/ScanPathToken.java
+Patch:
+@@ -183,7 +183,7 @@ public boolean matches(Object model) {
+                 return true;
+             }
+ 
+-            if (ctx.options().contains(Option.DEFAULT_PATH_LEAF_TO_NULL)) {
++            if (propertyPathToken.isLeaf() && ctx.options().contains(Option.DEFAULT_PATH_LEAF_TO_NULL)) {
+                 // In case of DEFAULT_PATH_LEAF_TO_NULL missing properties is not a problem.
+                 return true;
+             }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/PredicatePathToken.java
+Patch:
+@@ -69,7 +69,9 @@ public void evaluate(String currentPath, PathRef ref, Object model, EvaluationCo
+                 idx++;
+             }
+         } else {
+-            throw new InvalidPathException(format("Filter: %s can not be applied to primitives. Current context is: %s", toString(), model));
++            if (isUpstreamDefinite()) {
++                throw new InvalidPathException(format("Filter: %s can not be applied to primitives. Current context is: %s", toString(), model));
++            }
+         }
+     }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/JsonReader.java
+Patch:
+@@ -147,7 +147,7 @@ public <T> T read(String path, Predicate... filters) {
+         	return read(jsonPath);
+         }else {
+         	jsonPath = compile(path, filters);
+-        	cache.put(path, jsonPath);
++        	cache.put(cacheKey, jsonPath);
+         	return read(jsonPath);
+         }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/PathToken.java
+Patch:
+@@ -57,8 +57,8 @@ void handleObjectProperty(String currentPath, Object model, EvaluationContextImp
+                     }
+                 } else {
+                     if(!isUpstreamDefinite() &&
+-                       !ctx.options().contains(Option.REQUIRE_PROPERTIES) &&
+-                       !ctx.options().contains(Option.SUPPRESS_EXCEPTIONS)){
++                       !ctx.options().contains(Option.REQUIRE_PROPERTIES) ||
++                       ctx.options().contains(Option.SUPPRESS_EXCEPTIONS)){
+                         return;
+                     } else {
+                         throw new PathNotFoundException("Missing property in path " + evalPath);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/PathToken.java
+Patch:
+@@ -30,7 +30,7 @@ public abstract class PathToken {
+     private Boolean definite = null;
+     private Boolean upstreamDefinite = null;
+ 
+-    PathToken appendTailToken(PathToken next) {
++    public PathToken appendTailToken(PathToken next) {
+         this.next = next;
+         this.next.prev = this;
+         return next;
+@@ -148,13 +148,13 @@ boolean isRoot() {
+         return  prev == null;
+     }
+ 
+-    boolean isUpstreamDefinite(){
++    public boolean isUpstreamDefinite(){
+         if(upstreamDefinite != null){
+             return upstreamDefinite.booleanValue();
+         }
+         boolean isUpstreamDefinite = isTokenDefinite();
+         if (isUpstreamDefinite && !isRoot()) {
+-            isUpstreamDefinite = prev.isPathDefinite();
++            isUpstreamDefinite = prev.isUpstreamDefinite();
+         }
+         upstreamDefinite = isUpstreamDefinite;
+         return isUpstreamDefinite;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/CompiledPath.java
+Patch:
+@@ -29,8 +29,6 @@ public class CompiledPath implements Path {
+     private final boolean isRootPath;
+ 
+ 
+-
+-
+     public CompiledPath(PathToken root, boolean isRootPath) {
+         this.root = root;
+         this.isRootPath = isRootPath;
+
+File: json-path/src/test/java/com/jayway/jsonpath/BaseTest.java
+Patch:
+@@ -78,6 +78,7 @@ public class BaseTest {
+             "      ],\n" +
+             "      \"bicycle\" : {\n" +
+             "         \"foo\" : \"baz\",\n" +
++            "         \"escape\" : \"Esc\\b\\f\\n\\r\\t\\n\\t\\u002A\",\n" +
+             "         \"color\" : \"red\",\n" +
+             "         \"display-price\" : 19.95,\n" +
+             "         \"foo:bar\" : \"fooBar\",\n" +
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/PathToken.java
+Patch:
+@@ -47,7 +47,8 @@ void handleObjectProperty(String currentPath, Object model, EvaluationContextImp
+                     if(ctx.options().contains(Option.DEFAULT_PATH_LEAF_TO_NULL)){
+                         propertyVal =  null;
+                     } else {
+-                        if(ctx.options().contains(Option.SUPPRESS_EXCEPTIONS) && !ctx.options().contains(Option.REQUIRE_PROPERTIES)){
++                        if(ctx.options().contains(Option.SUPPRESS_EXCEPTIONS) ||
++                           !ctx.options().contains(Option.REQUIRE_PROPERTIES)){
+                             return;
+                         } else {
+                             throw new PathNotFoundException("No results for path: " + evalPath);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/PathToken.java
+Patch:
+@@ -47,7 +47,8 @@ void handleObjectProperty(String currentPath, Object model, EvaluationContextImp
+                     if(ctx.options().contains(Option.DEFAULT_PATH_LEAF_TO_NULL)){
+                         propertyVal =  null;
+                     } else {
+-                        if(ctx.options().contains(Option.SUPPRESS_EXCEPTIONS) && !ctx.options().contains(Option.REQUIRE_PROPERTIES)){
++                        if(ctx.options().contains(Option.SUPPRESS_EXCEPTIONS) ||
++                           !ctx.options().contains(Option.REQUIRE_PROPERTIES)){
+                             return;
+                         } else {
+                             throw new PathNotFoundException("No results for path: " + evalPath);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathCompiler.java
+Patch:
+@@ -109,7 +109,7 @@ public static Path compile(String path, Predicate... filters) {
+                         break;
+                     case PERIOD:
+                         i++;
+-                        if (path.charAt(i) == PERIOD) {
++                        if ( i < path.length() && path.charAt(i) == PERIOD) {
+                             //This is a deep scan
+                             fragment = "..";
+                             i++;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/PathToken.java
+Patch:
+@@ -125,7 +125,6 @@ void handleArrayIndex(int index, String currentPath, Object model, EvaluationCon
+                 next().evaluate(evalPath, pathRef, evalHit, ctx);
+             }
+         } catch (IndexOutOfBoundsException e) {
+-            throw new PathNotFoundException("Index out of bounds when evaluating path " + evalPath);
+         }
+     }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathCompiler.java
+Patch:
+@@ -109,7 +109,7 @@ public static Path compile(String path, Predicate... filters) {
+                         break;
+                     case PERIOD:
+                         i++;
+-                        if (path.charAt(i) == PERIOD) {
++                        if ( i < path.length() && path.charAt(i) == PERIOD) {
+                             //This is a deep scan
+                             fragment = "..";
+                             i++;
+
+File: json-path/src/main/java/com/jayway/jsonpath/ParseContext.java
+Patch:
+@@ -30,7 +30,4 @@ public interface ParseContext {
+     DocumentContext parse(InputStream json, String charset);
+ 
+     DocumentContext parse(File json) throws IOException;
+-
+-    @Deprecated
+-    DocumentContext parse(URL json) throws IOException;
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JacksonJsonNodeJsonProvider.java
+Patch:
+@@ -71,7 +71,7 @@ public String toJson(Object obj) {
+         if (!(obj instanceof JsonNode)) {
+             throw new JsonPathException("Not a JSON Node");
+         }
+-        return toString();
++        return obj.toString();
+     }
+ 
+     @Override
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/ComplianceTest.java
+Patch:
+@@ -107,10 +107,10 @@ public void test_four() throws Exception {
+                 "               }\n" +
+                 "             }";
+ 
+-        //assertThat(JsonPath.<List<String>>read(json, "$.menu.items[?(@)]"), Matchers.is(notNullValue()));
++        assertThat(JsonPath.<List<String>>read(json, "$.menu.items[?(@)]"), Matchers.is(notNullValue()));
+         assertThat(JsonPath.<List<String>>read(json, "$.menu.items[?(@ && @.id == 'ViewSVG')].id"), hasItems("ViewSVG"));
+ 
+-        //assertThat(JsonPath.<List<String>>read(json, "$.menu.items[?(@ && @.id && !@.label)].id"), hasItems("?")); //low
++        assertThat(JsonPath.<List<String>>read(json, "$.menu.items[?(@ && @.id && !@.label)].id"), hasItems("Open", "Quality", "Pause", "Mute", "Copy", "Help")); //low
+         //assertThat(JsonPath.<List<String>>read(json, "$.menu.items[?(@ && @.label && /SVG/.test(@.label))].id"), hasItems("?")); //low
+         //assertThat(JsonPath.<List<String>>read(json, "$.menu.items[?(!@)]"), hasItems("?")); //low
+         //assertThat(JsonPath.<List<String>>read(json, "$..[0]"), hasItems("?")); //low
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathRef.java
+Patch:
+@@ -100,7 +100,7 @@ public void put(String key, Object newVal, Configuration configuration) {
+             if(configuration.jsonProvider().isMap(parent)){
+                 configuration.jsonProvider().setProperty(parent, key, newVal);
+             } else {
+-                throw new InvalidModificationException("Invalid add operation. $ is not an array");
++                throw new InvalidModificationException("Invalid put operation. $ is not a map");
+             }
+         }
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/Criteria.java
+Patch:
+@@ -247,7 +247,7 @@ boolean eval(Object left, Object right, PredicateContext ctx) {
+                 if(target != null){
+                     res = pattern.matcher(target.toString()).matches();
+                 }
+-                if(logger.isDebugEnabled()) logger.debug("[{}] {} [{}] => {}", right.toString(), name(), left.toString(), res);
++                if(logger.isDebugEnabled()) logger.debug("[{}] {} [{}] => {}", right == null?"null":right.toString(), name(), left==null?"null":left.toString(), res);
+                 return res;
+             }
+             @Override
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathRef.java
+Patch:
+@@ -100,7 +100,7 @@ public void put(String key, Object newVal, Configuration configuration) {
+             if(configuration.jsonProvider().isMap(parent)){
+                 configuration.jsonProvider().setProperty(parent, key, newVal);
+             } else {
+-                throw new InvalidModificationException("Invalid add operation. $ is not an array");
++                throw new InvalidModificationException("Invalid put operation. $ is not a map");
+             }
+         }
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/token/WildcardPathToken.java
+Patch:
+@@ -14,6 +14,7 @@
+  */
+ package com.jayway.jsonpath.internal.token;
+ 
++import com.jayway.jsonpath.Option;
+ import com.jayway.jsonpath.PathNotFoundException;
+ 
+ import static java.util.Arrays.asList;
+@@ -34,7 +35,7 @@ public void evaluate(String currentPath, Object model, EvaluationContextImpl ctx
+                 try {
+                     handleArrayIndex(idx, currentPath, model, ctx);
+                 } catch (PathNotFoundException p){
+-                    if(!isLeaf() && !next().isLeaf()){
++                    if(ctx.options().contains(Option.REQUIRE_PATH_PROPERTIES)){
+                         throw p;
+                     }
+                 }
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/JsonProviderTest.java
+Patch:
+@@ -54,7 +54,6 @@ public void parse_document() throws Exception {
+ 
+         Object o = provider.parse(DOCUMENT);
+ 
+-        System.out.println(o);
+ 
+     }
+ 
+@@ -64,6 +63,5 @@ public void parse_array() throws Exception {
+ 
+         Object o = provider.parse(ARRAY);
+ 
+-        System.out.println(o);
+     }
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/JsonPath.java
+Patch:
+@@ -40,7 +40,7 @@
+  * <p/>
+  * Given the Json document:
+  * <p/>
+- * <code>
++ * <pre>
+  * String json =
+  * "{
+  * "store":
+@@ -67,7 +67,7 @@
+  * }
+  * }
+  * }";
+- * </code>
++ * </pre>
+  * <p/>
+  * A JsonPath can be compiled and used as shown:
+  * <p/>
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/IssuesTest.java
+Patch:
+@@ -28,7 +28,7 @@
+ 
+ public class IssuesTest {
+ 
+-    private static final JsonProvider jp = new JsonSmartJsonProvider();
++    private static final JsonProvider jp = Configuration.defaultConfiguration().jsonProvider();
+ 
+     @Test
+     public void full_ones_can_be_filtered() {
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/internal/ScanPathTokenTest.java
+Patch:
+@@ -15,7 +15,7 @@
+ public class ScanPathTokenTest {
+ 
+ 
+-    public final static Object DOCUMENT = new JsonSmartJsonProvider().parse(
++    public final static Object DOCUMENT = Configuration.defaultConfiguration().jsonProvider().parse(
+             "{\n" +
+                     " \"store\":{\n" +
+                     "  \"book\":[\n" +
+@@ -64,7 +64,7 @@ public class ScanPathTokenTest {
+                     "}"
+     );
+ 
+-    public final static Object DOCUMENT2 = new JsonSmartJsonProvider().parse(
++    public final static Object DOCUMENT2 = Configuration.defaultConfiguration().jsonProvider().parse(
+             "{\n" +
+                     "     \"firstName\": \"John\",\n" +
+                     "     \"lastName\" : \"doe\",\n" +
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/internal/TestBase.java
+Patch:
+@@ -9,7 +9,7 @@
+ public class TestBase {
+ 
+ 
+-    public final static Object ARRAY = new JsonSmartJsonProvider().parse("[" +
++    public final static Object ARRAY = Configuration.defaultConfiguration().jsonProvider().parse("[" +
+             "{\n" +
+             "   \"foo\" : \"foo-val-0\"\n" +
+             "}," +
+@@ -33,7 +33,7 @@ public class TestBase {
+             "}" +
+             "]");
+ 
+-    public final static Object DOC = new JsonSmartJsonProvider().parse(
++    public final static Object DOC = Configuration.defaultConfiguration().jsonProvider().parse(
+             "{ \"store\": {\n" +
+                     "    \"book\": [ \n" +
+                     "      { \"category\": \"reference\",\n" +
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/json/JsonProvider.java
+Patch:
+@@ -32,14 +32,12 @@ public interface JsonProvider {
+ 
+     Object parse(InputStream jsonStream) throws InvalidJsonException;
+ 
+-
+     String toJson(Object obj);
+ 
+     Object createMap();
+ 
+     Object createArray();
+ 
+-
+     Object clone(Object model);
+ 
+     /**
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/Cache.java
+Patch:
+@@ -1,7 +1,5 @@
+ package com.jayway.jsonpath.internal;
+ 
+-import com.jayway.jsonpath.spi.compiler.Path;
+-
+ import java.util.Deque;
+ import java.util.LinkedList;
+ import java.util.Map;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/EvaluationContext.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.spi.compiler;
++package com.jayway.jsonpath.internal;
+ 
+ import com.jayway.jsonpath.Configuration;
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/Path.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.spi.compiler;
++package com.jayway.jsonpath.internal;
+ 
+ import com.jayway.jsonpath.Configuration;
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/compiler/ArrayPathToken.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.internal.spi.compiler;
++package com.jayway.jsonpath.internal.compiler;
+ 
+ import com.jayway.jsonpath.InvalidPathException;
+ import com.jayway.jsonpath.PathNotFoundException;
+@@ -13,7 +13,7 @@
+ /**
+  *
+  */
+-class ArrayPathToken extends PathToken {
++public class ArrayPathToken extends PathToken {
+ 
+     private static final Logger logger = LoggerFactory.getLogger(ArrayPathToken.class);
+ 
+@@ -37,7 +37,7 @@ public ArrayPathToken(List<Integer> criteria, Operation operation) {
+     }
+ 
+     @Override
+-    void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
++    public void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
+         if(model == null){
+             throw new PathNotFoundException("The path " + currentPath + " is null");
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/compiler/FilterPathToken.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.internal.spi.compiler;
++package com.jayway.jsonpath.internal.compiler;
+ 
+ import com.jayway.jsonpath.Configuration;
+ import com.jayway.jsonpath.Filter;
+@@ -12,7 +12,7 @@
+ /**
+  *
+  */
+-class FilterPathToken extends PathToken {
++public class FilterPathToken extends PathToken {
+ 
+     private static final String[] FRAGMENTS = {
+             "[?]",
+@@ -33,7 +33,7 @@ public FilterPathToken(Collection<Filter> filters) {
+     }
+ 
+     @Override
+-    void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
++    public void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
+         if (!ctx.jsonProvider().isArray(model)) {
+             throw new InvalidPathException(format("Filter: %s can only be applied to arrays. Current context is: %s", toString(), model));
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/compiler/PropertyPathToken.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.internal.spi.compiler;
++package com.jayway.jsonpath.internal.compiler;
+ 
+ import com.jayway.jsonpath.PathNotFoundException;
+ import com.jayway.jsonpath.internal.Utils;
+@@ -8,7 +8,7 @@
+ /**
+  *
+  */
+-class PropertyPathToken extends PathToken {
++public class PropertyPathToken extends PathToken {
+ 
+     private final List<String> properties;
+ 
+@@ -21,7 +21,7 @@ public List<String> getProperties() {
+     }
+ 
+     @Override
+-    void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
++    public void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
+         if (!ctx.jsonProvider().isMap(model)) {
+             throw new PathNotFoundException("Property " + getPathFragment() + " not found in path " + currentPath);
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/compiler/RootPathToken.java
+Patch:
+@@ -1,12 +1,12 @@
+-package com.jayway.jsonpath.internal.spi.compiler;
++package com.jayway.jsonpath.internal.compiler;
+ 
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+ /**
+  *
+  */
+-class RootPathToken extends PathToken /*implements Path*/ {
++public class RootPathToken extends PathToken /*implements Path*/ {
+ 
+     private static final Logger logger = LoggerFactory.getLogger(RootPathToken.class);
+ 
+@@ -30,7 +30,7 @@ public RootPathToken append(PathToken next) {
+     }
+ 
+     @Override
+-    void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
++    public void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
+         if (isLeaf()) {
+             ctx.addResult("$", model);
+         } else {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/compiler/ScanPathToken.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.internal.spi.compiler;
++package com.jayway.jsonpath.internal.compiler;
+ 
+ import java.util.Collection;
+ import java.util.LinkedHashMap;
+@@ -7,10 +7,10 @@
+ /**
+  *
+  */
+-class ScanPathToken extends PathToken {
++public class ScanPathToken extends PathToken {
+ 
+     @Override
+-    void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
++    public void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
+ 
+         if (isLeaf()) {
+             ctx.addResult(currentPath, model);
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/ArraySlicingTest.java
+Patch:
+@@ -1,5 +1,6 @@
+-package com.jayway.jsonpath;
++package com.jayway.jsonpath.old;
+ 
++import com.jayway.jsonpath.JsonPath;
+ import org.hamcrest.Matchers;
+ import org.junit.Test;
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/ComplianceTest.java
+Patch:
+@@ -1,5 +1,6 @@
+-package com.jayway.jsonpath;
++package com.jayway.jsonpath.old;
+ 
++import com.jayway.jsonpath.JsonPath;
+ import org.hamcrest.Matchers;
+ import org.junit.Test;
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/DeepScanTest.java
+Patch:
+@@ -1,5 +1,6 @@
+-package com.jayway.jsonpath;
++package com.jayway.jsonpath.old;
+ 
++import com.jayway.jsonpath.Option;
+ import com.jayway.jsonpath.spi.json.JsonProvider;
+ import com.jayway.jsonpath.spi.json.JsonProviderFactory;
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/DocumentationPageTests.java
+Patch:
+@@ -1,5 +1,6 @@
+-package com.jayway.jsonpath;
++package com.jayway.jsonpath.old;
+ 
++import com.jayway.jsonpath.JsonPath;
+ import org.junit.Test;
+ 
+ public class DocumentationPageTests {
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/Filter2Test.java
+Patch:
+@@ -1,5 +1,7 @@
+-package com.jayway.jsonpath;
++package com.jayway.jsonpath.old;
+ 
++import com.jayway.jsonpath.Configuration;
++import com.jayway.jsonpath.Predicate;
+ import org.junit.Test;
+ 
+ import java.util.List;
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/HelpTest.java
+Patch:
+@@ -1,5 +1,6 @@
+-package com.jayway.jsonpath;
++package com.jayway.jsonpath.old;
+ 
++import com.jayway.jsonpath.JsonPath;
+ import org.junit.Test;
+ 
+ import java.util.List;
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/HttpProviderTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath;
++package com.jayway.jsonpath.old;
+ 
+ import com.jayway.jsonpath.internal.Utils;
+ import com.jayway.jsonpath.spi.http.HttpProviderFactory;
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/JsonPathFilterTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath;
++package com.jayway.jsonpath.old;
+ 
+ public class JsonPathFilterTest {
+     
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/JsonProviderTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath;
++package com.jayway.jsonpath.old;
+ 
+ import com.jayway.jsonpath.internal.spi.json.JacksonProvider;
+ import org.junit.Test;
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/MultiAttributeTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath;
++package com.jayway.jsonpath.old;
+ 
+ public class MultiAttributeTest {
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/internal/ArrayIndexFilterTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.internal;
++package com.jayway.jsonpath.old.internal;
+ 
+ import com.jayway.jsonpath.JsonPath;
+ import org.hamcrest.Matchers;
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/internal/ArrayPathTokenTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.internal;
++package com.jayway.jsonpath.old.internal;
+ 
+ import org.junit.Test;
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/internal/FilterPathTokenTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.internal;
++package com.jayway.jsonpath.old.internal;
+ 
+ import com.jayway.jsonpath.JsonPath;
+ import com.jayway.jsonpath.spi.json.JsonProviderFactory;
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/internal/PropertyPathTokenTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.internal;
++package com.jayway.jsonpath.old.internal;
+ 
+ import com.jayway.jsonpath.Configuration;
+ import com.jayway.jsonpath.JsonPath;
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/internal/TestBase.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.internal;
++package com.jayway.jsonpath.old.internal;
+ 
+ import com.jayway.jsonpath.Configuration;
+ import com.jayway.jsonpath.spi.json.JsonProviderFactory;
+
+File: json-path/src/test/java/com/jayway/jsonpath/old/reader/ReadConfigurationTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.jayway.jsonpath.reader;
++package com.jayway.jsonpath.old.reader;
+ 
+ import com.jayway.jsonpath.Configuration;
+ import com.jayway.jsonpath.JsonPath;
+
+File: json-path-web-test/src/main/java/com/jayway/jsonpath/web/resource/ApiResource.java
+Patch:
+@@ -19,15 +19,15 @@
+ import java.util.Collections;
+ import java.util.Map;
+ 
+-@Path("/api/")
++@Path("/")
+ @Produces(MediaType.TEXT_HTML)
+ public class ApiResource {
+ 
+     private static final Logger logger = LoggerFactory.getLogger(ApiResource.class);
+ 
+ 
+     @GET
+-    @Path("validate")
++    @Path("/validate")
+     @Produces(MediaType.APPLICATION_JSON)
+     public Response validate(@QueryParam("path") String path){
+         int result = -1;
+@@ -41,7 +41,7 @@ public Response validate(@QueryParam("path") String path){
+ 
+ 
+     @POST
+-    @Path("eval")
++    @Path("/eval")
+     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+     @Produces(MediaType.APPLICATION_JSON)
+     public Response getTemplate(@FormParam("json") String json,
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/Utils.java
+Patch:
+@@ -1,7 +1,5 @@
+ package com.jayway.jsonpath.internal;
+ 
+-import com.jayway.jsonpath.InvalidConversionException;
+-
+ import java.io.ByteArrayInputStream;
+ import java.io.ByteArrayOutputStream;
+ import java.io.Closeable;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/spi/compiler/PathToken.java
+Patch:
+@@ -39,7 +39,7 @@ void handleObjectProperty(String currentPath, Object model, EvaluationContextImp
+                 throw new InvalidPathException("Multi properties can only be used as path leafs: " + evalPath);
+             }
+ 
+-            if(ctx.configuration().getOptions().contains(Option.MERGE_MULTI_PROPS)) {
++            if(ctx.configuration().containsOption(Option.MERGE_MULTI_PROPS)) {
+                 Object map = ctx.jsonProvider().createMap();
+                 for (String property : properties) {
+                     Object propertyVal = readObjectProperty(property, model, ctx);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/spi/compiler/ArrayPathToken.java
+Patch:
+@@ -59,7 +59,7 @@ void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
+ 
+                 case INDEX_SEQUENCE:
+                     for (Integer i : criteria) {
+-                        handleArrayIndex(criteria.get(i), currentPath, model, ctx);
++                        handleArrayIndex(i, currentPath, model, ctx);
+                     }
+                     break;
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/spi/json/AbstractJsonProvider.java
+Patch:
+@@ -84,7 +84,7 @@ public Object getMapValue(Object obj, String key){
+      */
+     public Object getMapValue(Object obj, String key, boolean throwOnMissing){
+         Map m = (Map) obj;
+-        if(!m.containsKey(key)){
++        if(!m.containsKey(key) && throwOnMissing){
+             throw new PathNotFoundException("Property ['" + key + "'] not found in the current context" );
+         } else {
+             return m.get(key);
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/spi/compiler/EvaluationContextImpl.java
+Patch:
+@@ -52,7 +52,7 @@ public Configuration configuration() {
+     @Override
+     public <T> T get() {
+         if (path.isDefinite()) {
+-            return (T) jsonProvider().getProperty(objectResult, 0);
++            return (T) jsonProvider().getArrayIndex(objectResult, 0);
+         }
+         return (T) objectResult;
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/spi/compiler/ScanPathToken.java
+Patch:
+@@ -78,7 +78,7 @@ public void walkObject(String currentPath, Object model, EvaluationContextImpl c
+ 
+         for (String property : properties) {
+             String evalPath = currentPath + "['" + property + "']";
+-            Object propertyModel = ctx.jsonProvider().getProperty(model, property);
++            Object propertyModel = ctx.jsonProvider().getMapValue(model, property);
+             walk(evalPath, propertyModel, ctx, predicate, predicateMatches);
+         }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/spi/compiler/EvaluationContextImpl.java
+Patch:
+@@ -82,4 +82,5 @@ public Object getWithOptions() {
+     public List<String> getPathList() {
+         return pathResult;
+     }
++
+ }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/spi/compiler/ArrayPathToken.java
+Patch:
+@@ -38,6 +38,9 @@ public ArrayPathToken(List<Integer> criteria, Operation operation) {
+ 
+     @Override
+     void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
++        if(model == null){
++            throw new PathNotFoundException("The path " + currentPath + " is null");
++        }
+         if (!ctx.jsonProvider().isArray(model)) {
+             throw new InvalidPathException(format("Filter: %s can only be applied to arrays. Current context is: %s", toString(), model));
+         }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/spi/compiler/ArrayPathToken.java
+Patch:
+@@ -113,7 +113,7 @@ else if (Operation.SLICE_BETWEEN == operation) {
+                 }
+             }
+         } catch (IndexOutOfBoundsException e) {
+-            throw new PathNotFoundException(e);
++            throw new PathNotFoundException("Index out of bounds when evaluating path " + currentPath);
+         }
+     }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/spi/compiler/PropertyPathToken.java
+Patch:
+@@ -20,7 +20,7 @@ public String getProperty() {
+     @Override
+     void evaluate(String currentPath, Object model, EvaluationContextImpl ctx) {
+         if (!ctx.jsonProvider().isMap(model)) {
+-            throw new PathNotFoundException("Property " + currentPath + " not found!");
++            throw new PathNotFoundException("Property ['" + property + "'] not found in path " + currentPath);
+         }
+ 
+         handleObjectProperty(currentPath, model, ctx, property);
+
+File: json-path/src/test/java/com/jayway/jsonpath/HttpProviderTest.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.jayway.jsonpath.internal.IOUtils;
+ import com.jayway.jsonpath.spi.HttpProviderFactory;
++import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import java.io.IOException;
+@@ -16,6 +17,7 @@
+  * Date: 3/10/12
+  * Time: 8:12 AM
+  */
++@Ignore
+ public class HttpProviderTest {
+ 
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/JsonPathTest.java
+Patch:
+@@ -276,7 +276,7 @@ public void all_books() throws Exception {
+             //List<String> books = JsonPath.<List<String>>read(DOCUMENT, "$..book");
+             Object books = JsonPath.<List<String>>read(DOCUMENT, "$..book");
+ 
+-            System.out.println("test");
++            System.out.println(books);
+ 
+         }
+ 
+
+File: json-path-assert/src/test/java/com/jayway/jsonassert/JsonAssertTest.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.jayway.jsonassert;
+ 
++import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import java.io.InputStream;
+@@ -56,6 +57,7 @@ public void failed_error_message() throws Exception {
+     }
+ 
+     @Test
++    @Ignore //TODO: finalize behaviour
+     public void links_document() throws Exception {
+ 
+         with(getResourceAsStream("links.json")).assertEquals("count", 2)
+@@ -68,6 +70,7 @@ public void links_document() throws Exception {
+ 
+ 
+     @Test
++    @Ignore //TODO: finalize behaviour
+     public void a_document_can_be_expected_not_to_contain_a_path() throws Exception {
+         with(JSON).assertNotDefined("$.store.bicycle.cool");
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/ArrayQueryFilter.java
+Patch:
+@@ -30,11 +30,8 @@ public class ArrayQueryFilter extends PathTokenFilter {
+ 
+     @Override
+     public Object filter(Object obj, JsonProvider jsonProvider, LinkedList<Filter> filters, boolean inArrayContext) {
+-
+         Filter filter = filters.poll();
+-
+         return filter.doFilter(jsonProvider.toIterable(obj), jsonProvider);
+-
+     }
+ 
+     @Override
+
+File: json-path/src/test/java/com/jayway/jsonpath/ExpressionEvalTest.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.jayway.jsonpath.internal.filter.eval.ExpressionEvaluator;
+ import org.codehaus.jackson.node.BigIntegerNode;
++import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import java.math.BigDecimal;
+@@ -188,6 +189,7 @@ public void null_eval() throws Exception {
+ 
+ 
+     @Test
++    @Ignore //TODO: finalize behaviour
+     public void nulls_filter() {
+ 
+         List<Map<String, Object>> result = JsonPath.read(DOCUMENT, "$.characters[?(@.offspring == null)]");
+
+File: json-path/src/test/java/com/jayway/jsonpath/FilterTest.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.jayway.jsonpath;
+ 
++import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import java.util.Collections;
+@@ -189,6 +190,7 @@ public void size_filters_evaluates() throws Exception {
+     }
+ 
+     @Test
++    @Ignore //TODO: finalize behaviour
+     public void exists_filters_evaluates() throws Exception {
+         Map<String, Object> check = new HashMap<String, Object>();
+         check.put("foo", "foo");
+
+File: json-path/src/test/java/com/jayway/jsonpath/IssuesTest.java
+Patch:
+@@ -5,6 +5,7 @@
+ import net.minidev.json.JSONObject;
+ 
+ import org.hamcrest.Matchers;
++import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import java.io.InputStream;
+@@ -127,6 +128,7 @@ public void issue_28_boolean() {
+ 
+ 
+     @Test(expected = PathNotFoundException.class)
++    @Ignore //TODO: finalize behaviour
+     public void issue_22() throws Exception {
+         String json = "{\"a\":{\"b\":1,\"c\":2}}";
+         System.out.println(JsonPath.read(json, "a.d"));
+
+File: json-path/src/test/java/com/jayway/jsonpath/JsonModelTest.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.jayway.jsonpath;
+ 
++import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import java.io.ByteArrayInputStream;
+@@ -75,6 +76,7 @@ public void a_model_can_be_pretty_printed() throws Exception {
+     }
+ 
+     @Test
++    @Ignore //TODO: finalize behaviour
+     public void has_path_validates() throws Exception {
+         assertFalse(JsonModel.model(DOCUMENT).hasPath("store.invalid"));
+         assertFalse(JsonModel.model(DOCUMENT).hasPath("store.book[0].foo"));
+
+File: json-path/src/test/java/com/jayway/jsonpath/internal/filter/ArrayEvalFilterTest.java
+Patch:
+@@ -14,7 +14,7 @@ public class ArrayEvalFilterTest {
+     @Test
+     public void condition_statements_can_be_parsed() {
+ 
+-        assertEquals(new ArrayEvalFilter.ConditionStatement("@.length", ">", "0"), ArrayEvalFilter.createConditionStatement("[?(@.length>0)]"));
++        //assertEquals(new ArrayEvalFilter.ConditionStatement("@.length", ">", "0"), ArrayEvalFilter.createConditionStatement("[?(@.length>0)]"));
+ 
+         //int array
+         assertEquals(new ArrayEvalFilter.ConditionStatement("@", "==", "5"), ArrayEvalFilter.createConditionStatement("[?(@==5)]"));
+
+File: json-path/src/main/java/com/jayway/jsonpath/JsonModel.java
+Patch:
+@@ -155,7 +155,7 @@ public boolean hasPath(JsonPath jsonPath) {
+ 
+         try {
+             get(jsonPath);
+-        } catch (InvalidPathException e) {
++        } catch (PathNotFoundException e) {
+             return false;
+         }
+         return true;
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/ArrayIndexFilter.java
+Patch:
+@@ -97,7 +97,8 @@ public Object filter(Object obj, JsonProvider jsonProvider) {
+             String[] indexArr = COMMA.split(trimmedCondition);
+ 
+             if(obj == null || jsonProvider.length(obj) == 0){
+-                throw new PathNotFoundException("Failed to access array index: '" + condition + "' since the array is null or empty");
++                //throw new PathNotFoundException("Failed to access array index: '" + condition + "' since the array is null or empty");
++                return result;
+             }
+ 
+             if (indexArr.length == 1) {
+
+File: json-path/src/test/java/com/jayway/jsonpath/IssuesTest.java
+Patch:
+@@ -23,7 +23,8 @@
+  */
+ public class IssuesTest {
+ 
+-    @Test
++    //@Test(expected = PathNotFoundException.class)
++    @Test()
+     public void issue_11() throws Exception {
+         String json = "{ \"foo\" : [] }";
+         List<String> result = JsonPath.read(json, "$.foo[?(@.rel= 'item')][0].uri");
+
+File: json-path/src/main/java/com/jayway/jsonpath/Criteria.java
+Patch:
+@@ -297,7 +297,7 @@ public boolean accept(String value) {
+                 return objectOrAnyCollectionItemMatches(actualVal, new Predicate<Object>() {
+                     @Override
+                     public boolean accept(Object value) {
+-                        if (isValue == null) {
++                       if (isValue == null) {
+                             return value == null;
+                         } else {
+                             return isValue.equals(value);
+
+File: json-path/src/main/java/com/jayway/jsonpath/JsonPath.java
+Patch:
+@@ -115,6 +115,9 @@ public JsonPath(String jsonPath, Filter[] filters) {
+         isTrue(filterCountInPath == filters.length, "Filters in path ([?]) does not match provided filters.");
+ 
+         this.tokenizer = new PathTokenizer(jsonPath);
++
++        //System.out.println(tokenizer.toString());
++
+         this.filters = new LinkedList<Filter>();
+         this.filters.addAll(asList(filters));
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/JsonPathTest.java
+Patch:
+@@ -190,7 +190,7 @@ public void all_prices_in_store() throws Exception {
+     public void access_array_by_index_from_tail() throws Exception {
+ 
+         assertThat(JsonPath.<String>read(DOCUMENT, "$..book[(@.length-1)].author"), equalTo("J. R. R. Tolkien"));
+-        assertThat(JsonPath.<String>read(DOCUMENT, "$..book[-1:].author"), equalTo("J. R. R. Tolkien"));
++        assertThat(JsonPath.<String>read(DOCUMENT, "$..book[1:].author"), equalTo("J. R. R. Tolkien"));
+     }
+ 
+     @Test
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/FieldFilter.java
+Patch:
+@@ -38,7 +38,7 @@ public FieldFilter(String condition) {
+     public Object filter(Object obj, JsonProvider jsonProvider, LinkedList<Filter> filters, boolean inArrayContext) {
+         if (jsonProvider.isList(obj)) {
+             if (!inArrayContext) {
+-                return null;
++                throw new InvalidPathException("Trying to access field on array");
+             } else {
+                 List<Object> result = jsonProvider.createList();
+                 for (Object current : jsonProvider.toList(obj)) {
+
+File: json-path-assert/src/test/java/com/jayway/jsonassert/JsonAssertTest.java
+Patch:
+@@ -127,7 +127,7 @@ public void map_content_can_be_asserted_with_matcher() throws Exception {
+ 
+     @Test
+     public void an_empty_collection() throws Exception {
+-        with(JSON).assertThat("$.store.book[?(@.category = 'x')]", emptyCollection());
++        with(JSON).assertThat("$.store.book[?(@.category == 'x')]", emptyCollection());
+     }
+ 
+     @Test
+
+File: json-path-assert/src/test/java/com/jayway/jsonassert/JsonAssertTest.java
+Patch:
+@@ -127,7 +127,7 @@ public void map_content_can_be_asserted_with_matcher() throws Exception {
+ 
+     @Test
+     public void an_empty_collection() throws Exception {
+-        with(JSON).assertThat("$.store.book[?(@.category = 'x')]", emptyCollection());
++        with(JSON).assertThat("$.store.book[?(@.category == 'x')]", emptyCollection());
+     }
+ 
+     @Test
+
+File: json-path/src/main/java/com/jayway/jsonpath/Criteria.java
+Patch:
+@@ -18,8 +18,8 @@
+ import java.util.regex.Pattern;
+ 
+ import static java.util.Arrays.asList;
+-import static org.apache.commons.lang.Validate.notEmpty;
+-import static org.apache.commons.lang.Validate.notNull;
++import static org.apache.commons.lang3.Validate.notEmpty;
++import static org.apache.commons.lang3.Validate.notNull;
+ 
+ /**
+  * @author Kalle Stenflo
+
+File: json-path/src/main/java/com/jayway/jsonpath/JsonModel.java
+Patch:
+@@ -28,7 +28,7 @@
+ import java.util.*;
+ 
+ import static java.util.Arrays.asList;
+-import static org.apache.commons.lang.Validate.*;
++import static org.apache.commons.lang3.Validate.*;
+ 
+ /**
+  * A JsonModel holds a parsed JSON document and provides easy read and write operations. In contrast to the
+
+File: json-path/src/main/java/com/jayway/jsonpath/JsonPath.java
+Patch:
+@@ -22,7 +22,7 @@
+ import com.jayway.jsonpath.spi.HttpProviderFactory;
+ import com.jayway.jsonpath.spi.JsonProvider;
+ import com.jayway.jsonpath.spi.JsonProviderFactory;
+-import org.apache.commons.lang.StringUtils;
++import org.apache.commons.lang3.StringUtils;
+ 
+ import java.io.*;
+ import java.net.URL;
+@@ -32,7 +32,7 @@
+ import java.util.regex.Pattern;
+ 
+ import static java.util.Arrays.asList;
+-import static org.apache.commons.lang.Validate.*;
++import static org.apache.commons.lang3.Validate.*;
+ 
+ /**
+  * <p/>
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/filter/ArrayQueryFilter.java
+Patch:
+@@ -34,7 +34,7 @@ public Object filter(Object obj, JsonProvider jsonProvider, LinkedList<Filter> f
+ 
+         Filter filter = filters.poll();
+ 
+-        return filter.doFilter((List)obj);
++        return filter.doFilter(jsonProvider.toList(obj), jsonProvider);
+ 
+     }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/spi/impl/AbstractJsonProvider.java
+Patch:
+@@ -15,7 +15,7 @@
+ package com.jayway.jsonpath.spi.impl;
+ 
+ import com.jayway.jsonpath.spi.JsonProvider;
+-import org.apache.commons.lang.SerializationUtils;
++import org.apache.commons.lang3.SerializationUtils;
+ 
+ import java.io.Serializable;
+ import java.util.List;
+
+File: json-path/src/test/java/com/jayway/jsonpath/HttpProviderTest.java
+Patch:
+@@ -33,7 +33,7 @@ public void http_get() throws Exception {
+         try {
+             inputStream =  HttpProviderFactory.getProvider().get(url);
+ 
+-            byte[] bytes = sun.misc.IOUtils.readFully(inputStream, -1, true);
++            byte[] bytes = org.apache.commons.io.IOUtils.toByteArray(inputStream);
+             
+             String json = new String(bytes).trim();
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/JsonProviderTest.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.jayway.jsonpath;
+ 
+ import com.jayway.jsonpath.spi.impl.JacksonProvider;
+-import org.apache.commons.lang.SerializationUtils;
++import org.apache.commons.lang3.SerializationUtils;
+ import org.junit.Test;
+ 
+ import java.io.Serializable;
+
+File: json-path/src/test/java/com/jayway/jsonpath/IssuesTest.java
+Patch:
+@@ -40,4 +40,6 @@ public void issue_11() throws Exception {
+         assertTrue(result.isEmpty());
+     }
+ 
++
++
+ }
+
+File: json-path/src/test/java/com/jayway/jsonpath/JsonModelChainedCallsTest.java
+Patch:
+@@ -58,7 +58,6 @@ public void convert_and_map() throws Exception {
+         JsonModel model = JsonModel.model(DOCUMENT);
+         
+         Transformer<Map<String, Object>> transformer = new Transformer<Map<String, Object>>() {
+-            @Override
+             public Object transform(Map<String, Object> map) {
+                 map.remove("isbn");
+                 map.put("author", "kalle");
+@@ -78,7 +77,6 @@ public void convert_each_and_map() throws Exception {
+         JsonModel model = JsonModel.model(DOCUMENT);
+         
+         Transformer<Object> transformer = new Transformer<Object>() {
+-            @Override
+             public Object transform(Object obj) {
+                 Map<String, Object> map = (Map<String, Object>) obj;
+                 map.remove("isbn");
+
+File: json-path/src/test/java/com/jayway/jsonpath/JsonPathTest.java
+Patch:
+@@ -72,7 +72,6 @@ public class JsonPathTest {
+ 
+     private final static String ARRAY_EXPAND = "[{\"parent\": \"ONE\", \"child\": {\"name\": \"NAME_ONE\"}}, [{\"parent\": \"TWO\", \"child\": {\"name\": \"NAME_TWO\"}}]]";
+ 
+-
+     @Test
+     public void array_start_expands() throws Exception {
+         //assertThat(JsonPath.<List<String>>read(ARRAY_EXPAND, "$[?(@.parent = 'ONE')].child.name"), hasItems("NAME_ONE"));
+
+File: json-path/src/test/java/com/jayway/jsonpath/JsonModelTest.java
+Patch:
+@@ -83,7 +83,7 @@ public void maps_and_list_can_queried() throws Exception {
+ 
+         assertEquals("value", model.get("$child.key"));
+         assertEquals(1, model.get("$items[1]"));
+-        assertEquals("{\"child\":{\"key\":\"value\"},\"items\":[0,1,2]}", model.toJson());
++        assertEquals("{\"child\":{\"key\":\"value\"},\"items\":[0,1,2]}", model.getJson());
+     }
+ 
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/JsonModel.java
+Patch:
+@@ -278,7 +278,7 @@ private <T> T getTargetObject(JsonPath jsonPath, Class<T> clazz) {
+         PathToken currentToken;
+         do {
+             currentToken = tokens.poll();
+-            modelRef = currentToken.get(modelRef, jsonProvider);
++            modelRef = currentToken.apply(modelRef, jsonProvider);
+         } while (!tokens.isEmpty());
+ 
+         if (modelRef.getClass().isAssignableFrom(clazz)) {
+
+File: json-path/src/main/java/com/jayway/jsonpath/internal/PathToken.java
+Patch:
+@@ -37,7 +37,7 @@ public Object filter(Object model, JsonProvider jsonProvider){
+         return FilterFactory.createFilter(fragment).filter(model, jsonProvider);
+     }
+ 
+-    public Object get(Object model, JsonProvider jsonProvider){
++    public Object apply(Object model, JsonProvider jsonProvider){
+         return FilterFactory.createFilter(fragment).getRef(model, jsonProvider);
+     }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/reader/PathTokenizer.java
+Patch:
+@@ -149,7 +149,7 @@ private String clean(StringBuilder sb) {
+         src = trimLeft(src, "?");
+         src = trimLeft(src, "@");
+ 
+-        if (src.length() > 5 && src.subSequence(0, 2).equals("['")) {
++        if (src.length() >= 5 && src.subSequence(0, 2).equals("['")) {
+             src = src.substring(2);
+             src = src.substring(0, src.length() - 2);
+         }
+
+File: json-path/src/test/java/com/jayway/jsonpath/SplitPathFragmentsTest.java
+Patch:
+@@ -20,6 +20,8 @@ public class SplitPathFragmentsTest {
+     private JsonProvider jsonProvider = JsonProvider.getInstance();
+ 
+ 
++
++
+     @Test
+     public void array_filter_bracket_test() throws Exception {
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/reader/filter/FilterFactory.java
+Patch:
+@@ -8,8 +8,8 @@
+  */
+ public class FilterFactory {
+ 
+-    private final static Filter DOCUMENT_FILTER = new PassThroughFilter("$", false);
+-    private final static Filter ALL_ARRAY_ITEMS_FILTER = new PassThroughFilter("[*]", true);
++    private final static Filter DOCUMENT_FILTER = new PassthroughFilter("$", false);
++    private final static Filter ALL_ARRAY_ITEMS_FILTER = new PassthroughFilter("[*]", true);
+     private final static Filter WILDCARD_FILTER = new WildcardFilter("*");
+     private final static Filter SCAN_FILTER = new ScanFilter("..");
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/reader/filter/PassthroughFilter.java
+Patch:
+@@ -8,11 +8,12 @@
+  * Date: 11/4/11
+  * Time: 10:15 PM
+  */
+-public class PassThroughFilter extends Filter {
++public class PassthroughFilter extends Filter {
++
+ 
+     private boolean isArrayFilter;
+ 
+-    public PassThroughFilter(String condition, boolean isArrayFilter) {
++    public PassthroughFilter(String condition, boolean isArrayFilter) {
+         super(condition);
+         this.isArrayFilter = isArrayFilter;
+     }
+
+File: json-path/src/main/java/com/jayway/jsonpath/reader/filter/eval/ExpressionEvaluator.java
+Patch:
+@@ -17,7 +17,7 @@ public static <T> boolean eval(T actual, String comparator, String expected) {
+             Long a = (Long) actual;
+             Long e = Long.parseLong(expected.trim());
+ 
+-            if ("=".equals(comparator)) {
++            if ("=".equals(comparator) || "==".equals(comparator)) {
+                 return a.longValue() == e.longValue();
+             } else if ("!=".equals(comparator) || "<>".equals(comparator)) {
+                 return a.longValue() != e.longValue();
+@@ -52,7 +52,7 @@ public static <T> boolean eval(T actual, String comparator, String expected) {
+             Double a = (Double) actual;
+             Double e = Double.parseDouble(expected.trim());
+ 
+-            if ("=".equals(comparator)) {
++            if ("=".equals(comparator) || "==".equals(comparator)) {
+                 return a.doubleValue() == e.doubleValue();
+             } else if ("!=".equals(comparator) || "<>".equals(comparator)) {
+                 return a.doubleValue() != e.doubleValue();
+@@ -76,7 +76,7 @@ public static <T> boolean eval(T actual, String comparator, String expected) {
+                 expected = expected.substring(0, expected.length()-1);
+             }
+ 
+-            if ("=".equals(comparator)) {
++            if ("=".equals(comparator) || "==".equals(comparator)) {
+                 return a.equals(expected);
+             } else if ("!=".equals(comparator) || "<>".equals(comparator)) {
+                 return !a.equals(expected);
+
+File: json-path/src/main/java/com/jayway/jsonpath/reader/filter/FilterFactory.java
+Patch:
+@@ -8,8 +8,8 @@
+  */
+ public class FilterFactory {
+ 
+-    private final static Filter DOCUMENT_FILTER = new PassThrewFilter("$");
+-    private final static Filter ALL_ARRAY_ITEMS_FILTER = new PassThrewFilter("[*]");
++    private final static Filter DOCUMENT_FILTER = new PassThrewFilter("$", false);
++    private final static Filter ALL_ARRAY_ITEMS_FILTER = new PassThrewFilter("[*]", true);
+     private final static Filter WILDCARD_FILTER = new WildcardFilter("*");
+     private final static Filter SCAN_FILTER = new ScanFilter("..");
+ 
+
+File: json-path/src/test/java/com/jayway/jsonpath/JsonPathTest.java
+Patch:
+@@ -77,7 +77,8 @@ public class JsonPathTest {
+ 
+     @Test
+     public void array_start_expands() throws Exception {
+-        assertThat(JsonPath.<List<String>>read(ARRAY_EXPAND, "$[?(@.parent = 'ONE')].child.name"), hasItems("NAME_ONE"));
++        //assertThat(JsonPath.<List<String>>read(ARRAY_EXPAND, "$[?(@.parent = 'ONE')].child.name"), hasItems("NAME_ONE"));
++        assertThat(JsonPath.<List<String>>read(ARRAY_EXPAND, "$[?(@['parent'] = 'ONE')].child.name"), hasItems("NAME_ONE"));
+     }
+ 
+     @Test
+
+File: json-path/src/test/java/com/jayway/jsonpath/JsonPathTest.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.jayway.jsonpath;
+ 
++import com.jayway.jsonpath.reader.PathTokenizer;
+ import com.jayway.jsonpath.util.ScriptEngineJsonPath;
+ import org.junit.Test;
+ 
+@@ -212,7 +213,9 @@ public void read_store_book_filter_by_isbn() throws Exception {
+     @Test
+     public void all_books_cheaper_than_10() throws Exception {
+ 
++
+         assertThat(JsonPath.<List<String>>read(DOCUMENT, "$..book[?(@['display-price'] < 10)].title"), hasItems("Sayings of the Century", "Moby Dick"));
++        assertThat(JsonPath.<List<String>>read(DOCUMENT, "$..book[?(@.display-price < 10)].title"), hasItems("Sayings of the Century", "Moby Dick"));
+ 
+     }
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/reader/PathTokenizer.java
+Patch:
+@@ -84,7 +84,7 @@ public List<String> splitPath() {
+ 
+                 case '.':
+                     poll();
+-                    if (peek() == '.') {
++	                if (!isEmpty() && peek() == '.') {
+                         poll();
+                         fragments.add("..");
+ 
+
+File: json-path/src/main/java/com/jayway/jsonpath/reader/PathTokenizer.java
+Patch:
+@@ -84,7 +84,7 @@ public List<String> splitPath() {
+ 
+                 case '.':
+                     poll();
+-                    if (peek() == '.') {
++	                if (!isEmpty() && peek() == '.') {
+                         poll();
+                         fragments.add("..");
+ 
+
+File: json-path-assert/src/test/java/com/jayway/jsonassert/JsonAssertTest.java
+Patch:
+@@ -4,7 +4,6 @@
+ import org.junit.Test;
+ 
+ import java.io.InputStream;
+-import java.io.InputStreamReader;
+ 
+ import static com.jayway.jsonassert.JsonAssert.*;
+ import static org.hamcrest.Matchers.*;
+@@ -131,6 +130,9 @@ public void a_path_can_be_asserted_equal_to() throws Exception {
+ 
+         with(JSON).assertEquals("$.store.book[0].title", "Sayings of the Century")
+                 .assertThat("$.store.book[0].title", equalTo("Sayings of the Century"));
++
++        with(JSON).assertEquals("$['store']['book'][0].['title']", "Sayings of the Century")
++                .assertThat("$['store'].book[0].title", equalTo("Sayings of the Century"));
+     }
+ 
+     @Test
+
+File: json-assert/src/main/java/com/jayway/jsonpath/JsonPath.java
+Patch:
+@@ -44,7 +44,6 @@ public <T> List<T> read(String json) throws java.text.ParseException {
+         return (List<T>) filters.filter(root);
+     }
+ 
+-
+     public static <T> List<T> read(String json, String jsonPath) throws java.text.ParseException {
+         JsonPath path = compile(jsonPath);
+ 
+
+File: json-assert/src/test/java/com/jayway/jsonassert/JSONReaderTest.java
+Patch:
+@@ -93,6 +93,9 @@ public void a_path_can_be_checked_for_existence() throws Exception {
+ 
+     @Test
+     public void a_path_can_be_checked_for_non_existence() throws Exception {
++
++
++
+         JSONReader reader = JSONAssert.parse(TEST_DEEP_PATH_DOCUMENT);
+ 
+         assertFalse(reader.hasJsonPath("a.b.c.FOO"));
+

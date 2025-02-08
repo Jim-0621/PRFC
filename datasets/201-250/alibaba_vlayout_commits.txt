@@ -1,0 +1,1072 @@
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/BaseLayoutHelper.java
+Patch:
+@@ -206,7 +206,7 @@ public void afterLayout(RecyclerView.Recycler recycler, RecyclerView.State state
+                         mLayoutRegion.right = helper.getContentWidth() - helper.getPaddingRight() - mMarginRight;
+                     } else {
+                         mLayoutRegion.top = helper.getPaddingTop() + mMarginTop;
+-                        mLayoutRegion.bottom = helper.getContentWidth() - helper.getPaddingBottom() - mMarginBottom;
++                        mLayoutRegion.bottom = helper.getContentHeight() - helper.getPaddingBottom() - mMarginBottom;
+                     }
+ 
+                     bindLayoutView(mLayoutView);
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/StaggeredGridLayoutHelper.java
+Patch:
+@@ -311,7 +311,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+             } else {
+                 if (isEndLine) {
+                     end = currentSpan.getStartLine(defaultNewViewLine, orientationHelper) - (layoutInVertical ?
+-                        mMarginBottom + mPaddingRight : mMarginRight + mPaddingRight);
++                            mMarginBottom + mPaddingRight : mMarginRight + mPaddingRight);
+                     //Log.d(TAG, "endLine " + position + " " + end);
+                 } else {
+                     end = currentSpan.getStartLine(defaultNewViewLine, orientationHelper) - (layoutInVertical ? mVGap : mHGap);
+@@ -1054,7 +1054,7 @@ public void onRestoreInstanceState(Bundle bundle) {
+     @Override
+     public void onOffsetChildrenVertical(int dy, LayoutManagerHelper helper) {
+         super.onOffsetChildrenVertical(dy, helper);
+-        if (helper.getOrientation() == VERTICAL) {
++        if (helper.getOrientation() == VERTICAL && mSpans != null) {
+             for (int i = 0, size = mSpans.length; i < size; i++) {
+                 Span span = mSpans[i];
+                 span.onOffset(dy);
+@@ -1065,7 +1065,7 @@ public void onOffsetChildrenVertical(int dy, LayoutManagerHelper helper) {
+     @Override
+     public void onOffsetChildrenHorizontal(int dx, LayoutManagerHelper helper) {
+         super.onOffsetChildrenHorizontal(dx, helper);
+-        if (helper.getOrientation() == HORIZONTAL) {
++        if (helper.getOrientation() == HORIZONTAL && mSpans != null) {
+             for (int i = 0, size = mSpans.length; i < size; i++) {
+                 Span span = mSpans[i];
+                 span.onOffset(dx);
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/StickyLayoutHelper.java
+Patch:
+@@ -85,7 +85,7 @@ public void setOffset(int offset) {
+     }
+ 
+     public boolean isStickyNow() {
+-        return !mDoNormalHandle;
++        return !mDoNormalHandle && mFixView != null;
+     }
+ 
+     @Override
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/StickyLayoutHelper.java
+Patch:
+@@ -63,7 +63,7 @@ public interface StickyListener {
+ 
+     private boolean mDoNormalHandle = false;
+ 
+-    private boolean isLastStatusSticking = true;
++    private boolean isLastStatusSticking = false;
+ 
+     private StickyListener stickyListener;
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/StaggeredGridLayoutHelper.java
+Patch:
+@@ -1034,7 +1034,7 @@ public void checkAnchorInfo(RecyclerView.State state, VirtualLayoutManager.Ancho
+ 
+     @Override
+     public void onItemsChanged(LayoutManagerHelper helper) {
+-        mLazySpanLookup.clear();
++//        mLazySpanLookup.clear();
+     }
+ 
+     @Override
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/StickyLayoutHelper.java
+Patch:
+@@ -288,6 +288,7 @@ public void afterLayout(RecyclerView.Recycler recycler, RecyclerView.State state
+             }
+         }
+ 
++        View stickyView = mFixView;
+         // Not in normal flow
+         if (!mDoNormalHandle && mFixView != null) {
+             // already capture in layoutViews phase
+@@ -307,7 +308,7 @@ public void afterLayout(RecyclerView.Recycler recycler, RecyclerView.State state
+ 
+         if (stickyListener != null) {
+             if (isLastStatusSticking && !isStickyNow()) {
+-                stickyListener.onUnSticky(mPos, mFixView);
++                stickyListener.onUnSticky(mPos, stickyView);
+                 isLastStatusSticking = false;
+             } else if (!isLastStatusSticking && isStickyNow()) {
+                 stickyListener.onSticky(mPos, mFixView);
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/StickyLayoutHelper.java
+Patch:
+@@ -709,8 +709,8 @@ public View getFixedView() {
+     public void onClear(LayoutManagerHelper helper) {
+         super.onClear(helper);
+         if (mFixView != null) {
+-            helper.removeChildView(mFixView);
+             helper.recycleView(mFixView);
++            helper.removeChildView(mFixView);
+             mFixView = null;
+         }
+     }
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/LayoutHelperFinder.java
+Patch:
+@@ -32,7 +32,7 @@
+ /**
+  * LayoutHelperFinder provides as repository of LayoutHelpers
+  */
+-public abstract class LayoutHelperFinder implements Iterable<LayoutHelper> {
++public abstract class LayoutHelperFinder {
+ 
+     /**
+      * Put layouts into the finder
+@@ -57,10 +57,10 @@ public abstract class LayoutHelperFinder implements Iterable<LayoutHelper> {
+     protected abstract List<LayoutHelper> getLayoutHelpers();
+ 
+     /**
+-     * Get iterator that in reverse order
++     * Get layoutHelpers that in reverse order
+      *
+      * @return
+      */
+-    protected abstract Iterable<LayoutHelper> reverse();
++    protected abstract List<LayoutHelper> reverse();
+ 
+ }
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/BaseLayoutHelper.java
+Patch:
+@@ -507,14 +507,14 @@ protected void handleStateOnResult(LayoutChunkResult result, View view) {
+ 
+     /**
+      * Helper methods to handle focus states for views
+-     * FIXME 可变参数性能不好,会引起一次潜在的数组对象创建,在频繁滑动过程中,容易引起GC,如果只有一个View,建议调用上述方法
+      * @param result
+      * @param views
+      */
+-    protected void handleStateOnResult(LayoutChunkResult result, View... views) {
++    protected void handleStateOnResult(LayoutChunkResult result, View[] views) {
+         if (views == null) return;
+ 
+-        for (View view : views) {
++        for (int i = 0; i < views.length; i++) {
++            View view = views[i];
+             if (view == null) {
+                 continue;
+             }
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/DelegateAdapter.java
+Patch:
+@@ -221,7 +221,7 @@ public void onViewRecycled(RecyclerView.ViewHolder holder) {
+         super.onViewRecycled(holder);
+ 
+         int position = holder.getPosition();
+-        if (position > 0) {
++        if (position >= 0) {
+             Pair<AdapterDataObserver, Adapter> pair = findAdapterByPosition(position);
+             if (pair != null) {
+                 pair.second.onViewRecycled(holder);
+@@ -235,7 +235,7 @@ public void onViewRecycled(RecyclerView.ViewHolder holder) {
+     public void onViewAttachedToWindow(RecyclerView.ViewHolder holder) {
+         super.onViewAttachedToWindow(holder);
+         int position = holder.getPosition();
+-        if (position > 0) {
++        if (position >= 0) {
+             Pair<AdapterDataObserver, Adapter> pair = findAdapterByPosition(position);
+             if (pair != null) {
+                 pair.second.onViewAttachedToWindow(holder);
+@@ -248,7 +248,7 @@ public void onViewAttachedToWindow(RecyclerView.ViewHolder holder) {
+     public void onViewDetachedFromWindow(RecyclerView.ViewHolder holder) {
+         super.onViewDetachedFromWindow(holder);
+         int position = holder.getPosition();
+-        if (position > 0) {
++        if (position >= 0) {
+             Pair<AdapterDataObserver, Adapter> pair = findAdapterByPosition(position);
+             if (pair != null) {
+                 pair.second.onViewDetachedFromWindow(holder);
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/DelegateAdapter.java
+Patch:
+@@ -221,7 +221,7 @@ public void onViewRecycled(RecyclerView.ViewHolder holder) {
+         super.onViewRecycled(holder);
+ 
+         int position = holder.getPosition();
+-        if (position > 0) {
++        if (position >= 0) {
+             Pair<AdapterDataObserver, Adapter> pair = findAdapterByPosition(position);
+             if (pair != null) {
+                 pair.second.onViewRecycled(holder);
+@@ -235,7 +235,7 @@ public void onViewRecycled(RecyclerView.ViewHolder holder) {
+     public void onViewAttachedToWindow(RecyclerView.ViewHolder holder) {
+         super.onViewAttachedToWindow(holder);
+         int position = holder.getPosition();
+-        if (position > 0) {
++        if (position >= 0) {
+             Pair<AdapterDataObserver, Adapter> pair = findAdapterByPosition(position);
+             if (pair != null) {
+                 pair.second.onViewAttachedToWindow(holder);
+@@ -248,7 +248,7 @@ public void onViewAttachedToWindow(RecyclerView.ViewHolder holder) {
+     public void onViewDetachedFromWindow(RecyclerView.ViewHolder holder) {
+         super.onViewDetachedFromWindow(holder);
+         int position = holder.getPosition();
+-        if (position > 0) {
++        if (position >= 0) {
+             Pair<AdapterDataObserver, Adapter> pair = findAdapterByPosition(position);
+             if (pair != null) {
+                 pair.second.onViewDetachedFromWindow(holder);
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/DelegateAdapter.java
+Patch:
+@@ -143,7 +143,6 @@ public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
+     @SuppressWarnings("unchecked")
+     @Override
+     public void onBindViewHolder(RecyclerView.ViewHolder holder, int position, List<Object> payloads) {
+-        super.onBindViewHolder(holder, position, payloads);
+         Pair<AdapterDataObserver, Adapter> pair = findAdapterByPosition(position);
+         if (pair == null) {
+             return;
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/RangeGridLayoutHelper.java
+Patch:
+@@ -977,7 +977,7 @@ public static int computeStartAlignOffset(GridRangeStyle rangeStyle, boolean lay
+             for (int i = 0, size = rangeStyle.mChildren.size(); i < size; i++) {
+                 GridRangeStyle childRangeStyle = rangeStyle.mChildren.valueAt(i);
+                 if (!childRangeStyle.isChildrenEmpty()){
+-                    //FIXEME may compute the wrong start space here
++                    //FIXME may compute the wrong start space here
+                     offset += computeStartAlignOffset(childRangeStyle, layoutInVertical);
+                 }else if (childRangeStyle.mRange.getLower().intValue() == startPosition) {
+                     offset += (layoutInVertical ? -childRangeStyle.mMarginTop - childRangeStyle.mPaddingTop
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/RangeGridLayoutHelper.java
+Patch:
+@@ -977,7 +977,7 @@ public static int computeStartAlignOffset(GridRangeStyle rangeStyle, boolean lay
+             for (int i = 0, size = rangeStyle.mChildren.size(); i < size; i++) {
+                 GridRangeStyle childRangeStyle = rangeStyle.mChildren.valueAt(i);
+                 if (!childRangeStyle.isChildrenEmpty()){
+-                    //FIXEME may compute the wrong start space here
++                    //FIXME may compute the wrong start space here
+                     offset += computeStartAlignOffset(childRangeStyle, layoutInVertical);
+                 }else if (childRangeStyle.mRange.getLower().intValue() == startPosition) {
+                     offset += (layoutInVertical ? -childRangeStyle.mMarginTop - childRangeStyle.mPaddingTop
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/RangeGridLayoutHelper.java
+Patch:
+@@ -977,7 +977,7 @@ public static int computeStartAlignOffset(GridRangeStyle rangeStyle, boolean lay
+             for (int i = 0, size = rangeStyle.mChildren.size(); i < size; i++) {
+                 GridRangeStyle childRangeStyle = rangeStyle.mChildren.valueAt(i);
+                 if (!childRangeStyle.isChildrenEmpty()){
+-                    //FIXEME may compute the wrong start space here
++                    //FIXME may compute the wrong start space here
+                     offset += computeStartAlignOffset(childRangeStyle, layoutInVertical);
+                 }else if (childRangeStyle.mRange.getLower().intValue() == startPosition) {
+                     offset += (layoutInVertical ? -childRangeStyle.mMarginTop - childRangeStyle.mPaddingTop
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/OnePlusNLayoutHelper.java
+Patch:
+@@ -192,6 +192,9 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+         }
+ 
+         int count = getAllChildren(mChildrenViews, recycler, layoutState, result, helper);
++        if (count == 0) {
++            return;
++        }
+         int contentCount = count;
+         if (hasHeader) {
+             contentCount = contentCount - 1;
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/OnePlusNLayoutHelper.java
+Patch:
+@@ -192,6 +192,9 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+         }
+ 
+         int count = getAllChildren(mChildrenViews, recycler, layoutState, result, helper);
++        if (count == 0) {
++            return;
++        }
+         int contentCount = count;
+         if (hasHeader) {
+             contentCount = contentCount - 1;
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/VirtualLayoutManager.java
+Patch:
+@@ -852,8 +852,6 @@ public static class LayoutParams extends RecyclerView.LayoutParams {
+ 
+         public int zIndex = 0;
+ 
+-        public int mOverlapOffset = 0;
+-
+         public float mAspectRatio = Float.NaN;
+ 
+         private int mOriginWidth = INVALIDE_SIZE;
+
+File: examples/src/main/java/com/alibaba/android/vlayout/example/RootActivity.java
+Patch:
+@@ -17,14 +17,16 @@ public class RootActivity extends ListActivity {
+             VLayoutActivity.class.getSimpleName(),
+             MainActivity.class.getSimpleName(),
+             TestActivity.class.getSimpleName(),
+-            OnePlusNLayoutActivity.class.getSimpleName()
++            OnePlusNLayoutActivity.class.getSimpleName(),
++            DebugActivity.class.getSimpleName()
+     };
+ 
+     private Class[] mActivities = new Class[]{
+             VLayoutActivity.class,
+             MainActivity.class,
+             TestActivity.class,
+             OnePlusNLayoutActivity.class,
++            DebugActivity.class
+     };
+ 
+     @Override
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/RangeGridLayoutHelper.java
+Patch:
+@@ -536,7 +536,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+         }
+ 
+ 
+-        result.mConsumed = maxSize + startSpace + endSpace + secondStartSpace + secondEndSpace - maxOverlapOffset;
++        result.mConsumed = maxSize + startSpace + endSpace + secondStartSpace + secondEndSpace - maxOverlapOffset; //FIXME conflicts when layout to start
+ 
+         final boolean layoutStart = layoutState.getLayoutDirection() == LayoutStateWrapper.LAYOUT_START;
+         int consumedGap = 0;
+@@ -625,7 +625,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+         int left = 0, right = 0, top = 0, bottom = 0;
+         if (layoutInVertical) {
+             if (layoutStart) {
+-                bottom = layoutState.getOffset() - endSpace - secondEndSpace - (consumedGap) - lastUnconsumedSpace + maxOverlapOffset;
++                bottom = layoutState.getOffset() - endSpace - secondEndSpace - (consumedGap) - lastUnconsumedSpace - maxOverlapOffset; //FIXME should minus maxOverlapOffset
+                 top = bottom - maxSize;
+             } else {
+                 top = layoutState.getOffset() + startSpace + secondStartSpace + (consumedGap) + lastUnconsumedSpace - maxOverlapOffset;
+
+File: examples/src/main/java/com/alibaba/android/vlayout/example/RootActivity.java
+Patch:
+@@ -17,14 +17,16 @@ public class RootActivity extends ListActivity {
+             VLayoutActivity.class.getSimpleName(),
+             MainActivity.class.getSimpleName(),
+             TestActivity.class.getSimpleName(),
+-            OnePlusNLayoutActivity.class.getSimpleName()
++            OnePlusNLayoutActivity.class.getSimpleName(),
++            DebugActivity.class.getSimpleName()
+     };
+ 
+     private Class[] mActivities = new Class[]{
+             VLayoutActivity.class,
+             MainActivity.class,
+             TestActivity.class,
+             OnePlusNLayoutActivity.class,
++            DebugActivity.class
+     };
+ 
+     @Override
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/RangeGridLayoutHelper.java
+Patch:
+@@ -536,7 +536,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+         }
+ 
+ 
+-        result.mConsumed = maxSize + startSpace + endSpace + secondStartSpace + secondEndSpace - maxOverlapOffset;
++        result.mConsumed = maxSize + startSpace + endSpace + secondStartSpace + secondEndSpace - maxOverlapOffset; //FIXME conflicts when layout to start
+ 
+         final boolean layoutStart = layoutState.getLayoutDirection() == LayoutStateWrapper.LAYOUT_START;
+         int consumedGap = 0;
+@@ -625,7 +625,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+         int left = 0, right = 0, top = 0, bottom = 0;
+         if (layoutInVertical) {
+             if (layoutStart) {
+-                bottom = layoutState.getOffset() - endSpace - secondEndSpace - (consumedGap) - lastUnconsumedSpace + maxOverlapOffset;
++                bottom = layoutState.getOffset() - endSpace - secondEndSpace - (consumedGap) - lastUnconsumedSpace - maxOverlapOffset; //FIXME should minus maxOverlapOffset
+                 top = bottom - maxSize;
+             } else {
+                 top = layoutState.getOffset() + startSpace + secondStartSpace + (consumedGap) + lastUnconsumedSpace - maxOverlapOffset;
+
+File: examples/src/main/java/com/alibaba/android/vlayout/example/RootActivity.java
+Patch:
+@@ -17,14 +17,16 @@ public class RootActivity extends ListActivity {
+             VLayoutActivity.class.getSimpleName(),
+             MainActivity.class.getSimpleName(),
+             TestActivity.class.getSimpleName(),
+-            OnePlusNLayoutActivity.class.getSimpleName()
++            OnePlusNLayoutActivity.class.getSimpleName(),
++            DebugActivity.class.getSimpleName()
+     };
+ 
+     private Class[] mActivities = new Class[]{
+             VLayoutActivity.class,
+             MainActivity.class,
+             TestActivity.class,
+             OnePlusNLayoutActivity.class,
++            DebugActivity.class
+     };
+ 
+     @Override
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/RangeGridLayoutHelper.java
+Patch:
+@@ -625,7 +625,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+         int left = 0, right = 0, top = 0, bottom = 0;
+         if (layoutInVertical) {
+             if (layoutStart) {
+-                bottom = layoutState.getOffset() - endSpace - secondEndSpace - (consumedGap) - lastUnconsumedSpace + maxOverlapOffset; //FIXME should minus maxOverlapOffset
++                bottom = layoutState.getOffset() - endSpace - secondEndSpace - (consumedGap) - lastUnconsumedSpace - maxOverlapOffset; //FIXME should minus maxOverlapOffset
+                 top = bottom - maxSize;
+             } else {
+                 top = layoutState.getOffset() + startSpace + secondStartSpace + (consumedGap) + lastUnconsumedSpace - maxOverlapOffset;
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/ExposeLinearLayoutManagerEx.java
+Patch:
+@@ -1153,7 +1153,7 @@ protected int fill(RecyclerView.Recycler recycler, LayoutState layoutState,
+             }
+             recycleByLayoutStateExpose(recycler, layoutState);
+         }
+-        int remainingSpace = layoutState.mAvailable + layoutState.mExtra;
++        int remainingSpace = layoutState.mAvailable + layoutState.mExtra + recycleOffset;
+         while (remainingSpace > 0 && layoutState.hasMore(state)) {
+             layoutChunkResultCache.resetInternal();
+             layoutChunk(recycler, state, layoutState, layoutChunkResultCache);
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/VirtualLayoutManager.java
+Patch:
+@@ -845,6 +845,8 @@ public static class LayoutParams extends RecyclerView.LayoutParams {
+ 
+         public int zIndex = 0;
+ 
++        public int mOverlapOffset = 0;
++
+         public float mAspectRatio = Float.NaN;
+ 
+         private int mOriginWidth = INVALIDE_SIZE;
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/RangeLayoutHelperFinder.java
+Patch:
+@@ -56,7 +56,7 @@ public int compare(LayoutHelperItem lhs, LayoutHelperItem rhs) {
+     private Comparator<LayoutHelper> mLayoutHelperComparator = new Comparator<LayoutHelper>() {
+         @Override
+         public int compare(LayoutHelper lhs, LayoutHelper rhs) {
+-            return lhs.getZIndex() - rhs.getZIndex();
++            return lhs.getRange().getLower().intValue() - rhs.getRange().getLower().intValue();
+         }
+     };
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/AbstractFullFillLayoutHelper.java
+Patch:
+@@ -131,8 +131,9 @@ protected final void setMeasuredDimension(int measuredWidth, int measuredHeight)
+     public void checkAnchorInfo(RecyclerView.State state, VirtualLayoutManager.AnchorInfoWrapper anchorInfo, LayoutManagerHelper helper) {
+         if (anchorInfo.layoutFromEnd) {
+             anchorInfo.position = getRange().getUpper();
+-        } else
++        } else {
+             anchorInfo.position = getRange().getLower();
++        }
+     }
+ 
+     @Override
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/FloatLayoutHelper.java
+Patch:
+@@ -25,12 +25,12 @@
+ package com.alibaba.android.vlayout.layout;
+ 
+ import com.alibaba.android.vlayout.LayoutManagerHelper;
++import com.alibaba.android.vlayout.OrientationHelperEx;
+ import com.alibaba.android.vlayout.VirtualLayoutManager;
+ 
+ import android.animation.ObjectAnimator;
+ import android.graphics.Rect;
+ import android.support.annotation.Nullable;
+-import android.support.v7.widget.OrientationHelper;
+ import android.support.v7.widget.RecyclerView;
+ import android.view.MotionEvent;
+ import android.view.View;
+@@ -291,7 +291,7 @@ private void doMeasureAndLayout(View view, LayoutManagerHelper helper) {
+         }
+ 
+ 
+-        final OrientationHelper orientationHelper = helper.getMainOrientationHelper();
++        final OrientationHelperEx orientationHelper = helper.getMainOrientationHelper();
+         int left, top, right, bottom;
+ 
+         if (mAlignType == TOP_RIGHT) {
+@@ -337,7 +337,7 @@ private void doMeasureAndLayout(View view, LayoutManagerHelper helper) {
+             top = bottom - (layoutInVertical ? orientationHelper.getDecoratedMeasurement(view) : orientationHelper.getDecoratedMeasurementInOther(view));
+         }
+ 
+-        layoutChild(view, left, top, right, bottom, helper);
++        layoutChildWithMargin(view, left, top, right, bottom, helper);
+     }
+ 
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/LayoutHelper.java
+Patch:
+@@ -178,8 +178,8 @@ public int getZIndex() {
+     }
+ 
+     /**
+-     * Set zIndex of this {@link LayoutHelper}
+-     *
++     * Experimental attribute, set zIndex of this {@link LayoutHelper}，it does not mean the z-index of view. It just reorder the layoutHelpers in linear flow.
++     * Do not use it currently.
+      * @param zIndex
+      */
+     public void setZIndex(int zIndex) {
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/RangeLayoutHelperFinder.java
+Patch:
+@@ -56,7 +56,7 @@ public int compare(LayoutHelperItem lhs, LayoutHelperItem rhs) {
+     private Comparator<LayoutHelper> mLayoutHelperComparator = new Comparator<LayoutHelper>() {
+         @Override
+         public int compare(LayoutHelper lhs, LayoutHelper rhs) {
+-            return lhs.getZIndex() - rhs.getZIndex();
++            return lhs.getRange().getLower().intValue() - rhs.getRange().getLower().intValue();
+         }
+     };
+ 
+
+File: examples/src/main/java/com/alibaba/android/vlayout/example/VLayoutActivity.java
+Patch:
+@@ -152,7 +152,7 @@ public void onScrolled(RecyclerView recyclerView, int i, int i2) {
+             }
+         });
+ 
+-        //layoutManager.setRecycleOffset(300);
++        layoutManager.setRecycleOffset(300);
+ 
+         recyclerView.setLayoutManager(layoutManager);
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/BaseLayoutHelper.java
+Patch:
+@@ -591,7 +591,7 @@ protected int computeStartSpace(LayoutManagerHelper helper, boolean layoutInVert
+                         ? (isLayoutEnd ? calGap(lastMarginLayoutHelper.mMarginBottom, mMarginTop) : calGap(lastMarginLayoutHelper.mMarginTop, mMarginBottom))
+                         : (isLayoutEnd ? calGap(lastMarginLayoutHelper.mMarginRight, mMarginLeft) : calGap(lastMarginLayoutHelper.mMarginLeft, mMarginRight));
+             }
+-            Log.e("huang", "computeStartSpace offset: " + offset + ", isLayoutEnd: " + isLayoutEnd + ", " + this);
++            //Log.e("huang", "computeStartSpace offset: " + offset + ", isLayoutEnd: " + isLayoutEnd + ", " + this);
+             startSpace += layoutInVertical
+                     ? (isLayoutEnd ? mPaddingTop : mPaddingBottom)
+                     : (isLayoutEnd ? mPaddingLeft : mPaddingRight);
+@@ -605,8 +605,8 @@ protected int computeEndSpace(LayoutManagerHelper helper, boolean layoutInVertic
+         int endSpace = layoutInVertical
+                 ? (isLayoutEnd ? mMarginBottom + mPaddingBottom : mMarginTop + mPaddingTop)
+                 : (isLayoutEnd ? mMarginRight + mPaddingRight : mMarginLeft + mPaddingLeft);
+-        Log.e("huang", "computeEndSpace offset: " + endSpace + ", isLayoutEnd: " + isLayoutEnd + ", " + this);
+-        Log.e("huang", "===================\n\n");
++        //Log.e("huang", "computeEndSpace offset: " + endSpace + ", isLayoutEnd: " + isLayoutEnd + ", " + this);
++        //Log.e("huang", "===================\n\n");
+         return endSpace;
+     }
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/DelegateAdapter.java
+Patch:
+@@ -414,6 +414,9 @@ public void clear() {
+         mIndexAry.clear();
+     }
+ 
++    public int getAdaptersCount(){
++        return mAdapters == null ? 0 : mAdapters.size();
++    }
+ 
+     @Nullable
+     public Pair<AdapterDataObserver, Adapter> findAdapterByPosition(int position) {
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/StaggeredGridLayoutHelper.java
+Patch:
+@@ -382,7 +382,7 @@ public void onScrollStateChanged(int state, int startPosition,
+         }
+ 
+         if (state == RecyclerView.SCROLL_STATE_IDLE) {
+-            checkForGaps();
++            //checkForGaps();
+         }
+     }
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/ExposeLinearLayoutManagerEx.java
+Patch:
+@@ -1037,7 +1037,7 @@ private void recycleViewsFromStartExpose(RecyclerView.Recycler recycler, int dt)
+         if (mShouldReverseLayoutExpose) {
+             for (int i = childCount - 1; i >= 0; i--) {
+                 View child = getChildAt(i);
+-                if (mOrientationHelper.getDecoratedEnd(child) > limit) {// stop here
++                if (mOrientationHelper.getDecoratedEnd(child) + recycleOffset > limit) {// stop here
+                     recycleChildren(recycler, childCount - 1, i);
+                     return;
+                 }
+@@ -1075,7 +1075,7 @@ private void recycleViewsFromEndExpose(RecyclerView.Recycler recycler, int dt) {
+         if (mShouldReverseLayoutExpose) {
+             for (int i = 0; i < childCount; i++) {
+                 View child = getChildAt(i);
+-                if (mOrientationHelper.getDecoratedStart(child) < limit) {// stop here
++                if (mOrientationHelper.getDecoratedStart(child) - recycleOffset < limit) {// stop here
+                     recycleChildren(recycler, 0, i);
+                     return;
+                 }
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/RangeGridLayoutHelper.java
+Patch:
+@@ -270,7 +270,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                 while (count < rangeStyle.mSpanCount && revRemainingSpan > 0) {
+                     // go reverse direction to find views fill current row
+                     index -= itemDirection;
+-                    if (isOutOfRange(index)) {
++                    if (rangeStyle.isOutOfRange(index)) {
+                         break;
+                     }
+                     final int spanSize = getSpanSize(rangeStyle.mSpanSizeLookup, recycler, state, index);
+@@ -334,7 +334,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+ 
+         while (count < rangeStyle.mSpanCount && layoutState.hasMore(state) && remainingSpan > 0) {
+             int pos = layoutState.getCurrentPosition();
+-            if (isOutOfRange(pos)) {
++            if (rangeStyle.isOutOfRange(pos)) {
+                 if (DEBUG) {
+                     Log.d(TAG, "pos [" + pos + "] is out of range");
+                 }
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/RangeGridLayoutHelper.java
+Patch:
+@@ -270,7 +270,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                 while (count < rangeStyle.mSpanCount && revRemainingSpan > 0) {
+                     // go reverse direction to find views fill current row
+                     index -= itemDirection;
+-                    if (isOutOfRange(index)) {
++                    if (rangeStyle.isOutOfRange(index)) {
+                         break;
+                     }
+                     final int spanSize = getSpanSize(rangeStyle.mSpanSizeLookup, recycler, state, index);
+@@ -334,7 +334,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+ 
+         while (count < rangeStyle.mSpanCount && layoutState.hasMore(state) && remainingSpan > 0) {
+             int pos = layoutState.getCurrentPosition();
+-            if (isOutOfRange(pos)) {
++            if (rangeStyle.isOutOfRange(pos)) {
+                 if (DEBUG) {
+                     Log.d(TAG, "pos [" + pos + "] is out of range");
+                 }
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/ColumnLayoutHelper.java
+Patch:
+@@ -173,7 +173,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                                 .makeMeasureSpec(specialHeight, View.MeasureSpec.EXACTLY);
+                     }
+ 
+-                    helper.measureChild(view, View.MeasureSpec.makeMeasureSpec(resizeWidth, View.MeasureSpec.EXACTLY), heightSpec);
++                    helper.measureChildWithMargins(view, View.MeasureSpec.makeMeasureSpec(resizeWidth, View.MeasureSpec.EXACTLY), heightSpec);
+ 
+                     // add width into usedWidth
+                     usedWidth += resizeWidth;
+@@ -202,7 +202,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                 }
+ 
+                 //if cols' length is less than view's count, then remainder views share the rest space
+-                helper.measureChild(view,
++                helper.measureChildWithMargins(view,
+                         View.MeasureSpec.makeMeasureSpec(resizeWidth, View.MeasureSpec.EXACTLY),
+                         heightSpec);
+ 
+@@ -215,7 +215,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                 View view = mViews[i];
+                 if (view.getMeasuredHeight() != minHeight) {
+                     //noinspection ResourceType
+-                    helper.measureChild(view, View.MeasureSpec.makeMeasureSpec(view.getMeasuredWidth(), View.MeasureSpec.EXACTLY),
++                    helper.measureChildWithMargins(view, View.MeasureSpec.makeMeasureSpec(view.getMeasuredWidth(), View.MeasureSpec.EXACTLY),
+                             View.MeasureSpec.makeMeasureSpec(minHeight, View.MeasureSpec.EXACTLY));
+                 }
+             }
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/FixLayoutHelper.java
+Patch:
+@@ -408,7 +408,7 @@ private void doMeasureAndLayout(View view, LayoutManagerHelper helper) {
+             }
+ 
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         } else {
+             final int heightSpec = helper.getChildMeasureSpec(
+                     helper.getContentHeight() - helper.getPaddingTop() - helper.getPaddingBottom(),
+@@ -441,7 +441,7 @@ private void doMeasureAndLayout(View view, LayoutManagerHelper helper) {
+ 
+ 
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         }
+ 
+         int left, top, right, bottom;
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/FloatLayoutHelper.java
+Patch:
+@@ -268,7 +268,7 @@ private void doMeasureAndLayout(View view, LayoutManagerHelper helper) {
+                         params.height, layoutInVertical);
+             }
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         } else {
+             int widthSpec;
+             final int heightSpec = helper.getChildMeasureSpec(
+@@ -287,7 +287,7 @@ private void doMeasureAndLayout(View view, LayoutManagerHelper helper) {
+                         params.width, !layoutInVertical);
+             }
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         }
+ 
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/SingleLayoutHelper.java
+Patch:
+@@ -107,7 +107,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                             parentWidth / params.mAspectRatio + 0.5f), layoutInVertical && Float.isNaN(mAspectRatio));
+ 
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         } else {
+             final int widthSpec = helper.getChildMeasureSpec(parentWidth,
+                     Float.isNaN(params.mAspectRatio) ? (Float.isNaN(mAspectRatio) ? params.width : parentWidth) : (int) (
+@@ -116,7 +116,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                      Float.isNaN(mAspectRatio) ? params.height : parentHeight, layoutInVertical && Float.isNaN(mAspectRatio));
+ 
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         }
+ 
+         OrientationHelper orientationHelper = helper.getMainOrientationHelper();
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/ColumnLayoutHelper.java
+Patch:
+@@ -173,7 +173,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                                 .makeMeasureSpec(specialHeight, View.MeasureSpec.EXACTLY);
+                     }
+ 
+-                    helper.measureChild(view, View.MeasureSpec.makeMeasureSpec(resizeWidth, View.MeasureSpec.EXACTLY), heightSpec);
++                    helper.measureChildWithMargins(view, View.MeasureSpec.makeMeasureSpec(resizeWidth, View.MeasureSpec.EXACTLY), heightSpec);
+ 
+                     // add width into usedWidth
+                     usedWidth += resizeWidth;
+@@ -202,7 +202,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                 }
+ 
+                 //if cols' length is less than view's count, then remainder views share the rest space
+-                helper.measureChild(view,
++                helper.measureChildWithMargins(view,
+                         View.MeasureSpec.makeMeasureSpec(resizeWidth, View.MeasureSpec.EXACTLY),
+                         heightSpec);
+ 
+@@ -215,7 +215,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                 View view = mViews[i];
+                 if (view.getMeasuredHeight() != minHeight) {
+                     //noinspection ResourceType
+-                    helper.measureChild(view, View.MeasureSpec.makeMeasureSpec(view.getMeasuredWidth(), View.MeasureSpec.EXACTLY),
++                    helper.measureChildWithMargins(view, View.MeasureSpec.makeMeasureSpec(view.getMeasuredWidth(), View.MeasureSpec.EXACTLY),
+                             View.MeasureSpec.makeMeasureSpec(minHeight, View.MeasureSpec.EXACTLY));
+                 }
+             }
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/FixLayoutHelper.java
+Patch:
+@@ -408,7 +408,7 @@ private void doMeasureAndLayout(View view, LayoutManagerHelper helper) {
+             }
+ 
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         } else {
+             final int heightSpec = helper.getChildMeasureSpec(
+                     helper.getContentHeight() - helper.getPaddingTop() - helper.getPaddingBottom(),
+@@ -441,7 +441,7 @@ private void doMeasureAndLayout(View view, LayoutManagerHelper helper) {
+ 
+ 
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         }
+ 
+         int left, top, right, bottom;
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/FloatLayoutHelper.java
+Patch:
+@@ -268,7 +268,7 @@ private void doMeasureAndLayout(View view, LayoutManagerHelper helper) {
+                         params.height, layoutInVertical);
+             }
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         } else {
+             int widthSpec;
+             final int heightSpec = helper.getChildMeasureSpec(
+@@ -287,7 +287,7 @@ private void doMeasureAndLayout(View view, LayoutManagerHelper helper) {
+                         params.width, !layoutInVertical);
+             }
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         }
+ 
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/SingleLayoutHelper.java
+Patch:
+@@ -107,7 +107,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                             parentWidth / params.mAspectRatio + 0.5f), layoutInVertical && Float.isNaN(mAspectRatio));
+ 
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         } else {
+             final int widthSpec = helper.getChildMeasureSpec(parentWidth,
+                     Float.isNaN(params.mAspectRatio) ? (Float.isNaN(mAspectRatio) ? params.width : parentWidth) : (int) (
+@@ -116,7 +116,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+                      Float.isNaN(mAspectRatio) ? params.height : parentHeight, layoutInVertical && Float.isNaN(mAspectRatio));
+ 
+             // do measurement
+-            helper.measureChild(view, widthSpec, heightSpec);
++            helper.measureChildWithMargins(view, widthSpec, heightSpec);
+         }
+ 
+         OrientationHelper orientationHelper = helper.getMainOrientationHelper();
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/RangeGridLayoutHelper.java
+Patch:
+@@ -553,8 +553,8 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+             if (!isOutOfRange(lastLinePosition)) {
+                 RangeStyle<GridRangeStyle> neighbourRange = mRangeStyle.findRangeStyleByPosition(lastLinePosition);
+                 if (neighbourRange.isFirstPosition(lastLinePosition)) {
+-                    lastUnconsumedSpace = layoutInVertical ? rangeStyle.getMarginTop() + rangeStyle.getPaddingTop()
+-                        : rangeStyle.getMarginLeft() + rangeStyle.getPaddingLeft();
++                    lastUnconsumedSpace = layoutInVertical ? neighbourRange.getMarginTop() + neighbourRange.getPaddingTop()
++                        : neighbourRange.getMarginLeft() + neighbourRange.getPaddingLeft();
+                     if (DEBUG) {
+                         Log.d(TAG, "--> " + currentPosition + " 1 " + lastUnconsumedSpace);
+                     }
+
+File: examples/src/main/java/com/alibaba/android/vlayout/example/VLayoutActivity.java
+Patch:
+@@ -192,6 +192,7 @@ public void getItemOffsets(Rect outRect, View view, RecyclerView parent, Recycle
+             rangeStyle.setRange(4, 7);
+             rangeStyle.setSpanCount(2);
+             rangeStyle.setWeights(new float[]{46.665f});
++            rangeStyle.setPadding(7, 7, 7, 7);
+             rangeStyle.setMargin(7, 7, 7, 7);
+             rangeStyle.setHGap(3);
+             rangeStyle.setVGap(3);
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/GridLayoutHelper.java
+Patch:
+@@ -132,7 +132,6 @@ public void setWeights(float[] weights) {
+         }
+     }
+ 
+-
+     public void setSpanSizeLookup(SpanSizeLookup spanSizeLookup) {
+         if (spanSizeLookup != null) {
+             // TODO: handle reverse layout?
+@@ -349,7 +348,8 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+         // we should assign spans before item decor offsets are calculated
+         assignSpans(recycler, state, count, consumedSpanCount, layingOutInPrimaryDirection, helper);
+ 
+-        if (remainingSpan > 0 && mIsAutoExpand) {
++        if (remainingSpan > 0 && (count == consumedSpanCount) && mIsAutoExpand) {
++            //autoExpand only support when each cell occupy one span.
+             if (layoutInVertical) {
+                 mSizePerSpan = (helper.getContentWidth() - helper.getPaddingRight() - getHorizontalMargin() - getHorizontalPadding() -
+                         helper.getPaddingLeft() - (count - 1) * mHGap) / count;
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/OnePlusNLayoutHelper.java
+Patch:
+@@ -264,6 +264,8 @@ public int computeAlignOffset(int offset, boolean isLayoutEnd, boolean useAnchor
+     private int handleOne(LayoutStateWrapper layoutState, LayoutChunkResult result, LayoutManagerHelper helper,
+         boolean layoutInVertical, int parentWidth, int parentHeight, int parentHPadding, int parentVPadding) {
+         int mainConsumed = 0;
++        OrientationHelper orientationHelper = helper.getMainOrientationHelper();
++
+         View view = mChildrenViews[0];
+         final ViewGroup.MarginLayoutParams lp = new ViewGroup.MarginLayoutParams(
+             view.getLayoutParams());
+@@ -288,7 +290,6 @@ private int handleOne(LayoutStateWrapper layoutState, LayoutChunkResult result,
+ 
+         helper.measureChild(view, widthSpec, heightSpec);
+ 
+-        OrientationHelper orientationHelper = helper.getMainOrientationHelper();
+         mainConsumed = orientationHelper.getDecoratedMeasurement(view) + (layoutInVertical ?
+             getVerticalMargin() + getVerticalPadding()
+             : getHorizontalMargin() + getHorizontalPadding());
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/FixLayoutHelper.java
+Patch:
+@@ -254,7 +254,7 @@ public void afterLayout(final RecyclerView.Recycler recycler, RecyclerView.State
+         }
+ 
+         // Not in normal flow
+-        if (shouldBeDraw(startPosition, endPosition, scrolled)) {
++        if (shouldBeDraw(helper, startPosition, endPosition, scrolled)) {
+             mShouldDrawn = true;
+             if (mFixView != null) {
+                 // already capture in layoutViews phase
+@@ -340,13 +340,14 @@ private void removeFixViewWithAnimator(RecyclerView.Recycler recycler,
+     /**
+      * Decide whether the view should be shown
+      *
++     * @param helper layoutManagerHelper
+      * @param startPosition the first visible position in RecyclerView
+      * @param endPosition   the last visible position in RecyclerView
+      * @param scrolled      how many pixels will be scrolled during this scrolling, 0 during
+      *                      layouting
+      * @return Whether the view in current layoutHelper should be shown
+      */
+-    protected boolean shouldBeDraw(int startPosition, int endPosition, int scrolled) {
++    protected boolean shouldBeDraw(LayoutManagerHelper helper, int startPosition, int endPosition, int scrolled) {
+         return true;
+     }
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/ScrollFixLayoutHelper.java
+Patch:
+@@ -24,6 +24,8 @@
+ 
+ package com.alibaba.android.vlayout.layout;
+ 
++import com.alibaba.android.vlayout.LayoutManagerHelper;
++
+ /**
+  * Absolute layout which only shows after scrolling to its' position,
+  * it'll layout View based on leftMargin/topMargin/rightMargin/bottomMargin.
+@@ -60,7 +62,7 @@ public int getShowType() {
+     }
+ 
+     @Override
+-    protected boolean shouldBeDraw(int startPosition, int endPosition, int scrolled) {
++    protected boolean shouldBeDraw(LayoutManagerHelper helper, int startPosition, int endPosition, int scrolled) {
+         switch (mShowType) {
+             case SHOW_ON_ENTER:
+                 // when previous item is entering
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/FixLayoutHelper.java
+Patch:
+@@ -254,7 +254,7 @@ public void afterLayout(final RecyclerView.Recycler recycler, RecyclerView.State
+         }
+ 
+         // Not in normal flow
+-        if (shouldBeDraw(startPosition, endPosition, scrolled)) {
++        if (shouldBeDraw(helper, startPosition, endPosition, scrolled)) {
+             mShouldDrawn = true;
+             if (mFixView != null) {
+                 // already capture in layoutViews phase
+@@ -340,13 +340,14 @@ private void removeFixViewWithAnimator(RecyclerView.Recycler recycler,
+     /**
+      * Decide whether the view should be shown
+      *
++     * @param helper layoutManagerHelper
+      * @param startPosition the first visible position in RecyclerView
+      * @param endPosition   the last visible position in RecyclerView
+      * @param scrolled      how many pixels will be scrolled during this scrolling, 0 during
+      *                      layouting
+      * @return Whether the view in current layoutHelper should be shown
+      */
+-    protected boolean shouldBeDraw(int startPosition, int endPosition, int scrolled) {
++    protected boolean shouldBeDraw(LayoutManagerHelper helper, int startPosition, int endPosition, int scrolled) {
+         return true;
+     }
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/ScrollFixLayoutHelper.java
+Patch:
+@@ -24,6 +24,8 @@
+ 
+ package com.alibaba.android.vlayout.layout;
+ 
++import com.alibaba.android.vlayout.LayoutManagerHelper;
++
+ /**
+  * Absolute layout which only shows after scrolling to its' position,
+  * it'll layout View based on leftMargin/topMargin/rightMargin/bottomMargin.
+@@ -60,7 +62,7 @@ public int getShowType() {
+     }
+ 
+     @Override
+-    protected boolean shouldBeDraw(int startPosition, int endPosition, int scrolled) {
++    protected boolean shouldBeDraw(LayoutManagerHelper helper, int startPosition, int endPosition, int scrolled) {
+         switch (mShowType) {
+             case SHOW_ON_ENTER:
+                 // when previous item is entering
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/ScrollFixLayoutHelper.java
+Patch:
+@@ -55,6 +55,9 @@ public void setShowType(int showType) {
+         this.mShowType = showType;
+     }
+ 
++    public int getShowType() {
++        return mShowType;
++    }
+ 
+     @Override
+     protected boolean shouldBeDraw(int startPosition, int endPosition, int scrolled) {
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/DelegateAdapter.java
+Patch:
+@@ -308,6 +308,7 @@ public void addAdapters(int position, @Nullable List<Adapter> adapters) {
+ 
+             helpers.add(position, helper);
+             mAdapters.add(position, Pair.create(observer, adapter));
++            position++;
+         }
+ 
+         if (!hasObservers()) {
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/DelegateAdapter.java
+Patch:
+@@ -310,7 +310,9 @@ public void addAdapters(int position, @Nullable List<Adapter> adapters) {
+             mAdapters.add(position, Pair.create(observer, adapter));
+         }
+ 
+-        super.setHasStableIds(hasStableIds);
++        if (!hasObservers()) {
++            super.setHasStableIds(hasStableIds);
++        }
+         super.setLayoutHelpers(helpers);
+     }
+ 
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/layout/FloatLayoutHelper.java
+Patch:
+@@ -142,6 +142,7 @@ public void layoutViews(RecyclerView.Recycler recycler, RecyclerView.State state
+         }
+ 
+         mFixView = view;
++        mFixView.setClickable(true);
+ 
+         doMeasureAndLayout(view, helper);
+ 
+@@ -420,6 +421,7 @@ public boolean onTouch(View v, MotionEvent event) {
+                 case MotionEvent.ACTION_CANCEL:
+                     doPullOverAnimation(v);
+                     (v.getParent()).requestDisallowInterceptTouchEvent(false);
++                    v.setPressed(false);
+                     break;
+             }
+             return isDrag;
+
+File: vlayout/src/main/java/com/alibaba/android/vlayout/DelegateAdapter.java
+Patch:
+@@ -420,7 +420,7 @@ public void onChanged() {
+             if (idx < 0) return;
+ 
+             Pair<AdapterDataObserver, Adapter> p = mAdapters.get(idx);
+-            List<LayoutHelper> helpers = getLayoutHelpers();
++            List<LayoutHelper> helpers = new LinkedList<>(getLayoutHelpers());
+             LayoutHelper helper = helpers.get(idx);
+ 
+             if (helper.getItemCount() != p.second.getItemCount()) {
+

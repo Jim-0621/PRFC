@@ -1,0 +1,665 @@
+File: domain/src/main/java/com/fernandocejas/android10/sample/domain/interactor/GetUserList.java
+Patch:
+@@ -19,7 +19,6 @@
+ import com.fernandocejas.android10.sample.domain.executor.PostExecutionThread;
+ import com.fernandocejas.android10.sample.domain.executor.ThreadExecutor;
+ import com.fernandocejas.android10.sample.domain.repository.UserRepository;
+-import com.fernandocejas.arrow.optional.Optional;
+ import io.reactivex.Observable;
+ import java.util.List;
+ import javax.inject.Inject;
+@@ -28,7 +27,7 @@
+  * This class is an implementation of {@link UseCase} that represents a use case for
+  * retrieving a collection of all {@link User}.
+  */
+-public class GetUserList extends UseCase<List<User>> {
++public class GetUserList extends UseCase<List<User>, Void> {
+ 
+   private final UserRepository userRepository;
+ 
+@@ -39,7 +38,7 @@ public class GetUserList extends UseCase<List<User>> {
+     this.userRepository = userRepository;
+   }
+ 
+-  @Override public Observable<List<User>> buildUseCaseObservable(Optional<Params> params) {
++  @Override Observable<List<User>> buildUseCaseObservable(Void unused) {
+     return this.userRepository.users();
+   }
+ }
+
+File: presentation/src/androidTest/java/com/fernandocejas/android10/sample/test/presenter/UserDetailsPresenterTest.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import android.content.Context;
+ import com.fernandocejas.android10.sample.domain.interactor.GetUserDetails;
++import com.fernandocejas.android10.sample.domain.interactor.GetUserDetails.Params;
+ import com.fernandocejas.android10.sample.presentation.mapper.UserModelDataMapper;
+ import com.fernandocejas.android10.sample.presentation.presenter.UserDetailsPresenter;
+ import com.fernandocejas.android10.sample.presentation.view.UserDetailsView;
+@@ -27,7 +28,6 @@
+ import org.mockito.Mock;
+ import org.mockito.runners.MockitoJUnitRunner;
+ 
+-import com.fernandocejas.android10.sample.domain.interactor.Params;
+ import static org.mockito.BDDMockito.given;
+ import static org.mockito.Matchers.any;
+ import static org.mockito.Mockito.verify;
+@@ -51,6 +51,7 @@ public void setUp() {
+   }
+ 
+   @Test
++  @SuppressWarnings("unchecked")
+   public void testUserDetailsPresenterInitialize() {
+     given(mockUserDetailsView.context()).willReturn(mockContext);
+ 
+
+File: presentation/src/androidTest/java/com/fernandocejas/android10/sample/test/presenter/UserListPresenterTest.java
+Patch:
+@@ -17,7 +17,6 @@
+ 
+ import android.content.Context;
+ import com.fernandocejas.android10.sample.domain.interactor.GetUserList;
+-import com.fernandocejas.android10.sample.domain.interactor.Params;
+ import com.fernandocejas.android10.sample.presentation.mapper.UserModelDataMapper;
+ import com.fernandocejas.android10.sample.presentation.presenter.UserListPresenter;
+ import com.fernandocejas.android10.sample.presentation.view.UserListView;
+@@ -49,13 +48,14 @@ public void setUp() {
+   }
+ 
+   @Test
++  @SuppressWarnings("unchecked")
+   public void testUserListPresenterInitialize() {
+     given(mockUserListView.context()).willReturn(mockContext);
+ 
+     userListPresenter.initialize();
+ 
+     verify(mockUserListView).hideRetry();
+     verify(mockUserListView).showLoading();
+-    verify(mockGetUserList).execute(any(DisposableObserver.class), any(Params.class));
++    verify(mockGetUserList).execute(any(DisposableObserver.class), any(Void.class));
+   }
+ }
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/presenter/UserListPresenter.java
+Patch:
+@@ -21,7 +21,6 @@
+ import com.fernandocejas.android10.sample.domain.exception.ErrorBundle;
+ import com.fernandocejas.android10.sample.domain.interactor.DefaultObserver;
+ import com.fernandocejas.android10.sample.domain.interactor.GetUserList;
+-import com.fernandocejas.android10.sample.domain.interactor.Params;
+ import com.fernandocejas.android10.sample.presentation.exception.ErrorMessageFactory;
+ import com.fernandocejas.android10.sample.presentation.internal.di.PerActivity;
+ import com.fernandocejas.android10.sample.presentation.mapper.UserModelDataMapper;
+@@ -112,7 +111,7 @@ private void showUsersCollectionInView(Collection<User> usersCollection) {
+   }
+ 
+   private void getUserList() {
+-    this.getUserListUseCase.execute(new UserListObserver(), Params.EMPTY);
++    this.getUserListUseCase.execute(new UserListObserver(), null);
+   }
+ 
+   private final class UserListObserver extends DefaultObserver<List<User>> {
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/cache/UserCacheImpl.java
+Patch:
+@@ -80,10 +80,10 @@ public UserCacheImpl(Context context, JsonSerializer userCacheSerializer,
+ 
+   @Override public void put(UserEntity userEntity) {
+     if (userEntity != null) {
+-      File userEntitiyFile = this.buildFile(userEntity.getUserId());
++      File userEntityFile = this.buildFile(userEntity.getUserId());
+       if (!isCached(userEntity.getUserId())) {
+         String jsonString = this.serializer.serialize(userEntity);
+-        this.executeAsynchronously(new CacheWriter(this.fileManager, userEntitiyFile,
++        this.executeAsynchronously(new CacheWriter(this.fileManager, userEntityFile,
+             jsonString));
+         setLastCacheUpdateTimeMillis();
+       }
+
+File: domain/src/main/java/com/fernandocejas/android10/sample/domain/interactor/UseCase.java
+Patch:
+@@ -52,15 +52,15 @@ protected UseCase(ThreadExecutor threadExecutor,
+   /**
+    * Executes the current use case.
+    *
+-   * @param UseCaseSubscriber The guy who will be listen to the observable build
++   * @param useCaseSubscriber The guy who will be listen to the observable build
+    * with {@link #buildUseCaseObservable()}.
+    */
+   @SuppressWarnings("unchecked")
+-  public void execute(Subscriber UseCaseSubscriber) {
++  public void execute(Subscriber useCaseSubscriber) {
+     this.subscription = this.buildUseCaseObservable()
+         .subscribeOn(Schedulers.from(threadExecutor))
+         .observeOn(postExecutionThread.getScheduler())
+-        .subscribe(UseCaseSubscriber);
++        .subscribe(useCaseSubscriber);
+   }
+ 
+   /**
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/view/activity/BaseActivity.java
+Patch:
+@@ -41,7 +41,7 @@ protected void addFragment(int containerViewId, Fragment fragment) {
+    * @return {@link com.fernandocejas.android10.sample.presentation.internal.di.components.ApplicationComponent}
+    */
+   protected ApplicationComponent getApplicationComponent() {
+-    return ((AndroidApplication)getApplication()).getApplicationComponent();
++    return ((AndroidApplication) getApplication()).getApplicationComponent();
+   }
+ 
+   /**
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/exception/RepositoryErrorBundle.java
+Patch:
+@@ -16,6 +16,7 @@
+ package com.fernandocejas.android10.sample.data.exception;
+ 
+ import com.fernandocejas.android10.sample.domain.exception.ErrorBundle;
++import com.fernandocejas.frodo.core.strings.Strings;
+ 
+ /**
+  * Wrapper around Exceptions used to manage errors in the repository.
+@@ -35,9 +36,9 @@ public Exception getException() {
+ 
+   @Override
+   public String getErrorMessage() {
+-    String message = "";
++    String message = Strings.EMPTY;
+     if (this.exception != null) {
+-      this.exception.getMessage();
++      message = this.exception.getMessage();
+     }
+     return message;
+   }
+
+File: presentation/src/androidTest/java/com/fernandocejas/android10/sample/test/view/activity/UserDetailsActivityTest.java
+Patch:
+@@ -53,7 +53,7 @@ public UserDetailsActivityTest() {
+ 
+   public void testContainsUserDetailsFragment() {
+     Fragment userDetailsFragment =
+-        userDetailsActivity.getFragmentManager().findFragmentById(R.id.fl_fragment);
++        userDetailsActivity.getFragmentManager().findFragmentById(R.id.fragmentContainer);
+     assertThat(userDetailsFragment, is(notNullValue()));
+   }
+ 
+
+File: presentation/src/androidTest/java/com/fernandocejas/android10/sample/test/view/activity/UserListActivityTest.java
+Patch:
+@@ -45,7 +45,7 @@ public UserListActivityTest() {
+ 
+   public void testContainsUserListFragment() {
+     Fragment userListFragment =
+-        userListActivity.getFragmentManager().findFragmentById(R.id.fragmentUserList);
++        userListActivity.getFragmentManager().findFragmentById(R.id.fragmentContainer);
+     assertThat(userListFragment, is(notNullValue()));
+   }
+ 
+
+File: presentation/src/androidTest/java/com/fernandocejas/android10/sample/test/view/activity/UserDetailsActivityTest.java
+Patch:
+@@ -53,7 +53,7 @@ public UserDetailsActivityTest() {
+ 
+   public void testContainsUserDetailsFragment() {
+     Fragment userDetailsFragment =
+-        userDetailsActivity.getFragmentManager().findFragmentById(R.id.fl_fragment);
++        userDetailsActivity.getFragmentManager().findFragmentById(R.id.fragmentContainer);
+     assertThat(userDetailsFragment, is(notNullValue()));
+   }
+ 
+
+File: presentation/src/androidTest/java/com/fernandocejas/android10/sample/test/view/activity/UserListActivityTest.java
+Patch:
+@@ -45,7 +45,7 @@ public UserListActivityTest() {
+ 
+   public void testContainsUserListFragment() {
+     Fragment userListFragment =
+-        userListActivity.getFragmentManager().findFragmentById(R.id.fragmentUserList);
++        userListActivity.getFragmentManager().findFragmentById(R.id.fragmentContainer);
+     assertThat(userListFragment, is(notNullValue()));
+   }
+ 
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/presenter/UserListPresenter.java
+Patch:
+@@ -44,7 +44,8 @@ public class UserListPresenter implements Presenter {
+   private final UserModelDataMapper userModelDataMapper;
+ 
+   @Inject
+-  public UserListPresenter(@Named("userList") UseCase getUserListUserCase, UserModelDataMapper userModelDataMapper) {
++  public UserListPresenter(@Named("userList") UseCase getUserListUserCase,
++      UserModelDataMapper userModelDataMapper) {
+     this.getUserListUseCase = getUserListUserCase;
+     this.userModelDataMapper = userModelDataMapper;
+   }
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/view/activity/UserListActivity.java
+Patch:
+@@ -31,10 +31,9 @@ public static Intent getCallingIntent(Context context) {
+   @Override protected void onCreate(Bundle savedInstanceState) {
+     super.onCreate(savedInstanceState);
+     requestWindowFeature(Window.FEATURE_INDETERMINATE_PROGRESS);
+-    setContentView(R.layout.activity_user_list);
++    setContentView(R.layout.activity_layout);
+ 
+     this.initializeInjector();
+-
+     if (savedInstanceState == null) {
+       addFragment(R.id.fragmentContainer, new UserListFragment());
+     }
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/presenter/UserDetailsPresenter.java
+Patch:
+@@ -62,6 +62,7 @@ public void setView(@NonNull UserDetailsView view) {
+ 
+   @Override public void destroy() {
+     this.getUserDetailsUseCase.unsubscribe();
++    this.viewDetailsView = null;
+   }
+ 
+   /**
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/presenter/UserListPresenter.java
+Patch:
+@@ -59,6 +59,7 @@ public void setView(@NonNull UserListView view) {
+ 
+   @Override public void destroy() {
+     this.getUserListUseCase.unsubscribe();
++    this.viewListView = null;
+   }
+ 
+   /**
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/navigation/Navigator.java
+Patch:
+@@ -29,7 +29,7 @@
+ public class Navigator {
+ 
+   @Inject
+-  public void Navigator() {
++  public Navigator() {
+     //empty
+   }
+ 
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/executor/JobExecutor.java
+Patch:
+@@ -65,7 +65,7 @@ private static class JobThreadFactory implements ThreadFactory {
+     private int counter = 0;
+ 
+     @Override public Thread newThread(Runnable runnable) {
+-      return new Thread(runnable, THREAD_NAME + counter);
++      return new Thread(runnable, THREAD_NAME + counter++);
+     }
+   }
+-}
+\ No newline at end of file
++}
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/executor/JobExecutor.java
+Patch:
+@@ -65,7 +65,7 @@ private static class JobThreadFactory implements ThreadFactory {
+     private int counter = 0;
+ 
+     @Override public Thread newThread(Runnable runnable) {
+-      return new Thread(runnable, THREAD_NAME + counter);
++      return new Thread(runnable, THREAD_NAME + counter++);
+     }
+   }
+-}
+\ No newline at end of file
++}
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/presenter/UserListPresenter.java
+Patch:
+@@ -36,7 +36,7 @@
+  * layer.
+  */
+ @PerActivity
+-public class UserListPresenter extends DefaultSubscriber<List<User>> implements Presenter {
++public class UserListPresenter implements Presenter {
+ 
+   private UserListView viewListView;
+ 
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/entity/mapper/UserEntityDataMapper.java
+Patch:
+@@ -60,7 +60,7 @@ public User transform(UserEntity userEntity) {
+    * @return {@link User} if valid {@link UserEntity} otherwise null.
+    */
+   public List<User> transform(Collection<UserEntity> userEntityCollection) {
+-    List<User> userList = new ArrayList<User>(20);
++    List<User> userList = new ArrayList<>(20);
+     User user;
+     for (UserEntity userEntity : userEntityCollection) {
+       user = transform(userEntity);
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/mapper/UserModelDataMapper.java
+Patch:
+@@ -63,7 +63,7 @@ public Collection<UserModel> transform(Collection<User> usersCollection) {
+     Collection<UserModel> userModelsCollection;
+ 
+     if (usersCollection != null && !usersCollection.isEmpty()) {
+-      userModelsCollection = new ArrayList<UserModel>();
++      userModelsCollection = new ArrayList<>();
+       for (User user : usersCollection) {
+         userModelsCollection.add(transform(user));
+       }
+
+File: presentation/src/androidTest/java/com/fernandocejas/android10/sample/test/presenter/UserDetailsPresenterTest.java
+Patch:
+@@ -37,8 +37,9 @@ public class UserDetailsPresenterTest extends AndroidTestCase {
+   @Override protected void setUp() throws Exception {
+     super.setUp();
+     MockitoAnnotations.initMocks(this);
+-    userDetailsPresenter = new UserDetailsPresenter(mockUserDetailsView, mockGetUserDetailsUseCase,
++    userDetailsPresenter = new UserDetailsPresenter(mockGetUserDetailsUseCase,
+         mockUserModelDataMapper);
++    userDetailsPresenter.setView(mockUserDetailsView);
+   }
+ 
+   public void testUserDetailsPresenterInitialize() {
+
+File: presentation/src/androidTest/java/com/fernandocejas/android10/sample/test/presenter/UserListPresenterTest.java
+Patch:
+@@ -34,8 +34,8 @@ public class UserListPresenterTest extends AndroidTestCase {
+   @Override protected void setUp() throws Exception {
+     super.setUp();
+     MockitoAnnotations.initMocks(this);
+-    userListPresenter = new UserListPresenter(mockUserListView, mockGetUserListUseCase,
+-        mockUserModelDataMapper);
++    userListPresenter = new UserListPresenter(mockGetUserListUseCase, mockUserModelDataMapper);
++    userListPresenter.setView(mockUserListView);
+   }
+ 
+   public void testUserListPresenterInitialize() {
+
+File: presentation/src/androidTest/java/com/fernandocejas/android10/sample/test/presenter/UserDetailsPresenterTest.java
+Patch:
+@@ -37,8 +37,9 @@ public class UserDetailsPresenterTest extends AndroidTestCase {
+   @Override protected void setUp() throws Exception {
+     super.setUp();
+     MockitoAnnotations.initMocks(this);
+-    userDetailsPresenter = new UserDetailsPresenter(mockUserDetailsView, mockGetUserDetailsUseCase,
++    userDetailsPresenter = new UserDetailsPresenter(mockGetUserDetailsUseCase,
+         mockUserModelDataMapper);
++    userDetailsPresenter.setView(mockUserDetailsView);
+   }
+ 
+   public void testUserDetailsPresenterInitialize() {
+
+File: presentation/src/androidTest/java/com/fernandocejas/android10/sample/test/presenter/UserListPresenterTest.java
+Patch:
+@@ -34,8 +34,8 @@ public class UserListPresenterTest extends AndroidTestCase {
+   @Override protected void setUp() throws Exception {
+     super.setUp();
+     MockitoAnnotations.initMocks(this);
+-    userListPresenter = new UserListPresenter(mockUserListView, mockGetUserListUseCase,
+-        mockUserModelDataMapper);
++    userListPresenter = new UserListPresenter(mockGetUserListUseCase, mockUserModelDataMapper);
++    userListPresenter.setView(mockUserListView);
+   }
+ 
+   public void testUserListPresenterInitialize() {
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/internal/di/PerActivity.java
+Patch:
+@@ -11,7 +11,7 @@
+ 
+ /**
+  * A scoping annotation to permit objects whose lifetime should
+- * conform to the life of the activity to be memoized in the
++ * conform to the life of the activity to be memorized in the
+  * correct component.
+  */
+ @Scope
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/AndroidApplication.java
+Patch:
+@@ -6,7 +6,7 @@
+ 
+ import android.app.Application;
+ import com.fernandocejas.android10.sample.presentation.internal.di.components.ApplicationComponent;
+-import com.fernandocejas.android10.sample.presentation.internal.di.components.Dagger_ApplicationComponent;
++import com.fernandocejas.android10.sample.presentation.internal.di.components.DaggerApplicationComponent;
+ import com.fernandocejas.android10.sample.presentation.internal.di.modules.ApplicationModule;
+ 
+ /**
+@@ -22,7 +22,7 @@ public class AndroidApplication extends Application {
+   }
+ 
+   private void initializeInjector() {
+-    this.applicationComponent = Dagger_ApplicationComponent.builder()
++    this.applicationComponent = DaggerApplicationComponent.builder()
+         .applicationModule(new ApplicationModule(this))
+         .build();
+     this.applicationComponent.inject(this);
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/view/activity/UserDetailsActivity.java
+Patch:
+@@ -10,14 +10,14 @@
+ import android.view.Window;
+ import com.fernandocejas.android10.sample.presentation.R;
+ import com.fernandocejas.android10.sample.presentation.internal.di.HasComponent;
+-import com.fernandocejas.android10.sample.presentation.internal.di.components.Dagger_UserComponent;
++import com.fernandocejas.android10.sample.presentation.internal.di.components.DaggerUserComponent;
+ import com.fernandocejas.android10.sample.presentation.internal.di.components.UserComponent;
+ import com.fernandocejas.android10.sample.presentation.view.fragment.UserDetailsFragment;
+ 
+ /**
+  * Activity that shows details of a certain user.
+  */
+-public class UserDetailsActivity extends BaseActivity implements HasComponent<UserComponent>{
++public class UserDetailsActivity extends BaseActivity implements HasComponent<UserComponent> {
+ 
+   private static final String INTENT_EXTRA_PARAM_USER_ID = "org.android10.INTENT_PARAM_USER_ID";
+   private static final String INSTANCE_STATE_PARAM_USER_ID = "org.android10.STATE_PARAM_USER_ID";
+@@ -61,7 +61,7 @@ private void initializeActivity(Bundle savedInstanceState) {
+   }
+ 
+   private void initializeInjector() {
+-    this.userComponent = Dagger_UserComponent.builder()
++    this.userComponent = DaggerUserComponent.builder()
+         .applicationComponent(getApplicationComponent())
+         .activityModule(getActivityModule())
+         .build();
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/view/activity/UserListActivity.java
+Patch:
+@@ -10,7 +10,7 @@
+ import android.view.Window;
+ import com.fernandocejas.android10.sample.presentation.R;
+ import com.fernandocejas.android10.sample.presentation.internal.di.HasComponent;
+-import com.fernandocejas.android10.sample.presentation.internal.di.components.Dagger_UserComponent;
++import com.fernandocejas.android10.sample.presentation.internal.di.components.DaggerUserComponent;
+ import com.fernandocejas.android10.sample.presentation.internal.di.components.UserComponent;
+ import com.fernandocejas.android10.sample.presentation.model.UserModel;
+ import com.fernandocejas.android10.sample.presentation.view.fragment.UserListFragment;
+@@ -36,7 +36,7 @@ public static Intent getCallingIntent(Context context) {
+   }
+ 
+   private void initializeInjector() {
+-    this.userComponent = Dagger_UserComponent.builder()
++    this.userComponent = DaggerUserComponent.builder()
+         .applicationComponent(getApplicationComponent())
+         .activityModule(getActivityModule())
+         .build();
+
+File: data-test/src/test/java/com/fernandocejas/android10/sample/data/cache/UserCacheTest.java
+Patch:
+@@ -40,7 +40,7 @@ public class UserCacheTest extends ApplicationTestCase {
+   @Before
+   public void setUp() {
+     MockitoAnnotations.initMocks(this);
+-    userCache = UserCacheImpl.getInstance(Robolectric.application, mockJsonSerializer,
++    userCache = new UserCacheImpl(Robolectric.application, mockJsonSerializer,
+         mockFileManager, mockThreadExecutor);
+   }
+ 
+
+File: data-test/src/test/java/com/fernandocejas/android10/sample/data/cache/FileManagerTest.java
+Patch:
+@@ -22,7 +22,7 @@ public class FileManagerTest extends ApplicationTestCase {
+ 
+   @Before
+   public void setUp() {
+-    fileManager = FileManager.getInstance();
++    fileManager = new FileManager();
+     cacheDir = Robolectric.application.getCacheDir();
+   }
+ 
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/cache/serializer/JsonSerializer.java
+Patch:
+@@ -18,9 +18,7 @@ public class JsonSerializer {
+   private final Gson gson = new Gson();
+ 
+   @Inject
+-  public JsonSerializer() {
+-    //empty
+-  }
++  public JsonSerializer() {}
+ 
+   /**
+    * Serialize an object to Json.
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/entity/mapper/UserEntityDataMapper.java
+Patch:
+@@ -20,9 +20,7 @@
+ public class UserEntityDataMapper {
+ 
+   @Inject
+-  public UserEntityDataMapper() {
+-    //empty
+-  }
++  public UserEntityDataMapper() {}
+ 
+   /**
+    * Transform a {@link UserEntity} into an {@link User}.
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/mapper/UserModelDataMapper.java
+Patch:
+@@ -20,9 +20,7 @@
+ public class UserModelDataMapper {
+ 
+   @Inject
+-  public UserModelDataMapper() {
+-    //empty
+-  }
++  public UserModelDataMapper() {}
+ 
+   /**
+    * Transform a {@link User} into an {@link UserModel}.
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/entity/mapper/UserEntityDataMapper.java
+Patch:
+@@ -8,7 +8,6 @@
+ import com.fernandocejas.android10.sample.domain.User;
+ import java.util.ArrayList;
+ import java.util.Collection;
+-import java.util.Collections;
+ import java.util.List;
+ 
+ /**
+@@ -49,14 +48,14 @@ public User transform(UserEntity userEntity) {
+    */
+   public Collection<User> transform(Collection<UserEntity> userEntityCollection) {
+     List<User> userList = new ArrayList<User>(20);
+-    User user = null;
++    User user;
+     for (UserEntity userEntity : userEntityCollection) {
+       user = transform(userEntity);
+       if (user != null) {
+         userList.add(user);
+       }
+     }
+ 
+-    return Collections.unmodifiableCollection(userList);
++    return userList;
+   }
+ }
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/repository/UserDataRepository.java
+Patch:
+@@ -71,11 +71,11 @@ protected UserDataRepository(UserDataStoreFactory dataStoreFactory,
+    * {@inheritDoc}
+    *
+    * @param userId The user id used to retrieve user data.
+-   * @param userCallback A {@link UserDetailsCallback} used for notifying clients.
++   * @param userCallback A {@link com.fernandocejas.android10.sample.domain.repository.UserRepository.UserDetailsCallback} used for notifying clients.
+    */
+   @Override public void getUserById(final int userId, final UserDetailsCallback userCallback) {
+     UserDataStore userDataStore = this.userDataStoreFactory.create(userId);
+-    userDataStore.getUserEntityDetails(userId, new UserDataStore.Callback() {
++    userDataStore.getUserEntityDetails(userId, new UserDataStore.UserDetailsCallback() {
+       @Override public void onUserEntityLoaded(UserEntity userEntity) {
+         User user = UserDataRepository.this.userEntityDataMapper.transform(userEntity);
+         userCallback.onUserLoaded(user);
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/repository/datasource/DiskUserDataStore.java
+Patch:
+@@ -25,7 +25,7 @@ public DiskUserDataStore(UserCache userCache) {
+ 
+   }
+ 
+-  @Override public void getUserEntityDetails(int id, Callback callback) {
++  @Override public void getUserEntityDetails(int id, UserDetailsCallback userDetailsCallback) {
+ 
+   }
+ }
+
+File: data/src/main/java/com/fernandocejas/android10/sample/data/repository/datasource/UserDataStore.java
+Patch:
+@@ -24,7 +24,7 @@ interface UserListCallback {
+    * Callback used for clients to be notified when either user data has been retrieved successfully
+    * or any error occurred.
+    */
+-  interface Callback {
++  interface UserDetailsCallback {
+     void onUserEntityLoaded(UserEntity userEntity);
+     void onError(Exception exception);
+   }
+@@ -40,7 +40,7 @@ interface Callback {
+    * Get a {@link UserEntity} by its id.
+    *
+    * @param id The id to retrieve user data.
+-   * @param callback A {@link UserDataStore.Callback} for notifications.
++   * @param userDetailsCallback A {@link UserDetailsCallback} for notifications.
+    */
+-  void getUserEntityDetails(int id, Callback callback);
++  void getUserEntityDetails(int id, UserDetailsCallback userDetailsCallback);
+ }
+
+File: domain/src/main/java/com/fernandocejas/android10/sample/domain/interactor/GetUserListUseCaseImpl.java
+Patch:
+@@ -10,7 +10,6 @@
+ import com.fernandocejas.android10.sample.domain.executor.ThreadExecutor;
+ import com.fernandocejas.android10.sample.domain.repository.UserRepository;
+ import java.util.Collection;
+-import java.util.Collections;
+ 
+ /**
+  * This class is an implementation of {@link GetUserListUseCase} that represents a use case for
+@@ -69,7 +68,7 @@ public GetUserListUseCaseImpl(UserRepository userRepository, ThreadExecutor thre
+   private void notifyGetUserListSuccessfully(final Collection<User> usersCollection) {
+     this.postExecutionThread.post(new Runnable() {
+       @Override public void run() {
+-        callback.onUserListLoaded(Collections.unmodifiableCollection(usersCollection));
++        callback.onUserListLoaded(usersCollection);
+       }
+     });
+   }
+
+File: presentation/src/main/java/com/fernandocejas/android10/sample/presentation/mapper/UserModelDataMapper.java
+Patch:
+@@ -58,6 +58,6 @@ public Collection<UserModel> transform(Collection<User> usersCollection) {
+       userModelsCollection = Collections.emptyList();
+     }
+ 
+-    return Collections.unmodifiableCollection(userModelsCollection);
++    return userModelsCollection;
+   }
+ }
+

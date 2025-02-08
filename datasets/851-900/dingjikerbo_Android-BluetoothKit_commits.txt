@@ -1,0 +1,330 @@
+File: app/src/main/java/com/inuker/bluetooth/DeviceDetailAdapter.java
+Patch:
+@@ -100,7 +100,7 @@ public View getView(int position, View convertView, ViewGroup parent) {
+             holder.uuid.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.0f);
+             holder.uuid.setText(String.format("Service: %s", result.uuid.toString().toUpperCase()));
+ 
+-            holder.root.setOnClickListener(null);
++//            holder.root.setOnClickListener(null);
+         } else {
+             holder.root.setBackgroundColor(mContext.getResources().getColor(R.color.device_detail_character));
+             holder.uuid.getPaint().setFakeBoldText(false);
+
+File: library/src/main/java/com/inuker/bluetooth/library/BluetoothClient.java
+Patch:
+@@ -120,7 +120,7 @@ public void unindicate(String mac, UUID service, UUID character, BleUnnotifyResp
+         BluetoothLog.v(String.format("indicate %s: service = %s, character = %s", mac, service, character));
+ 
+         response = ProxyUtils.getUIProxy(response);
+-        unindicate(mac, service, character, response);
++        mClient.unindicate(mac, service, character, response);
+     }
+ 
+     @Override
+
+File: library/src/main/java/com/inuker/bluetooth/library/BluetoothClient.java
+Patch:
+@@ -120,7 +120,7 @@ public void unindicate(String mac, UUID service, UUID character, BleUnnotifyResp
+         BluetoothLog.v(String.format("indicate %s: service = %s, character = %s", mac, service, character));
+ 
+         response = ProxyUtils.getUIProxy(response);
+-        unindicate(mac, service, character, response);
++        mClient.unindicate(mac, service, character, response);
+     }
+ 
+     @Override
+
+File: library/src/main/java/com/inuker/bluetooth/library/BluetoothClientImpl.java
+Patch:
+@@ -91,9 +91,9 @@ public class BluetoothClientImpl implements IBluetoothClient, ProxyInterceptor,
+ 
+     private Context mContext;
+ 
+-    private IBluetoothService mBluetoothService;
++    private volatile IBluetoothService mBluetoothService;
+ 
+-    private static IBluetoothClient sInstance;
++    private volatile static IBluetoothClient sInstance;
+ 
+     private CountDownLatch mCountDownLatch;
+ 
+
+File: library/src/main/java/com/inuker/bluetooth/library/beacon/Beacon.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.inuker.bluetooth.library.utils.ListUtils;
+ 
+ import java.util.ArrayList;
++import java.util.LinkedList;
+ import java.util.List;
+ 
+ /**
+@@ -16,9 +17,10 @@ public class Beacon {
+     public List<BeaconItem> mItems;
+ 
+     public Beacon(byte[] scanRecord) {
++        mItems = new LinkedList<BeaconItem>();
+         if (!ByteUtils.isEmpty(scanRecord)) {
+             mBytes = ByteUtils.trimLast(scanRecord);
+-            mItems = BeaconParser.parseBeacon(mBytes);
++            mItems.addAll(BeaconParser.parseBeacon(mBytes));
+         }
+     }
+ 
+
+File: library/src/main/java/com/inuker/bluetooth/library/connect/IBleConnectWorker.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.inuker.bluetooth.library.connect;
+ 
+ import com.inuker.bluetooth.library.connect.listener.GattResponseListener;
++import com.inuker.bluetooth.library.model.BleGattProfile;
+ 
+ import java.util.UUID;
+ 
+@@ -39,4 +40,6 @@ public interface IBleConnectWorker {
+     boolean setCharacteristicIndication(UUID service, UUID character, boolean enable);
+ 
+     boolean readRemoteRssi();
++
++    BleGattProfile getGattProfile();
+ }
+
+File: library/src/main/java/com/inuker/bluetooth/library/BluetoothClientImpl.java
+Patch:
+@@ -105,6 +105,7 @@ public class BluetoothClientImpl implements IBluetoothClient, ProxyInterceptor,
+ 
+     private BluetoothClientImpl(Context context) {
+         mContext = context.getApplicationContext();
++        BluetoothContext.setContext(mContext);
+ 
+         mWorkerThread = new HandlerThread(TAG);
+         mWorkerThread.start();
+
+File: library/src/main/java/com/inuker/bluetooth/library/model/BleGattService.java
+Patch:
+@@ -76,6 +76,7 @@ public String toString() {
+         StringBuilder sb = new StringBuilder();
+         sb.append(String.format("Service: %s\n", uuid));
+ 
++        List<BleGattCharacter> characters = getCharacters();
+         int size = characters.size();
+         for (int i = 0; i < size; i++) {
+             sb.append(String.format(">>> Character: %s", characters.get(i)));
+
+File: library/src/main/java/com/inuker/bluetooth/library/BluetoothServiceImpl.java
+Patch:
+@@ -99,6 +99,7 @@ public boolean handleMessage(Message msg) {
+ 
+             case CODE_WRITE_NORSP:
+                 BleConnectManager.writeNoRsp(mac, service, character, value, response);
++                break;
+ 
+             case CODE_NOTIFY:
+                 BleConnectManager.notify(mac, service, character, response);
+
+File: app/src/main/java/com/inuker/bluetooth/DeviceListAdapter.java
+Patch:
+@@ -10,6 +10,7 @@
+ 
+ import com.inuker.bluetooth.library.beacon.Beacon;
+ import com.inuker.bluetooth.library.search.SearchResult;
++import com.inuker.bluetooth.library.utils.BluetoothLog;
+ 
+ import java.util.ArrayList;
+ import java.util.Collections;
+
+File: library/src/main/java/com/inuker/bluetooth/library/BluetoothClientImpl.java
+Patch:
+@@ -324,6 +324,8 @@ public void onResponse(int code, Bundle data) throws RemoteException {
+                     return;
+                 }
+ 
++                data.setClassLoader(getClass().getClassLoader());
++
+                 switch (code) {
+                     case SEARCH_START:
+                         response.onSearchStarted();
+
+File: library/src/main/java/com/inuker/bluetooth/library/connect/request/BleConnectRequest.java
+Patch:
+@@ -4,13 +4,14 @@
+ 
+ import com.inuker.bluetooth.library.connect.listener.ServiceDiscoverListener;
+ import com.inuker.bluetooth.library.connect.options.BleConnectOption;
++import com.inuker.bluetooth.library.connect.response.BleGeneralResponse;
+ import com.inuker.bluetooth.library.connect.response.BluetoothResponse;
+ 
+ public class BleConnectRequest extends BleRequest implements ServiceDiscoverListener {
+ 
+     private BleConnectOption mOptions;
+ 
+-    public BleConnectRequest(String mac, BleConnectOption options, BluetoothResponse response) {
++    public BleConnectRequest(String mac, BleConnectOption options, BleGeneralResponse response) {
+         super(mac, response);
+         mOptions = options;
+     }
+
+File: library/src/main/java/com/inuker/bluetooth/library/connect/request/BleNotifyRequest.java
+Patch:
+@@ -4,6 +4,7 @@
+ import android.bluetooth.BluetoothGattDescriptor;
+ 
+ import com.inuker.bluetooth.library.connect.listener.WriteDescriptorListener;
++import com.inuker.bluetooth.library.connect.response.BleGeneralResponse;
+ import com.inuker.bluetooth.library.connect.response.BluetoothResponse;
+ 
+ import java.util.UUID;
+@@ -13,7 +14,7 @@
+  */
+ public class BleNotifyRequest extends BleRequest implements WriteDescriptorListener {
+ 
+-    public BleNotifyRequest(String mac, UUID service, UUID character, BluetoothResponse response) {
++    public BleNotifyRequest(String mac, UUID service, UUID character, BleGeneralResponse response) {
+         super(mac, response);
+         mServiceUUID = service;
+         mCharacterUUID = character;
+
+File: library/src/main/java/com/inuker/bluetooth/library/connect/request/BleReadRequest.java
+Patch:
+@@ -4,14 +4,15 @@
+ import android.bluetooth.BluetoothGattCharacteristic;
+ 
+ import com.inuker.bluetooth.library.connect.listener.ReadCharacterListener;
++import com.inuker.bluetooth.library.connect.response.BleGeneralResponse;
+ import com.inuker.bluetooth.library.connect.response.BluetoothResponse;
+ 
+ import java.util.UUID;
+ 
+ 
+ public class BleReadRequest extends BleRequest implements ReadCharacterListener {
+ 
+-    public BleReadRequest(String mac, UUID service, UUID character, BluetoothResponse response) {
++    public BleReadRequest(String mac, UUID service, UUID character, BleGeneralResponse response) {
+         super(mac, response);
+         mServiceUUID = service;
+         mCharacterUUID = character;
+
+File: library/src/main/java/com/inuker/bluetooth/library/connect/request/BleReadRssiRequest.java
+Patch:
+@@ -3,14 +3,15 @@
+ import android.bluetooth.BluetoothGatt;
+ 
+ import com.inuker.bluetooth.library.connect.listener.ReadRssiListener;
++import com.inuker.bluetooth.library.connect.response.BleGeneralResponse;
+ import com.inuker.bluetooth.library.connect.response.BluetoothResponse;
+ 
+ /**
+  * Created by dingjikerbo on 2015/12/23.
+  */
+ public class BleReadRssiRequest extends BleRequest implements ReadRssiListener {
+ 
+-    public BleReadRssiRequest(String mac, BluetoothResponse response) {
++    public BleReadRssiRequest(String mac, BleGeneralResponse response) {
+         super(mac, response);
+     }
+ 
+
+File: library/src/main/java/com/inuker/bluetooth/library/connect/request/BleUnnotifyRequest.java
+Patch:
+@@ -4,6 +4,7 @@
+ import android.bluetooth.BluetoothGattDescriptor;
+ 
+ import com.inuker.bluetooth.library.connect.listener.WriteDescriptorListener;
++import com.inuker.bluetooth.library.connect.response.BleGeneralResponse;
+ import com.inuker.bluetooth.library.connect.response.BluetoothResponse;
+ 
+ import java.util.UUID;
+@@ -13,7 +14,7 @@
+  */
+ public class BleUnnotifyRequest extends BleRequest implements WriteDescriptorListener {
+ 
+-    public BleUnnotifyRequest(String mac, UUID service, UUID character, BluetoothResponse response) {
++    public BleUnnotifyRequest(String mac, UUID service, UUID character, BleGeneralResponse response) {
+         super(mac, response);
+         mServiceUUID = service;
+         mCharacterUUID = character;
+
+File: library/src/main/java/com/inuker/bluetooth/library/connect/request/BleWriteNoRspRequest.java
+Patch:
+@@ -1,13 +1,14 @@
+ package com.inuker.bluetooth.library.connect.request;
+ 
++import com.inuker.bluetooth.library.connect.response.BleGeneralResponse;
+ import com.inuker.bluetooth.library.connect.response.BluetoothResponse;
+ 
+ import java.util.UUID;
+ 
+ public class BleWriteNoRspRequest extends BleWriteRequest {
+ 
+     public BleWriteNoRspRequest(String mac, UUID service, UUID character, byte[] bytes,
+-                                BluetoothResponse response) {
++                                BleGeneralResponse response) {
+         super(mac, service, character, bytes, response);
+     }
+ 
+
+File: library/src/main/java/com/inuker/bluetooth/library/connect/request/BleWriteRequest.java
+Patch:
+@@ -4,14 +4,15 @@
+ import android.bluetooth.BluetoothGattCharacteristic;
+ 
+ import com.inuker.bluetooth.library.connect.listener.WriteCharacterListener;
++import com.inuker.bluetooth.library.connect.response.BleGeneralResponse;
+ import com.inuker.bluetooth.library.connect.response.BluetoothResponse;
+ 
+ import java.util.UUID;
+ 
+ public class BleWriteRequest extends BleRequest implements WriteCharacterListener {
+ 
+     public BleWriteRequest(String mac, UUID service, UUID character, byte[] bytes,
+-                           BluetoothResponse response) {
++                           BleGeneralResponse response) {
+         super(mac, response);
+         mServiceUUID = service;
+         mCharacterUUID = character;
+
+File: library/src/main/java/com/inuker/bluetooth/library/search/SearchResult.java
+Patch:
+@@ -32,7 +32,7 @@ public String getName() {
+     }
+ 
+     public String getAddress() {
+-        return device.getAddress();
++        return device != null ? device.getAddress() : "";
+     }
+ 
+     @Override
+
+File: library/src/main/java/com/inuker/bluetooth/library/connect/BleConnectWorker.java
+Patch:
+@@ -299,6 +299,7 @@ public void onConnectionStateChange(int status, int newState) {
+         if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
+             setConnectStatus(STATUS_DEVICE_CONNECTED);
+             mBluetoothGatt.discoverServices();
++            BluetoothLog.v("discoverServices");
+         } else {
+             closeBluetoothGatt();
+         }
+
+File: library/src/main/java/com/inuker/bluetooth/library/connect/response/BleConnectResponse.java
+Patch:
+@@ -6,5 +6,4 @@
+  * Created by dingjikerbo on 2016/8/28.
+  */
+ public interface BleConnectResponse extends BleTResponse<Bundle> {
+-
+ }
+
+File: library/src/main/java/com/inuker/bluetooth/library/model/BleGattProfile.java
+Patch:
+@@ -29,7 +29,7 @@ public void addServices(List<BleGattService> services) {
+         getServices().addAll(services);
+     }
+ 
+-    private List<BleGattService> getServices() {
++    public List<BleGattService> getServices() {
+         if (services == null) {
+             services = new ArrayList<BleGattService>();
+         }
+

@@ -1,0 +1,4614 @@
+File: play-services-core/src/main/java/org/microg/tools/selfcheck/InstalledPackagesChecks.java
+Patch:
+@@ -53,7 +53,8 @@ private void addPackageInstalledAndSignedResult(Context context, ResultCollector
+     }
+ 
+     private boolean addPackageSignedResult(Context context, ResultCollector collector, String nicePackageName, String androidPackageName, String signatureHash) {
+-        boolean hashMatches = signatureHash.equals(PackageUtils.firstSignatureDigest(context, androidPackageName));
++        boolean hashMatches = signatureHash.equals(PackageUtils.firstSignatureDigest(context, androidPackageName, true)) &&
++                signatureHash.equals(PackageUtils.firstSignatureDigest(context, androidPackageName, false));
+         collector.addResult(context.getString(R.string.self_check_name_correct_sig, nicePackageName),
+                 hashMatches ? Positive : Negative,
+                 context.getString(R.string.self_check_resolution_correct_sig, nicePackageName),
+
+File: play-services-core/src/main/java/org/microg/tools/selfcheck/RomSpoofSignatureChecks.java
+Patch:
+@@ -58,7 +58,8 @@ private boolean addSystemSpoofsSignature(Context context, ResultCollector collec
+         if (knowsPermission) {
+             grantsPermission = ContextCompat.checkSelfPermission(context, FAKE_SIGNATURE_PERMISSION) == PERMISSION_GRANTED;
+         }
+-        boolean spoofsSignature = GMS_PACKAGE_SIGNATURE_SHA1.equals(PackageUtils.firstSignatureDigest(context, Constants.GMS_PACKAGE_NAME));
++        boolean spoofsSignature = GMS_PACKAGE_SIGNATURE_SHA1.equals(PackageUtils.firstSignatureDigest(context, Constants.GMS_PACKAGE_NAME, true)) &&
++                GMS_PACKAGE_SIGNATURE_SHA1.equals(PackageUtils.firstSignatureDigest(context, Constants.GMS_PACKAGE_NAME, false));
+         if (knowsPermission && !spoofsSignature && !grantsPermission) {
+             collector.addResult(
+                     context.getString(R.string.self_check_name_system_spoofs),
+
+File: vending-app/src/main/java/com/google/android/play/core/assetpacks/protocol/BundleKeys.java
+Patch:
+@@ -47,8 +47,8 @@ public final class BundleKeys {
+     public static PackKey<ArrayList<String>> SLICE_IDS = new PackKey.StringArrayList("slice_ids");
+ 
+     public static SliceKey<ArrayList<Intent>> CHUNK_INTENTS = new SliceKey.ParcelableArrayList<>("chunk_intents", Intent.class);
+-    public static SliceKey<Integer> COMPRESSION_FORMAT = new SliceKey.Int("compression_format");
+-    public static SliceKey<Integer> PATCH_FORMAT = new SliceKey.Int("patch_format");
++    public static SliceKey<@CompressionFormat Integer> COMPRESSION_FORMAT = new SliceKey.Int("compression_format");
++    public static SliceKey<@PatchFormat Integer> PATCH_FORMAT = new SliceKey.Int("patch_format");
+     public static SliceKey<String> UNCOMPRESSED_HASH_SHA256 = new SliceKey.String("uncompressed_hash_sha256");
+     public static SliceKey<Long> UNCOMPRESSED_SIZE = new SliceKey.Long("uncompressed_size");
+ 
+
+File: play-services-location/src/main/java/org/microg/gms/location/LocationClientImpl.java
+Patch:
+@@ -24,6 +24,7 @@
+ import android.os.RemoteException;
+ import android.util.Log;
+ 
++import androidx.annotation.NonNull;
+ import com.google.android.gms.common.api.GoogleApiClient;
+ import com.google.android.gms.location.GeofencingRequest;
+ import com.google.android.gms.location.ILocationListener;
+@@ -113,7 +114,7 @@ public void requestLocationUpdates(LocationRequest request, PendingIntent pendin
+         getServiceInterface().requestLocationUpdatesWithIntent(request, pendingIntent);
+     }
+ 
+-    public void requestLocationUpdates(LocationRequest request, LocationListener listener, Looper looper) throws RemoteException {
++    public void requestLocationUpdates(LocationRequest request, LocationListener listener, @NonNull Looper looper) throws RemoteException {
+         final Handler handler = new Handler(looper);
+         requestLocationUpdates(request, handler::post, listener);
+     }
+@@ -135,7 +136,7 @@ public void cancel() throws RemoteException {
+         getServiceInterface().requestLocationUpdatesWithPackage(request, listenerMap.get(listener), getContext().getPackageName());
+     }
+ 
+-    public void requestLocationUpdates(LocationRequest request, LocationCallback callback, Looper looper) throws RemoteException {
++    public void requestLocationUpdates(LocationRequest request, LocationCallback callback, @NonNull Looper looper) throws RemoteException {
+         final Handler handler = new Handler(looper);
+         requestLocationUpdates(request, handler::post, callback);
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthManager.java
+Patch:
+@@ -13,8 +13,6 @@
+ import android.net.Uri;
+ import android.util.Log;
+ 
+-import androidx.annotation.RequiresPermission;
+-
+ import org.microg.gms.accountaction.ErrorResolverKt;
+ import org.microg.gms.accountaction.Resolution;
+ import org.microg.gms.common.NotOkayException;
+@@ -261,7 +259,7 @@ public AuthResponse requestAuthWithBackgroundResolution(boolean legacy) throws I
+             return requestAuth(legacy);
+         } catch (NotOkayException e) {
+             if (e.getMessage() != null) {
+-                Resolution errorResolution = ErrorResolverKt.fromErrorMessage(e.getMessage());
++                Resolution errorResolution = ErrorResolverKt.resolveAuthErrorMessage(context, e.getMessage());
+                 if (errorResolution != null) {
+                     return ErrorResolverKt.initiateFromBackgroundBlocking(
+                             errorResolution,
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/BrowserRequestOptions.java
+Patch:
+@@ -10,6 +10,7 @@
+ 
+ import android.net.Uri;
+ import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ 
+ /**
+  * An abstract class representing browser-based request parameters.
+@@ -18,7 +19,7 @@ public abstract class BrowserRequestOptions extends RequestOptions {
+     /**
+      * Gets value of the client data hash.
+      */
+-    @NonNull
++    @Nullable
+     public abstract byte[] getClientDataHash();
+ 
+     @NonNull
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthManagerServiceImpl.java
+Patch:
+@@ -20,7 +20,6 @@
+ import android.accounts.AccountManager;
+ import android.annotation.SuppressLint;
+ import android.app.NotificationManager;
+-import android.app.PendingIntent;
+ import android.content.Context;
+ import android.content.Intent;
+ import android.content.pm.PackageManager;
+@@ -31,6 +30,7 @@
+ import android.util.Log;
+ 
+ import androidx.core.app.NotificationCompat;
++import androidx.core.app.PendingIntentCompat;
+ 
+ import com.google.android.auth.IAuthManagerService;
+ import com.google.android.gms.R;
+@@ -172,7 +172,7 @@ public Bundle getTokenWithAccount(Account account, String scope, Bundle extras)
+                 if (notify) {
+                     NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+                     nm.notify(packageName.hashCode(), new NotificationCompat.Builder(context)
+-                            .setContentIntent(PendingIntent.getActivity(context, 0, i, 0))
++                            .setContentIntent(PendingIntentCompat.getActivity(context, 0, i, 0, false))
+                             .setContentTitle(context.getString(R.string.auth_notification_title))
+                             .setContentText(context.getString(R.string.auth_notification_content, getPackageLabel(packageName, context.getPackageManager())))
+                             .setSmallIcon(android.R.drawable.stat_notify_error)
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinService.java
+Patch:
+@@ -30,6 +30,7 @@
+ import android.os.ResultReceiver;
+ import android.util.Log;
+ 
++import androidx.core.app.PendingIntentCompat;
+ import androidx.legacy.content.WakefulBroadcastReceiver;
+ 
+ import com.google.android.gms.R;
+@@ -124,7 +125,7 @@ public IBinder onBind(Intent intent) {
+ 
+     static void schedule(Context context) {
+         AlarmManager alarmManager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+-        PendingIntent pendingIntent = PendingIntent.getService(context, TriggerReceiver.class.getName().hashCode(), new Intent(context, TriggerReceiver.class), PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_UPDATE_CURRENT);
++        PendingIntent pendingIntent = PendingIntentCompat.getService(context, TriggerReceiver.class.getName().hashCode(), new Intent(context, TriggerReceiver.class), PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_UPDATE_CURRENT, false);
+         alarmManager.set(AlarmManager.RTC, Math.max(LastCheckinInfo.read(context).getLastCheckin() + REGULAR_CHECKIN_INTERVAL, System.currentTimeMillis() + BACKUP_CHECKIN_DELAY), pendingIntent);
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/TriggerReceiver.java
+Patch:
+@@ -24,6 +24,7 @@
+ import android.net.NetworkRequest;
+ import android.util.Log;
+ 
++import androidx.core.app.PendingIntentCompat;
+ import androidx.legacy.content.WakefulBroadcastReceiver;
+ 
+ import org.microg.gms.common.ForegroundServiceContext;
+@@ -61,7 +62,7 @@ public void onReceive(Context context, Intent intent) {
+                             .addCapability(NET_CAPABILITY_INTERNET)
+                             .build();
+                     Intent i = new Intent(context, TriggerReceiver.class);
+-                    PendingIntent pendingIntent = PendingIntent.getBroadcast(context, 0, i, FLAG_UPDATE_CURRENT);
++                    PendingIntent pendingIntent = PendingIntentCompat.getBroadcast(context, 0, i, FLAG_UPDATE_CURRENT, true);
+                     cm.registerNetworkCallback(networkRequest, pendingIntent);
+                 }
+             } else {
+
+File: play-services-core/src/main/java/org/microg/gms/games/GamesStubService.java
+Patch:
+@@ -21,6 +21,7 @@
+ import android.os.Bundle;
+ import android.os.RemoteException;
+ 
++import androidx.core.app.PendingIntentCompat;
+ import com.google.android.gms.common.api.CommonStatusCodes;
+ import com.google.android.gms.common.internal.GetServiceRequest;
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+@@ -52,7 +53,7 @@ public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest reque
+         intent.setPackage(GMS_PACKAGE_NAME);
+         intent.putExtra(EXTRA_GAME_PACACKE_NAME, packageName);
+         Bundle bundle = new Bundle();
+-        bundle.putParcelable("pendingIntent", PendingIntent.getActivity(this, packageName.hashCode(), intent, FLAG_UPDATE_CURRENT));
++        bundle.putParcelable("pendingIntent", PendingIntentCompat.getActivity(this, packageName.hashCode(), intent, FLAG_UPDATE_CURRENT, false));
+         callback.onPostInitComplete(CommonStatusCodes.RESOLUTION_REQUIRED, null, bundle);
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsService.java
+Patch:
+@@ -174,7 +174,7 @@ public void onCreate() {
+         super.onCreate();
+         TriggerReceiver.register(this);
+         database = new GcmDatabase(this);
+-        heartbeatIntent = PendingIntent.getService(this, 0, new Intent(ACTION_HEARTBEAT, null, this, McsService.class), 0);
++        heartbeatIntent = PendingIntent.getService(this, 0, new Intent(ACTION_HEARTBEAT, null, this, McsService.class), PendingIntent.FLAG_IMMUTABLE);
+         alarmManager = (AlarmManager) getSystemService(ALARM_SERVICE);
+         powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+         if (SDK_INT >= 23 && checkSelfPermission("android.permission.CHANGE_DEVICE_IDLE_TEMP_WHITELIST") == PackageManager.PERMISSION_GRANTED) {
+@@ -265,7 +265,7 @@ public static void scheduleReconnect(Context context) {
+         AlarmManager alarmManager = (AlarmManager) context.getSystemService(ALARM_SERVICE);
+         long delay = getCurrentDelay();
+         logd(context, "Scheduling reconnect in " + delay / 1000 + " seconds...");
+-        PendingIntent pi = PendingIntent.getBroadcast(context, 1, new Intent(ACTION_RECONNECT, null, context, TriggerReceiver.class), 0);
++        PendingIntent pi = PendingIntent.getBroadcast(context, 1, new Intent(ACTION_RECONNECT, null, context, TriggerReceiver.class), PendingIntent.FLAG_IMMUTABLE);
+         if (SDK_INT >= 23) {
+             alarmManager.setExactAndAllowWhileIdle(ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + delay, pi);
+         } else {
+
+File: play-services-location/src/main/java/com/google/android/gms/location/LocationSettingsRequest.java
+Patch:
+@@ -32,7 +32,7 @@
+ @SafeParcelable.Class
+ public class LocationSettingsRequest extends AbstractSafeParcelable {
+     @Field(1000)
+-    private int versionCode = 2;
++    int versionCode = 2;
+ 
+     @Field(value = 1, subClass = LocationRequest.class)
+     @Hide
+
+File: play-services-location/src/main/java/com/google/android/gms/location/LocationSettingsResult.java
+Patch:
+@@ -42,11 +42,11 @@ public class LocationSettingsResult extends AbstractSafeParcelable implements Re
+     @Field(1000)
+     int versionCode = 1;
+ 
+-    @Field(1)
++    @Field(value = 1, getterName = "getStatus")
+     @NonNull
+     private final Status status;
+ 
+-    @Field(2)
++    @Field(value = 2, getterName = "getLocationSettingsStates")
+     @Nullable
+     private final LocationSettingsStates settings;
+ 
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthManagerServiceImpl.java
+Patch:
+@@ -118,6 +118,8 @@ public Bundle getTokenWithAccount(Account account, String scope, Bundle extras)
+         packageName = PackageUtils.getAndCheckCallingPackage(context, packageName, extras.getInt(KEY_CALLER_UID, 0), extras.getInt(KEY_CALLER_PID, 0));
+         boolean notify = extras.getBoolean(KEY_HANDLE_NOTIFICATION, false);
+ 
++        scope = Objects.equals(AuthConstants.SCOPE_OAUTH2, scope) ? AuthConstants.SCOPE_EM_OP_PRO : scope;
++
+         if (!AuthConstants.SCOPE_GET_ACCOUNT_ID.equals(scope))
+             Log.d(TAG, "getToken: account:" + account.name + " scope:" + scope + " extras:" + extras + ", notify: " + notify);
+ 
+
+File: play-services-api/src/main/java/com/google/android/gms/measurement/internal/AppMetadata.java
+Patch:
+@@ -31,7 +31,7 @@ public class AppMetadata extends AutoSafeParcelable {
+     @Field(11)
+     public long versionCode = Integer.MIN_VALUE;
+     @Field(12)
+-    private String firebaseInstanceId;
++    public String firebaseInstanceId;
+     @Field(13)
+     private long androidId;
+     @Field(14)
+@@ -57,7 +57,7 @@ public class AppMetadata extends AutoSafeParcelable {
+     @Field(25)
+     private String consentSettings;
+     @Field(26)
+-    private String ephemeralAppInstanceId;
++    public String ephemeralAppInstanceId;
+     @Field(27)
+     private String sessionStitchingToken;
+     @Field(28)
+
+File: play-services-basement/src/main/java/org/microg/gms/common/GmsService.java
+Patch:
+@@ -158,6 +158,7 @@ public enum GmsService {
+     THUNDERBIRD(226, "com.google.android.gms.thunderbird.service.START"),
+     NEARBY_EXPOSURE(236, "com.google.android.gms.nearby.exposurenotification.START"),
+     GMS_COMPLIANCE(257, "com.google.android.gms.gmscompliance.service.START"),
++    BLOCK_STORE(258, "com.google.android.gms.auth.blockstore.service.START"),
+     FIDO_SOURCE_DEVICE(262, "com.google.android.gms.fido.sourcedevice.service.START"),
+     FAST_PAIR(265, "com.google.android.gms.nearby.fastpair.START"),
+     MATCHSTICK_LIGHTER(268, "com.google.android.gms.matchstick.lighter.service.START"),
+
+File: play-services-base/core/src/main/java/org/microg/gms/common/PackageUtils.java
+Patch:
+@@ -77,6 +77,7 @@ public class PackageUtils {
+         KNOWN_GOOGLE_PACKAGES.put("com.google.android.apps.recorder", "394d84cd2cf89d3453702c663f98ec6554afc3cd");
+         KNOWN_GOOGLE_PACKAGES.put("com.google.android.apps.messaging", "0980a12be993528c19107bc21ad811478c63cefc");
+         KNOWN_GOOGLE_PACKAGES.put("com.google.android.apps.tachyon", "a0bc09af527b6397c7a9ef171d6cf76f757becc3");
++        KNOWN_GOOGLE_PACKAGES.put("com.google.android.apps.access.wifi.consumer", "d850379540d68fbec82a742ab6a8321a3f9a4c7c");
+     }
+ 
+     public static boolean isGooglePackage(Context context, String packageName) {
+
+File: play-services-basement/src/main/java/org/microg/gms/auth/AuthConstants.java
+Patch:
+@@ -31,5 +31,7 @@ public class AuthConstants {
+     public static final String ERROR_CODE = "errorCode";
+     public static final String SIGN_IN_CREDENTIAL = "sign_in_credential";
+     public static final String STATUS = "status";
++    public static final String SCOPE_OAUTH2 = "oauth2:";
++    public static final String SCOPE_EM_OP_PRO = "oauth2:email openid profile";
+ 
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthManagerServiceImpl.java
+Patch:
+@@ -48,6 +48,7 @@
+ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.List;
++import java.util.Objects;
+ import java.util.concurrent.TimeUnit;
+ 
+ import static android.accounts.AccountManager.*;
+@@ -119,6 +120,8 @@ public Bundle getTokenWithAccount(Account account, String scope, Bundle extras)
+         if (!AuthConstants.SCOPE_GET_ACCOUNT_ID.equals(scope))
+             Log.d(TAG, "getToken: account:" + account.name + " scope:" + scope + " extras:" + extras + ", notify: " + notify);
+ 
++        scope = Objects.equals(AuthConstants.SCOPE_OAUTH2, scope) ? AuthConstants.SCOPE_EM_OP_PRO : scope;
++
+         /*
+          * TODO: This scope seems to be invalid (according to https://developers.google.com/oauthplayground/),
+          * but is used in some applications anyway. Removing it is unlikely a good solution, but works for now.
+
+File: play-services-phenotype/src/main/java/com/google/android/gms/phenotype/ExperimentTokens.java
+Patch:
+@@ -5,6 +5,7 @@
+ 
+ package com.google.android.gms.phenotype;
+ 
++import androidx.annotation.NonNull;
+ import org.microg.safeparcel.AutoSafeParcelable;
+ 
+ public class ExperimentTokens extends AutoSafeParcelable {
+@@ -26,6 +27,8 @@ public class ExperimentTokens extends AutoSafeParcelable {
+     public byte[][] directs;
+     @Field(10)
+     public int[] genericDimensions;
++    @Field(11)
++    public byte[][] external;
+ 
+     public static final Creator<ExperimentTokens> CREATOR = findCreator(ExperimentTokens.class);
+ }
+
+File: vending-app/src/main/java/com/android/vending/licensing/LicenseChecker.java
+Patch:
+@@ -44,12 +44,12 @@ public abstract class LicenseChecker<D, R> {
+      */
+     static final int LICENSED = 0x0;
+     /**
+-     * The application is licensed to the user, but there is an updated application version available that is
+-     * signed with a different key.
++     * The application is not licensed to the user.
+      */
+     static final int NOT_LICENSED = 0x1;
+     /**
+-     * The application is not licensed to the user.
++     * The application is licensed to the user, but there is an updated application version available that is
++     * signed with a different key.
+      */
+     static final int LICENSED_OLD_KEY = 0x2;
+     /**
+
+File: fake-signature/src/huawei/java/com/huawei/signature/diff/SignatureService.java
+Patch:
+@@ -64,7 +64,7 @@ protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
+ 
+         @Override
+         public boolean onTransact(int code, Parcel data, Parcel reply, int flags) throws RemoteException {
+-            if (Binder.getCallingPid() > 10000) {
++            if (Binder.getCallingUid() > 10000) {
+                 Log.w(TAG, "Illegal access from app");
+                 reply.writeException(new UnsupportedOperationException("Illegal"));
+                 return true;
+
+File: play-services-cast/core/src/main/java/org/microg/gms/cast/CastMediaRouteProvider.java
+Patch:
+@@ -183,7 +183,7 @@ public CastMediaRouteProvider(Context context) {
+             return;
+         }
+ 
+-        mNsdManager = (NsdManager)context.getSystemService(Context.NSD_SERVICE);
++        mNsdManager = (NsdManager)context.getApplicationContext().getSystemService(Context.NSD_SERVICE);
+ 
+         mDiscoveryListener = new NsdManager.DiscoveryListener() {
+ 
+
+File: fake-signature/src/huawei/java/com/huawei/signature/diff/SignatureService.java
+Patch:
+@@ -33,7 +33,7 @@ public class SignatureService extends Service {
+     public void onCreate() {
+         super.onCreate();
+         this.openHelper = new AppListDatabaseOpenHelper(this);
+-        this.database = openHelper.getReadableDatabase();
++        this.database = openHelper.getWritableDatabase();
+         this.start = System.currentTimeMillis();
+     }
+ 
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/AttestationConveyancePreference.java
+Patch:
+@@ -11,6 +11,7 @@
+ import android.os.Parcel;
+ import android.os.Parcelable;
+ 
++import androidx.annotation.NonNull;
+ import org.microg.gms.common.PublicApi;
+ 
+ /**
+@@ -28,6 +29,7 @@ public enum AttestationConveyancePreference implements Parcelable {
+     }
+ 
+     @Override
++    @NonNull
+     public String toString() {
+         return value;
+     }
+@@ -43,6 +45,7 @@ public void writeToParcel(Parcel dest, int flags) {
+     }
+ 
+     @PublicApi(exclude = true)
++    @NonNull
+     public static AttestationConveyancePreference fromString(String attachment) throws UnsupportedAttestationConveyancePreferenceException {
+         for (AttestationConveyancePreference value : values()) {
+             if (value.value.equals(attachment)) return value;
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/AuthenticatorResponse.java
+Patch:
+@@ -8,13 +8,16 @@
+ 
+ package com.google.android.gms.fido.fido2.api.common;
+ 
++import androidx.annotation.NonNull;
+ import org.microg.safeparcel.AutoSafeParcelable;
+ 
+ /**
+  * Authenticators respond to relying party requests by returning an object derived from this interface.
+  */
+ public abstract class AuthenticatorResponse extends AutoSafeParcelable {
++    @NonNull
+     public abstract byte[] getClientDataJSON();
+ 
++    @NonNull
+     public abstract byte[] serializeToBytes();
+ }
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/BrowserRequestOptions.java
+Patch:
+@@ -9,6 +9,7 @@
+ package com.google.android.gms.fido.fido2.api.common;
+ 
+ import android.net.Uri;
++import androidx.annotation.NonNull;
+ 
+ /**
+  * An abstract class representing browser-based request parameters.
+@@ -17,7 +18,9 @@ public abstract class BrowserRequestOptions extends RequestOptions {
+     /**
+      * Gets value of the client data hash.
+      */
++    @NonNull
+     public abstract byte[] getClientDataHash();
+ 
++    @NonNull
+     public abstract Uri getOrigin();
+ }
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/COSEAlgorithmIdentifier.java
+Patch:
+@@ -11,6 +11,7 @@
+ import android.os.Parcel;
+ import android.os.Parcelable;
+ 
++import androidx.annotation.NonNull;
+ import org.microg.gms.common.PublicApi;
+ import org.microg.gms.utils.ToStringHelper;
+ 
+@@ -25,6 +26,7 @@ private COSEAlgorithmIdentifier(Algorithm algorithm) {
+         this.algorithm = algorithm;
+     }
+ 
++    @NonNull
+     public static COSEAlgorithmIdentifier fromCoseValue(int value) throws UnsupportedAlgorithmIdentifierException {
+         if (value == RSAAlgorithm.LEGACY_RS1.getAlgoValue()) return new COSEAlgorithmIdentifier(RSAAlgorithm.RS1);
+         for (RSAAlgorithm algorithm : RSAAlgorithm.values()) {
+@@ -41,6 +43,7 @@ public int toCoseValue() {
+     }
+ 
+     @Override
++    @NonNull
+     public String toString() {
+         return ToStringHelper.name("COSEAlgorithmIdentifier")
+                 .value(algorithm)
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/CableAuthenticationExtension.java
+Patch:
+@@ -5,12 +5,14 @@
+ 
+ package com.google.android.gms.fido.fido2.api.common;
+ 
++import androidx.annotation.NonNull;
+ import org.microg.safeparcel.AutoSafeParcelable;
+ 
+ import java.util.List;
+ 
+ public class CableAuthenticationExtension extends AutoSafeParcelable {
+     @Field(1)
++    @NonNull
+     private List<CableAuthenticationData> cableAuthentication;
+ 
+     public static final Creator<CableAuthenticationExtension> CREATOR = new AutoCreator<>(CableAuthenticationExtension.class);
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/ErrorCode.java
+Patch:
+@@ -11,6 +11,7 @@
+ import android.os.Parcel;
+ import android.os.Parcelable;
+ 
++import org.microg.gms.common.Hide;
+ import org.microg.gms.common.PublicApi;
+ 
+ /**
+@@ -89,7 +90,7 @@ public void writeToParcel(Parcel dest, int flags) {
+         dest.writeInt(code);
+     }
+ 
+-    @PublicApi(exclude = true)
++    @Hide
+     public static ErrorCode toErrorCode(int errorCode) throws UnsupportedErrorCodeException {
+         for (ErrorCode value : values()) {
+             if (value.code == errorCode) return value;
+@@ -109,7 +110,7 @@ public UnsupportedErrorCodeException(int errorCode) {
+         }
+     }
+ 
+-    @PublicApi(exclude = true)
++    @Hide
+     public static final Creator<ErrorCode> CREATOR = new Creator<ErrorCode>() {
+         @Override
+         public ErrorCode createFromParcel(Parcel source) {
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/PublicKeyCredentialType.java
+Patch:
+@@ -11,6 +11,7 @@
+ import android.os.Parcel;
+ import android.os.Parcelable;
+ 
++import androidx.annotation.NonNull;
+ import org.microg.gms.common.PublicApi;
+ 
+ /**
+@@ -26,6 +27,7 @@ public enum PublicKeyCredentialType implements Parcelable {
+     }
+ 
+     @Override
++    @NonNull
+     public String toString() {
+         return value;
+     }
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/RSAAlgorithm.java
+Patch:
+@@ -14,7 +14,7 @@
+  * Algorithm names and COSE identifiers for RSA (public) keys.
+  */
+ @PublicApi
+-public enum RSAAlgorithm implements Algorithm{
++public enum RSAAlgorithm implements Algorithm {
+     /**
+      * RSASSA-PKCS1-v1_5 w/ SHA-256
+      */
+@@ -29,6 +29,7 @@ public enum RSAAlgorithm implements Algorithm{
+     RS512(-259),
+     /**
+      * The legacy value for "RSASSA-PKCS1-v1_5 w/ SHA-1"
++     *
+      * @deprecated please use {@link #RS1} instead.
+      */
+     @Deprecated
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/UserVerificationMethodExtension.java
+Patch:
+@@ -8,6 +8,7 @@
+ 
+ package com.google.android.gms.fido.fido2.api.common;
+ 
++import androidx.annotation.NonNull;
+ import org.microg.gms.common.PublicApi;
+ import org.microg.safeparcel.AutoSafeParcelable;
+ 
+@@ -24,8 +25,10 @@
+ @PublicApi
+ public class UserVerificationMethodExtension extends AutoSafeParcelable {
+     @Field(1)
++    @NonNull
+     private boolean uvm;
+ 
++    @NonNull
+     public boolean getUvm() {
+         return uvm;
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/RegisterRequest.java
+Patch:
+@@ -123,7 +123,7 @@ public RegisterRequest delete(boolean delete) {
+ 
+     public RegisterRequest extraParams(Bundle extraBundle) {
+         for (String key : extraBundle.keySet()) {
+-            if (!key.equals(GcmConstants.EXTRA_SENDER) && !key.equals(GcmConstants.EXTRA_DELETE)) {
++            if (!key.equals(GcmConstants.EXTRA_SENDER) && !key.equals(GcmConstants.EXTRA_DELETE) && !key.equals(GcmConstants.EXTRA_APP)) {
+                 extraParam(key, extraBundle.getString(key));
+             }
+         }
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/fido2/api/common/PublicKeyCredentialRequestOptions.java
+Patch:
+@@ -36,6 +36,8 @@ public class PublicKeyCredentialRequestOptions extends RequestOptions {
+     private UserVerificationRequirement requireUserVerification;
+     @Field(9)
+     private AuthenticationExtensions authenticationExtensions;
++    @Field(10)
++    private Long longRequestId;
+ 
+     public List<PublicKeyCredentialDescriptor> getAllowList() {
+         return allowList;
+
+File: play-services-phenotype/src/main/java/com/google/android/gms/phenotype/Configuration.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * SPDX-FileCopyrightText: 2020, microG Project Team
++ * SPDX-FileCopyrightText: 2020 microG Project Team
+  * SPDX-License-Identifier: Apache-2.0
+  */
+ 
+@@ -14,5 +14,6 @@ public class Configuration extends AutoSafeParcelable {
+     public Flag[] flags;
+     @Field(4)
+     public String[] removeNames;
+-    public static final Creator<Configuration> CREATOR = new AutoCreator<>(Configuration.class);
++
++    public static final Creator<Configuration> CREATOR = findCreator(Configuration.class);
+ }
+
+File: play-services-phenotype/src/main/java/com/google/android/gms/phenotype/ExperimentTokens.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * SPDX-FileCopyrightText: 2020, microG Project Team
++ * SPDX-FileCopyrightText: 2020 microG Project Team
+  * SPDX-License-Identifier: Apache-2.0
+  */
+ 
+@@ -26,5 +26,6 @@ public class ExperimentTokens extends AutoSafeParcelable {
+     public byte[][] directs;
+     @Field(10)
+     public int[] genericDimensions;
+-    public static final Creator<ExperimentTokens> CREATOR = new AutoCreator<>(ExperimentTokens.class);
++
++    public static final Creator<ExperimentTokens> CREATOR = findCreator(ExperimentTokens.class);
+ }
+
+File: play-services-safetynet/src/main/java/org/microg/gms/safetynet/ISafetyNetCallbacksDefaultStub.java
+Patch:
+@@ -24,7 +24,7 @@ public void onAttestationResult(Status status, AttestationData attestationData)
+     }
+ 
+     @Override
+-    public void onString(String s) throws RemoteException {
++    public void onSharedUuid(String s) throws RemoteException {
+     }
+ 
+     @Override
+
+File: play-services-api/src/main/java/com/google/android/gms/phenotype/Configuration.java
+Patch:
+@@ -9,10 +9,10 @@
+ 
+ public class Configuration extends AutoSafeParcelable {
+     @Field(2)
+-    public int flagType;
++    public int id;
+     @Field(3)
+     public Flag[] flags;
+     @Field(4)
+-    public String[] names;
++    public String[] removeNames;
+     public static final Creator<Configuration> CREATOR = new AutoCreator<>(Configuration.class);
+ }
+
+File: play-services-api/src/main/java/com/google/android/gms/phenotype/Configurations.java
+Patch:
+@@ -9,17 +9,17 @@
+ 
+ public class Configurations extends AutoSafeParcelable {
+     @Field(2)
+-    public String field2;
++    public String snapshotToken;
+     @Field(3)
+-    public String field3;
++    public String serverToken;
+     @Field(4)
+     public Configuration[] field4;
+     @Field(5)
+     public boolean field5;
+     @Field(6)
+     public byte[] field6;
+     @Field(7)
+-    public long field7;
++    public long version;
+ 
+     public static final Creator<Configurations> CREATOR = new AutoCreator<>(Configurations.class);
+ }
+
+File: play-services-base/core/src/main/java/org/microg/gms/common/PackageUtils.java
+Patch:
+@@ -74,6 +74,7 @@ public class PackageUtils {
+         KNOWN_GOOGLE_PACKAGES.put("com.google.stadia.android", "133aad3b3d3b580e286573c37f20549f9d3d1cce");
+         KNOWN_GOOGLE_PACKAGES.put("com.google.android.apps.kids.familylink", "88652b8464743e5ce80da0d4b890d13f9b1873df");
+         KNOWN_GOOGLE_PACKAGES.put("com.google.android.apps.walletnfcrel", "82759e2db43f9ccbafce313bc674f35748fabd7a");
++        KNOWN_GOOGLE_PACKAGES.put("com.google.android.apps.recorder", "394d84cd2cf89d3453702c663f98ec6554afc3cd");
+     }
+ 
+     public static boolean isGooglePackage(Context context, String packageName) {
+
+File: play-services-base/core/src/main/java/org/microg/gms/common/PackageUtils.java
+Patch:
+@@ -211,7 +211,7 @@ public static String getAndCheckCallingPackage(Context context, String suggested
+         if (suggestedCallerPid > 0 && suggestedCallerPid != callingPid) {
+             throw new SecurityException("suggested PID [" + suggestedCallerPid + "] and real calling PID [" + callingPid + "] mismatch!");
+         }
+-        return getAndCheckPackage(context, suggestedPackageName, callingUid, Binder.getCallingPid());
++        return getAndCheckPackage(context, suggestedPackageName, callingUid, callingPid);
+     }
+ 
+     @Nullable
+
+File: play-services-basement/src/main/java/org/microg/gms/common/GmsService.java
+Patch:
+@@ -162,6 +162,7 @@ public enum GmsService {
+     LOCATION_SHARING_REPORTER(277, "com.google.android.gms.locationsharingreporter.service.START"),
+     OCR(279, "com.google.android.gms.ocr.service.START"),
+     OCR_INTERNAL(281, "com.google.android.gms.ocr.service.internal.START"),
++    IN_APP_REACH(315, "com.google.android.gms.inappreach.service.START")
+     ;
+ 
+     public int SERVICE_ID;
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinManager.java
+Patch:
+@@ -20,7 +20,6 @@
+ import android.accounts.AccountManager;
+ import android.content.ContentResolver;
+ import android.content.Context;
+-import android.preference.PreferenceManager;
+ 
+ import org.microg.gms.auth.AuthConstants;
+ import org.microg.gms.auth.AuthRequest;
+@@ -41,7 +40,7 @@ public static synchronized LastCheckinInfo checkin(Context context, boolean forc
+         LastCheckinInfo info = LastCheckinInfo.read(context);
+         if (!force && info.getLastCheckin() > System.currentTimeMillis() - MIN_CHECKIN_INTERVAL)
+             return null;
+-        if (!CheckinPrefs.isEnabled(context))
++        if (!CheckinPreferences.isEnabled(context))
+             return null;
+         List<CheckinClient.Account> accounts = new ArrayList<CheckinClient.Account>();
+         AccountManager accountManager = AccountManager.get(context);
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinService.java
+Patch:
+@@ -80,7 +80,7 @@ public CheckinService() {
+     protected void onHandleIntent(Intent intent) {
+         try {
+             ForegroundServiceContext.completeForegroundService(this, intent, TAG);
+-            if (CheckinPrefs.isEnabled(this)) {
++            if (CheckinPreferences.isEnabled(this)) {
+                 LastCheckinInfo info = CheckinManager.checkin(this, intent.getBooleanExtra(EXTRA_FORCE_CHECKIN, false));
+                 if (info != null) {
+                     Log.d(TAG, "Checked in as " + Long.toHexString(info.getAndroidId()));
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/TriggerReceiver.java
+Patch:
+@@ -43,7 +43,7 @@ public void onReceive(Context context, Intent intent) {
+         try {
+             boolean force = "android.provider.Telephony.SECRET_CODE".equals(intent.getAction());
+ 
+-            if (CheckinPrefs.isEnabled(context) || force) {
++            if (CheckinPreferences.isEnabled(context) || force) {
+                 if (LastCheckinInfo.read(context).getLastCheckin() > System.currentTimeMillis() - REGULAR_CHECKIN_INTERVAL && !force) {
+                     CheckinService.schedule(context);
+                     return;
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/TriggerReceiver.java
+Patch:
+@@ -25,7 +25,7 @@
+ 
+ import androidx.legacy.content.WakefulBroadcastReceiver;
+ 
+-import org.microg.gms.checkin.CheckinPrefs;
++import org.microg.gms.checkin.CheckinPreferences;
+ import org.microg.gms.checkin.LastCheckinInfo;
+ import org.microg.gms.common.ForegroundServiceContext;
+ 
+@@ -68,7 +68,7 @@ public void onReceive(Context context, Intent intent) {
+ 
+             if (LastCheckinInfo.read(context).getAndroidId() == 0) {
+                 Log.d(TAG, "Ignoring " + intent + ": need to checkin first.");
+-                if (CheckinPrefs.isEnabled(context)) {
++                if (CheckinPreferences.isEnabled(context)) {
+                     // Do a check-in if we are not actually checked in,
+                     // but should be, e.g. cleared app data
+                     Log.d(TAG, "Requesting check-in...");
+
+File: play-services-location/system-api/src/main/java/android/location/LocationRequest.java
+Patch:
+@@ -72,6 +72,7 @@
+  *
+  * @hide
+  */
++@SuppressWarnings("WrongConstant")
+ public final class LocationRequest implements Parcelable {
+     /**
+      * Used with {@link #setQuality} to request the most accurate locations available.
+
+File: play-services-fido/src/main/java/com/google/android/gms/fido/Fido.java
+Patch:
+@@ -82,14 +82,14 @@ public static Fido2ApiClient getFido2ApiClient(Activity activity) {
+      * Creates a new instance of {@link Fido2PrivilegedApiClient} for use in a non-activity {@link Context}.
+      */
+     public static Fido2PrivilegedApiClient getFido2PrivilegedApiClient(Context context) {
+-        throw new UnsupportedOperationException();
++        return new Fido2PrivilegedApiClient(context);
+     }
+ 
+     /**
+      * Creates a new instance of {@link Fido2PrivilegedApiClient} for use in an {@link Activity}.
+      */
+     public static Fido2PrivilegedApiClient getFido2PrivilegedApiClient(Activity activity) {
+-        throw new UnsupportedOperationException();
++        return new Fido2PrivilegedApiClient(activity);
+     }
+ 
+     /**
+
+File: play-services-base-core/src/main/java/org/microg/gms/common/PackageUtils.java
+Patch:
+@@ -70,6 +70,7 @@ public class PackageUtils {
+         KNOWN_GOOGLE_PACKAGES.put("com.google.android.apps.dynamite", "519c5a17a60596e6fe5933b9cb4285e7b0e5eb7b");
+         KNOWN_GOOGLE_PACKAGES.put("com.google.android.projection.gearhead", "9ca91f9e704d630ef67a23f52bf1577a92b9ca5d");
+         KNOWN_GOOGLE_PACKAGES.put("com.google.stadia.android", "133aad3b3d3b580e286573c37f20549f9d3d1cce");
++        KNOWN_GOOGLE_PACKAGES.put("com.google.android.apps.kids.familylink", "88652b8464743e5ce80da0d4b890d13f9b1873df");
+     }
+ 
+     public static boolean isGooglePackage(Context context, String packageName) {
+
+File: play-services-fido-api/src/main/java/com/google/android/gms/fido/fido2/api/common/BrowserPublicKeyCredentialCreationOptions.java
+Patch:
+@@ -135,13 +135,13 @@ public BrowserPublicKeyCredentialCreationOptions.Builder setOrigin(Uri origin) {
+         /**
+          * Sets the parameters to dictate the client behavior during this registration session.
+          */
+-        public BrowserPublicKeyCredentialCreationOptions.Builder setPublicKeyCredentialRequestOptions(PublicKeyCredentialCreationOptions publicKeyCredentialCreationOptions) {
++        public BrowserPublicKeyCredentialCreationOptions.Builder setPublicKeyCredentialCreationOptions(PublicKeyCredentialCreationOptions publicKeyCredentialCreationOptions) {
+             this.delegate = publicKeyCredentialCreationOptions;
+             return this;
+         }
+ 
+         /**
+-         * Builds the {@link BrowserPublicKeyCredentialRequestOptions} object.
++         * Builds the {@link BrowserPublicKeyCredentialCreationOptions} object.
+          */
+         public BrowserPublicKeyCredentialCreationOptions build() {
+             BrowserPublicKeyCredentialCreationOptions options = new BrowserPublicKeyCredentialCreationOptions();
+
+File: play-services-core/src/main/java/org/microg/gms/auth/loginservice/AccountAuthenticator.java
+Patch:
+@@ -147,8 +147,10 @@ public Bundle hasFeatures(AccountAuthenticatorResponse response, Account account
+         if (services != null) {
+             List<String> servicesList = Arrays.asList(services.split(","));
+             for (String feature : features) {
+-                if (feature.startsWith("service_") && !servicesList.contains(feature.substring(8)))
++                if (feature.startsWith("service_") && !servicesList.contains(feature.substring(8))) {
++                    Log.d(TAG, "Feature " + feature + " not supported");
+                     res = false;
++                }
+             }
+         } else {
+             res = false;
+
+File: play-services-api/src/main/java/com/google/android/gms/phenotype/Configuration.java
+Patch:
+@@ -9,10 +9,10 @@
+ 
+ public class Configuration extends AutoSafeParcelable {
+     @Field(2)
+-    public int field2;
++    public int flagType;
+     @Field(3)
+-    public Flag[] field3;
++    public Flag[] flags;
+     @Field(4)
+-    public String[] field4;
++    public String[] names;
+     public static final Creator<Configuration> CREATOR = new AutoCreator<>(Configuration.class);
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthManagerServiceImpl.java
+Patch:
+@@ -20,6 +20,7 @@
+ import android.accounts.AccountManager;
+ import android.accounts.AuthenticatorException;
+ import android.accounts.OperationCanceledException;
++import android.annotation.SuppressLint;
+ import android.app.NotificationManager;
+ import android.app.PendingIntent;
+ import android.content.Context;
+@@ -205,6 +206,7 @@ public Bundle requestGoogleAccountsAccess(String packageName) throws RemoteExcep
+     }
+ 
+     @Override
++    @SuppressLint("MissingPermission") // Workaround bug in Android Linter
+     public Bundle clearToken(String token, Bundle extras) {
+         String packageName = extras.getString(KEY_ANDROID_PACKAGE_NAME);
+         if (packageName == null) packageName = extras.getString(KEY_CLIENT_PACKAGE_NAME);
+
+File: play-services-core/src/main/java/org/microg/gms/ui/PlacePickerActivity.java
+Patch:
+@@ -146,6 +146,7 @@ private void updateMapFromLocationManager() {
+ 
+     @Override
+     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
++        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+         if (requestCode == 0) {
+             for (int grantResult : grantResults) {
+                 if (grantResult != PERMISSION_GRANTED) return;
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsService.java
+Patch:
+@@ -244,9 +244,10 @@ public synchronized static boolean isConnected(Context context) {
+         }
+         // consider connection to be dead if we did not receive an ack within twice the heartbeat interval
+         int heartbeatMs = GcmPrefs.get(context).getHeartbeatMsFor(activeNetworkPref);
+-        if (heartbeatMs < 0) { // TODO how can this be negative?
++        // if disabled for active network, heartbeatMs will be -1
++        if (heartbeatMs < 0) {
+             closeAll();
+-        } else if (SystemClock.elapsedRealtime() - lastHeartbeatAckElapsedRealtime > 2 * heartbeatMs) {
++        } else if (SystemClock.elapsedRealtime() - lastHeartbeatAckElapsedRealtime > 2L * heartbeatMs) {
+             logd(null, "No heartbeat for " + (SystemClock.elapsedRealtime() - lastHeartbeatAckElapsedRealtime) / 1000 + " seconds, connection assumed to be dead after " + 2 * heartbeatMs / 1000 + " seconds");
+             GcmPrefs.get(context).learnTimeout(context, activeNetworkPref);
+             return false;
+
+File: play-services-basement/src/main/java/com/google/android/gms/common/api/CommonStatusCodes.java
+Patch:
+@@ -20,6 +20,7 @@
+ 
+ import org.microg.gms.common.PublicApi;
+ 
++@SuppressWarnings({"deprecation", "DeprecatedIsStillUsed"})
+ @PublicApi
+ public class CommonStatusCodes {
+     public static final int SUCCESS_CACHE = -1;
+
+File: play-services-api/src/main/java/com/google/android/gms/auth/api/credentials/HintRequest.java
+Patch:
+@@ -1,6 +1,9 @@
+ /*
+  * SPDX-FileCopyrightText: 2021, microG Project Team
+  * SPDX-License-Identifier: Apache-2.0
++ * Notice: Portions of this file are reproduced from work created and shared by Google and used
++ *         according to terms described in the Creative Commons 4.0 Attribution License.
++ *         See https://developers.google.com/readme/policies for details.
+  */
+ 
+ package com.google.android.gms.auth.api.credentials;
+
+File: play-services-api/src/main/java/com/google/android/gms/auth/api/credentials/IdentityProviders.java
+Patch:
+@@ -1,6 +1,9 @@
+ /*
+  * SPDX-FileCopyrightText: 2021, microG Project Team
+  * SPDX-License-Identifier: Apache-2.0
++ * Notice: Portions of this file are reproduced from work created and shared by Google and used
++ *         according to terms described in the Creative Commons 4.0 Attribution License.
++ *         See https://developers.google.com/readme/policies for details.
+  */
+ 
+ package com.google.android.gms.auth.api.credentials;
+
+File: play-services-core/src/main/java/org/microg/gms/people/PeopleManager.java
+Patch:
+@@ -45,7 +45,7 @@ public class PeopleManager {
+     public static final String USERINFO_URL = "https://www.googleapis.com/oauth2/v1/userinfo";
+     public static final String REGEX_SEARCH_USER_PHOTO = "https?\\:\\/\\/lh([0-9]*)\\.googleusercontent\\.com/";
+ 
+-    public static File getOwnerAvaterFile(Context context, String accountName, boolean network) {
++    public static File getOwnerAvatarFile(Context context, String accountName, boolean network) {
+         DatabaseHelper databaseHelper = new DatabaseHelper(context);
+         Cursor cursor = databaseHelper.getOwner(accountName);
+         String url = null;
+@@ -78,7 +78,7 @@ public static File getOwnerAvaterFile(Context context, String accountName, boole
+     }
+ 
+     public static Bitmap getOwnerAvatarBitmap(Context context, String accountName, boolean network) {
+-        File avaterFile = getOwnerAvaterFile(context, accountName, network);
++        File avaterFile = getOwnerAvatarFile(context, accountName, network);
+         if (avaterFile == null) return null;
+         return BitmapFactory.decodeFile(avaterFile.getPath());
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/people/PeopleServiceImpl.java
+Patch:
+@@ -127,7 +127,7 @@ public void run() {
+                 extras.putBoolean("rewindable", false);
+                 extras.putInt("width", 0);
+                 extras.putInt("height", 0);
+-                File avaterFile = PeopleManager.getOwnerAvaterFile(context, account, true);
++                File avaterFile = PeopleManager.getOwnerAvatarFile(context, account, true);
+                 try {
+                     ParcelFileDescriptor fileDescriptor = null;
+                     if (avaterFile != null) {
+
+File: play-services-basement/src/main/java/org/microg/gms/common/GmsService.java
+Patch:
+@@ -101,6 +101,7 @@ public enum GmsService {
+     WORK_ACCOUNT(120),
+     AD_CACHE(123, "com.google.android.gms.ads.service.CACHE"),
+     DYNAMIC_LINKS(131, "com.google.firebase.dynamiclinks.service.START"),
++    IDENTITY_SIGN_IN(212, "com.google.android.gms.auth.api.identity.service.signin.START"),
+     NEARBY_EXPOSURE(236, "com.google.android.gms.nearby.exposurenotification.START"),
+     ;
+ 
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinService.java
+Patch:
+@@ -32,13 +32,16 @@
+ 
+ import androidx.legacy.content.WakefulBroadcastReceiver;
+ 
++import com.google.android.gms.R;
+ import com.google.android.gms.checkin.internal.ICheckinService;
+ 
+ import org.microg.gms.auth.AuthConstants;
++import org.microg.gms.common.ForegroundServiceInfo;
+ import org.microg.gms.common.ForegroundServiceContext;
+ import org.microg.gms.gcm.McsService;
+ import org.microg.gms.people.PeopleManager;
+ 
++@ForegroundServiceInfo(value = "Google device registration", res = R.string.service_name_checkin)
+ public class CheckinService extends IntentService {
+     private static final String TAG = "GmsCheckinSvc";
+     public static final long MAX_VALID_CHECKIN_AGE = 24 * 60 * 60 * 1000; // 12 hours
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsService.java
+Patch:
+@@ -40,10 +40,12 @@
+ 
+ import androidx.legacy.content.WakefulBroadcastReceiver;
+ 
++import com.google.android.gms.R;
+ import com.squareup.wire.Message;
+ 
+ import org.microg.gms.checkin.LastCheckinInfo;
+ import org.microg.gms.common.ForegroundServiceContext;
++import org.microg.gms.common.ForegroundServiceInfo;
+ import org.microg.gms.common.PackageUtils;
+ import org.microg.gms.gcm.mcs.AppData;
+ import org.microg.gms.gcm.mcs.Close;
+@@ -106,6 +108,7 @@
+ import static org.microg.gms.gcm.McsConstants.MSG_OUTPUT_READY;
+ import static org.microg.gms.gcm.McsConstants.MSG_TEARDOWN;
+ 
++@ForegroundServiceInfo(value = "Cloud messaging", res = R.string.service_name_mcs)
+ public class McsService extends Service implements Handler.Callback {
+     private static final String TAG = "GmsGcmMcsSvc";
+ 
+
+File: play-services-base-core/src/main/java/org/microg/gms/common/ForegroundServiceContext.java
+Patch:
+@@ -50,7 +50,7 @@ private static Notification buildForegroundNotification(Context context) {
+         NotificationChannel channel = new NotificationChannel("foreground-service", "Foreground Service", NotificationManager.IMPORTANCE_NONE);
+         channel.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
+         channel.setShowBadge(false);
+-        channel.setVibrationPattern(new long[0]);
++        channel.setVibrationPattern(new long[] {0});
+         context.getSystemService(NotificationManager.class).createNotificationChannel(channel);
+         return new Notification.Builder(context, channel.getId())
+                 .setOngoing(true)
+
+File: play-services-core/src/main/java/org/microg/gms/wallet/OwServiceImpl.java
+Patch:
+@@ -18,7 +18,6 @@
+ 
+ import android.content.Context;
+ import android.os.Bundle;
+-import android.os.Handler;
+ import android.os.Parcel;
+ import android.os.RemoteException;
+ import android.util.Log;
+
+File: play-services-conscrypt-provider-core/src/main/java/com/google/android/gms/common/security/ProviderInstallerImpl.java
+Patch:
+@@ -131,7 +131,7 @@ private static void loadConscryptDirect(Context context, String packageName) thr
+         // TODO: Move manual loading into helper function (as it is also used in both maps implementations)
+         String primaryCpuAbi = (String) ApplicationInfo.class.getField("primaryCpuAbi").get(otherAppInfo);
+         if (primaryCpuAbi != null) {
+-            String path = "lib/" + primaryCpuAbi + "/libconscrypt_jni.so";
++            String path = "lib/" + primaryCpuAbi + "/libconscrypt_gmscore_jni.so";
+             File cacheFile = new File(context.createPackageContext(packageName, 0).getCacheDir().getAbsolutePath() + "/.gmscore/" + path);
+             cacheFile.getParentFile().mkdirs();
+             File apkFile = new File(context.getPackageCodePath());
+@@ -144,7 +144,7 @@ private static void loadConscryptDirect(Context context, String packageName) thr
+                     Log.d(TAG, "Can't load native library: " + path + " does not exist in " + apkFile);
+                 }
+             }
+-            Log.d(TAG, "Loading conscrypt_jni from " + cacheFile.getPath());
++            Log.d(TAG, "Loading conscrypt_gmscore_jni from " + cacheFile.getPath());
+             System.load(cacheFile.getAbsolutePath());
+ 
+             Class<NativeCrypto> clazz = NativeCrypto.class;
+
+File: play-services-basement/src/main/java/org/microg/gms/common/Constants.java
+Patch:
+@@ -17,7 +17,7 @@
+ package org.microg.gms.common;
+ 
+ public class Constants {
+-    public static final int MAX_REFERENCE_VERSION = 203915 * 1000;
++    public static final int MAX_REFERENCE_VERSION = 204215 * 1000;
+     public static final String GMS_PACKAGE_NAME = "com.google.android.gms";
+     public static final String GSF_PACKAGE_NAME = "com.google.android.gsf";
+     public static final String GMS_PACKAGE_SIGNATURE_SHA1 = "38918a453d07199354f8b19af05ec6562ced5788";
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/TriggerReceiver.java
+Patch:
+@@ -31,20 +31,20 @@
+ 
+ public class TriggerReceiver extends WakefulBroadcastReceiver {
+     private static final String TAG = "GmsCheckinTrigger";
++    private static boolean registered = false;
+ 
+     @Override
+     public void onReceive(Context context, Intent intent) {
+         try {
+             boolean force = "android.provider.Telephony.SECRET_CODE".equals(intent.getAction());
+-            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+ 
+             if (CheckinPrefs.get(context).isEnabled() || force) {
+-                if (ConnectivityManager.CONNECTIVITY_ACTION.equals(intent.getAction()) &&
+-                        LastCheckinInfo.read(context).lastCheckin > System.currentTimeMillis() - REGULAR_CHECKIN_INTERVAL) {
++                if (LastCheckinInfo.read(context).lastCheckin > System.currentTimeMillis() - REGULAR_CHECKIN_INTERVAL && !force) {
+                     CheckinService.schedule(context);
+                     return;
+                 }
+ 
++                ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+                 NetworkInfo networkInfo = cm.getActiveNetworkInfo();
+                 if (networkInfo != null && networkInfo.isConnected() || force) {
+                     Intent subIntent = new Intent(context, CheckinService.class);
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/TriggerReceiver.java
+Patch:
+@@ -50,7 +50,6 @@ public synchronized static void register(Context context) {
+         }
+     }
+ 
+-
+     @Override
+     public void onReceive(Context context, Intent intent) {
+         try {
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/LastCheckinInfo.java
+Patch:
+@@ -55,6 +55,6 @@ public void write(Context context) {
+                 .putLong(PREF_SECURITY_TOKEN, securityToken)
+                 .putString(PREF_VERSION_INFO, versionInfo)
+                 .putString(PREF_DEVICE_DATA_VERSION_INFO, deviceDataVersionInfo)
+-                .apply();
++                .commit();
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/TriggerReceiver.java
+Patch:
+@@ -45,7 +45,7 @@ public class TriggerReceiver extends WakefulBroadcastReceiver {
+     public synchronized static void register(Context context) {
+         if (SDK_INT >= N && !registered) {
+             IntentFilter intentFilter = new IntentFilter("android.net.conn.CONNECTIVITY_CHANGE");
+-            context.registerReceiver(new TriggerReceiver(), intentFilter);
++            context.getApplicationContext().registerReceiver(new TriggerReceiver(), intentFilter);
+             registered = true;
+         }
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/GcmPrefs.java
+Patch:
+@@ -115,7 +115,7 @@ public int getHeartbeatMsFor(NetworkInfo info) {
+ 
+     public int getHeartbeatMsFor(String pref, boolean rawRoaming) {
+         if (PREF_NETWORK_ROAMING.equals(pref) && (rawRoaming || networkRoaming != 0)) {
+-            return networkRoaming * 6000;
++            return networkRoaming * 60000;
+         } else if (PREF_NETWORK_MOBILE.equals(pref)) {
+             if (networkMobile != 0) return networkMobile * 60000;
+             else return learntMobile;
+
+File: play-services-gcm/src/main/java/com/google/android/gms/gcm/GoogleCloudMessaging.java
+Patch:
+@@ -167,7 +167,7 @@ public static GoogleCloudMessaging getInstance(Context context) {
+      *
+      * @return The message type or null if the intent is not a GCM intent
+      */
+-    public String getMessageType(Intent intent) throws IOException {
++    public String getMessageType(Intent intent) {
+         if (intent == null || !ACTION_C2DM_RECEIVE.equals(intent.getAction())) return null;
+         if (!intent.hasExtra(EXTRA_MESSAGE_TYPE)) return MESSAGE_TYPE_MESSAGE;
+         return intent.getStringExtra(EXTRA_MESSAGE_TYPE);
+@@ -319,4 +319,4 @@ private String getFrom(String to) {
+         }
+         return InstanceID.getInstance(context).getStore().get("", to, INSTANCE_ID_SCOPE);
+     }
+-}
+\ No newline at end of file
++}
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/PushRegisterHandler.java
+Patch:
+@@ -145,7 +145,7 @@ public void handleMessage(Message msg) {
+                         .checkin(LastCheckinInfo.read(context))
+                         .app(packageName)
+                         .delete(delete)
+-                        .appid(subdata.getString("appid"), subdata.getString("gmp_app_id")),
++                        .extraParams(subdata),
+                 bundle -> sendReply(what, id, replyTo, bundle));
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthManagerServiceImpl.java
+Patch:
+@@ -17,6 +17,7 @@
+ package org.microg.gms.auth;
+ 
+ import android.accounts.Account;
++import android.accounts.AccountManager;
+ import android.app.NotificationManager;
+ import android.app.PendingIntent;
+ import android.content.Context;
+@@ -167,6 +168,7 @@ public Bundle clearToken(String token, Bundle extras) throws RemoteException {
+         packageName = PackageUtils.getAndCheckCallingPackage(context, packageName, extras.getInt(KEY_CALLER_UID, 0), extras.getInt(KEY_CALLER_PID, 0));
+ 
+         Log.d(TAG, "clearToken: token:" + token + " extras:" + extras);
++        AccountManager.get(context).invalidateAuthToken(AuthConstants.DEFAULT_ACCOUNT_TYPE, token);
+         return null;
+     }
+ 
+
+File: play-services-maps-core-mapbox/src/main/java/com/google/android/gms/maps/internal/CreatorImpl.java
+Patch:
+@@ -65,9 +65,9 @@ public IBitmapDescriptorFactoryDelegate newBitmapDescriptorFactoryDelegate() {
+ 
+     @Override
+     public void initV2(IObjectWrapper resources, int flags) {
+-        BitmapDescriptorFactoryImpl.INSTANCE.initialize(ObjectWrapper.unwrapTyped(resources, Resources.class));
++        BitmapDescriptorFactoryImpl.INSTANCE.initialize(ObjectWrapper.unwrapTyped(resources, Resources.class), null);
+         //ResourcesContainer.set((Resources) ObjectWrapper.unwrap(resources));
+-        Log.d(TAG, "initV2");
++        Log.d(TAG, "initV2 " + flags);
+     }
+ 
+     @Override
+
+File: play-services-basement/src/main/java/com/google/android/gms/common/data/DataHolder.java
+Patch:
+@@ -153,7 +153,7 @@ public static DataHolder empty(int statusCode) {
+     }
+ 
+     @SuppressWarnings("deprecation")
+-    @SuppressLint("NewApi")
++    @SuppressLint({"NewApi", "ObsoleteSdkInt"})
+     static int getCursorType(Cursor cursor, int i) {
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
+             return cursor.getType(i);
+
+File: play-services-core/src/main/java/com/google/android/gms/common/security/ProviderInstallerImpl.java
+Patch:
+@@ -34,6 +34,7 @@
+ import java.lang.reflect.InvocationTargetException;
+ import java.lang.reflect.Method;
+ import java.security.Security;
++import java.util.Arrays;
+ import java.util.Collections;
+ import java.util.List;
+ import java.util.Set;
+@@ -45,7 +46,7 @@
+ 
+ public class ProviderInstallerImpl {
+     private static final String TAG = "GmsProviderInstaller";
+-    private static final List<String> DISABLED = Collections.singletonList("com.discord");
++    private static final List<String> DISABLED = Collections.unmodifiableList(Arrays.asList("com.discord", "com.bankid.bus"));
+ 
+     public static void insertProvider(Context context) {
+         String packageName = PackageUtils.packageFromProcessId(context, Process.myPid());
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/UnregisterReceiver.java
+Patch:
+@@ -28,7 +28,7 @@ public void run() {
+                         List<GcmDatabase.Registration> registrations = database.getRegistrationsByApp(packageName);
+                         boolean deletedAll = true;
+                         for (GcmDatabase.Registration registration : registrations) {
+-                            deletedAll &= PushRegisterService.unregister(context, registration.packageName, registration.signature, null, null).deleted != null;
++                            deletedAll &= PushRegisterManager.unregister(context, registration.packageName, registration.signature, null, null).deleted != null;
+                         }
+                         if (deletedAll) {
+                             database.removeApp(packageName);
+
+File: play-services-core/src/main/java/org/microg/gms/ui/AskPushPermission.java
+Patch:
+@@ -66,7 +66,7 @@ public void onClick(View v) {
+                     new Thread(new Runnable() {
+                         @Override
+                         public void run() {
+-                            PushRegisterService.registerAndReply(AskPushPermission.this, intent, packageName, requestId);
++                            PushRegisterService.registerAndReply(AskPushPermission.this, database, intent, packageName, requestId);
+                         }
+                     }).start();
+                     finish();
+
+File: play-services-core/src/main/java/org/microg/gms/ui/GcmAppFragment.java
+Patch:
+@@ -7,7 +7,6 @@
+ import android.net.Uri;
+ import android.os.Bundle;
+ import android.provider.Settings;
+-import android.support.annotation.StringRes;
+ import android.support.v14.preference.SwitchPreference;
+ import android.support.v4.app.Fragment;
+ import android.support.v7.app.AlertDialog;
+@@ -21,7 +20,7 @@
+ import com.google.android.gms.R;
+ 
+ import org.microg.gms.gcm.GcmDatabase;
+-import org.microg.gms.gcm.PushRegisterService;
++import org.microg.gms.gcm.PushRegisterManager;
+ import org.microg.tools.ui.AbstractSettingsActivity;
+ import org.microg.tools.ui.ResourceSettingsFragment;
+ 
+@@ -185,7 +184,7 @@ public void onClick(DialogInterface dialog, int which) {
+                             @Override
+                             public void run() {
+                                 for (GcmDatabase.Registration registration : registrations) {
+-                                    PushRegisterService.unregister(getContext(), registration.packageName, registration.signature, null, null);
++                                    PushRegisterManager.unregister(getContext(), registration.packageName, registration.signature, null, null);
+                                 }
+                                 getActivity().runOnUiThread(new Runnable() {
+                                     @Override
+
+File: play-services-core/src/main/java/org/microg/gms/common/PackageUtils.java
+Patch:
+@@ -43,7 +43,8 @@ public class PackageUtils {
+             "aa87ce1260c008d801197bb4ecea4ab8929da246" /* Google Inbox */,
+             "01b844184e360686aa98b48eb16e05c76d4a72ad" /* Project Fi */,
+             "35b438fe1bc69d975dc8702dc16ab69ebf65f26f" /* Waze */,
+-            "0cbe08032217d45e61c0bc72f294395ee9ecb5d5" /* Google Trip */};
++            "0cbe08032217d45e61c0bc72f294395ee9ecb5d5" /* Google Trips */,
++            "188c5ca3863fa121216157a5baa80755ceda70ab" /* Google Cardboard Camera */};
+ 
+     public static boolean isGoogleSignedPackages(Context context, String packageName) {
+         return Arrays.asList(KNOWN_GOOGLE_SIGNATURES).contains(firstSignatureDigest(context, packageName));
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/PushRegisterService.java
+Patch:
+@@ -101,7 +101,7 @@ public static RegisterResponse unregister(Context context, String packageName, S
+     protected void onHandleIntent(Intent intent) {
+         Log.d(TAG, "onHandleIntent: " + intent);
+         Log.d(TAG, "onHandleIntent: " + intent.getExtras());
+-        if (GcmPrefs.get(this).isGcmEnabled()) {
++        if (GcmPrefs.get(this).isEnabled()) {
+             if (LastCheckinInfo.read(this).lastCheckin > 0) {
+                 try {
+                     if (ACTION_C2DM_UNREGISTER.equals(intent.getAction()) ||
+
+File: play-services-core/src/main/java/org/microg/gms/ui/Conditions.java
+Patch:
+@@ -46,7 +46,7 @@ public class Conditions {
+                 @Override
+                 public boolean isActive(Context context) {
+                     if (SDK_INT < 23) return false;
+-                    if (!GcmPrefs.get(context).isGcmEnabled()) return false;
++                    if (!GcmPrefs.get(context).isEnabled()) return false;
+                     PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                     return !pm.isIgnoringBatteryOptimizations(context.getPackageName());
+                 }
+
+File: play-services-core/src/main/java/org/microg/gms/ui/SettingsActivity.java
+Patch:
+@@ -72,7 +72,7 @@ public void onResume() {
+ 
+         private void updateDetails() {
+             findPreference(PREF_ABOUT).setSummary(getString(R.string.about_version_str, AboutFragment.getSelfVersion(getContext())));
+-            if (GcmPrefs.get(getContext()).isGcmEnabled()) {
++            if (GcmPrefs.get(getContext()).isEnabled()) {
+                 GcmDatabase database = new GcmDatabase(getContext());
+                 int regCount = database.getRegistrationList().size();
+                 database.close();
+
+File: play-services-core/src/main/java/org/microg/gms/ui/SettingsActivity.java
+Patch:
+@@ -75,9 +75,9 @@ private void updateDetails() {
+                 GcmDatabase database = new GcmDatabase(getContext());
+                 int regCount = database.getRegistrationList().size();
+                 database.close();
+-                findPreference(PREF_GCM).setSummary(getString(R.string.v7_preference_on) + " / " + getResources().getQuantityString(R.plurals.gcm_registered_apps_counter, regCount, regCount));
++                findPreference(PREF_GCM).setSummary(getString(R.string.abc_capital_on) + " / " + getResources().getQuantityString(R.plurals.gcm_registered_apps_counter, regCount, regCount));
+             } else {
+-                findPreference(PREF_GCM).setSummary(R.string.v7_preference_off);
++                findPreference(PREF_GCM).setSummary(R.string.abc_capital_off);
+             }
+             findPreference(PREF_SNET).setSummary(SafetyNetPrefs.get(getContext()).isEnabled() ? R.string.service_status_enabled : R.string.service_status_disabled);
+ 
+
+File: microg-ui-tools/src/main/java/org/microg/tools/ui/SwitchBar.java
+Patch:
+@@ -72,7 +72,7 @@ public SwitchBar(Context context, AttributeSet attrs) {
+         if (SDK_INT > Build.VERSION_CODES.JELLY_BEAN) {
+             mTextView.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+         }
+-        mLabel = getResources().getString(R.string.v7_preference_off);
++        mLabel = getResources().getString(R.string.abc_capital_off);
+         mSummarySpan = new TextAppearanceSpan(context, android.support.v7.appcompat.R.style.TextAppearance_AppCompat_Widget_Switch);
+         updateText();
+ 
+@@ -99,7 +99,7 @@ public void onSwitchChanged(SwitchCompat switchView, boolean isChecked) {
+ 
+     public void setTextViewLabel(boolean isChecked) {
+         mLabel = getResources()
+-                .getString(isChecked ? R.string.v7_preference_on : R.string.v7_preference_off);
++                .getString(isChecked ? R.string.abc_capital_on : R.string.abc_capital_off);
+         updateText();
+     }
+ 
+
+File: play-services-core/src/main/java/org/microg/gms/maps/BackendMap.java
+Patch:
+@@ -23,7 +23,6 @@
+ import android.os.RemoteException;
+ import android.util.Log;
+ import android.view.View;
+-import android.widget.FrameLayout;
+ 
+ import com.google.android.gms.maps.internal.ISnapshotReadyCallback;
+ import com.google.android.gms.maps.model.CameraPosition;
+@@ -331,7 +330,8 @@ public void setTiltGesturesEnabled(boolean enabled) {
+ 
+     @Override
+     public void onMapEvent(Event event, MapPosition mapPosition) {
+-        cameraUpdateListener.onCameraUpdate(GmsMapsTypeHelper.toCameraPosition(mapPosition));
++        if (event == org.oscim.map.Map.ANIM_END || event == org.oscim.map.Map.POSITION_EVENT || event == org.oscim.map.Map.MOVE_EVENT)
++            cameraUpdateListener.onCameraUpdate(GmsMapsTypeHelper.toCameraPosition(mapPosition));
+     }
+ 
+     public interface CameraUpdateListener {
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinManager.java
+Patch:
+@@ -43,7 +43,7 @@ public static synchronized LastCheckinInfo checkin(Context context, boolean forc
+         LastCheckinInfo info = LastCheckinInfo.read(context);
+         if (!force && info.lastCheckin > System.currentTimeMillis() - MIN_CHECKIN_INTERVAL)
+             return null;
+-        if (PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_ENABLE_CHECKIN, false))
++        if (!PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_ENABLE_CHECKIN, false))
+             return null;
+         List<CheckinClient.Account> accounts = new ArrayList<CheckinClient.Account>();
+         AccountManager accountManager = AccountManager.get(context);
+
+File: play-services-core/src/main/java/org/microg/gms/wearable/NodeDatabaseHelper.java
+Patch:
+@@ -88,7 +88,7 @@ public synchronized Cursor getDataItemsForDataHolderByHostAndPath(String package
+             selection = "packageName = ? AND signatureDigest = ? AND host = ? AND path LIKE ?";
+         }
+         selection += " AND deleted=0 AND assetsPresent !=0";
+-        return getReadableDatabase().rawQuery("SELECT null AS host,printf(\"wear://%s%s\",host,path) AS path,data AS data,\'\' AS tags,assetname AS asset_key,assets_digest AS asset_id FROM dataItemsAndAssets WHERE " + selection, params);
++        return getReadableDatabase().rawQuery("SELECT host AS host,path AS path,data AS data,\'\' AS tags,assetname AS asset_key,assets_digest AS asset_id FROM dataItemsAndAssets WHERE " + selection, params);
+     }
+ 
+     public synchronized Cursor getDataItemsByHostAndPath(String packageName, String signatureDigest, String host, String path) {
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/PushRegisterService.java
+Patch:
+@@ -140,6 +140,7 @@ private void register(final Intent intent) {
+                 Intent i = new Intent(this, AskPushPermission.class);
+                 i.putExtra(EXTRA_PENDING_INTENT, intent);
+                 i.putExtra(EXTRA_APP, packageName);
++                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                 startActivity(i);
+             } catch (PackageManager.NameNotFoundException e) {
+                 replyNotAvailable(this, intent, packageName);
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/TriggerReceiver.java
+Patch:
+@@ -26,7 +26,7 @@
+ 
+ public class TriggerReceiver extends WakefulBroadcastReceiver {
+     private static final String TAG = "GmsCheckinTrigger";
+-    private static final String PREF_ENABLE_CHECKIN = "checkin_enable_service";
++    public static final String PREF_ENABLE_CHECKIN = "checkin_enable_service";
+     private static final long REGULAR_CHECKIN_INTERVAL = 12 * 60 * 60 * 1000; // 12 hours
+ 
+     @Override
+
+File: play-services-core/src/main/java/org/microg/gms/common/PackageUtils.java
+Patch:
+@@ -99,6 +99,7 @@ public static String firstSignatureDigest(Context context, String packageName) {
+ 
+     @SuppressWarnings("deprecation")
+     public static String packageFromPendingIntent(PendingIntent pi) {
++        if (pi == null) return null;
+         if (SDK_INT < android.os.Build.VERSION_CODES.JELLY_BEAN_MR1) {
+             return pi.getTargetPackage();
+         } else {
+
+File: play-services-core/src/main/java/org/microg/gms/ui/GcmFragment.java
+Patch:
+@@ -213,6 +213,7 @@ public GcmAppPreference(Context context, GcmDatabase.App app) {
+                 setIcon(packageManager.getApplicationIcon(applicationInfo));
+             } catch (PackageManager.NameNotFoundException e) {
+                 setTitle(app.packageName);
++                setIcon(android.R.drawable.sym_def_app_icon);
+             }
+             setOnPreferenceClickListener(this);
+             updateViewDetails();
+
+File: play-services-core/src/main/java/org/microg/gms/maps/BackendMapView.java
+Patch:
+@@ -152,8 +152,8 @@ private void initialize() {
+         tileSource.setCache(cache);
+         VectorTileLayer baseLayer = map().setBaseMap(tileSource);
+         Layers layers = map().layers();
+-        layers.add(labels = new LabelLayer(map(), baseLayer));
+         layers.add(drawables = new ClearableVectorLayer(map()));
++        layers.add(labels = new LabelLayer(map(), baseLayer));
+         layers.add(buildings = new BuildingLayer(map(), baseLayer));
+         layers.add(items = new ItemizedLayer<MarkerItem>(map(), new MarkerSymbol(
+                 new AndroidBitmap(BitmapFactory.decodeResource(getContext().getResources(), R.drawable.nop)), 0.5F, 1)));
+
+File: play-services-core/src/main/java/org/microg/gms/ui/GcmAppFragment.java
+Patch:
+@@ -74,6 +74,7 @@ public void onClick(View v) {
+                 });
+                 view.setClickable(true);
+             } catch (Exception e) {
++                appName = packageName;
+                 ((TextView) activity.findViewById(R.id.app_name)).setText(packageName);
+             }
+         }
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AccountContentProvider.java
+Patch:
+@@ -59,7 +59,7 @@ public Bundle call(String method, String arg, Bundle extras) {
+             if (getContext().checkCallingPermission(Manifest.permission.GET_ACCOUNTS) != PackageManager.PERMISSION_GRANTED)
+                 throw new SecurityException("Access denied, missing GET_ACCOUNTS or EXTENDED_ACCESS permission");
+         }
+-        if (PROVIDER_METHOD_GET_ACCOUNTS.equals(method) && getContext().getString(R.string.google_account_type).equals(arg)) {
++        if (PROVIDER_METHOD_GET_ACCOUNTS.equals(method) && AuthConstants.DEFAULT_ACCOUNT_TYPE.equals(arg)) {
+             Bundle result = new Bundle();
+             result.putParcelableArray(PROVIDER_EXTRA_ACCOUNTS, AccountManager.get(getContext()).getAccountsByType(arg));
+             return result;
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthManager.java
+Patch:
+@@ -56,7 +56,7 @@ public AuthManager(Context context, String accountName, String packageName, Stri
+ 
+     public String getAccountType() {
+         if (accountType == null)
+-            accountType = context.getString(R.string.google_account_type);
++            accountType = AuthConstants.DEFAULT_ACCOUNT_TYPE;
+         return accountType;
+     }
+ 
+
+File: play-services-core/src/main/java/org/microg/gms/auth/login/LoginActivity.java
+Patch:
+@@ -44,6 +44,7 @@
+ import com.google.android.gms.R;
+ 
+ import org.json.JSONArray;
++import org.microg.gms.auth.AuthConstants;
+ import org.microg.gms.auth.AuthManager;
+ import org.microg.gms.auth.AuthRequest;
+ import org.microg.gms.auth.AuthResponse;
+@@ -90,7 +91,7 @@ public class LoginActivity extends AssistantActivity {
+     @Override
+     protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+-        accountType = getString(R.string.google_account_type);
++        accountType = AuthConstants.DEFAULT_ACCOUNT_TYPE;
+         accountManager = AccountManager.get(LoginActivity.this);
+         inputMethodManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+         webView = createWebView(this);
+
+File: play-services-core/src/main/java/org/microg/gms/auth/loginservice/AccountAuthenticator.java
+Patch:
+@@ -30,6 +30,7 @@
+ import com.google.android.gms.R;
+ 
+ import org.microg.gms.auth.AskPermissionActivity;
++import org.microg.gms.auth.AuthConstants;
+ import org.microg.gms.auth.AuthManager;
+ import org.microg.gms.auth.AuthResponse;
+ import org.microg.gms.auth.login.LoginActivity;
+@@ -55,7 +56,7 @@ class AccountAuthenticator extends AbstractAccountAuthenticator {
+     public AccountAuthenticator(Context context) {
+         super(context);
+         this.context = context;
+-        this.accountType = context.getString(R.string.google_account_type);
++        this.accountType = AuthConstants.DEFAULT_ACCOUNT_TYPE;
+     }
+ 
+     @Override
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinManager.java
+Patch:
+@@ -23,6 +23,7 @@
+ 
+ import com.google.android.gms.R;
+ 
++import org.microg.gms.auth.AuthConstants;
+ import org.microg.gms.auth.AuthRequest;
+ import org.microg.gms.common.Constants;
+ import org.microg.gms.common.DeviceConfiguration;
+@@ -43,7 +44,7 @@ public static synchronized LastCheckinInfo checkin(Context context, boolean forc
+             return null;
+         List<CheckinClient.Account> accounts = new ArrayList<CheckinClient.Account>();
+         AccountManager accountManager = AccountManager.get(context);
+-        String accountType = context.getString(R.string.google_account_type);
++        String accountType = AuthConstants.DEFAULT_ACCOUNT_TYPE;
+         for (Account account : accountManager.getAccountsByType(accountType)) {
+             String token = new AuthRequest()
+                     .email(account.name).token(accountManager.getPassword(account))
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinService.java
+Patch:
+@@ -28,6 +28,7 @@
+ import com.google.android.gms.R;
+ import com.google.android.gms.checkin.internal.ICheckinService;
+ 
++import org.microg.gms.auth.AuthConstants;
+ import org.microg.gms.gcm.McsService;
+ import org.microg.gms.people.PeopleManager;
+ 
+@@ -55,7 +56,7 @@ protected void onHandleIntent(Intent intent) {
+             LastCheckinInfo info = CheckinManager.checkin(this, intent.getBooleanExtra(EXTRA_FORCE_CHECKIN, false));
+             if (info != null) {
+                 Log.d(TAG, "Checked in as " + Long.toHexString(info.androidId));
+-                String accountType = getString(R.string.google_account_type);
++                String accountType = AuthConstants.DEFAULT_ACCOUNT_TYPE;
+                 for (Account account : AccountManager.get(this).getAccountsByType(accountType)) {
+                     PeopleManager.loadUserInfo(this, account);
+                 }
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/LastCheckinInfo.java
+Patch:
+@@ -55,6 +55,6 @@ public void write(Context context) {
+                 .putLong(PREF_SECURITY_TOKEN, securityToken)
+                 .putString(PREF_VERSION_INFO, versionInfo)
+                 .putString(PREF_DEVICE_DATA_VERSION_INFO, deviceDataVersionInfo)
+-                .commit();
++                .apply();
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/RegisterResponse.java
+Patch:
+@@ -17,6 +17,7 @@
+ package org.microg.gms.gcm;
+ 
+ import org.microg.gms.common.HttpFormClient.ResponseHeader;
++import org.microg.gms.common.HttpFormClient.ResponseStatusText;
+ 
+ import static org.microg.gms.common.HttpFormClient.ResponseField;
+ 
+@@ -27,6 +28,8 @@ public class RegisterResponse {
+     public String retryAfter;
+     @ResponseField("deleted")
+     public String deleted;
++    @ResponseStatusText
++    public String responseText;
+ 
+     @Override
+     public String toString() {
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/TriggerReceiver.java
+Patch:
+@@ -32,14 +32,13 @@
+ 
+ public class TriggerReceiver extends WakefulBroadcastReceiver {
+     private static final String TAG = "GmsGcmTrigger";
+-    private static final String PREF_ENABLE_GCM = "gcm_enable_mcs_service";
+ 
+     @Override
+     public void onReceive(Context context, Intent intent) {
+         boolean force = "android.provider.Telephony.SECRET_CODE".equals(intent.getAction());
+         ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+ 
+-        if (PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_ENABLE_GCM, false) || force) {
++        if (GcmPrefs.get(context).isGcmEnabled() || force) {
+             if (ConnectivityManager.CONNECTIVITY_ACTION.equals(intent.getAction())) {
+                 McsService.resetCurrentDelay();
+             }
+
+File: play-services-core/src/main/java/org/microg/gms/people/PeopleServiceImpl.java
+Patch:
+@@ -33,6 +33,7 @@
+ import com.google.android.gms.people.internal.IPeopleService;
+ import com.google.android.gms.people.model.AccountMetadata;
+ 
++import org.microg.gms.auth.AuthConstants;
+ import org.microg.gms.common.NonCancelToken;
+ import org.microg.gms.common.PackageUtils;
+ 
+@@ -53,7 +54,7 @@ public void loadOwners(final IPeopleCallbacks callbacks, boolean var2, boolean v
+         PackageUtils.assertExtendedAccess(context);
+         AccountManager accountManager = AccountManager.get(context);
+         Bundle accountMetadata = new Bundle();
+-        String accountType = context.getString(R.string.google_account_type);
++        String accountType = AuthConstants.DEFAULT_ACCOUNT_TYPE;
+         for (Account account : accountManager.getAccountsByType(accountType)) {
+             if (accountName == null || account.name.equals(accountName)) {
+                 accountMetadata.putParcelable(account.name, new AccountMetadata());
+
+File: play-services-core/src/main/java/org/microg/gms/ui/PlacePickerActivity.java
+Patch:
+@@ -25,6 +25,7 @@
+ import android.os.Bundle;
+ import android.support.annotation.NonNull;
+ import android.support.v4.app.ActivityCompat;
++import android.support.v4.view.MenuItemCompat;
+ import android.support.v7.app.AppCompatActivity;
+ import android.support.v7.widget.SearchView;
+ import android.support.v7.widget.Toolbar;
+@@ -153,7 +154,7 @@ public boolean onCreateOptionsMenu(Menu menu) {
+         super.onCreateOptionsMenu(menu);
+         MenuInflater inflater = getMenuInflater();
+         inflater.inflate(R.menu.pick_place, menu);
+-        SearchView searchView = (SearchView) menu.findItem(R.id.menu_action_search).getActionView();
++        SearchView searchView = (SearchView) MenuItemCompat.getActionView(menu.findItem(R.id.menu_action_search));
+         // TODO: search
+         return true;
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/location/LocationRequestHelper.java
+Patch:
+@@ -83,6 +83,7 @@ public LocationRequestHelper(Context context, boolean hasFinePermission, boolean
+      * @return whether to continue sending reports to this {@link LocationRequestHelper}
+      */
+     public boolean report(Location location) {
++        if (location == null) return true;
+         if (lastReport != null) {
+             if (location.getTime() - lastReport.getTime() < locationRequest.getFastestInterval()) {
+                 return true;
+
+File: play-services-core/src/main/java/org/microg/gms/auth/login/LoginActivity.java
+Patch:
+@@ -338,6 +338,7 @@ private static String buildUrl(String tmpl, Locale locale) {
+     }
+ 
+     private class JsBridge {
++        @SuppressWarnings("MissingPermission")
+         @JavascriptInterface
+         public final String getAccounts() {
+             Account[] accountsByType = accountManager.getAccountsByType(accountType);
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinManager.java
+Patch:
+@@ -36,6 +36,7 @@
+ public class CheckinManager {
+     private static final long MIN_CHECKIN_INTERVAL = 3 * 60 * 60 * 1000; // 3 hours
+ 
++    @SuppressWarnings("MissingPermission")
+     public static synchronized LastCheckinInfo checkin(Context context, boolean force) throws IOException {
+         LastCheckinInfo info = LastCheckinInfo.read(context);
+         if (!force && info.lastCheckin > System.currentTimeMillis() - MIN_CHECKIN_INTERVAL)
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinService.java
+Patch:
+@@ -48,6 +48,7 @@ public CheckinService() {
+         super(TAG);
+     }
+ 
++    @SuppressWarnings("MissingPermission")
+     @Override
+     protected void onHandleIntent(Intent intent) {
+         try {
+
+File: play-services-core/src/main/java/org/microg/gms/people/PeopleServiceImpl.java
+Patch:
+@@ -46,6 +46,7 @@ public PeopleServiceImpl(Context context) {
+         this.context = context;
+     }
+ 
++    @SuppressWarnings("MissingPermission")
+     @Override
+     public void loadOwners(final IPeopleCallbacks callbacks, boolean var2, boolean var3, final String accountName, String var5, int sortOrder) {
+         Log.d(TAG, "loadOwners: " + var2 + ", " + var3 + ", " + accountName + ", " + var5 + ", " + sortOrder);
+
+File: play-services-core/src/main/java/org/microg/gms/common/PackageUtils.java
+Patch:
+@@ -119,7 +119,7 @@ public static int versionCode(Context context, String packageName) {
+         try {
+             return context.getPackageManager().getPackageInfo(packageName, 0).versionCode;
+         } catch (PackageManager.NameNotFoundException e) {
+-            throw new RuntimeException(e);
++            return -1;
+         }
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/GcmPrefs.java
+Patch:
+@@ -38,7 +38,7 @@ public static GcmPrefs get(Context context) {
+         return INSTANCE;
+     }
+ 
+-    private int heartbeatMs = 60000;
++    private int heartbeatMs = 300000;
+     private boolean gcmLogEnabled = true;
+     private String lastPersistedId = "";
+ 
+@@ -53,7 +53,7 @@ public GcmPrefs(Context context) {
+     }
+ 
+     public void update() {
+-        heartbeatMs = Integer.parseInt(defaultPreferences.getString(PREF_GCM_HEARTBEAT, "60")) * 1000;
++        heartbeatMs = Integer.parseInt(defaultPreferences.getString(PREF_GCM_HEARTBEAT, "300")) * 1000;
+         gcmLogEnabled = defaultPreferences.getBoolean(PREF_GCM_LOG, true);
+         lastPersistedId = defaultPreferences.getString(PREF_LAST_PERSISTENT_ID, "");
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/common/RemoteListenerProxy.java
+Patch:
+@@ -66,6 +66,7 @@ private boolean connect() {
+                         if (!connecting) Log.d(TAG, "Could not connect to: " + intent);
+                         return connecting;
+                     }
++                    Log.d(TAG, "Unable to resolve: " + searchIntent);
+                     return false;
+                 } catch (Exception e) {
+                     Log.w(TAG, e);
+@@ -95,6 +96,8 @@ public void onServiceConnected(ComponentName name, IBinder service) {
+                 }
+                 waiting.clear();
+                 context.unbindService(RemoteListenerProxy.this);
++                connecting = false;
++                remote = null;
+             }
+         }
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/people/DatabaseHelper.java
+Patch:
+@@ -22,6 +22,8 @@
+ import android.database.sqlite.SQLiteDatabase;
+ import android.database.sqlite.SQLiteOpenHelper;
+ 
++import java.util.Set;
++
+ public class DatabaseHelper extends SQLiteOpenHelper {
+     private static final int DB_VERSION = 3;
+     private static final String DB_NAME = "pluscontacts.db";
+
+File: play-services-base/src/main/java/org/microg/gms/common/api/ResultCallbackHandler.java
+Patch:
+@@ -25,7 +25,7 @@
+ import com.google.android.gms.common.api.ResultCallback;
+ 
+ class ResultCallbackHandler<R extends Result> extends Handler {
+-    private static final String TAG = "GmsResultCallbackHandler";
++    private static final String TAG = "GmsResultCbackHandler";
+     public static final int CALLBACK_ON_COMPLETE = 1;
+     public static final int CALLBACK_ON_TIMEOUT = 2;
+ 
+
+File: play-services-core/src/main/java/org/microg/gms/ads/GService.java
+Patch:
+@@ -20,16 +20,16 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class GService extends BaseService {
+ 
+     public GService() {
+-        super("GmsAdsGSvc", Services.GSERVICES.SERVICE_ID, Services.ADREQUEST.SERVICE_ID);
++        super("GmsAdsGSvc", GmsService.GSERVICES, GmsService.ADREQUEST);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) {
+         // TODO
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AccountContentProvider.java
+Patch:
+@@ -54,7 +54,7 @@ public Bundle call(String method, String arg, Bundle extras) {
+         if (!PackageUtils.callerHasExtendedAccess(getContext())) {
+             String[] packagesForUid = getContext().getPackageManager().getPackagesForUid(Binder.getCallingUid());
+             if (packagesForUid != null && packagesForUid.length != 0)
+-                Log.w(TAG, "Not granting access to " + Arrays.toString(packagesForUid)
++                Log.w(TAG, "Not granting extended access to " + Arrays.toString(packagesForUid)
+                         + ", signature: " + PackageUtils.firstSignatureDigest(getContext(), packagesForUid[0]));
+             if (getContext().checkCallingPermission(Manifest.permission.GET_ACCOUNTS) != PackageManager.PERMISSION_GRANTED)
+                 throw new SecurityException("Access denied, missing GET_ACCOUNTS or EXTENDED_ACCESS permission");
+
+File: play-services-core/src/main/java/org/microg/gms/auth/SignInService.java
+Patch:
+@@ -23,15 +23,15 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class SignInService extends BaseService {
+     public SignInService() {
+-        super("GmsSignInSvc", Services.SIGN_IN.SERVICE_ID);
++        super("GmsSignInSvc", GmsService.SIGN_IN);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) throws RemoteException {
+         Log.d(TAG, "unimplemented Method: handleServiceRequest");
+ 
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/car/CarService.java
+Patch:
+@@ -20,15 +20,15 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class CarService extends BaseService {
+     public CarService() {
+-        super("GmsCarSvc", Services.CAR.SERVICE_ID);
++        super("GmsCarSvc", GmsService.CAR);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) {
+         // TODO
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/clearcut/ClearcutLoggerService.java
+Patch:
+@@ -22,17 +22,17 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class ClearcutLoggerService extends BaseService {
+     private ClearcutLoggerServiceImpl clearcutService = new ClearcutLoggerServiceImpl();
+ 
+     public ClearcutLoggerService() {
+-        super("GmsClearcutSvc", Services.CLEARCUT_LOGGER.SERVICE_ID);
++        super("GmsClearcutSvc", GmsService.CLEARCUT_LOGGER);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) throws RemoteException {
+         callback.onPostInitComplete(0, clearcutService.asBinder(), null);
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/drive/api/DriveApiService.java
+Patch:
+@@ -22,17 +22,17 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class DriveApiService extends BaseService {
+     private DriveServiceImpl impl = new DriveServiceImpl();
+ 
+     public DriveApiService() {
+-        super("GmsDriveApiSvc", Services.DRIVE.SERVICE_ID);
++        super("GmsDriveApiSvc", GmsService.DRIVE);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) throws RemoteException {
+         callback.onPostInitComplete(0, impl.asBinder(), null);
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/droidguard/DroidGuardService.java
+Patch:
+@@ -20,16 +20,16 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class DroidGuardService extends BaseService {
+ 
+     public DroidGuardService() {
+-        super("GmsDroidGuardSvc", Services.DROIDGUARD.SERVICE_ID);
++        super("GmsDroidGuardSvc", GmsService.DROIDGUARD);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) {
+         // TODO
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/feedback/FeedbackService.java
+Patch:
+@@ -20,15 +20,15 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class FeedbackService extends BaseService {
+     public FeedbackService() {
+-        super("GmsFeedbackSvc", Services.FEEDBACK.SERVICE_ID);
++        super("GmsFeedbackSvc", GmsService.FEEDBACK);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) {
+         // TODO
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/games/GamesStubService.java
+Patch:
+@@ -26,7 +26,7 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services.GAMES;
++import org.microg.gms.common.GmsService;
+ 
+ import static android.app.PendingIntent.FLAG_UPDATE_CURRENT;
+ import static org.microg.gms.common.Constants.GMS_PACKAGE_NAME;
+@@ -38,11 +38,11 @@ public class GamesStubService extends BaseService {
+     public static final String PARAM_GAME_PACKAGE_NAME = "com.google.android.gms.games.key.gamePackageName";
+ 
+     public GamesStubService() {
+-        super("GmsGamesSvc", GAMES.SERVICE_ID);
++        super("GmsGamesSvc", GmsService.GAMES);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) throws RemoteException {
+         String packageName = null;
+         if (request.extras != null) {
+             packageName = request.extras.getString(PARAM_GAME_PACKAGE_NAME);
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsService.java
+Patch:
+@@ -95,7 +95,7 @@ public class McsService extends Service implements Handler.Callback {
+     private static final String PREF_GCM_HEARTBEAT = "gcm_heartbeat_interval";
+     private static final int WAKELOCK_TIMEOUT = 5000;
+ 
+-    public static int heartbeatMs = 60000;
++    public static int heartbeatMs = 120000;
+     private static long lastHeartbeatAckElapsedRealtime = -1;
+ 
+     private static Socket sslSocket;
+
+File: play-services-core/src/main/java/org/microg/gms/icing/LightweightIndexService.java
+Patch:
+@@ -22,17 +22,17 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class LightweightIndexService extends BaseService {
+     private LightweightAppDataSearchImpl appDataSearch = new LightweightAppDataSearchImpl();
+ 
+     public LightweightIndexService() {
+-        super("GmsIcingLightIndexSvc", Services.LIGHTWEIGHT_INDEX.SERVICE_ID);
++        super("GmsIcingLightIndexSvc", GmsService.LIGHTWEIGHT_INDEX);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) throws RemoteException {
+         callback.onPostInitComplete(0, appDataSearch.asBinder(), null);
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/location/ReportingAndroidService.java
+Patch:
+@@ -22,17 +22,17 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class ReportingAndroidService extends BaseService {
+     private ReportingServiceImpl reportingService = new ReportingServiceImpl();
+ 
+     public ReportingAndroidService() {
+-        super("GmsLocReportingSvc", Services.LOCATION_REPORTING.SERVICE_ID);
++        super("GmsLocReportingSvc", GmsService.LOCATION_REPORTING);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) throws RemoteException {
+         callback.onPostInitComplete(0, reportingService.asBinder(), null);
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/people/PeopleService.java
+Patch:
+@@ -22,17 +22,17 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class PeopleService extends BaseService {
+     private PeopleServiceImpl impl = new PeopleServiceImpl(this);
+ 
+     public PeopleService() {
+-        super("GmsPeopleSvc", Services.PEOPLE.SERVICE_ID);
++        super("GmsPeopleSvc", GmsService.PEOPLE);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) throws RemoteException {
+         callback.onPostInitComplete(0, impl.asBinder(), null);
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/places/GeoDataService.java
+Patch:
+@@ -23,15 +23,15 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class GeoDataService extends BaseService {
+     public GeoDataService() {
+-        super("GmsPlcGeoSvc", Services.GEODATA.SERVICE_ID);
++        super("GmsPlcGeoSvc", GmsService.GEODATA);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) throws RemoteException {
+         Log.d(TAG, "unimplemented Method: handleServiceRequest");
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/places/PlaceDetectionService.java
+Patch:
+@@ -23,15 +23,15 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class PlaceDetectionService extends BaseService {
+     public PlaceDetectionService() {
+-        super("GmsPlcDtctSvc", Services.PLACE_DETECTION.SERVICE_ID);
++        super("GmsPlcDtctSvc", GmsService.PLACE_DETECTION);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) throws RemoteException {
+         Log.d(TAG, "unimplemented Method: handleServiceRequest");
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/playlog/PlayLogService.java
+Patch:
+@@ -22,18 +22,18 @@
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ 
+ import org.microg.gms.BaseService;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ 
+ public class PlayLogService extends BaseService {
+ 
+     private PlayLogServiceImpl playLogService = new PlayLogServiceImpl();
+ 
+     public PlayLogService() {
+-        super("GmsPlayLogSvc", Services.PLAY_LOG.SERVICE_ID);
++        super("GmsPlayLogSvc", GmsService.PLAY_LOG);
+     }
+ 
+     @Override
+-    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++    public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request, GmsService service) throws RemoteException {
+         callback.onPostInitComplete(0, playLogService.asBinder(), null);
+     }
+ }
+
+File: play-services-api/src/main/java/com/google/android/gms/common/internal/GetServiceRequest.java
+Patch:
+@@ -23,7 +23,7 @@
+ import com.google.android.gms.common.api.Scope;
+ 
+ import org.microg.gms.common.Constants;
+-import org.microg.gms.common.Services;
++import org.microg.gms.common.GmsService;
+ import org.microg.safeparcel.AutoSafeParcelable;
+ import org.microg.safeparcel.SafeParceled;
+ 
+@@ -67,7 +67,7 @@ public GetServiceRequest(int serviceId) {
+     @Override
+     public String toString() {
+         return "GetServiceRequest{" +
+-                "serviceId=" + Services.nameFromServiceId(serviceId) +
++                "serviceId=" + GmsService.nameFromServiceId(serviceId) +
+                 ", gmsVersion=" + gmsVersion +
+                 ", packageName='" + packageName + '\'' +
+                 (scopes == null || scopes.length == 0 ? "" : (", scopes=" + Arrays.toString(scopes))) +
+
+File: play-services-core/src/main/java/org/microg/gms/wearable/NodeDatabaseHelper.java
+Patch:
+@@ -143,7 +143,7 @@ public synchronized void putRecord(DataItemRecord record) {
+     }
+ 
+     private static void updateRecord(SQLiteDatabase db, String key, DataItemRecord record) {
+-        Log.d(TAG, "updateRecord: " + record);
++        Log.d(TAG, "updateRecord not implemented: " + record);
+     }
+ 
+     private String insertRecord(SQLiteDatabase db, DataItemRecord record) {
+
+File: play-services-core/src/main/java/org/microg/gms/maps/BackendMap.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 microG Project Team
++ * Copyright 2013-2016 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -57,7 +57,7 @@ public class BackendMap implements ItemizedLayer.OnItemGestureListener<MarkerIte
+     public BackendMap(Context context, final CameraUpdateListener cameraUpdateListener) {
+         this.context = context;
+         this.cameraUpdateListener = cameraUpdateListener;
+-        mapView = new BackendMapView(new ContextContainer(context));
++        mapView = new BackendMapView(context);
+         mapView.items().setOnItemGestureListener(this);
+         mapView.map().input.bind(this);
+         mapView.map().events.bind(this);
+
+File: play-services-core/src/main/java/org/microg/gms/maps/BackendMapView.java
+Patch:
+@@ -38,7 +38,6 @@
+ import org.oscim.tiling.source.oscimap4.OSciMap4TileSource;
+ 
+ public class BackendMapView extends MapView {
+-    private static final String TAG = BackendMapView.class.getSimpleName();
+     private LabelLayer labels;
+     private BuildingLayer buildings;
+     private ItemizedLayer<MarkerItem> items;
+
+File: play-services-core/src/main/java/org/microg/gms/maps/MapViewImpl.java
+Patch:
+@@ -45,9 +45,8 @@ public MapViewImpl(Context context, GoogleMapOptions options) {
+ 
+     private GoogleMapImpl myMap() {
+         if (map == null) {
+-            LayoutInflater inflater = (LayoutInflater) context
+-                    .getSystemService(Context.LAYOUT_INFLATER_SERVICE);
+-            map = new GoogleMapImpl(inflater, options);
++            LayoutInflater inflater = (LayoutInflater) context.getSystemService(Context.LAYOUT_INFLATER_SERVICE);
++            map = new GoogleMapImpl(inflater.getContext(), options);
+         }
+         return map;
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/common/PackageUtils.java
+Patch:
+@@ -32,7 +32,7 @@
+ 
+ public class PackageUtils {
+ 
+-    private static final String[] KNOWN_GOOGLE_SIGNATURES = {GMS_PACKAGE_SIGNATURE_SHA1};
++    private static final String[] KNOWN_GOOGLE_SIGNATURES = {GMS_PACKAGE_SIGNATURE_SHA1, "58e1c4133f7441ec3d2c270270a14802da47ba0e", "24bb24c05e47e0aefa68a58a766179d9b613a600"};
+ 
+     public static boolean isGoogleSignedPackages(Context context, String packageName) {
+         return Arrays.asList(KNOWN_GOOGLE_SIGNATURES).contains(firstSignatureDigest(context, packageName));
+
+File: play-services-core/src/main/java/org/microg/gms/location/RealLocationProvider.java
+Patch:
+@@ -27,7 +27,7 @@
+ import java.util.List;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ 
+-@SuppressWarnings("ResourceType")
++@SuppressWarnings("MissingPermission")
+ public class RealLocationProvider {
+     public static final String TAG = "GmsLocProviderReal";
+ 
+@@ -39,7 +39,7 @@ public class RealLocationProvider {
+     private long connectedMinTime;
+     private float connectedMinDistance;
+     private Location lastLocation;
+-    private List<LocationRequestHelper> requests = new ArrayList<LocationRequestHelper>();
++    private final List<LocationRequestHelper> requests = new ArrayList<LocationRequestHelper>();
+     private LocationListener listener = new LocationListener() {
+         @Override
+         public void onLocationChanged(Location location) {
+
+File: microg-ui-tools/src/main/java/android/support/v4/preference/PreferenceFragment.java
+Patch:
+@@ -136,7 +136,7 @@ public PreferenceManager getPreferenceManager() {
+     @Override
+     public void onActivityCreated(Bundle savedInstanceState) {
+         super.onActivityCreated(savedInstanceState);
+-        getListView().setScrollBarStyle(0);
++        getListView().setScrollBarStyle(View.SCROLLBARS_INSIDE_OVERLAY);
+         if (mHavePrefs) {
+             bindPreferences();
+         }
+
+File: microg-ui-tools/src/main/java/android/support/v4/preference/PreferenceFragment.java
+Patch:
+@@ -136,7 +136,7 @@ public PreferenceManager getPreferenceManager() {
+     @Override
+     public void onActivityCreated(Bundle savedInstanceState) {
+         super.onActivityCreated(savedInstanceState);
+-        getListView().setScrollBarStyle(0);
++        getListView().setScrollBarStyle(View.SCROLLBARS_INSIDE_OVERLAY);
+         if (mHavePrefs) {
+             bindPreferences();
+         }
+
+File: play-services-core/src/main/java/com/google/android/gms/plus/plusone/PlusOneButtonCreatorImpl.java
+Patch:
+@@ -22,14 +22,14 @@
+ import com.google.android.gms.dynamic.ObjectWrapper;
+ import com.google.android.gms.plus.internal.IPlusOneButtonCreator;
+ 
+-import org.microg.gms.common.Constants;
++import org.microg.gms.auth.AuthConstants;
+ import org.microg.gms.plus.PlusOneButtonImpl;
+ 
+ public class PlusOneButtonCreatorImpl  extends IPlusOneButtonCreator.Stub {
+ 	@Override
+ 	public IObjectWrapper create(IObjectWrapper context, int size, int annotation, String url, int activityRequestCode) throws RemoteException {
+ 		Context ctx = (Context) ObjectWrapper.unwrap(context);
+-		return ObjectWrapper.wrap(new PlusOneButtonImpl(ctx, size, annotation, url, Constants.DEFAULT_ACCOUNT));
++		return ObjectWrapper.wrap(new PlusOneButtonImpl(ctx, size, annotation, url, AuthConstants.DEFAULT_ACCOUNT));
+ 	}
+ 
+ 	@Override
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthManager.java
+Patch:
+@@ -25,7 +25,6 @@
+ 
+ import com.google.android.gms.R;
+ 
+-import org.microg.gms.common.Constants;
+ import org.microg.gms.common.PackageUtils;
+ 
+ import java.io.IOException;
+@@ -180,7 +179,7 @@ private boolean isSystemApp() {
+     }
+ 
+     public AuthResponse requestAuth(boolean legacy) throws IOException {
+-        if (service.equals(Constants.SCOPE_GET_ACCOUNT_ID)) {
++        if (service.equals(AuthConstants.SCOPE_GET_ACCOUNT_ID)) {
+             AuthResponse response = new AuthResponse();
+             response.accountId = response.auth = getAccountManager().getUserData(getAccount(), "GoogleUserId");
+             return response;
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsConstants.java
+Patch:
+@@ -16,7 +16,7 @@
+ 
+ package org.microg.gms.gcm;
+ 
+-public class Constants {
++public final class McsConstants {
+     public static final int MCS_HEARTBEAT_PING_TAG = 0;
+     public static final int MCS_HEARTBEAT_ACK_TAG = 1;
+     public static final int MCS_LOGIN_REQUEST_TAG = 2;
+@@ -32,6 +32,7 @@ public class Constants {
+     public static final int MSG_OUTPUT = 20;
+     public static final int MSG_OUTPUT_ERROR = 21;
+     public static final int MSG_OUTPUT_READY = 22;
++    public static final int MSG_OUTPUT_DONE = 23;
+     public static final int MSG_TEARDOWN = 30;
+     public static final int MSG_CONNECT = 40;
+     public static final int MSG_HEARTBEAT = 41;
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/TriggerReceiver.java
+Patch:
+@@ -26,9 +26,9 @@
+ 
+ import org.microg.gms.checkin.LastCheckinInfo;
+ 
+-import static org.microg.gms.gcm.Constants.ACTION_CONNECT;
+-import static org.microg.gms.gcm.Constants.ACTION_HEARTBEAT;
+-import static org.microg.gms.gcm.Constants.EXTRA_REASON;
++import static org.microg.gms.gcm.McsConstants.ACTION_CONNECT;
++import static org.microg.gms.gcm.McsConstants.ACTION_HEARTBEAT;
++import static org.microg.gms.gcm.McsConstants.EXTRA_REASON;
+ 
+ public class TriggerReceiver extends WakefulBroadcastReceiver {
+     private static final String TAG = "GmsGcmTrigger";
+
+File: play-services-core/src/main/java/org/microg/gms/location/MockLocationProvider.java
+Patch:
+@@ -19,7 +19,7 @@
+ import android.location.Location;
+ import android.os.Bundle;
+ 
+-import static org.microg.gms.common.Constants.KEY_MOCK_LOCATION;
++import static org.microg.gms.location.LocationConstants.KEY_MOCK_LOCATION;
+ 
+ public class MockLocationProvider {
+     private boolean mockEnabled = false;
+@@ -44,5 +44,6 @@ public void setLocation(Location mockLocation) {
+         }
+         mockLocation.getExtras().putBoolean(KEY_MOCK_LOCATION, false);
+         this.mockLocation = mockLocation;
++        this.changeListener.onLocationChanged();
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/maps/markup/PolylineImpl.java
+Patch:
+@@ -33,9 +33,6 @@
+ import java.util.ArrayList;
+ import java.util.List;
+ 
+-/**
+- * TODO
+- */
+ public class PolylineImpl extends IPolylineDelegate.Stub implements DrawableMarkup {
+     private static final String TAG = "GmsMapsPolylineImpl";
+ 
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsInputStream.java
+Patch:
+@@ -77,6 +77,7 @@ public void run() {
+                     mainHandler.dispatchMessage(mainHandler.obtainMessage(MSG_INPUT, msg));
+                 } else {
+                     mainHandler.dispatchMessage(mainHandler.obtainMessage(MSG_TEARDOWN, "null message"));
++                    break; // if input is empty, do not continue looping
+                 }
+             }
+         } catch (IOException e) {
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsService.java
+Patch:
+@@ -323,7 +323,7 @@ private void send(Message message) {
+ 
+     private void sendOutputStream(int what, Object obj) {
+         McsOutputStream os = outputStream;
+-        if (os != null) {
++        if (os != null && os.isAlive()) {
+             Handler outputHandler = os.getHandler();
+             if (outputHandler != null)
+                 outputHandler.sendMessage(outputHandler.obtainMessage(what, obj));
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsInputStream.java
+Patch:
+@@ -77,6 +77,7 @@ public void run() {
+                     mainHandler.dispatchMessage(mainHandler.obtainMessage(MSG_INPUT, msg));
+                 } else {
+                     mainHandler.dispatchMessage(mainHandler.obtainMessage(MSG_TEARDOWN, "null message"));
++                    break; // if input is empty, do not continue looping
+                 }
+             }
+         } catch (IOException e) {
+
+File: play-services-core/src/main/java/org/microg/gms/maps/ContextContainer.java
+Patch:
+@@ -593,10 +593,12 @@ public File getSharedPrefsFile(String name) {
+         return (File) safeInvoke("getBasePackageName", String.class, name);
+     }
+ 
++    @TargetApi(17)
+     public void startActivityAsUser(Intent intent, UserHandle user) {
+         safeInvoke("startActivityAsUser", Intent.class, UserHandle.class, intent, user);
+     }
+ 
++    @TargetApi(17)
+     public void startActivityAsUser(Intent intent, Bundle options, UserHandle userId) {
+         safeInvoke("startActivityAsUser", Intent.class, Bundle.class, UserHandle.class, intent, options, userId);
+     }
+@@ -609,6 +611,7 @@ public boolean canStartActivityForResult() {
+         return (Boolean) safeInvoke("canStartActivityForResult");
+     }
+ 
++    @TargetApi(17)
+     public void startActivitiesAsUser(Intent[] intents, Bundle options, UserHandle userHandle) {
+         safeInvoke("startActivitiesAsUser", new Class[]{Intent[].class, Bundle.class, UserHandle.class}, intents, options, userHandle);
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/maps/ContextContainer.java
+Patch:
+@@ -593,10 +593,12 @@ public File getSharedPrefsFile(String name) {
+         return (File) safeInvoke("getBasePackageName", String.class, name);
+     }
+ 
++    @TargetApi(17)
+     public void startActivityAsUser(Intent intent, UserHandle user) {
+         safeInvoke("startActivityAsUser", Intent.class, UserHandle.class, intent, user);
+     }
+ 
++    @TargetApi(17)
+     public void startActivityAsUser(Intent intent, Bundle options, UserHandle userId) {
+         safeInvoke("startActivityAsUser", Intent.class, Bundle.class, UserHandle.class, intent, options, userId);
+     }
+@@ -609,6 +611,7 @@ public boolean canStartActivityForResult() {
+         return (Boolean) safeInvoke("canStartActivityForResult");
+     }
+ 
++    @TargetApi(17)
+     public void startActivitiesAsUser(Intent[] intents, Bundle options, UserHandle userHandle) {
+         safeInvoke("startActivitiesAsUser", new Class[]{Intent[].class, Bundle.class, UserHandle.class}, intents, options, userHandle);
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/maps/GmsMapsTypeHelper.java
+Patch:
+@@ -44,6 +44,8 @@ public static LatLngBounds toLatLngBounds(Box box) {
+         double maxLon = MercatorProjection.toLongitude(box.xmax);
+         double minLat = MercatorProjection.toLatitude(box.ymax);
+         double maxLat = MercatorProjection.toLatitude(box.ymin);
++        if (Double.isNaN(minLon) || Double.isNaN(maxLon) || Double.isNaN(minLat) || Double.isNaN(maxLat))
++            minLon = maxLon = minLat = maxLat = 0;
+         return new LatLngBounds(new LatLng(minLat, minLon), new LatLng(maxLat, maxLon));
+     }
+ 
+
+File: play-services-core/src/main/java/org/microg/gms/maps/ProjectionImpl.java
+Patch:
+@@ -29,6 +29,7 @@
+ 
+ public class ProjectionImpl extends IProjectionDelegate.Stub {
+     private Viewport viewport;
++    private float[] extents = new float[8];
+ 
+     public ProjectionImpl(Viewport viewport) {
+         this.viewport = viewport;
+@@ -51,6 +52,8 @@ public IObjectWrapper toScreenLocation(LatLng latLng) throws RemoteException {
+ 
+     @Override
+     public VisibleRegion getVisibleRegion() throws RemoteException {
++        viewport.getMapExtents(extents, 0);
++        // TODO: Support non-flat map extents
+         return new VisibleRegion(GmsMapsTypeHelper.toLatLngBounds(viewport.getBBox(null, 0)));
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/people/PeopleManager.java
+Patch:
+@@ -84,7 +84,7 @@ public static Bitmap getOwnerAvatarBitmap(Context context, String accountName, b
+         return BitmapFactory.decodeFile(avaterFile.getPath());
+     }
+ 
+-    public static void loadUserInfo(Context context, Account account) {
++    public static String loadUserInfo(Context context, Account account) {
+         try {
+             URLConnection conn = new URL(USERINFO_URL).openConnection();
+             conn.addRequestProperty("Authorization", "Bearer " + getUserInfoAuthKey(context, account));
+@@ -104,8 +104,10 @@ public static void loadUserInfo(Context context, Account account) {
+             DatabaseHelper databaseHelper = new DatabaseHelper(context);
+             databaseHelper.putOwner(contentValues);
+             databaseHelper.close();
++            return contentValues.getAsString("gaia_id");
+         } catch (Exception e) {
+             Log.w(TAG, e);
++            return null;
+         }
+     }
+ 
+
+File: play-services-core/src/main/java/org/microg/gms/maps/BackendMap.java
+Patch:
+@@ -254,7 +254,7 @@ public boolean onItemLongPress(int index, MarkerItem item) {
+ 
+     @Override
+     public void onInputEvent(Event event, MotionEvent motionEvent) {
+-        if (motionEvent.getAction() == MotionEvent.ACTION_CANCEL || motionEvent.getAction() == MotionEvent.ACTION_UP && currentlyDraggedItem != null) {
++        if ((motionEvent.getAction() == MotionEvent.ACTION_CANCEL || motionEvent.getAction() == MotionEvent.ACTION_UP) && currentlyDraggedItem != null) {
+             currentlyDraggedItem.onDragStop();
+             currentlyDraggedItem = null;
+         }
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsService.java
+Patch:
+@@ -158,7 +158,7 @@ public synchronized static void resetCurrentDelay() {
+     public int onStartCommand(Intent intent, int flags, int startId) {
+         synchronized (McsService.class) {
+             if (rootHandler != null) {
+-                wakeLock.acquire();
++                wakeLock.acquire(5000);
+                 Object reason = intent == null ? "I am so sticky!" :
+                         intent.hasExtra(EXTRA_REASON) ? intent.getExtras().get(EXTRA_REASON) : intent;
+                 if (ACTION_CONNECT.equals(intent.getAction())) {
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsInputStream.java
+Patch:
+@@ -72,6 +72,7 @@ public void run() {
+         try {
+             while (!Thread.currentThread().isInterrupted()) {
+                 Message msg = read();
++                Log.d(TAG, "Incoming message: " + msg);
+                 if (msg != null) {
+                     mainHandler.dispatchMessage(mainHandler.obtainMessage(MSG_INPUT, msg));
+                 } else {
+@@ -109,7 +110,7 @@ private synchronized void ensureVersionRead() {
+         if (!initialized) {
+             try {
+                 version = is.read();
+-                Log.d(TAG, "Reading from MCS version=" + version);
++                Log.d(TAG, "Reading from MCS version: " + version);
+                 initialized = true;
+             } catch (IOException e) {
+                 Log.w(TAG, e);
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsOutputStream.java
+Patch:
+@@ -80,6 +80,7 @@ public boolean handleMessage(android.os.Message msg) {
+             case MSG_OUTPUT:
+                 try {
+                     Message message = (Message) msg.obj;
++                    Log.d(TAG, "Outgoing message: " + message);
+                     if (msg.obj instanceof DataMessageStanza) {
+                         writeInternal(message, MCS_DATA_MESSAGE_STANZA_TAG);
+                     } else if (msg.obj instanceof LoginRequest) {
+
+File: play-services-core/src/main/java/org/microg/gms/location/GoogleLocationManagerServiceImpl.java
+Patch:
+@@ -34,6 +34,7 @@
+ import com.google.android.gms.location.LocationRequest;
+ import com.google.android.gms.location.LocationSettingsRequest;
+ import com.google.android.gms.location.LocationSettingsResult;
++import com.google.android.gms.location.LocationSettingsStates;
+ import com.google.android.gms.location.internal.IGeofencerCallbacks;
+ import com.google.android.gms.location.internal.IGoogleLocationManagerService;
+ import com.google.android.gms.location.internal.ISettingsCallbacks;
+@@ -294,7 +295,7 @@ public IBinder iglms51() throws RemoteException {
+     @Override
+     public void requestLocationSettingsDialog(LocationSettingsRequest settingsRequest, ISettingsCallbacks callback, String packageName) throws RemoteException {
+         Log.d(TAG, "requestLocationSettingsDialog: " + settingsRequest);
+-        callback.onLocationSettingsResult(new LocationSettingsResult(Status.CANCELED));
++        callback.onLocationSettingsResult(new LocationSettingsResult(new LocationSettingsStates(true, true, false, true, true, false), Status.CANCELED));
+     }
+ 
+     @Override
+
+File: play-services-core/src/main/java/com/google/android/gms/ads/AdActivity.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/ads/AdManagerCreatorImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/analytics/service/AnalyticsService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/auth/GetToken.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/auth/TokenActivity.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/common/security/ProviderInstallerImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/common/ui/SignInButtonCreatorImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/gcm/http/GoogleHttpService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/maps/internal/CreatorImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/plus/plusone/PlusOneButtonCreatorImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/recovery/RecoveryService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/com/google/android/gms/wallet/dynamite/WalletDynamiteCreatorImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/AbstractGmsServiceBroker.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/BaseService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -35,6 +35,7 @@ public BaseService(String tag, Integer supportedServiceId, Integer... supportedS
+         broker = new AbstractGmsServiceBroker(supportedServiceId, supportedServiceIds) {
+             @Override
+             public void handleServiceRequest(IGmsCallbacks callback, GetServiceRequest request) throws RemoteException {
++                request.extras.keySet(); // call to unparcel()
+                 Log.d(TAG, "bound by: " + request);
+                 BaseService.this.handleServiceRequest(callback, request);
+             }
+
+File: play-services-core/src/main/java/org/microg/gms/DummyService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/ads/GService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AskPermissionActivity.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthManager.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthRequest.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthResponse.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/auth/login/AssistantActivity.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/auth/loginservice/AccountAuthenticator.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/auth/loginservice/GoogleLoginService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/car/CarService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinClient.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinManager.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/LastCheckinInfo.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/TriggerReceiver.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/common/Build.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/common/DeviceConfiguration.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/common/DeviceIdentifier.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/common/HttpFormClient.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/common/NonCancelToken.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/common/PackageUtils.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/common/PhoneInfo.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/common/Utils.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/droidguard/DroidGuardService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/feedback/FeedbackService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/feeds/SubscribedFeedsProvider.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/Constants.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsInputStream.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsOutputStream.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/PushRegisterService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/RegisterRequest.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/RegisterResponse.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/gservices/DatabaseHelper.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/gservices/GServices.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/gservices/GServicesProvider.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/icing/AppDataSearchImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/icing/GlobalSearchAdminImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/icing/IndexService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/icing/LightweightAppDataSearchImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/icing/LightweightIndexService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/icing/SearchCorporaImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/icing/SearchQueriesImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/location/GoogleLocationManagerService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -25,8 +25,6 @@
+ import org.microg.gms.common.Services;
+ 
+ public class GoogleLocationManagerService extends BaseService {
+-    private static final String TAG = "GmsLocManagerSvc";
+-
+     private GoogleLocationManagerServiceImpl impl = new GoogleLocationManagerServiceImpl(this);
+ 
+     public GoogleLocationManagerService() {
+
+File: play-services-core/src/main/java/org/microg/gms/location/LocationChangeListener.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/location/MockLocationProvider.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/location/RealLocationProvider.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/location/ReportingAndroidService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/mdm/NetworkQualityService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/people/DatabaseHelper.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/people/PeopleManager.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/people/PeopleService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/people/PeopleServiceImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/playlog/PlayLogService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/playlog/PlayLogServiceImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/plus/PlusOneButtonImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/settings/GoogleSettingsProvider.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/ui/SettingsActivity.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/wearable/ConfigurationDatabaseHelper.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/wearable/DataItemInternal.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/wearable/DataItemRecord.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/wearable/NodeDatabaseHelper.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/wearable/WearableService.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/wearable/WearableServiceImpl.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/tools/AccountPickerActivity.java
+Patch:
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2013-2015 µg Project Team
++ * Copyright 2013-2015 microG Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+
+File: play-services-core/src/main/java/org/microg/gms/common/DeviceConfiguration.java
+Patch:
+@@ -103,7 +103,8 @@ private static List<String> getNativePlatforms() {
+         } else {
+             nativePlatforms = new ArrayList<String>();
+             nativePlatforms.add(Build.CPU_ABI);
+-            if (Build.CPU_ABI2 != null) nativePlatforms.add(Build.CPU_ABI2);
++            if (Build.CPU_ABI2 != null && !Build.CPU_ABI2.equals("unknown"))
++                nativePlatforms.add(Build.CPU_ABI2);
+             return nativePlatforms;
+         }
+     }
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AskPermissionActivity.java
+Patch:
+@@ -267,12 +267,13 @@ public View getView(int position, View convertView, ViewGroup parent) {
+             }
+             View view = convertView;
+             if (view == null) {
+-                view = LayoutInflater.from(AskPermissionActivity.this).inflate(R.layout.ask_permission_list_entry, null);
++                view = LayoutInflater.from(AskPermissionActivity.this)
++                        .inflate(R.layout.ask_permission_list_entry, parent, false);
+             }
+             ((TextView) view.findViewById(android.R.id.text1)).setText(label);
+             TextView textView = (TextView) view.findViewById(android.R.id.text2);
+             if (description != null && !description.isEmpty()) {
+-                textView.setText(Html.fromHtml(description.trim().replace("\n","<br>")));
++                textView.setText(Html.fromHtml(description.trim().replace("\n", "<br>")));
+                 textView.setVisibility(VISIBLE);
+             } else {
+                 textView.setVisibility(GONE);
+
+File: play-services-core/src/main/java/org/microg/gms/common/Build.java
+Patch:
+@@ -16,6 +16,7 @@
+ 
+ package org.microg.gms.common;
+ 
++import java.util.Locale;
+ import java.util.Random;
+ 
+ public class Build {
+@@ -33,11 +34,11 @@ public class Build {
+     public String id = android.os.Build.ID;
+     public String serial = generateSerialNumber(); // TODO: static
+ 
++    @SuppressWarnings("deprecation")
+     private static String getRadio() {
+         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
+             return android.os.Build.getRadioVersion();
+         } else {
+-            //noinspection deprecation
+             return android.os.Build.RADIO;
+         }
+     }
+@@ -47,7 +48,7 @@ private String generateSerialNumber() {
+         Random rand = new Random();
+         for (int i = 0; i < 10; i++)
+             serial += Integer.toString(rand.nextInt(16), 16);
+-        serial = serial.toUpperCase();
++        serial = serial.toUpperCase(Locale.US);
+         return serial;
+     }
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/people/PeopleServiceImpl.java
+Patch:
+@@ -38,7 +38,7 @@
+ 
+ public class PeopleServiceImpl extends IPeopleService.Stub {
+     private static final String TAG = "GmsPeopleSvcImpl";
+-    private Context context;
++    private final Context context;
+ 
+     public PeopleServiceImpl(Context context) {
+         this.context = context;
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/CheckinClient.java
+Patch:
+@@ -52,7 +52,7 @@ public static CheckinResponse request(CheckinRequest request) throws IOException
+         connection.setRequestMethod("POST");
+         connection.setDoInput(true);
+         connection.setDoOutput(true);
+-        connection.setRequestProperty("Content-Type", "application/x-protobuffer");
++        connection.setRequestProperty("Content-type", "application/x-protobuffer");
+         connection.setRequestProperty("Content-Encoding", "gzip");
+         connection.setRequestProperty("Accept-Encoding", "gzip");
+         connection.setRequestProperty("User-Agent", "Android-Checkin/2.0 (vbox86p JLS36G); gzip");
+@@ -138,7 +138,7 @@ public static CheckinRequest makeRequest(Build build, DeviceConfiguration device
+                         .locale(deviceConfiguration.locales)
+                         .nativePlatform(deviceConfiguration.nativePlatforms)
+                         .navigation(deviceConfiguration.navigation)
+-                        .screenLayout(deviceConfiguration.screenLayout)
++                        .screenLayout(deviceConfiguration.screenLayout & 0xF)
+                         .sharedLibrary(deviceConfiguration.sharedLibraries)
+                         .touchScreen(deviceConfiguration.touchScreen)
+                         .widthPixels(deviceConfiguration.widthPixels)
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/LastCheckinInfo.java
+Patch:
+@@ -27,7 +27,7 @@ public class LastCheckinInfo {
+     public static final String PREF_SECURITY_TOKEN = "securityToken";
+     public static final String PREF_VERSION_INFO = "versionInfo";
+     public static final String PREF_DEVICE_DATA_VERSION_INFO = "deviceDataVersionInfo";
+-    public static final String INITIAL_DIGEST = "1-da39a3ee5e6b4b0d3255bfef95601890afd80709";
++    public static final String INITIAL_DIGEST = "1-929a0dca0eee55513280171a8585da7dcd3700f8";
+     public long lastCheckin;
+     public long androidId;
+     public long securityToken;
+
+File: play-services-core/src/main/java/org/microg/gms/common/PhoneInfo.java
+Patch:
+@@ -17,7 +17,7 @@
+ package org.microg.gms.common;
+ 
+ public class PhoneInfo {
+-    public String cellOperator;
+-    public String roaming;
+-    public String simOperator;
++    public String cellOperator = "26207";
++    public String roaming = "mobile-notroaming";
++    public String simOperator = "26207";
+ }
+
+File: play-services-core/src/main/java/org/microg/gms/gservices/GServicesProvider.java
+Patch:
+@@ -96,6 +96,7 @@ public Cursor query(Uri uri, String[] projection, String selection, String[] sel
+                 }
+             }
+         }
++        if (cursor.getCount() == 0) return null;
+         return cursor;
+     }
+ 
+
+File: play-services-api/src/main/java/com/google/android/gms/maps/model/TileOverlayOptions.java
+Patch:
+@@ -31,7 +31,7 @@
+ public class TileOverlayOptions extends AutoSafeParcelable {
+ 
+     @SafeParceled(1)
+-    private final int versionCode = 1;
++    private final int versionCode;
+     /**
+      * This is a IBinder to the {@link #tileProvider}, built using {@link ITileProviderDelegate}.
+      */
+@@ -49,6 +49,7 @@ public class TileOverlayOptions extends AutoSafeParcelable {
+      * Creates a new set of tile overlay options.
+      */
+     public TileOverlayOptions() {
++        versionCode = 1;
+     }
+ 
+     /**
+
+File: play-services-api/src/main/java/org/microg/gms/common/Constants.java
+Patch:
+@@ -5,7 +5,7 @@ public class Constants {
+      * This is the highest version that was looked at during development.
+      * Does not necessarily mean anything.
+      */
+-    public static final int MAX_REFERENCE_VERSION = 6599436;
++    public static final int MAX_REFERENCE_VERSION = 7099448;
+     public static final String KEY_MOCK_LOCATION = "mockLocation";
+     public static final String DEFAULT_ACCOUNT = "<<default account>>";
+     public static final String GMS_PACKAGE_NAME = "com.google.android.gms";
+
+File: play-services-core/src/main/java/org/microg/gms/auth/AuthManager.java
+Patch:
+@@ -36,7 +36,7 @@ public class AuthManager {
+ 
+     private static final String TAG = "GmsAuthManager";
+     public static final String PERMISSION_TREE_BASE = "com.google.android.googleapps.permission.GOOGLE_AUTH.";
+-    private static final String PREF_KEY_TRUST_GOOGLE = "auth_manager_trust_google";
++    private static final String PREF_AUTH_TRUST_GOOGLE = "auth_manager_trust_google";
+ 
+     private final Context context;
+     private final String accountName;
+@@ -165,7 +165,7 @@ public void storeResponse(AuthResponse response) {
+     }
+ 
+     public static boolean isTrustGooglePermitted(Context context) {
+-        return PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_KEY_TRUST_GOOGLE, true);
++        return PreferenceManager.getDefaultSharedPreferences(context).getBoolean(PREF_AUTH_TRUST_GOOGLE, true);
+     }
+ 
+     private boolean isSystemApp() {
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/McsInputStream.java
+Patch:
+@@ -16,7 +16,6 @@
+ 
+ package org.microg.gms.gcm;
+ 
+-import android.util.Base64;
+ import android.util.Log;
+ 
+ import com.squareup.wire.Message;
+@@ -92,8 +91,9 @@ public synchronized Message read() throws IOException {
+         Log.d(TAG, "Reading from MCS tag=" + mcsTag + " size=" + mcsSize);
+         byte[] bytes = new byte[mcsSize];
+         int len = 0;
+-        while ((len += is.read(bytes, len, mcsSize - len)) < mcsSize) ;
+-        Log.d(TAG, "Reading from MCS: " + Base64.encodeToString(bytes, 0));
++        while (len < mcsSize) {
++            len += is.read(bytes, len, mcsSize - len);
++        }
+         Message read = read(mcsTag, bytes, len);
+         Log.d(TAG, "Read from MCS: " + read);
+         streamId++;
+
+File: play-services-core/src/main/java/org/microg/gms/checkin/TriggerReceiver.java
+Patch:
+@@ -27,6 +27,7 @@ public class TriggerReceiver extends BroadcastReceiver {
+     @Override
+     public void onReceive(Context context, Intent intent) {
+         Log.d(TAG, "Trigger checkin: " + intent);
++
+         Intent subIntent = new Intent(context, CheckinService.class);
+         if ("android.provider.Telephony.SECRET_CODE".equals(intent.getAction())) {
+             subIntent.putExtra("force", true);
+
+File: play-services-core/src/main/java/org/microg/gms/gcm/Constants.java
+Patch:
+@@ -14,7 +14,7 @@
+  * limitations under the License.
+  */
+ 
+-package org.microg.gms.gcm.mcs;
++package org.microg.gms.gcm;
+ 
+ public class Constants {
+     public static final int MCS_HEARTBEAT_PING_TAG = 0;
+
+File: play-services-core/src/main/java/org/microg/gms/maps/markup/InfoWindow.java
+Patch:
+@@ -133,6 +133,7 @@ public boolean onTap(GeoPoint p, MapView mapView) {
+ */
+ 
+     private class DefaultWindow extends FrameLayout {
++        @SuppressWarnings("deprecation")
+         public DefaultWindow(View view) {
+             super(context);
+             addView(view);
+
+File: play-services-wearable/src/main/java/com/google/android/gms/wearable/PutDataMapRequest.java
+Patch:
+@@ -38,7 +38,7 @@ private PutDataMapRequest(DataMapItem dataMapItem) {
+      */
+     public PutDataRequest asPutDataRequest() {
+         // TODO
+-        return new PutDataRequest();
++        return PutDataRequest.create(null);
+     }
+ 
+     /**
+
+File: play-services-core/src/main/java/org/microg/gms/gservices/GServicesProvider.java
+Patch:
+@@ -76,7 +76,7 @@ public Cursor query(Uri uri, String[] projection, String selection, String[] sel
+                 for (String name : cache.keySet()) {
+                     if (name.startsWith(prefix)) {
+                         String value = cache.get(name);
+-                        Log.d(TAG, "query caller=" + getCallingPackageName() + " name=" + name + " value=" + value);
++                        Log.d(TAG, "query caller=" + getCallingPackageName() + " prefix=" + prefix + " name=" + name + " value=" + value);
+                         cursor.addRow(new String[]{name, value});
+                     }
+                 }
+
+File: play-services-core/src/main/java/org/microg/gms/people/DatabaseHelper.java
+Patch:
+@@ -71,6 +71,7 @@ public DatabaseHelper(Context context) {
+     @Override
+     public void onCreate(SQLiteDatabase db) {
+         db.execSQL(CREATE_OWNERS);
++        db.execSQL(CREATE_CIRCLES);
+     }
+ 
+     @Override
+
+File: play-services-core/src/main/java/org/microg/gms/auth/login/LoginActivity.java
+Patch:
+@@ -186,6 +186,7 @@ public void onResponse(AuthResponse response) {
+                             // TODO: Error message
+                             Log.w(TAG, "Account NOT created!");
+                             setResult(RESULT_CANCELED);
++                            finish();
+                         }
+                     }
+ 
+
+File: src/org/microg/gms/auth/AuthManagerServiceImpl.java
+Patch:
+@@ -38,8 +38,6 @@
+ public class AuthManagerServiceImpl extends IAuthManagerService.Stub {
+     private static final String TAG = "GmsAuthManagerSvc";
+ 
+-    public static final String GOOGLE_ACCOUNT_TYPE = "com.google";
+-
+     public static final String KEY_AUTHORITY = "authority";
+     public static final String KEY_CALLBACK_INTENT = "callback_intent";
+     public static final String KEY_CALLER_UID = "callerUid";
+@@ -83,7 +81,7 @@ public Bundle getToken(String accountName, String scope, Bundle extras) throws R
+                 Intent i = new Intent(context, AskPermissionActivity.class);
+                 i.putExtras(extras);
+                 i.putExtra(KEY_ANDROID_PACKAGE_NAME, packageName);
+-                i.putExtra(KEY_ACCOUNT_TYPE, GOOGLE_ACCOUNT_TYPE);
++                i.putExtra(KEY_ACCOUNT_TYPE, authManager.getAccountType());
+                 i.putExtra(KEY_ACCOUNT_NAME, accountName);
+                 i.putExtra(KEY_AUTHTOKEN, scope);
+                 if (res.consentDataBase64 != null)
+
+File: src/org/microg/gms/auth/loginservice/AccountAuthenticator.java
+Patch:
+@@ -66,7 +66,7 @@ public Bundle editProperties(AccountAuthenticatorResponse response, String accou
+ 
+     @Override
+     public Bundle addAccount(AccountAuthenticatorResponse response, String accountType, String authTokenType, String[] requiredFeatures, Bundle options) throws NetworkErrorException {
+-        if (accountType.equals(accountType)) {
++        if (accountType.equals(this.accountType)) {
+             final Intent i = new Intent(context, LoginActivity.class);
+             i.putExtras(options);
+             i.putExtra(LoginActivity.EXTRA_TMPL, LoginActivity.TMPL_NEW_ACCOUNT);
+
+File: src/org/microg/gms/people/PeopleServiceImpl.java
+Patch:
+@@ -24,6 +24,7 @@
+ import android.os.RemoteException;
+ import android.util.Log;
+ 
++import com.google.android.gms.R;
+ import com.google.android.gms.common.data.DataHolder;
+ import com.google.android.gms.common.internal.ICancelToken;
+ import com.google.android.gms.people.internal.IPeopleCallbacks;
+@@ -42,7 +43,8 @@ public void loadOwners(final IPeopleCallbacks callbacks, boolean var2, boolean v
+         Log.d(TAG, "loadOwners: " + var2 + ", " + var3 + ", " + accountName + ", " + var5 + ", " + sortOrder);
+         AccountManager accountManager = AccountManager.get(context);
+         Bundle result = new Bundle();
+-        for (Account account : accountManager.getAccountsByType("com.google")) {
++        String accountType = context.getString(R.string.google_account_type);
++        for (Account account : accountManager.getAccountsByType(accountType)) {
+             if (accountName == null || account.name.equals(accountName)) {
+                 result.putParcelable(account.name, null);
+             }
+
+File: src/org/microg/gms/auth/AuthManager.java
+Patch:
+@@ -151,7 +151,7 @@ public void storeResponse(AuthResponse response) {
+             setAuthToken("LSID", response.LSid);
+         if (response.expiry > 0)
+             setExpiry(response.expiry);
+-        if (response.auth != null && response.expiry != 0 && response.storeConsentRemotely)
++        if (response.auth != null && (response.expiry != 0 || response.storeConsentRemotely))
+             setAuthToken(response.auth);
+     }
+ 
+
+File: src/org/microg/gms/auth/AskPermissionActivity.java
+Patch:
+@@ -38,7 +38,7 @@
+ import com.google.android.gms.R;
+ 
+ import org.microg.gms.common.PackageUtils;
+-import org.microg.gms.userinfo.ProfileManager;
++import org.microg.gms.people.PeopleManager;
+ 
+ import java.io.IOException;
+ 
+@@ -83,7 +83,7 @@ protected void onCreate(Bundle savedInstanceState) {
+         }
+         CharSequence appLabel = packageManager.getApplicationLabel(applicationInfo);
+         Drawable appIcon = packageManager.getApplicationIcon(applicationInfo);
+-        Bitmap profileIcon = ProfileManager.getProfilePicture(this, account, false);
++        Bitmap profileIcon = PeopleManager.getUserPicture(this, account, false);
+ 
+         // receive profile icon
+         if (profileIcon != null) {
+@@ -92,7 +92,7 @@ protected void onCreate(Bundle savedInstanceState) {
+             new Thread(new Runnable() {
+                 @Override
+                 public void run() {
+-                    final Bitmap profileIcon = ProfileManager.getProfilePicture(AskPermissionActivity.this, account, true);
++                    final Bitmap profileIcon = PeopleManager.getUserPicture(AskPermissionActivity.this, account, true);
+                     runOnUiThread(new Runnable() {
+                         @Override
+                         public void run() {
+
+File: src/com/google/android/gms/common/data/DataHolder.java
+Patch:
+@@ -49,6 +49,8 @@ public static DataHolder fromCursor(Cursor cursor, int statusCode, Bundle metada
+                 cursorWindow = new CursorWindow(false);
+                 cursorWindow.setNumColumns(cursor.getColumnCount());
+                 windows.add(cursorWindow);
++                if (!cursorWindow.allocRow())
++                    throw new RuntimeException("Impossible to store Cursor in CursorWindows");
+                 row = 0;
+             }
+             for (int i = 0; i < cursor.getColumnCount(); i++) {
+
+File: src/org/microg/gms/userinfo/ProfileManager.java
+Patch:
+@@ -99,7 +99,7 @@ public static Bitmap getProfilePicture(Context context, Account account, boolean
+             byte[] bytes = Utils.readStreamToEnd(conn.getInputStream());
+             Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+             if (bitmap != null)
+-                preferences.edit().putString("profile_picture", Base64.encodeToString(bytes, Base64.DEFAULT)).commit();
++                preferences.edit().putString("profile_picture", Base64.encodeToString(bytes, Base64.DEFAULT)).apply();
+             return bitmap;
+         } catch (Exception e) {
+             Log.w(TAG, e);
+
+File: src/org/microg/gms/checkin/CheckinManager.java
+Patch:
+@@ -30,7 +30,7 @@ public class CheckinManager {
+     public static synchronized LastCheckinInfo checkin(Context context) throws IOException {
+         LastCheckinInfo info = LastCheckinInfo.read(context);
+         if (info.lastCheckin > System.currentTimeMillis() - MIN_CHECKIN_INTERVAL) return null;
+-        CheckinRequest request = CheckinClient.makeRequest(Utils.getBuild(context), null, null, null, info);
++        CheckinRequest request = CheckinClient.makeRequest(Utils.getBuild(context), null, null, null, info); // TODO
+         return handleResponse(context, CheckinClient.request(request));
+     }
+ 
+
+File: src/org/microg/gms/checkin/LastCheckinInfo.java
+Patch:
+@@ -25,6 +25,7 @@ public class LastCheckinInfo {
+     public static final String PREF_DIGEST = "digest";
+     public static final String PREF_LAST_CHECKIN = "lastCheckin";
+     public static final String PREF_SECURITY_TOKEN = "securityToken";
++    public static final String INITIAL_DIGEST = "1-da39a3ee5e6b4b0d3255bfef95601890afd80709";
+     public long lastCheckin;
+     public long androidId;
+     public long securityToken;
+@@ -34,7 +35,7 @@ public static LastCheckinInfo read(Context context) {
+         LastCheckinInfo info = new LastCheckinInfo();
+         SharedPreferences preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
+         info.androidId = preferences.getLong(PREF_ANDROID_ID, 0);
+-        info.digest = preferences.getString(PREF_DIGEST, null);
++        info.digest = preferences.getString(PREF_DIGEST, INITIAL_DIGEST);
+         info.lastCheckin = preferences.getLong(PREF_LAST_CHECKIN, 0);
+         info.securityToken = preferences.getLong(PREF_SECURITY_TOKEN, 0);
+         return info;
+
+File: src/org/microg/gms/common/DeviceConfiguration.java
+Patch:
+@@ -21,7 +21,6 @@
+ public class DeviceConfiguration {
+     public List<String> availableFeatures;
+     public int densityDpi;
+-    public int deviceClass;
+     public int glEsVersion;
+     public List<String> glExtensions;
+     public boolean hasFiveWayNavigation;
+
+File: src/org/microg/gms/common/DeviceIdentifier.java
+Patch:
+@@ -17,7 +17,6 @@
+ package org.microg.gms.common;
+ 
+ public class DeviceIdentifier {
+-    public String bluetoothMac;
+     public String wifiMac;
+     public String meid;
+     public String esn;
+
+File: src/org/microg/gms/gcm/RegisterRequest.java
+Patch:
+@@ -26,6 +26,7 @@
+ import static org.microg.gms.common.HttpFormClient.RequestHeader;
+ 
+ public class RegisterRequest extends HttpFormClient.Request {
++    private static final String SERVICE_URL = "https://android.clients.google.com/c2dm/register3";
+     private static final String USER_AGENT = "Android-GCM/1.3 (%s %s)";
+ 
+     @RequestHeader("Authorization")
+@@ -86,10 +87,10 @@ public RegisterRequest build(Build build) {
+     }
+ 
+     public RegisterResponse getResponse() throws IOException {
+-        return HttpFormClient.request(Constants.REGISTER_URL, this, RegisterResponse.class);
++        return HttpFormClient.request(SERVICE_URL, this, RegisterResponse.class);
+     }
+ 
+     public void getResponseAsync(HttpFormClient.Callback<RegisterResponse> callback) {
+-        HttpFormClient.requestAsync(Constants.REGISTER_URL, this, RegisterResponse.class, callback);
++        HttpFormClient.requestAsync(SERVICE_URL, this, RegisterResponse.class, callback);
+     }
+ }
+
+File: src/org/microg/gms/common/GmsConnector.java
+Patch:
+@@ -45,6 +45,7 @@ public GmsConnector(GoogleApiClient apiClient, Api<O> api, Callback<C, R> callba
+ 
+     public AbstractPendingResult<R> connect() {
+         Log.d(TAG, "connect()");
++        apiClient.getApiConnection(api);
+         Looper looper = apiClient.getLooper();
+         final AbstractPendingResult<R> result = new AbstractPendingResult<>(looper);
+         Message msg = new Message();
+@@ -67,8 +68,8 @@ public void handleMessage(Message msg) {
+             Log.d(TAG, "Handler : handleMessage");
+             AbstractPendingResult<R> result = (AbstractPendingResult<R>) msg.obj;
+             try {
+-                result.deliverResult(callback.onClientAvailable((C) apiClient.getApiConnection
+-                        (api)));
++                C connection = (C)apiClient.getApiConnection(api);
++                result.deliverResult(callback.onClientAvailable(connection));
+             } catch (RemoteException ignored) {
+ 
+             }
+
+File: src/org/microg/gms/common/api/GoogleApiClientImpl.java
+Patch:
+@@ -123,7 +123,7 @@ public PendingResult<Status> clearDefaultAccountAndReconnect() {
+     public synchronized void connect() {
+         Log.d(TAG, "connect()");
+         if (isConnected() || isConnecting()) {
+-            Log.d(TAG, "Already connected/connecting, noting to do");
++            Log.d(TAG, "Already connected/connecting, nothing to do");
+             return;
+         }
+         for (ApiConnection connection : apiConnections.values()) {
+
+File: src/org/microg/gms/location/FusedLocationProviderApiImpl.java
+Patch:
+@@ -129,8 +129,8 @@ private PendingResult callVoid(GoogleApiClient client, final Runnable runnable)
+                     @Override
+                     public Result onClientAvailable(LocationClientImpl client) throws
+                             RemoteException {
+-                        runnable.run(client);
+-                        return Status.SUCCESS;
++                            runnable.run(client);
++                            return Status.SUCCESS;
+                     }
+                 }).connect();
+     }
+
+File: src/org/microg/gms/location/GoogleLocationManager.java
+Patch:
+@@ -33,6 +33,7 @@
+ 
+ public class GoogleLocationManager implements LocationChangeListener {
+     private static final String MOCK_PROVIDER = "mock";
++    private static final long SWITCH_ON_FRESHNESS_CLIFF_MS = 30000; // 30 seconds
+ 
+     private Context context;
+     private LocationManager locationManager;
+@@ -63,12 +64,12 @@ public Location getLocation(boolean gpsPermission, boolean networkPermission) {
+                 return gps;
+             if (gps == null)
+                 return network;
+-            if (gps.getTime() > network.getTime() - 10000)
++            if (gps.getTime() > network.getTime() - SWITCH_ON_FRESHNESS_CLIFF_MS)
+                 return gps;
+             return network;
+         } else if (networkPermission) {
+             Location network = networkProvider.getLastLocation();
+-            if (network.getExtras() != null &&
++            if (network != null && network.getExtras() != null &&
+                     network.getExtras().getParcelable("no_gps_location") instanceof Location) {
+                 network = network.getExtras().getParcelable("no_gps_location");
+             }
+
+File: src/com/google/android/gms/common/GooglePlayServicesUtil.java
+Patch:
+@@ -9,8 +9,8 @@
+ import android.content.pm.PackageManager;
+ import android.util.Log;
+ 
+-import org.microg.gms.Constants;
+-import org.microg.gms.PublicApi;
++import org.microg.gms.common.Constants;
++import org.microg.gms.common.PublicApi;
+ 
+ /**
+  * Utility class for verifying that the Google Play services APK is available and up-to-date on
+
+File: src/com/google/android/gms/common/api/Api.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.google.android.gms.common.api;
+ 
+-import org.microg.gms.PublicApi;
++import org.microg.gms.common.PublicApi;
+ import org.microg.gms.common.api.ApiBuilder;
+ 
+ /**
+
+File: src/com/google/android/gms/common/api/GoogleApiClient.java
+Patch:
+@@ -10,8 +10,8 @@
+ 
+ import com.google.android.gms.common.ConnectionResult;
+ 
+-import org.microg.gms.Constants;
+-import org.microg.gms.PublicApi;
++import org.microg.gms.common.Constants;
++import org.microg.gms.common.PublicApi;
+ import org.microg.gms.common.api.GoogleApiClientImpl;
+ 
+ import java.util.HashMap;
+
+File: src/com/google/android/gms/location/FusedLocationProviderApi.java
+Patch:
+@@ -7,7 +7,7 @@
+ import com.google.android.gms.common.api.GoogleApiClient;
+ import com.google.android.gms.common.api.PendingResult;
+ 
+-import org.microg.gms.Constants;
++import org.microg.gms.common.Constants;
+ 
+ public interface FusedLocationProviderApi {
+     public static final String KEY_LOCATION_CHANGED = "com.google.android.location.LOCATION";
+
+File: src/org/microg/gms/location/GoogleLocationManagerClient.java
+Patch:
+@@ -25,7 +25,7 @@
+ import com.google.android.gms.common.internal.IGmsServiceBroker;
+ import com.google.android.gms.location.internal.IGoogleLocationManagerService;
+ 
+-import org.microg.gms.Constants;
++import org.microg.gms.common.Constants;
+ import org.microg.gms.common.GmsClient;
+ 
+ public abstract class GoogleLocationManagerClient extends GmsClient<IGoogleLocationManagerService> {
+
+File: src/com/google/android/gms/common/security/ProviderInstallerImpl.java
+Patch:
+@@ -21,6 +21,6 @@
+ 
+ public class ProviderInstallerImpl {
+     public static void insertProvider(Context context) {
+-        Log.d("ProviderInstallerImpl", "yep, i should do something with OpenSSL here...");
++        Log.d("ProviderInstallerImpl", "yep, i should do something with Security here...");
+     }
+ }
+
+File: src/com/google/android/gms/plus/plusone/PlusOneButtonCreatorImpl.java
+Patch:
+@@ -21,13 +21,15 @@
+ import com.google.android.gms.dynamic.IObjectWrapper;
+ import com.google.android.gms.dynamic.ObjectWrapper;
+ import com.google.android.gms.plus.internal.IPlusOneButtonCreator;
++
++import org.microg.gms.Constants;
+ import org.microg.gms.plus.PlusOneButtonImpl;
+ 
+ public class PlusOneButtonCreatorImpl  extends IPlusOneButtonCreator.Stub {
+ 	@Override
+ 	public IObjectWrapper create(IObjectWrapper context, int size, int annotation, String url, int activityRequestCode) throws RemoteException {
+ 		Context ctx = (Context) ObjectWrapper.unwrap(context);
+-		return ObjectWrapper.wrap(new PlusOneButtonImpl(ctx, size, annotation, url, "<< default account >>"));
++		return ObjectWrapper.wrap(new PlusOneButtonImpl(ctx, size, annotation, url, Constants.DEFAULT_ACCOUNT));
+ 	}
+ 
+ 	@Override
+
+File: src/org/microg/gms/AbstractGmsServiceBroker.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/auth/AuthManagerServiceImpl.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/MapFragmentImpl.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/MapViewImpl.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/ResourcesContainer.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/bitmap/AbstractBitmapDescriptor.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/bitmap/AssetBitmapDescriptor.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/bitmap/BitmapBitmapDescriptor.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/bitmap/BitmapDescriptorFactoryImpl.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/bitmap/DefaultBitmapDescriptor.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/bitmap/FileBitmapDescriptor.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/bitmap/PathBitmapDescriptor.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/bitmap/ResourceBitmapDescriptor.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/camera/CameraUpdate.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/camera/CameraUpdateFactoryImpl.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/markup/CircleImpl.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/markup/GroundOverlayImpl.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/markup/InfoWindow.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/markup/MarkerImpl.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/markup/PolygonImpl.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/org/microg/gms/maps/markup/PolylineImpl.java
+Patch:
+@@ -1,11 +1,11 @@
+ /*
+- * Copyright (c) 2014 μg Project Team
++ * Copyright 2014-2015 µg Project Team
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+- *       http://www.apache.org/licenses/LICENSE-2.0
++ *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+
+File: src/com/google/android/gms/wearable/internal/NodeParcelable.java
+Patch:
+@@ -76,4 +76,6 @@ public int hashCode() {
+     public String toString() {
+         return "NodeParcelable{" + id + "," + displayName + "}";
+     }
++
++    public static final Creator<NodeParcelable> CREATOR = new AutoCreator<>(NodeParcelable.class);
+ }
+
+File: src/org/microg/gms/common/api/ApiConnection.java
+Patch:
+@@ -22,4 +22,6 @@ public interface ApiConnection {
+     public void disconnect();
+ 
+     public boolean isConnected();
++
++    boolean isConnecting();
+ }
+
+File: src/org/microg/gms/location/FusedLocationProviderApiImpl.java
+Patch:
+@@ -23,6 +23,7 @@ public class FusedLocationProviderApiImpl implements FusedLocationProviderApi {
+     @Override
+     public Location getLastLocation(GoogleApiClient client) {
+         try {
++            Log.d(TAG, "getLastLocation(" + client + ")");
+             return LocationClientImpl.get(client).getLastLocation();
+         } catch (RemoteException e) {
+             Log.w(TAG, e);
+
+File: src/org/microg/gms/location/GoogleLocationManagerClient.java
+Patch:
+@@ -12,7 +12,7 @@
+ import org.microg.gms.Constants;
+ import org.microg.gms.common.GmsClient;
+ 
+-public class GoogleLocationManagerClient extends GmsClient<IGoogleLocationManagerService> {
++public abstract class GoogleLocationManagerClient extends GmsClient<IGoogleLocationManagerService> {
+     public GoogleLocationManagerClient(Context context, GoogleApiClient.ConnectionCallbacks
+             callbacks, GoogleApiClient.OnConnectionFailedListener connectionFailedListener) {
+         super(context, callbacks, connectionFailedListener);
+
+File: src/org/microg/gms/location/LocationClientImpl.java
+Patch:
+@@ -38,6 +38,7 @@ public static LocationClientImpl get(GoogleApiClient apiClient) {
+     private Map<LocationListener, ILocationListener> listenerMap = new HashMap<>();
+ 
+     public Location getLastLocation() throws RemoteException {
++        Log.d(TAG, "getLastLocation()");
+         return getServiceInterface().getLastLocation();
+     }
+ 
+
+File: src/com/google/android/gms/common/api/Status.java
+Patch:
+@@ -14,6 +14,7 @@ public final class Status extends AutoSafeParcelable implements Result {
+ 
+     public static final Status INTERRUPTED = new Status(STATUS_CODE_INTERRUPTED);
+     public static final Status CANCELED = new Status(STATUS_CODE_CANCELED);
++    public static final Status SUCCESS = new Status(0);
+ 
+     private final int versionCode;
+     private final int statusCode;
+
+File: src/com/google/android/gms/location/LocationRequest.java
+Patch:
+@@ -399,7 +399,7 @@ public LocationRequest setPriority(int priority) {
+      * @return the same object, so that setters can be chained
+      * @throws IllegalArgumentException if smallestDisplacementMeters is negative
+      */
+-    public LocationRequest setSmallestDesplacement(float smallestDisplacementMeters) {
++    public LocationRequest setSmallestDisplacement(float smallestDisplacementMeters) {
+         if (smallestDisplacementMeters < 0)
+             throw new IllegalArgumentException("smallestDisplacementMeters must not be negative");
+         this.smallestDesplacement = smallestDisplacementMeters;
+
+File: src/com/google/android/location/internal/GoogleLocationManagerService.java
+Patch:
+@@ -22,11 +22,11 @@
+ import android.os.IBinder;
+ import android.os.RemoteException;
+ import android.util.Log;
+-import com.google.android.gms.common.AbstractGmsServiceBroker;
++import org.microg.gms.AbstractGmsServiceBroker;
+ import com.google.android.gms.common.internal.IGmsCallbacks;
+ import org.microg.gms.location.GoogleLocationManagerServiceImpl;
+ 
+-import static org.microg.gms.maps.Constants.ACTION_GMS_LOCATION_MANAGER_SERVICE_START;
++import static org.microg.gms.Constants.ACTION_GMS_LOCATION_MANAGER_SERVICE_START;
+ 
+ public class GoogleLocationManagerService extends Service {
+     private static final String TAG = "GmsLMS";
+
+File: src/org/microg/gms/location/MockLocationProvider.java
+Patch:
+@@ -3,7 +3,7 @@
+ import android.location.Location;
+ import android.os.Bundle;
+ 
+-import static org.microg.gms.maps.Constants.KEY_MOCK_LOCATION;
++import static org.microg.gms.Constants.KEY_MOCK_LOCATION;
+ 
+ public class MockLocationProvider {
+     private boolean mockEnabled = false;
+

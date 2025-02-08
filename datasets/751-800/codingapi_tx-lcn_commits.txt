@@ -1,0 +1,4818 @@
+File: txlcn-tc/src/test/java/com/codingapi/txlcn/tc/jdbc/sql/MysqlSqlAnalyseTest.java
+Patch:
+@@ -70,7 +70,7 @@ public void analyse() throws SQLException, JSQLParserException {
+     @Test
+     public void mysqlAnalyse() throws SQLException, JSQLParserException {
+         String sql = "DELETE  t2,t3 FROM lcn_sql_parse_test2 t2 ,lcn_sql_parse_test3 t3 where t3.job = t2.dept_name AND t2.dept_name = 'test' and t3.name = 'a' ";
+-        sql = "update lcn_sql_parse_test3 t3 ,lcn_sql_parse_test2 t2 set t3.age = 56 ,t2.dept_name = 'dev' where t3.job = t2.dept_name and t2.dept_name = 'test'";
++        sql = "update lcn_sql_parse_test3 t3 set t3.update_time = now()";
+         Connection connection = dataSource.getConnection();
+         String catalog = connection.getCatalog();
+         DataBaseContext.getInstance().push(catalog, JdbcAnalyseUtils.analyse(connection));
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/jdbc/sql/strategy/AnalyseStrategryFactory.java
+Patch:
+@@ -1,15 +1,18 @@
+ package com.codingapi.txlcn.tc.jdbc.sql.strategy;
+ 
+ import com.google.common.collect.Maps;
++import org.springframework.context.annotation.Configuration;
+ import org.springframework.util.StringUtils;
+ 
++import javax.annotation.PostConstruct;
+ import java.util.Map;
+ 
+ /**
+  * @author Gz.
+  * @description:
+  * @date 2020-09-02 22:51:37
+  */
++
+ public class AnalyseStrategryFactory {
+ 
+     private static Map<String, SqlSqlAnalyseHandler> strategyMap = Maps.newHashMap();
+
+File: txlcn-protocol/src/main/java/com/codingapi/txlcn/protocol/message/separate/TransactionMessage.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ @EqualsAndHashCode(callSuper = true)
+ @Data
+-public  class TransactionMessage extends AbsMessage {
++public class TransactionMessage extends AbsMessage {
+ 
+     protected String groupId;
+ 
+
+File: txlcn-protocol/src/main/java/com/codingapi/txlcn/protocol/service/ConnectionService.java
+Patch:
+@@ -17,7 +17,7 @@
+ public class ConnectionService {
+ 
+     // server name -> connection
+-    private final Map<String, Connection> connections = new HashMap<String, Connection>();
++    private final Map<String, Connection> connections = new HashMap<>();
+ 
+     public void addConnection(final Connection connection) {
+         final String uniqueKey = connection.getUniqueKey();
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/control/commit/LcnCommitor.java
+Patch:
+@@ -39,7 +39,8 @@ public void commit(boolean state) {
+             }
+         }else{
+             try {
+-                transactionLogExecutor.delete(connection);
++                //不需要删除补偿日志,因为日志没有存储.
++//                transactionLogExecutor.delete(connection);
+                 connection.rollback();
+             } catch (SQLException e) {
+                 //不需要关心，即便日志没有删除，在补偿的时候也会执行回滚操作。
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/control/step/TransactionStepNotify.java
+Patch:
+@@ -38,10 +38,10 @@ public void run(TransactionInfo transactionInfo) {
+             res = (TransactionNotifyEvent) managerProtocoler.requestMsg(new TransactionNotifyEvent(transactionInfo.getGroupId(),transactionInfo.getSuccessReturn()));
+         }
+         //当TM返回是正常时,则需要提交本地事务.
+-        transactionCommitorStrategy.commit(res.isSuccess()&&transactionInfo.getSuccessReturn());
++        transactionCommitorStrategy.commit(res != null && (res.isSuccess() && transactionInfo.getSuccessReturn()));
+ 
+         long t2 = System.currentTimeMillis();
+-        log.info("notify transaction result:{},time:{}",res.getResult(),(t2-t1));
++        log.info("notify transaction result:{},time:{}",res,(t2-t1));
+ 
+ 
+     }
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/jdbc/event/LcnAfterTransactionJdbcEvent.java
+Patch:
+@@ -42,7 +42,7 @@ public Object execute(Object param) throws SQLException {
+         log.info("execute connection:{}",connection);
+         log.info("sql=>{}",sql);
+         //这里要分析sql获取，真实变动的数据.不需要获取之前的数据
+-        sqlParserStrategy.parser(connection,sql);
++        sql = sqlParserStrategy.parser(connection,sql);
+         TransactionLog transactionLog = new TransactionLog(sql);
+         JdbcTransaction.current().add(transactionLog);
+         return sql;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/jdbc/event/LcnRollbackTransactionJdbcEvent.java
+Patch:
+@@ -39,10 +39,7 @@ public Object execute(Object param) throws SQLException {
+         log.info("rollback connection:{}",connection);
+         JdbcCallable jdbcCallable = (JdbcCallable) param;
+ 
+-        transactionLogExecutor.delete(connection);
+-
+         //不需要返回值，返回固定值1
+-        jdbcCallable.call();
+         return 1;
+     }
+ }
+
+File: example/example-tc-2/src/main/java/com/codingapi/example/tc/controller/DemoController.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import com.codingapi.example.tc2.vo.DemoReq;
+ import com.codingapi.example.tc2.vo.DemoRes;
+-import com.codingapi.txlcn.service.DemoService;
++import com.codingapi.example.tc.service.DemoService;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.PostMapping;
+ import org.springframework.web.bind.annotation.RequestBody;
+
+File: example/example-tc/src/main/java/com/codingapi/example/tc/controller/DemoController.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.codingapi.example.tc.controller;
+ 
+-import com.codingapi.txlcn.service.DemoService;
++import com.codingapi.example.tc.service.DemoService;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.RequestParam;
+
+File: example/example-tc/src/main/java/com/codingapi/example/tc/db/mapper/DemoMapper.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.codingapi.example.tc.db.mapper;
+ 
+-import com.codingapi.txlcn.db.domain.Demo;
++import com.codingapi.example.tc.db.domain.Demo;
+ import org.apache.ibatis.annotations.Insert;
+ import org.apache.ibatis.annotations.Mapper;
+ 
+
+File: example/example-tc/src/main/java/com/codingapi/example/tc/service/DemoService.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.codingapi.example.tc.service;
+ 
++import com.codingapi.example.tc.db.domain.Demo;
+ import com.codingapi.example.tc.db.mapper.DemoMapper;
+ import com.codingapi.example.tc.feign.TC2Client;
+-import com.codingapi.txlcn.db.domain.Demo;
+ import com.codingapi.example.tc2.vo.DemoReq;
+ import com.codingapi.example.tc2.vo.DemoRes;
+ import com.codingapi.txlcn.tc.annotation.LcnTransaction;
+
+File: txlcn-tracing/src/main/java/com/codingapi/txlcn/tracing/TracingConstants.java
+Patch:
+@@ -27,8 +27,6 @@ public class TracingConstants {
+ 
+     public static final String APP_MAP = "appMap";
+ 
+-    public static final String THREAD_ID = "threadId";
+-
+     public static final String HEADER_KEY_GROUP_ID = "X-Group-ID";
+ 
+     public static final String HEADER_KEY_APP_MAP = "X-App-Map";
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/core/storage/redis/RedisStorage.java
+Patch:
+@@ -236,9 +236,8 @@ public long acquireMachineId(long machineMaxSize, long timeout) throws FastStora
+             acquireGlobalXLock();
+             stringRedisTemplate.opsForValue().setIfAbsent(REDIS_MACHINE_ID_MAP_PREFIX + "cur_id", "-1");
+             for (int i = 0; i < machineMaxSize; i++) {
+-                int curId = Math.toIntExact(
+-                        Objects.requireNonNull(
+-                                stringRedisTemplate.opsForValue().increment(REDIS_MACHINE_ID_MAP_PREFIX + "cur_id", 1)));
++                long curId = Objects.requireNonNull(
++                        stringRedisTemplate.opsForValue().increment(REDIS_MACHINE_ID_MAP_PREFIX + "cur_id", 1));
+                 if (curId > machineMaxSize) {
+                     stringRedisTemplate.opsForValue().set(REDIS_MACHINE_ID_MAP_PREFIX + "cur_id", "0");
+                     curId = 0;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/txmsg/TMSearcher.java
+Patch:
+@@ -78,6 +78,7 @@ public static void search() {
+                 return;
+             }
+             clusterCountLatch = new CountDownLatch(cluster.size() - knownTMClusterSize);
++            log.debug("wait connect size is {}", cluster.size() - knownTMClusterSize);
+             RPC_CLIENT_INITIALIZER.init(TxManagerHost.parserList(new ArrayList<>(cluster)), true);
+             clusterCountLatch.await(10, TimeUnit.SECONDS);
+             echoTMClusterSuccessful();
+@@ -92,9 +93,9 @@ public static void search() {
+     public static boolean searchedOne() {
+         if (Objects.nonNull(clusterCountLatch)) {
+             if (clusterCountLatch.getCount() == 0) {
+-                clusterCountLatch.countDown();
+                 return false;
+             }
++            clusterCountLatch.countDown();
+             return true;
+         }
+         return false;
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/cluster/TMAutoCluster.java
+Patch:
+@@ -70,7 +70,7 @@ public void init() throws Exception {
+         // 1. 通知 TC 建立连接
+         List<TMProperties> tmList = fastStorage.findTMProperties().stream()
+                 .filter(tmProperties ->
+-                        !tmProperties.getHost().equals(txManagerConfig.getHost()) && !tmProperties.getTransactionPort().equals(txManagerConfig.getPort()))
++                        !tmProperties.getHost().equals(txManagerConfig.getHost()) || !tmProperties.getTransactionPort().equals(txManagerConfig.getPort()))
+                 .collect(Collectors.toList());
+         for (TMProperties properties : tmList) {
+             NotifyConnectParams notifyConnectParams = new NotifyConnectParams();
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/core/DTXContext.java
+Patch:
+@@ -47,7 +47,7 @@ public interface DTXContext {
+     void resetTransactionState(int state) throws TransactionException;
+ 
+     /**
+-     * 获取该事务组事务单元列表
++     * 获取该事务组事务单元列表。从FastStorage获取。
+      *
+      * @return list
+      * @throws TransactionException TransactionException
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/core/SimpleTransactionManager.java
+Patch:
+@@ -74,7 +74,6 @@ public void begin(String groupId) throws TransactionException {
+ 
+     @Override
+     public void join(DTXContext dtxContext, String unitId, String unitType, String modId, int userState) throws TransactionException {
+-        log.debug("unit:{} joined group:{}", unitId, dtxContext.getGroupId());
+         //手动回滚时设置状态为回滚状态 0
+         if (userState == 0) {
+             dtxContext.resetTransactionState(0);
+@@ -117,7 +116,9 @@ public int transactionStateFromFastStorage(String groupId) {
+     }
+ 
+     private void notifyTransaction(DTXContext dtxContext, int transactionState) throws TransactionException {
+-        for (TransactionUnit transUnit : dtxContext.transactionUnits()) {
++        List<TransactionUnit> transactionUnits = dtxContext.transactionUnits();
++        log.debug("group[{}]'s transaction units: {}", dtxContext.getGroupId(), transactionUnits);
++        for (TransactionUnit transUnit : transactionUnits) {
+             NotifyUnitParams notifyUnitParams = new NotifyUnitParams();
+             notifyUnitParams.setGroupId(dtxContext.getGroupId());
+             notifyUnitParams.setUnitId(transUnit.getUnitId());
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/txmsg/EnsureIdGenEngine.java
+Patch:
+@@ -58,6 +58,7 @@ public void onTmReceivedHeart(RpcCmd cmd) {
+         try {
+             int machineId = cmd.getMsg().loadBean(Integer.class);
+             managerService.refreshMachineId(machineId);
++            // todo refresh tm machine id.
+         } catch (Exception e) {
+             e.printStackTrace();
+         }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/txmsg/transaction/CreateGroupExecuteService.java
+Patch:
+@@ -51,7 +51,7 @@ public Serializable execute(TransactionCmd transactionCmd) throws TxManagerExcep
+         } catch (TransactionException e) {
+             throw new TxManagerException(e);
+         }
+-        txLogger.txTrace(transactionCmd.getGroupId(), null, "create group");
++        txLogger.txTrace(transactionCmd.getGroupId(), null, "created group:{}", transactionCmd.getGroupId());
+         return null;
+     }
+ }
+
+File: txlcn-tracing/src/main/java/com/codingapi/txlcn/tracing/TracingConstants.java
+Patch:
+@@ -27,6 +27,8 @@ public class TracingConstants {
+ 
+     public static final String APP_MAP = "appMap";
+ 
++    public static final String THREAD_ID = "threadId";
++
+     public static final String HEADER_KEY_GROUP_ID = "X-Group-ID";
+ 
+     public static final String HEADER_KEY_APP_MAP = "X-App-Map";
+
+File: txlcn-tracing/src/main/java/com/codingapi/txlcn/tracing/TracingContext.java
+Patch:
+@@ -38,7 +38,7 @@
+ @Slf4j
+ public class TracingContext {
+ 
+-    private static ThreadLocal<TracingContext> tracingContextThreadLocal = new ThreadLocal<>();
++    private static ThreadLocal<TracingContext> tracingContextThreadLocal = new InheritableThreadLocal<>();
+ 
+     private TracingContext() {
+ 
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/support/restapi/vo/ListAppMods.java
+Patch:
+@@ -32,8 +32,8 @@ public class ListAppMods {
+ 
+     @Data
+     public static class AppMod {
++        private String modName;
+         private String modId;
+-        private int machineId;
+         private String registerTime;
+     }
+ }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/support/service/impl/AdminServiceImpl.java
+Patch:
+@@ -174,6 +174,7 @@ public ListAppMods listAppMods(Integer page, Integer limit) {
+             AppInfo appInfo = apps.get(i);
+             ListAppMods.AppMod appMod = new ListAppMods.AppMod();
+             PropertyMapper.get().from(appInfo::getAppName).to(appMod::setModId);
++            PropertyMapper.get().from(appInfo::getLabelName).to(appMod::setModName);
+             PropertyMapper.get().from(appInfo::getCreateTime).to(t -> appMod.setRegisterTime(dateFormat.format(t)));
+             appMods.add(appMod);
+         }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/txmsg/EnsureIdGenEngine.java
+Patch:
+@@ -59,7 +59,7 @@ public void onTmReceivedHeart(RpcCmd cmd) {
+             int machineId = cmd.getMsg().loadBean(Integer.class);
+             managerService.refreshMachineId(machineId);
+         } catch (Exception e) {
+-            txLogger.error("onTmReceivedHeart", e.toString());
++            e.printStackTrace();
+         }
+     }
+ }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/support/service/impl/TxExceptionServiceImpl.java
+Patch:
+@@ -98,7 +98,7 @@ public int transactionState(String groupId) {
+     @Override
+     public ExceptionList exceptionList(Integer page, Integer limit, Integer exState, String keyword, Integer registrar) {
+         if (Objects.isNull(page) || page <= 0) {
+-            page = 0;
++            page = 1;
+         }
+         if (Objects.isNull(limit) || limit < 1) {
+             limit = 10;
+@@ -118,7 +118,7 @@ public ExceptionList exceptionList(Integer page, Integer limit, Integer exState,
+             return cb.and(predicatesList.toArray(predicates));
+         };
+         
+-        Page<TxException> pageTxExceptions = txExceptionRepository.findAll(specification, PageRequest.of(page, limit));
++        Page<TxException> pageTxExceptions = txExceptionRepository.findAll(specification, PageRequest.of(page-1, limit));
+         List<TxException> txExceptions = pageTxExceptions.getContent();
+         
+         List<ExceptionInfo> exceptionInfoList = new ArrayList<>(txExceptions.size());
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/support/db/domain/TxException.java
+Patch:
+@@ -20,9 +20,7 @@
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+ 
+-import javax.persistence.Entity;
+-import javax.persistence.Id;
+-import javax.persistence.Table;
++import javax.persistence.*;
+ import java.util.Date;
+ 
+ /**
+@@ -39,6 +37,7 @@
+ public class TxException {
+     
+     @Id
++    @GeneratedValue(strategy = GenerationType.AUTO)
+     private Long id;
+ 
+     /**
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/support/db/jpa/TxExceptionRepository.java
+Patch:
+@@ -41,5 +41,5 @@ public interface TxExceptionRepository extends JpaRepository<TxException, Long>
+      * @return list get(0)
+      */
+     @Query(value = "select transaction_state from t_tx_exception where group_id=?1",nativeQuery = true)
+-    List<Integer> getTransactionStateByGroupId(Pageable page, String groupId);
++    List<Integer> getTransactionStateByGroupId(String groupId,Pageable page);
+ }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/support/service/impl/TxExceptionServiceImpl.java
+Patch:
+@@ -88,11 +88,11 @@ public void writeTxException(WriteTxExceptionDTO writeTxExceptionReq) {
+     @Override
+     public int transactionState(String groupId) {
+         log.debug("transactionState > groupId: {}", groupId);
+-        Integer state = txExceptionRepository.getTransactionStateByGroupId(PageRequest.of(0, 1), groupId).get(0);
+-        if (Objects.isNull(state)) {
++        List<Integer> lists = txExceptionRepository.getTransactionStateByGroupId(groupId,PageRequest.of(0, 1));
++        if (lists.size()<=0) {
+             return -1;
+         }
+-        return state;
++        return lists.get(0);
+     }
+     
+     @Override
+
+File: txlcn-logger/src/main/java/com/codingapi/txlcn/logger/db/LogDbProperties.java
+Patch:
+@@ -38,6 +38,8 @@ public class LogDbProperties extends HikariConfig {
+ 
+     private boolean enabled = false;
+ 
++    private boolean onlyError = true;
++
+     public LogDbProperties(@Autowired(required = false) DataSourceProperties dataSourceProperties) {
+         if (Objects.isNull(dataSourceProperties) ||
+                 Objects.isNull(dataSourceProperties.getDriverClassName()) ||
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/txmsg/transaction/LcnNotifiedUnitService.java
+Patch:
+@@ -33,8 +33,7 @@
+ public class LcnNotifiedUnitService extends DefaultNotifiedUnitService {
+ 
+     @Autowired
+-    public LcnNotifiedUnitService(TransactionCleanTemplate transactionCleanTemplate,
+-                                  TCGlobalContext context, TxLogger txLogger) {
+-        super(transactionCleanTemplate, txLogger, context);
++    public LcnNotifiedUnitService(TransactionCleanTemplate transactionCleanTemplate, TCGlobalContext context) {
++        super(transactionCleanTemplate, context);
+     }
+ }
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/txmsg/transaction/TccNotifiedUnitService.java
+Patch:
+@@ -33,8 +33,7 @@
+ public class TccNotifiedUnitService extends DefaultNotifiedUnitService {
+ 
+     @Autowired
+-    public TccNotifiedUnitService(TransactionCleanTemplate transactionCleanTemplate,
+-                                  TCGlobalContext context, TxLogger txLogger) {
+-        super(transactionCleanTemplate, txLogger, context);
++    public TccNotifiedUnitService(TransactionCleanTemplate transactionCleanTemplate, TCGlobalContext context) {
++        super(transactionCleanTemplate, context);
+     }
+ }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/txmsg/transaction/CleanInvalidTMExecuteService.java
+Patch:
+@@ -44,12 +44,11 @@ public class CleanInvalidTMExecuteService implements RpcExecuteService {
+ 
+     private final FastStorage fastStorage;
+ 
+-    private final TxLogger txLogger;
++    private static final TxLogger txLogger = TxLogger.newLogger(CleanInvalidTMExecuteService.class);
+ 
+     @Autowired
+-    public CleanInvalidTMExecuteService(FastStorage fastStorage, TxLogger txLogger) {
++    public CleanInvalidTMExecuteService(FastStorage fastStorage) {
+         this.fastStorage = fastStorage;
+-        this.txLogger = txLogger;
+     }
+ 
+     @Override
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/support/TxLcnManagerBanner.java
+Patch:
+@@ -42,7 +42,7 @@ public class TxLcnManagerBanner implements Banner {
+             "           | | / /^\\ \\     | |___| \\__/\\| |\\  |    \n" +
+             "           \\_/ \\/   \\/     \\_____/\\____/\\_| \\_/  \n";
+ 
+-    private static final String SERVER_INFO = "   Tx-Manager-%s HTTP port:%s  DTX port:%s";
++    private static final String SERVER_INFO = "      TM-%s HTTP port:%s  DTX port:%s";
+ 
+     @Override
+     public void printBanner(Environment environment, Class<?> sourceClass, PrintStream printStream) {
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/TransactionCleanService.java
+Patch:
+@@ -28,9 +28,9 @@ public interface TransactionCleanService {
+     /**
+      * 事务清理业务
+      *
+-     * @param groupId groupId
++     * @param groupId  groupId
+      * @param state    事务状态 1 提交 0 回滚
+-     * @param unitId unitId
++     * @param unitId   unitId
+      * @param unitType 事务类型
+      * @throws TransactionClearException TransactionClearException
+      */
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/tcc/control/TccTransactionCleanService.java
+Patch:
+@@ -59,7 +59,7 @@ public void clear(String groupId, int state, String unitId, String unitType) thr
+         try {
+             TccTransactionInfo tccInfo = globalContext.tccTransactionInfo(unitId, null);
+             Object object = applicationContext.getBean(tccInfo.getExecuteClass());
+-            // 用户的 confirm or cancel method 可以用到这个
++            // 用户的 confirm 或 cancel method 可以用到这个
+             if (Objects.isNull(DTXLocalContext.cur())) {
+                 DTXLocalContext.getOrNew().setJustNow(true);
+             }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/support/restapi/vo/ExceptionInfo.java
+Patch:
+@@ -53,7 +53,7 @@ public class ExceptionInfo {
+     /**
+      * 异常情况。-1 【未知】 0 【TxManager通知事务】， 1 【TxClient查询事务状态】 2 【事务发起方通知事务组】
+      */
+-    private int registrar;
++    private short registrar;
+ 
+     /**
+      * 异常状态 0 待处理 1已处理
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/core/DTXContext.java
+Patch:
+@@ -55,11 +55,11 @@ public interface DTXContext {
+     List<TransactionUnit> transactionUnits() throws TransactionException;
+ 
+     /**
+-     * 获取事务组属性
++     * 获取事务组ID
+      *
+-     * @return GroupProps
++     * @return groupId
+      */
+-    GroupProps groupProps() throws TransactionException;
++    String getGroupId();
+ 
+     /**
+      * 获取事务组状态
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/core/storage/redis/RedisStorage.java
+Patch:
+@@ -262,7 +262,7 @@ public int acquireOrRefreshMachineId(int machineId, long machineMaxSize, long ti
+                 }
+                 throw new FastStorageException("non can used machine id", FastStorageException.EX_CODE_NON_MACHINE_ID);
+             }
+-            stringRedisTemplate.opsForValue().set(REDIS_GROUP_PREFIX + machineId, "", timeout, TimeUnit.MILLISECONDS);
++            stringRedisTemplate.opsForValue().set(REDIS_MACHINE_ID_MAP_PREFIX + machineId, "", timeout, TimeUnit.MILLISECONDS);
+             return -1;
+         } finally {
+             releaseGlobalXLock();
+
+File: txlcn-logger/src/main/java/com/codingapi/txlcn/logger/Slf4jTxLogger.java
+Patch:
+@@ -28,16 +28,16 @@ public class Slf4jTxLogger implements TxLogger {
+ 
+     @Override
+     public void trace(String groupId, String unitId, String tag, String content, Object... args) {
+-        log.debug("{}-{}-{}: " + content, groupId, unitId, tag, content, args);
++        log.debug("{}: " + content, tag, content, args);
+     }
+ 
+     @Override
+     public void info(String groupId, String unitId, String tag, String content, Object... args) {
+-        log.debug("{}-{}-{}: " + content, groupId, unitId, tag, args);
++        log.debug("{}: " + content, tag, args);
+     }
+ 
+     @Override
+     public void error(String groupId, String unitId, String content, Object... args) {
+-        log.error("{}-{}-{}: " + content, groupId, unitId, Transactions.TE, args);
++        log.error("{}: " + content, groupId, unitId, Transactions.TE, args);
+     }
+ }
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/DTXLocalContext.java
+Patch:
+@@ -56,9 +56,9 @@ public class DTXLocalContext {
+     ////////////////////////// volatile ///////////////////////////////
+ 
+     /**
+-     * 本地事务互调标识
++     * 是否需要销毁。什么时候需要？一个请求下来，这个模块有两个Unit被执行，那么被调方是不能销毁的，只能有上层调用方销毁
+      */
+-    private boolean inUnit;
++    private boolean destroy = true;
+ 
+     /**
+      * 同事务组标识
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/config/EnableDistributedTransaction.java
+Patch:
+@@ -30,7 +30,7 @@
+ @Retention(RetentionPolicy.RUNTIME)
+ @Target(ElementType.TYPE)
+ @Documented
+-@Import(TCAutoConfiguration.class)
++@Import(value = {TCAutoConfiguration.class, DependenciesImportSelector.class})
+ public @interface EnableDistributedTransaction {
+-
++    boolean enableTxc() default true;
+ }
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/TxcConfiguration.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import org.apache.commons.dbutils.QueryRunner;
+ import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.ComponentScan;
+ import org.springframework.context.annotation.Configuration;
+ import org.springframework.context.annotation.Primary;
+ 
+@@ -29,6 +30,7 @@
+  * @author ujued
+  */
+ @Configuration
++@ComponentScan
+ public class TxcConfiguration {
+ 
+     /**
+
+File: txlcn-tc/src/test/java/com/codingapi/txlcn/tc/MiniConfiguration.java
+Patch:
+@@ -15,8 +15,8 @@
+  */
+ package com.codingapi.txlcn.tc;
+ 
++import com.codingapi.txlcn.tc.config.EnableDistributedTransaction;
+ import com.zaxxer.hikari.HikariDataSource;
+-import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+ 
+ import javax.sql.DataSource;
+@@ -28,9 +28,10 @@
+  * @author ujued
+  */
+ @Configuration
++@EnableDistributedTransaction(enableTxc = false)
+ public class MiniConfiguration {
+ 
+-    @Bean
++//    @Bean
+     public DataSource dataSource() {
+         HikariDataSource hikariDataSource = new HikariDataSource();
+         hikariDataSource.setDriverClassName("com.mysql.jdbc.Driver");
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/config/TxManagerConfig.java
+Patch:
+@@ -91,9 +91,9 @@ public TxManagerConfig(ServerProperties serverProperties) {
+     private String exUrl;
+ 
+     /**
+-     * 机器ID长度
++     * ID序列长度
+      */
+-    private int machineIdLen = 10;
++    private int seqLen = 12;
+ 
+     public long getDtxLockTime() {
+         return dtxLockTime == -1 ? dtxTime : dtxLockTime;
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/core/storage/FastStorage.java
+Patch:
+@@ -200,5 +200,5 @@ public interface FastStorage {
+      * @return
+      * @throws FastStorageException
+      */
+-    int acquireOrRefreshMachineId(int machineId, int machineMaxSize, long timeout) throws FastStorageException;
++    int acquireOrRefreshMachineId(int machineId, long machineMaxSize, long timeout) throws FastStorageException;
+ }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/core/storage/redis/RedisStorage.java
+Patch:
+@@ -242,7 +242,7 @@ private void releaseGlobalXLock() {
+     }
+ 
+     @Override
+-    public int acquireOrRefreshMachineId(int machineId, int machineMaxSize, long timeout) throws FastStorageException {
++    public int acquireOrRefreshMachineId(int machineId, long machineMaxSize, long timeout) throws FastStorageException {
+         try {
+             acquireGlobalXLock();
+             if (machineId < 0) {
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/txmsg/EnsureIdGenEngine.java
+Patch:
+@@ -55,7 +55,7 @@ public void disconnect(String remoteKey, String appName) {
+ 
+     @Override
+     public void init() throws Exception {
+-        IdGenInit.applyDefaultIdGen(managerConfig.getMachineIdLen(), managerService.machineIdSync());
++        IdGenInit.applyDefaultIdGen(managerConfig.getSeqLen(), managerService.machineIdSync());
+ 
+         Transactions.setApplicationIdWhenRunning(ApplicationInformation.modId(environment, serverProperties));
+     }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/txmsg/transaction/InitClientService.java
+Patch:
+@@ -74,7 +74,7 @@ public Serializable execute(TransactionCmd transactionCmd) throws TxManagerExcep
+         InitClientParams initClientParams = transactionCmd.getMsg().loadBean(InitClientParams.class);
+         rpcClient.bindAppName(transactionCmd.getRemoteKey(), initClientParams.getAppName());
+         // Machine len and id
+-        initClientParams.setMachineLen(txManagerConfig.getMachineIdLen());
++        initClientParams.setMachineLen(txManagerConfig.getSeqLen());
+         initClientParams.setMachineId(managerService.machineIdSync());
+         // DTX Time and TM timeout.
+         initClientParams.setDtxTime(txManagerConfig.getDtxTime());
+
+File: txlcn-common/src/main/java/com/codingapi/txlcn/common/util/id/IdGen.java
+Patch:
+@@ -22,5 +22,5 @@
+  * @author ujued
+  */
+ public interface IdGen {
+-    long nextId();
++    String nextId();
+ }
+
+File: txlcn-common/src/main/java/com/codingapi/txlcn/common/util/id/RandomUtils.java
+Patch:
+@@ -35,9 +35,9 @@ public static String getUUID() {
+ 
+     public static String randomKey() {
+         if (Objects.isNull(theIdGen)) {
+-            theIdGen = System::nanoTime;
++            theIdGen = new DefaultIdGen(12, 0);
+         }
+-        return String.valueOf(theIdGen.nextId());
++        return theIdGen.nextId();
+     }
+ 
+     public static String simpleKey() {
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/txmsg/TCSideRpcInitCallBack.java
+Patch:
+@@ -82,7 +82,7 @@ public void connected(String remoteKey) {
+                     txClientConfig.applyMachineId(resParams.getMachineId());
+ 
+                     // 2. IdGen 初始化
+-                    IdGenInit.applySnowFlakeIdGen(resParams.getMachineLen(), resParams.getMachineId());
++                    IdGenInit.applyDefaultIdGen(resParams.getMachineLen(), resParams.getMachineId());
+ 
+                     // 3. 日志
+                     log.info("Finally, determined dtx time is {}ms, tm rpc timeout is {} ms, machineId is {}",
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/txmsg/EnsureIdGenEngine.java
+Patch:
+@@ -55,7 +55,7 @@ public void disconnect(String remoteKey, String appName) {
+ 
+     @Override
+     public void init() throws Exception {
+-        IdGenInit.applySnowFlakeIdGen(managerConfig.getMachineIdLen(), managerService.machineIdSync());
++        IdGenInit.applyDefaultIdGen(managerConfig.getMachineIdLen(), managerService.machineIdSync());
+ 
+         Transactions.setApplicationIdWhenRunning(ApplicationInformation.modId(environment, serverProperties));
+     }
+
+File: txlcn-common/src/main/java/com/codingapi/txlcn/common/util/id/SnowFlakeGenerator.java
+Patch:
+@@ -64,7 +64,7 @@ public SnowFlakeGenerator create(long idcId, long machineId) {
+     /**
+      * 可分配的位数
+      */
+-    private final static int REMAIN_BIT_NUM = 32;
++    private final static int REMAIN_BIT_NUM = 22;
+ 
+     /**
+      * idc编号
+
+File: txlcn-common/src/main/java/com/codingapi/txlcn/common/util/id/IdGenInit.java
+Patch:
+@@ -12,6 +12,8 @@
+ public abstract class IdGenInit {
+ 
+     public static void applySnowFlakeIdGen(int machineLen, int machineId) {
+-        RandomUtils.init(new DefaultIdGen(machineLen, 12, machineId));
++        SnowFlakeGenerator.Factory factory = new SnowFlakeGenerator.Factory(machineLen, 0);
++        SnowFlakeGenerator snowFlakeGenerator = factory.create(0, machineId);
++        RandomUtils.init(snowFlakeGenerator::nextId);
+     }
+ }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/config/TxManagerConfig.java
+Patch:
+@@ -93,7 +93,7 @@ public TxManagerConfig(ServerProperties serverProperties) {
+     /**
+      * 机器ID长度
+      */
+-    private int machineIdLen = 20;
++    private int machineIdLen = 10;
+ 
+     public long getDtxLockTime() {
+         return dtxLockTime == -1 ? dtxTime : dtxLockTime;
+
+File: txlcn-common/src/main/java/com/codingapi/txlcn/common/util/id/SnowFlakeGenerator.java
+Patch:
+@@ -64,7 +64,7 @@ public SnowFlakeGenerator create(long idcId, long machineId) {
+     /**
+      * 可分配的位数
+      */
+-    private final static int REMAIN_BIT_NUM = 22;
++    private final static int REMAIN_BIT_NUM = 32;
+ 
+     /**
+      * idc编号
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/context/DefaultGlobalContext.java
+Patch:
+@@ -182,7 +182,7 @@ public boolean isDTXTimeout() {
+         if (!hasTxContext()) {
+             throw new IllegalStateException("non txContext.");
+         }
+-        return (System.currentTimeMillis() - txContext().getCreateTime()) > clientConfig.getDtxTime();
++        return (System.currentTimeMillis() - txContext().getCreateTime()) >= clientConfig.getDtxTime();
+     }
+ 
+     /**
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/core/storage/redis/RedisStorage.java
+Patch:
+@@ -245,7 +245,7 @@ private void releaseGlobalXLock() {
+     public int acquireOrRefreshMachineId(int machineId, int machineMaxSize, long timeout) throws FastStorageException {
+         try {
+             acquireGlobalXLock();
+-            if (machineId < 0 || !Optional.ofNullable(stringRedisTemplate.hasKey(REDIS_GROUP_PREFIX + machineId)).orElse(false)) {
++            if (machineId < 0) {
+                 stringRedisTemplate.opsForValue().setIfAbsent(REDIS_MACHINE_ID_MAP_PREFIX + "cur_id", "-1");
+                 for (int i = 0; i < machineMaxSize; i++) {
+                     int curId = Math.toIntExact(
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/core/storage/redis/RedisStorage.java
+Patch:
+@@ -151,7 +151,6 @@ public void acquireLocks(String contextId, Set<String> locks, LockValue lockValu
+             if (Objects.isNull(hasLockValue)) {
+                 throw new FastStorageException("acquire locks fail.", FastStorageException.EX_CODE_REPEAT_LOCK);
+             }
+-            log.info("Has LockValue: {}, lockValue: {}", hasLockValue, lockValue);
+             // 不在同一个DTX下，已存在的锁是排它锁 或者 新请求的不是共享锁时， 获取锁失败
+             if (Objects.isNull(lockValue.getGroupId()) || !lockValue.getGroupId().equals(hasLockValue.getGroupId())) {
+                 if (hasLockValue.getLockType() == DTXLocks.X_LOCK || lockValue.getLockType() != DTXLocks.S_LOCK) {
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/txmsg/TCSideRpcInitCallBack.java
+Patch:
+@@ -26,6 +26,7 @@
+ import com.codingapi.txlcn.txmsg.params.InitClientParams;
+ import com.codingapi.txlcn.tc.config.TxClientConfig;
+ import com.codingapi.txlcn.tc.support.listener.RpcEnvStatusListener;
++import com.codingapi.txlcn.txmsg.util.MessageUtils;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.boot.autoconfigure.web.ServerProperties;
+@@ -72,7 +73,7 @@ public void connected(String remoteKey) {
+             try {
+                 log.info("Send init message to TM[{}]", remoteKey);
+                 MessageDto msg = rpcClient.request(remoteKey, MessageCreator.initClient(modId), 5000);
+-                if (msg.getData() != null) {
++                if (MessageUtils.statusOk(msg)) {
+                     //每一次建立连接时将会获取最新的时间
+                     InitClientParams resParams = msg.loadBean(InitClientParams.class);
+                     // 1. 设置DTX Time 、 TM RPC timeout 和 MachineId
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/config/TxManagerConfig.java
+Patch:
+@@ -93,7 +93,7 @@ public TxManagerConfig(ServerProperties serverProperties) {
+     /**
+      * 机器ID长度
+      */
+-    private int machineIdLen = 15;
++    private int machineIdLen = 20;
+ 
+     public long getDtxLockTime() {
+         return dtxLockTime == -1 ? dtxTime : dtxLockTime;
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/txmsg/ServerRpcAnswer.java
+Patch:
+@@ -69,10 +69,10 @@ public void callback(RpcCmd rpcCmd) {
+                 MessageDto messageDto = null;
+                 try {
+                     Serializable message = rpcExecuteService.execute(transactionCmd);
+-                    messageDto = MessageCreator.notifyGroupOkResponse(message, action);
++                    messageDto = MessageCreator.okResponse(message, action);
+                 } catch (Throwable e) {
+-                    log.error(e.getMessage(), e);
+-                    messageDto = MessageCreator.notifyGroupFailResponse(e, action);
++                    log.error("rpc execute service error. action: " + action, e);
++                    messageDto = MessageCreator.failResponse(e, action);
+                 } finally {
+                     // 对需要响应信息的请求做出响应
+                     if (rpcCmd.getKey() != null) {
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/context/TCGlobalContext.java
+Patch:
+@@ -59,4 +59,6 @@ TccTransactionInfo tccTransactionInfo(String unitId, Supplier<TccTransactionInfo
+     TxContext txContext();
+ 
+     boolean hasTxContext();
++
++    boolean isDTXTimeout();
+ }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/support/service/impl/AdminServiceImpl.java
+Patch:
+@@ -23,6 +23,7 @@
+ import com.codingapi.txlcn.logger.helper.TxLcnLogDbHelper;
+ import com.codingapi.txlcn.logger.model.*;
+ import com.codingapi.txlcn.tm.config.TxManagerConfig;
++import com.codingapi.txlcn.tm.support.TxLcnManagerBanner;
+ import com.codingapi.txlcn.tm.support.restapi.auth.DefaultTokenStorage;
+ import com.codingapi.txlcn.tm.support.restapi.model.*;
+ import com.codingapi.txlcn.tm.support.service.AdminService;
+@@ -96,7 +97,7 @@ public TxLogList txLogList(Integer page, Integer limit, String groupId, String t
+ 
+         List<Field> list = Stream.of(new GroupId(groupId), new Tag(tag), new StartTime(startTime), new StopTime(stopTime))
+                 .filter(Field::ok).collect(Collectors.toList());
+-        LogList logList = null;
++        LogList logList;
+         try {
+             logList = txLoggerHelper.findByLimitAndFields(page, limit, timeOrder, list);
+         } catch (TxLoggerException e) {
+@@ -135,7 +136,6 @@ public DTXInfo dtxInfo() {
+ 
+     @Override
+     public TxManagerInfo getTxManagerInfo() {
+-
+         TxManagerInfo txManagerInfo = new TxManagerInfo();
+         txManagerInfo.setClientCount(rpcClient.loadAllRemoteKey().size());
+         txManagerInfo.setConcurrentLevel(Math.max(
+@@ -146,6 +146,7 @@ public TxManagerInfo getTxManagerInfo() {
+         txManagerInfo.setSocketPort(managerConfig.getPort());
+         txManagerInfo.setExUrl(managerConfig.isExUrlEnabled() ? managerConfig.getExUrl() : "disabled");
+         txManagerInfo.setEnableTxLogger(String.valueOf(logDbProperties.isEnabled()));
++        txManagerInfo.setTmVersion(TxLcnManagerBanner.VERSION);
+         return txManagerInfo;
+     }
+ 
+
+File: txlcn-logger/src/main/java/com/codingapi/txlcn/logger/AbstractTxLogger.java
+Patch:
+@@ -41,9 +41,10 @@ public AbstractTxLogger() {
+     }
+ 
+     @Override
+-    public void trace(String groupId, String unitId, String tag, String content) {
++    public void trace(String groupId, String unitId, String tag, String content, Object... args) {
+         TxLog txLog = new TxLog();
+         txLog.setContent(content);
++        txLog.setArgs(args);
+         txLog.setGroupId(groupId);
+         txLog.setTag(tag);
+         txLog.setUnitId(Objects.isNull(unitId) ? "" : unitId);
+
+File: txlcn-logger/src/main/java/com/codingapi/txlcn/logger/helper/MysqlLoggerHelper.java
+Patch:
+@@ -74,7 +74,8 @@ public void init() {
+     public int insert(TxLog txLoggerInfo) {
+         if (logDbProperties.isEnabled()) {
+             String sql = "insert into t_logger(group_id,unit_id,tag,content,create_time,app_name) values(?,?,?,?,?,?)";
+-            return dbHelper.update(sql, txLoggerInfo.getGroupId(), txLoggerInfo.getUnitId(), txLoggerInfo.getTag(), txLoggerInfo.getContent(), txLoggerInfo.getCreateTime(), txLoggerInfo.getAppName());
++            return dbHelper.update(sql, txLoggerInfo.getGroupId(), txLoggerInfo.getUnitId(), txLoggerInfo.getTag(),
++                    String.format(txLoggerInfo.getContent(), txLoggerInfo.getArgs()), txLoggerInfo.getCreateTime(), txLoggerInfo.getAppName());
+         } else {
+             throw new NotEnableLogException("not enable logger");
+         }
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/DTXLocalContext.java
+Patch:
+@@ -16,7 +16,7 @@
+ package com.codingapi.txlcn.tc.core;
+ 
+ 
+-import com.codingapi.txlcn.tc.core.tcc.control.TccTransactionCleanService;
++import com.codingapi.txlcn.tc.core.transaction.tcc.control.TccTransactionCleanService;
+ import lombok.Data;
+ import lombok.extern.slf4j.Slf4j;
+ 
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/DTXLogicState.java
+Patch:
+@@ -18,7 +18,7 @@
+ /**
+  * @author lorne
+  */
+-public enum DTXState {
++public enum DTXLogicState {
+ 
+     /**
+      * 发起事务状态
+@@ -44,7 +44,7 @@ public enum DTXState {
+     private String code;
+ 
+ 
+-    DTXState(String code) {
++    DTXLogicState(String code) {
+         this.code = code;
+     }
+ 
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/checking/DTXCheckingInitialization.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.codingapi.txlcn.tc.core.checking;
+ 
+ import com.codingapi.txlcn.common.runner.TxLcnInitializer;
+-import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionCleanTemplate;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+ 
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/checking/DefaultDTXExceptionHandler.java
+Patch:
+@@ -18,7 +18,7 @@
+ import com.codingapi.txlcn.common.util.Transactions;
+ import com.codingapi.txlcn.logger.TxLogger;
+ import com.codingapi.txlcn.tc.txmsg.helper.TxMangerReporter;
+-import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionCleanTemplate;
+ import com.codingapi.txlcn.common.exception.BeforeBusinessException;
+ import com.codingapi.txlcn.common.exception.TransactionClearException;
+ import com.codingapi.txlcn.common.exception.TxClientException;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/checking/SimpleDTXChecking.java
+Patch:
+@@ -26,7 +26,7 @@
+ import com.codingapi.txlcn.tc.corelog.aspect.AspectLogger;
+ import com.codingapi.txlcn.tc.txmsg.ReliableMessenger;
+ import com.codingapi.txlcn.tc.txmsg.helper.TxMangerReporter;
+-import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionCleanTemplate;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.DisposableBean;
+ import org.springframework.beans.factory.annotation.Autowired;
+@@ -96,7 +96,7 @@ public void startDelayCheckingAsync(String groupId, String unitId, String transa
+                 }
+                 int state = reliableMessenger.askTransactionState(groupId, unitId);
+                 log.debug("support > ask transaction transactionState:{}", state);
+-                txLogger.trace(groupId, unitId, Transactions.TAG_TASK, "ask transaction state " + state);
++                txLogger.trace(groupId, unitId, Transactions.TAG_TASK, "ask transaction state %d", state);
+                 if (state == -1) {
+                     log.error("delay clean transaction error.");
+                     onAskTransactionStateException(groupId, unitId, transactionType);
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/propagation/DefaultTransactionSeparator.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.support.propagation;
++package com.codingapi.txlcn.tc.core.propagation;
+ 
+ import org.springframework.stereotype.Component;
+ 
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/template/TransactionCleanTemplate.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.support.template;
++package com.codingapi.txlcn.tc.core.template;
+ 
+ import com.codingapi.txlcn.tc.corelog.aspect.AspectLogger;
+ import com.codingapi.txlcn.tc.support.TXLCNTransactionBeanHelper;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/template/TransactionControlTemplate.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.support.template;
++package com.codingapi.txlcn.tc.core.template;
+ 
+ import com.codingapi.txlcn.tc.aspect.TransactionInfo;
+ import com.codingapi.txlcn.common.exception.BeforeBusinessException;
+@@ -140,7 +140,7 @@ public void joinGroup(String groupId, String unitId, String transactionType, Tra
+      * @param state           transactionState
+      */
+     public void notifyGroup(String groupId, String unitId, String transactionType, int state) {
+-        txLogger.trace(groupId, unitId, Transactions.TAG_TRANSACTION, "notify group " + state);
++        txLogger.trace(groupId, unitId, Transactions.TAG_TRANSACTION, "notify group %d.", state);
+         log.debug("transaction type[{}] > notify group > groupId: {}, unitId: {}", transactionType, groupId, unitId);
+         try {
+             reliableMessenger.notifyGroup(groupId, state);
+@@ -155,6 +155,6 @@ public void notifyGroup(String groupId, String unitId, String transactionType, i
+             // 关闭事务组失败
+             dtxExceptionHandler.handleNotifyGroupBusinessException(Arrays.asList(groupId, state, unitId, transactionType), e.getCause());
+         }
+-        txLogger.trace(groupId, unitId, Transactions.TAG_TRANSACTION, "notify group exception " + state);
++        txLogger.trace(groupId, unitId, Transactions.TAG_TRANSACTION, "notify group exception state %d.", state);
+     }
+ }
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/lcn/control/LcnDefaultTransaction.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.lcn.control;
++package com.codingapi.txlcn.tc.core.transaction.lcn.control;
+ 
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+ import com.codingapi.txlcn.tc.core.TxTransactionInfo;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/lcn/control/LcnRunningTransaction.java
+Patch:
+@@ -13,16 +13,16 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.lcn.control;
++package com.codingapi.txlcn.tc.core.transaction.lcn.control;
+ 
+ import com.codingapi.txlcn.common.exception.TransactionClearException;
+ import com.codingapi.txlcn.common.exception.TxClientException;
+ import com.codingapi.txlcn.common.util.Transactions;
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+ import com.codingapi.txlcn.tc.core.DTXLocalControl;
+ import com.codingapi.txlcn.tc.core.TxTransactionInfo;
+-import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
+-import com.codingapi.txlcn.tc.support.template.TransactionControlTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionCleanTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionControlTemplate;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/lcn/control/LcnStartingTransaction.java
+Patch:
+@@ -13,12 +13,12 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.lcn.control;
++package com.codingapi.txlcn.tc.core.transaction.lcn.control;
+ 
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+ import com.codingapi.txlcn.tc.core.TxTransactionInfo;
+ import com.codingapi.txlcn.tc.core.DTXLocalControl;
+-import com.codingapi.txlcn.tc.support.template.TransactionControlTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionControlTemplate;
+ import com.codingapi.txlcn.common.exception.BeforeBusinessException;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/lcn/control/LcnTransactionCleanService.java
+Patch:
+@@ -13,12 +13,12 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.lcn.control;
++package com.codingapi.txlcn.tc.core.transaction.lcn.control;
+ 
+ import com.codingapi.txlcn.common.exception.TCGlobalContextException;
+ import com.codingapi.txlcn.common.exception.TransactionClearException;
+ import com.codingapi.txlcn.tc.core.TransactionCleanService;
+-import com.codingapi.txlcn.tc.core.lcn.resource.LcnConnectionProxy;
++import com.codingapi.txlcn.tc.core.transaction.lcn.resource.LcnConnectionProxy;
+ import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/lcn/resource/LcnConnectionProxy.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.lcn.resource;
++package com.codingapi.txlcn.tc.core.transaction.lcn.resource;
+ 
+ import com.codingapi.txlcn.txmsg.dto.RpcResponseState;
+ import lombok.extern.slf4j.Slf4j;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/lcn/resource/LcnTransactionResourceExecutor.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.lcn.resource;
++package com.codingapi.txlcn.tc.core.transaction.lcn.resource;
+ 
+ import com.codingapi.txlcn.common.exception.TCGlobalContextException;
+ import com.codingapi.txlcn.tc.aspect.weave.ConnectionCallback;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/tcc/control/TccDefaultTransaction.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.tcc.control;
++package com.codingapi.txlcn.tc.core.transaction.tcc.control;
+ 
+ import com.codingapi.txlcn.tc.core.DTXLocalControl;
+ import org.springframework.stereotype.Component;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/tcc/control/TccRunningTransaction.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.tcc.control;
++package com.codingapi.txlcn.tc.core.transaction.tcc.control;
+ 
+ import com.codingapi.txlcn.common.exception.BeforeBusinessException;
+ import com.codingapi.txlcn.common.exception.TransactionClearException;
+@@ -22,8 +22,8 @@
+ import com.codingapi.txlcn.tc.core.DTXLocalControl;
+ import com.codingapi.txlcn.tc.core.TxTransactionInfo;
+ import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+-import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
+-import com.codingapi.txlcn.tc.support.template.TransactionControlTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionCleanTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionControlTemplate;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/tcc/control/TccStartingTransaction.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.tcc.control;
++package com.codingapi.txlcn.tc.core.transaction.tcc.control;
+ 
+ import com.codingapi.txlcn.tc.annotation.TccTransaction;
+ import com.codingapi.txlcn.common.exception.BeforeBusinessException;
+@@ -22,7 +22,7 @@
+ import com.codingapi.txlcn.tc.core.TccTransactionInfo;
+ import com.codingapi.txlcn.tc.core.TxTransactionInfo;
+ import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+-import com.codingapi.txlcn.tc.support.template.TransactionControlTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionControlTemplate;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/tcc/control/TccTransactionCleanService.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.tcc.control;
++package com.codingapi.txlcn.tc.core.transaction.tcc.control;
+ 
+ import com.codingapi.txlcn.common.exception.TransactionClearException;
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/tcc/resource/TccTransactionResourceExecutor.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.tcc.resource;
++package com.codingapi.txlcn.tc.core.transaction.tcc.resource;
+ 
+ import com.codingapi.txlcn.tc.aspect.weave.ConnectionCallback;
+ import com.codingapi.txlcn.tc.support.resouce.TransactionResourceExecutor;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/TxcConfiguration.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.txlcn.tc.core.txc;
++package com.codingapi.txlcn.tc.core.transaction.txc;
+ 
+ import org.apache.commons.dbutils.QueryRunner;
+ import org.springframework.context.annotation.Bean;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/PrimaryKeyListVisitor.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy;
+ 
+ import net.sf.jsqlparser.expression.Expression;
+ import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/TableStructAnalyser.java
+Patch:
+@@ -13,10 +13,10 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy;
+ 
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+-import com.codingapi.txlcn.tc.core.txc.analy.def.bean.TableStruct;
++import com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean.TableStruct;
+ import org.apache.commons.dbutils.DbUtils;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/PrimaryKeysProvider.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.txlcn.tc.core.txc.analy.def;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def;
+ 
+ import java.util.List;
+ import java.util.Map;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/SqlExecuteInterceptor.java
+Patch:
+@@ -13,9 +13,9 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def;
+ 
+-import com.codingapi.txlcn.tc.core.txc.analy.def.bean.LockableSelect;
++import com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean.LockableSelect;
+ import com.codingapi.txlcn.tc.support.p6spy.common.StatementInformation;
+ import net.sf.jsqlparser.statement.delete.Delete;
+ import net.sf.jsqlparser.statement.insert.Insert;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/TxcSqlExecutor.java
+Patch:
+@@ -13,9 +13,9 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def;
+ 
+-import com.codingapi.txlcn.tc.core.txc.analy.def.bean.*;
++import com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean.*;
+ 
+ import java.sql.Connection;
+ import java.sql.SQLException;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/DeleteImageParams.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/FieldCluster.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/FieldValue.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/InsertImageParams.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+ import lombok.Data;
+ 
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/LockableSelect.java
+Patch:
+@@ -13,9 +13,9 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+-import com.codingapi.txlcn.tc.core.txc.analy.util.SqlUtils;
++import com.codingapi.txlcn.tc.core.transaction.txc.analy.util.SqlUtils;
+ import net.sf.jsqlparser.statement.select.Select;
+ import org.springframework.util.StringUtils;
+ 
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/ModifiedRecord.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/SelectImageParams.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/StatementInfo.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/TableStruct.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/UndoLogDO.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/def/bean/UpdateImageParams.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/undo/TableRecord.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.txlcn.tc.core.txc.analy.undo;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.undo;
+ 
+-import com.codingapi.txlcn.tc.core.txc.analy.def.bean.FieldCluster;
++import com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean.FieldCluster;
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/analy/undo/TableRecordList.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.txlcn.tc.core.txc.analy.undo;
++package com.codingapi.txlcn.tc.core.transaction.txc.analy.undo;
+ 
+ import lombok.Data;
+ 
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/control/TxcDefaultTransaction.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.control;
++package com.codingapi.txlcn.tc.core.transaction.txc.control;
+ 
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+ import com.codingapi.txlcn.tc.core.DTXLocalControl;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/control/TxcRunningTransaction.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.control;
++package com.codingapi.txlcn.tc.core.transaction.txc.control;
+ 
+ import com.codingapi.txlcn.common.exception.TransactionClearException;
+ import com.codingapi.txlcn.common.exception.TxClientException;
+@@ -22,8 +22,8 @@
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+ import com.codingapi.txlcn.tc.core.DTXLocalControl;
+ import com.codingapi.txlcn.tc.core.TxTransactionInfo;
+-import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
+-import com.codingapi.txlcn.tc.support.template.TransactionControlTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionCleanTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionControlTemplate;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/control/TxcStartingTransaction.java
+Patch:
+@@ -13,13 +13,13 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.control;
++package com.codingapi.txlcn.tc.core.transaction.txc.control;
+ 
+ import com.codingapi.txlcn.common.exception.BeforeBusinessException;
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+ import com.codingapi.txlcn.tc.core.DTXLocalControl;
+ import com.codingapi.txlcn.tc.core.TxTransactionInfo;
+-import com.codingapi.txlcn.tc.support.template.TransactionControlTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionControlTemplate;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/control/TxcTransactionCleanService.java
+Patch:
+@@ -13,9 +13,9 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.control;
++package com.codingapi.txlcn.tc.core.transaction.txc.control;
+ 
+-import com.codingapi.txlcn.tc.core.txc.analy.def.TxcService;
++import com.codingapi.txlcn.tc.core.transaction.txc.analy.def.TxcService;
+ import com.codingapi.txlcn.tc.core.TransactionCleanService;
+ import com.codingapi.txlcn.common.exception.TransactionClearException;
+ import com.codingapi.txlcn.common.exception.TxcLogicException;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/resource/CompoundJdbcEventListener.java
+Patch:
+@@ -15,7 +15,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource;
++package com.codingapi.txlcn.tc.core.transaction.txc.resource;
+ 
+ 
+ import com.codingapi.txlcn.tc.support.p6spy.common.*;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/resource/ConnectionHelper.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource;
++package com.codingapi.txlcn.tc.core.transaction.txc.resource;
+ 
+ import com.codingapi.txlcn.tc.support.p6spy.common.ConnectionInformation;
+ import com.codingapi.txlcn.tc.support.p6spy.wrapper.ConnectionWrapper;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/resource/TxcJdbcEventListener.java
+Patch:
+@@ -13,11 +13,11 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource;
++package com.codingapi.txlcn.tc.core.transaction.txc.resource;
+ 
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+-import com.codingapi.txlcn.tc.core.txc.analy.def.SqlExecuteInterceptor;
+-import com.codingapi.txlcn.tc.core.txc.analy.def.bean.LockableSelect;
++import com.codingapi.txlcn.tc.core.transaction.txc.analy.def.SqlExecuteInterceptor;
++import com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean.LockableSelect;
+ import com.codingapi.txlcn.tc.support.p6spy.common.PreparedStatementInformation;
+ import com.codingapi.txlcn.tc.support.p6spy.common.StatementInformation;
+ import com.codingapi.txlcn.tc.support.p6spy.event.P6spyJdbcEventListener;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/core/transaction/txc/resource/TxcTransactionResourceExecutor.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource;
++package com.codingapi.txlcn.tc.core.transaction.txc.resource;
+ 
+ import com.codingapi.txlcn.tc.aspect.weave.ConnectionCallback;
+ import com.codingapi.txlcn.tc.support.resouce.TransactionResourceExecutor;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/corelog/txc/TxcLogHelper.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.codingapi.txlcn.tc.corelog.txc;
+ 
+-import com.codingapi.txlcn.tc.core.txc.analy.def.bean.UndoLogDO;
++import com.codingapi.txlcn.tc.core.transaction.txc.analy.def.bean.UndoLogDO;
+ import com.codingapi.txlcn.tc.corelog.H2DbHelper;
+ import com.codingapi.txlcn.tc.corelog.LogHelper;
+ import lombok.extern.slf4j.Slf4j;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/txmsg/transaction/DefaultNotifiedUnitService.java
+Patch:
+@@ -24,7 +24,7 @@
+ import com.codingapi.txlcn.tc.txmsg.helper.TransactionCmd;
+ import com.codingapi.txlcn.tc.core.context.TxContext;
+ import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+-import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionCleanTemplate;
+ 
+ import java.io.Serializable;
+ import java.util.Objects;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/txmsg/transaction/LcnNotifiedUnitService.java
+Patch:
+@@ -17,7 +17,7 @@
+ 
+ import com.codingapi.txlcn.logger.TxLogger;
+ import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+-import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionCleanTemplate;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/txmsg/transaction/TccNotifiedUnitService.java
+Patch:
+@@ -16,7 +16,7 @@
+ package com.codingapi.txlcn.tc.txmsg.transaction;
+ 
+ import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+-import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionCleanTemplate;
+ import com.codingapi.txlcn.logger.TxLogger;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: txlcn-tc/src/main/java/com/codingapi/txlcn/tc/txmsg/transaction/TxcNotifiedUnitService.java
+Patch:
+@@ -17,7 +17,7 @@
+ 
+ import com.codingapi.txlcn.logger.TxLogger;
+ import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+-import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
++import com.codingapi.txlcn.tc.core.template.TransactionCleanTemplate;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+ 
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/support/service/impl/TxExceptionServiceImpl.java
+Patch:
+@@ -148,7 +148,7 @@ public JSONObject getTransactionInfo(String groupId, String unitId) throws Trans
+         }
+         try {
+             for (String remoteKey : remoteKeys) {
+-                MessageDto messageDto = rpcClient.request(remoteKey, MessageCreator.getAspectLog(groupId, unitId));
++                MessageDto messageDto = rpcClient.request(remoteKey, MessageCreator.getAspectLog(groupId, unitId), 5000);
+                 if (MessageUtils.statusOk(messageDto)) {
+                     return messageDto.loadBean(JSONObject.class);
+                 }
+
+File: txlcn-tm/src/main/java/com/codingapi/txlcn/tm/txmsg/transaction/CleanInvalidTMExecuteService.java
+Patch:
+@@ -43,7 +43,7 @@ public Serializable execute(TransactionCmd transactionCmd) throws TxManagerExcep
+             try {
+                 fastStorage.removeTMProperties(args[0], Integer.valueOf(args[1]));
+             } catch (FastStorageException e) {
+-                txLogger.trace("", "", Transactions.TE, "remove TM " + address + " fail.");
++                txLogger.trace("", "", Transactions.TE, "remove TM %s fail.", address);
+             }
+         }
+         log.info("Clean invalid TM: {}", hashSet);
+
+File: txlcn-tracing/src/main/java/com/codingapi/txlcn/tracing/TracingContext.java
+Patch:
+@@ -110,7 +110,9 @@ public JSONObject appMap() {
+     }
+ 
+     public void destroy() {
+-        this.fields = null;
++        if (Objects.nonNull(tracingContextThreadLocal.get())) {
++            tracingContextThreadLocal.set(null);
++        }
+     }
+ 
+     private void raiseNonGroupException() {
+
+File: txlcn-txmsg-netty/src/main/java/com/codingapi/txlcn/txmsg/netty/bean/SocketManager.java
+Patch:
+@@ -127,7 +127,7 @@ public MessageDto request(String key, RpcCmd cmd, long timeout) throws RpcExcept
+         Channel channel = getChannel(key);
+         channel.writeAndFlush(nettyRpcCmd);
+         log.debug("await response");
+-        if (timeout < 0) {
++        if (timeout < 1) {
+             nettyRpcCmd.await();
+         } else {
+             nettyRpcCmd.await(timeout);
+
+File: txlcn-txmsg-netty/src/main/java/com/codingapi/txlcn/txmsg/netty/impl/NettyRpcServerInitializer.java
+Patch:
+@@ -69,7 +69,7 @@ public void init(ManagerProperties managerProperties) {
+ 
+             // Start the server.
+             b.bind(port);
+-            log.info("Socket started on port(s): {}(socket)",port);
++            log.info("Socket started on port(s): {} (socket)",port);
+ 
+         } catch (Exception e) {
+             // Shut down all event loops to terminate all threads.
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/TCAutoInitialization.java
+Patch:
+@@ -90,7 +90,7 @@ private void dtxCheckingTransactionCleanTemplateAdapt() {
+ 
+     private void rpcEnvInit() throws Exception {
+         if (rpcConfig.getWaitTime() == -1) {
+-            rpcConfig.setWaitTime(1000);
++            rpcConfig.setWaitTime(2000);
+         }
+ 
+         // rpc client init.
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/aspect/weave/DTXResourceWeaver.java
+Patch:
+@@ -46,7 +46,8 @@ public Object around(ProceedingJoinPoint point) throws Throwable {
+         DTXLocalContext dtxLocalContext = DTXLocalContext.cur();
+         if (Objects.nonNull(dtxLocalContext) && dtxLocalContext.isProxy()) {
+             String transactionType = dtxLocalContext.getTransactionType();
+-            TransactionResourceExecutor transactionResourceExecutor = transactionBeanHelper.loadTransactionResourceExecuter(transactionType);
++            TransactionResourceExecutor transactionResourceExecutor =
++                    transactionBeanHelper.loadTransactionResourceExecuter(transactionType);
+             Connection connection = transactionResourceExecutor.proxyConnection(() -> {
+                 try {
+                     return (Connection) point.proceed();
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/DTXServiceExecutor.java
+Patch:
+@@ -20,7 +20,7 @@
+ import com.codingapi.txlcn.commons.util.Transactions;
+ import com.codingapi.txlcn.logger.TxLogger;
+ import com.codingapi.txlcn.tc.support.TXLCNTransactionBeanHelper;
+-import com.codingapi.txlcn.tc.support.context.TCGlobalContext;
++import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+ import com.codingapi.txlcn.tc.support.propagation.TXLCNTransactionSeparator;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+@@ -78,7 +78,7 @@ public Object transactionRunning(TxTransactionInfo info) throws Throwable {
+         // 5. 织入事务操作
+         try {
+             // 5.1 记录事务类型到事务上下文
+-            globalContext.dtxContext(info.getGroupId()).getTransactionTypes().add(transactionType);
++            globalContext.txContext(info.getGroupId()).getTransactionTypes().add(transactionType);
+ 
+             // 5.2 业务执行前
+             txLogger.trace(info.getGroupId(), info.getUnitId(), Transactions.TAG_TRANSACTION, "pre service business code");
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/lcn/control/LcnTransactionCleanService.java
+Patch:
+@@ -19,7 +19,7 @@
+ import com.codingapi.txlcn.commons.exception.TransactionClearException;
+ import com.codingapi.txlcn.tc.core.TransactionCleanService;
+ import com.codingapi.txlcn.tc.core.lcn.resource.LcnConnectionProxy;
+-import com.codingapi.txlcn.tc.support.context.TCGlobalContext;
++import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+@@ -48,8 +48,7 @@ public void clear(String groupId, int state, String unitId, String unitType) thr
+             connectionProxy.notify(state);
+             // todo notify exception
+         } catch (TCGlobalContextException e) {
+-            log.error("local non transaction, but notified. probably net message timeout . groupId: {}, transactionState: {}", groupId, state);
+-            throw new TransactionClearException("local non transaction, but notified. probably net message timeout .");
++            log.warn("Non lcn connection when clear transaction.");
+         }
+     }
+ }
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/lcn/control/LcnTypeTransactionSeparator.java
+Patch:
+@@ -19,7 +19,7 @@
+ import com.codingapi.txlcn.commons.util.Transactions;
+ import com.codingapi.txlcn.tc.core.DTXState;
+ import com.codingapi.txlcn.tc.core.TxTransactionInfo;
+-import com.codingapi.txlcn.tc.support.context.TCGlobalContext;
++import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+ import com.codingapi.txlcn.tc.support.propagation.CustomizableTransactionSeparator;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+@@ -45,7 +45,7 @@ public LcnTypeTransactionSeparator(TCGlobalContext globalContext) {
+     @Override
+     public DTXState loadTransactionState(TxTransactionInfo txTransactionInfo) throws TransactionException {
+         // 一个模块存在多个LCN类型的事务单元在一个事务内走DEFAULT
+-        if (globalContext.dtxContext(txTransactionInfo.getGroupId()).getTransactionTypes().contains(Transactions.LCN)) {
++        if (globalContext.txContext(txTransactionInfo.getGroupId()).getTransactionTypes().contains(Transactions.LCN)) {
+             log.info("Default by LCN assert !");
+             return DTXState.DEFAULT;
+         }
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/lcn/resource/LcnTransactionResourceExecutor.java
+Patch:
+@@ -17,7 +17,7 @@
+ 
+ import com.codingapi.txlcn.commons.exception.TCGlobalContextException;
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+-import com.codingapi.txlcn.tc.support.context.TCGlobalContext;
++import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+ import com.codingapi.txlcn.tc.support.resouce.TransactionResourceExecutor;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/tcc/control/TccStartingTransaction.java
+Patch:
+@@ -21,7 +21,7 @@
+ import com.codingapi.txlcn.tc.core.DTXLocalControl;
+ import com.codingapi.txlcn.tc.core.TccTransactionInfo;
+ import com.codingapi.txlcn.tc.core.TxTransactionInfo;
+-import com.codingapi.txlcn.tc.support.context.TCGlobalContext;
++import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+ import com.codingapi.txlcn.tc.support.template.TransactionControlTemplate;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/PrimaryKeyListVisitor.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource;
++package com.codingapi.txlcn.tc.core.txc.analy;
+ 
+ import net.sf.jsqlparser.expression.Expression;
+ import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/TableStructAnalyser.java
+Patch:
+@@ -13,10 +13,10 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource;
++package com.codingapi.txlcn.tc.core.txc.analy;
+ 
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+-import com.codingapi.txlcn.tc.core.txc.resource.def.bean.TableStruct;
++import com.codingapi.txlcn.tc.core.txc.analy.def.bean.TableStruct;
+ import org.apache.commons.dbutils.DbUtils;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/SqlExecuteInterceptor.java
+Patch:
+@@ -13,9 +13,9 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def;
++package com.codingapi.txlcn.tc.core.txc.analy.def;
+ 
+-import com.codingapi.txlcn.tc.core.txc.resource.def.bean.LockableSelect;
++import com.codingapi.txlcn.tc.core.txc.analy.def.bean.LockableSelect;
+ import com.codingapi.txlcn.jdbcproxy.p6spy.common.StatementInformation;
+ import net.sf.jsqlparser.statement.delete.Delete;
+ import net.sf.jsqlparser.statement.insert.Insert;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/TxcService.java
+Patch:
+@@ -13,10 +13,10 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def;
++package com.codingapi.txlcn.tc.core.txc.analy.def;
+ 
+ import com.codingapi.txlcn.commons.exception.TxcLogicException;
+-import com.codingapi.txlcn.tc.core.txc.resource.def.bean.*;
++import com.codingapi.txlcn.tc.core.txc.analy.def.bean.*;
+ 
+ /**
+  * Description: TXC事务模式植入的业务
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/TxcSqlExecutor.java
+Patch:
+@@ -13,9 +13,9 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def;
++package com.codingapi.txlcn.tc.core.txc.analy.def;
+ 
+-import com.codingapi.txlcn.tc.core.txc.resource.def.bean.*;
++import com.codingapi.txlcn.tc.core.txc.analy.def.bean.*;
+ 
+ import java.sql.Connection;
+ import java.sql.SQLException;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/DeleteImageParams.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/FieldCluster.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/FieldValue.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/InsertImageParams.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+ import lombok.Data;
+ 
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/LockableSelect.java
+Patch:
+@@ -13,9 +13,9 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+-import com.codingapi.txlcn.tc.core.txc.resource.util.SqlUtils;
++import com.codingapi.txlcn.tc.core.txc.analy.util.SqlUtils;
+ import net.sf.jsqlparser.statement.select.Select;
+ import org.springframework.util.StringUtils;
+ 
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/ModifiedRecord.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/SelectImageParams.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/StatementInfo.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/TableStruct.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/UndoLogDO.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/def/bean/UpdateImageParams.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.def.bean;
++package com.codingapi.txlcn.tc.core.txc.analy.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/undo/TableRecord.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.txlcn.tc.core.txc.resource.undo;
++package com.codingapi.txlcn.tc.core.txc.analy.undo;
+ 
+-import com.codingapi.txlcn.tc.core.txc.resource.def.bean.FieldCluster;
++import com.codingapi.txlcn.tc.core.txc.analy.def.bean.FieldCluster;
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/analy/undo/TableRecordList.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.txlcn.tc.core.txc.resource.undo;
++package com.codingapi.txlcn.tc.core.txc.analy.undo;
+ 
+ import lombok.Data;
+ 
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/control/TxcTransactionCleanService.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package com.codingapi.txlcn.tc.core.txc.control;
+ 
+-import com.codingapi.txlcn.tc.core.txc.resource.def.TxcService;
++import com.codingapi.txlcn.tc.core.txc.analy.def.TxcService;
+ import com.codingapi.txlcn.tc.core.TransactionCleanService;
+ import com.codingapi.txlcn.commons.exception.TransactionClearException;
+ import com.codingapi.txlcn.commons.exception.TxcLogicException;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/resource/TxcJdbcEventListener.java
+Patch:
+@@ -16,8 +16,8 @@
+ package com.codingapi.txlcn.tc.core.txc.resource;
+ 
+ import com.codingapi.txlcn.tc.core.DTXLocalContext;
+-import com.codingapi.txlcn.tc.core.txc.resource.def.SqlExecuteInterceptor;
+-import com.codingapi.txlcn.tc.core.txc.resource.def.bean.LockableSelect;
++import com.codingapi.txlcn.tc.core.txc.analy.def.SqlExecuteInterceptor;
++import com.codingapi.txlcn.tc.core.txc.analy.def.bean.LockableSelect;
+ import com.codingapi.txlcn.jdbcproxy.p6spy.common.PreparedStatementInformation;
+ import com.codingapi.txlcn.jdbcproxy.p6spy.common.StatementInformation;
+ import com.codingapi.txlcn.jdbcproxy.p6spy.event.P6spyJdbcEventListener;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/corelog/txc/TxcLogHelper.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.codingapi.txlcn.tc.corelog.txc;
+ 
+-import com.codingapi.txlcn.tc.core.txc.resource.def.bean.UndoLogDO;
++import com.codingapi.txlcn.tc.core.txc.analy.def.bean.UndoLogDO;
+ import com.codingapi.txlcn.tc.corelog.H2DbHelper;
+ import com.codingapi.txlcn.tc.corelog.LogHelper;
+ import lombok.extern.slf4j.Slf4j;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/message/helper/LoopMessenger.java
+Patch:
+@@ -9,7 +9,6 @@
+ import com.codingapi.txlcn.spi.message.params.NotifyGroupParams;
+ import com.codingapi.txlcn.spi.message.util.MessageUtils;
+ import com.codingapi.txlcn.tc.message.ReliableMessenger;
+-import com.codingapi.txlcn.tc.message.TMSearcher;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+@@ -125,18 +124,18 @@ public int clusterSize() {
+      * @throws RpcException RpcException
+      */
+     private MessageDto request(MessageDto messageDto, String whenNonManagerMessage) throws RpcException {
+-        while (true) {
++        for (int i = 0; i < rpcClient.loadAllRemoteKey().size(); i++) {
+             try {
+                 String remoteKey = rpcClient.loadRemoteKey();
+                 MessageDto result = rpcClient.request(remoteKey, messageDto);
+                 log.debug("request action: {}. TM[{}]", messageDto.getAction(), remoteKey);
+                 return result;
+             } catch (RpcException e) {
+                 if (e.getCode() == RpcException.NON_TX_MANAGER) {
+-                    TMSearcher.search();
+                     throw new RpcException(e.getCode(), whenNonManagerMessage + ". non tx-manager is alive.");
+                 }
+             }
+         }
++        throw new RpcException(RpcException.NON_TX_MANAGER, whenNonManagerMessage + ". non tx-manager is alive.");
+     }
+ }
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/message/transaction/LcnNotifiedUnitService.java
+Patch:
+@@ -16,7 +16,7 @@
+ package com.codingapi.txlcn.tc.message.transaction;
+ 
+ import com.codingapi.txlcn.logger.TxLogger;
+-import com.codingapi.txlcn.tc.support.context.TCGlobalContext;
++import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+ import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/message/transaction/TccNotifiedUnitService.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package com.codingapi.txlcn.tc.message.transaction;
+ 
+-import com.codingapi.txlcn.tc.support.context.TCGlobalContext;
++import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+ import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
+ import com.codingapi.txlcn.logger.TxLogger;
+ import lombok.extern.slf4j.Slf4j;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/message/transaction/TxcNotifiedUnitService.java
+Patch:
+@@ -16,7 +16,7 @@
+ package com.codingapi.txlcn.tc.message.transaction;
+ 
+ import com.codingapi.txlcn.logger.TxLogger;
+-import com.codingapi.txlcn.tc.support.context.TCGlobalContext;
++import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+ import com.codingapi.txlcn.tc.support.template.TransactionCleanTemplate;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/support/template/TransactionCleanTemplate.java
+Patch:
+@@ -21,7 +21,7 @@
+ import com.codingapi.txlcn.commons.exception.TransactionClearException;
+ import com.codingapi.txlcn.commons.util.Transactions;
+ import com.codingapi.txlcn.logger.TxLogger;
+-import com.codingapi.txlcn.tc.support.context.TCGlobalContext;
++import com.codingapi.txlcn.tc.core.context.TCGlobalContext;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: tx-commons/src/main/java/com/codingapi/txlcn/commons/util/function/Supplier.java
+Patch:
+@@ -6,13 +6,13 @@
+  *
+  * @author ujued
+  */
+-public interface ThrowableSupplier<T> {
++public interface Supplier<T, E extends Throwable> {
+ 
+     /**
+      * 获取 {@code T} 的实例
+      *
+      * @return T' implementation
+-     * @throws Throwable ex
++     * @throws E ex
+      */
+-    T get() throws Throwable;
++    T get() throws E;
+ }
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/core/storage/redis/RedisStorage.java
+Patch:
+@@ -181,7 +181,6 @@ public void saveTMProperties(TMProperties tmProperties) {
+     @Override
+     public List<TMProperties> findTMProperties() {
+         return redisTemplate.opsForHash().entries(REDIS_TM_LIST).entrySet().stream()
+-                .filter(entry -> !entry.getKey().equals(managerConfig.getHost() + ":" + managerConfig.getPort()))
+                 .map(entry -> {
+                     String[] args = ApplicationInformation.splitAddress(entry.getKey().toString());
+                     TMProperties tmProperties = new TMProperties();
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/core/transaction/QueryTMClusterExecuteService.java
+Patch:
+@@ -6,6 +6,7 @@
+ import com.codingapi.txlcn.tm.core.message.RpcExecuteService;
+ import com.codingapi.txlcn.tm.core.message.TransactionCmd;
+ import com.codingapi.txlcn.tm.core.storage.FastStorage;
++import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+ 
+@@ -19,6 +20,7 @@
+  * @author ujued
+  */
+ @Component("rpc_query-tm-cluster")
++@Slf4j
+ public class QueryTMClusterExecuteService implements RpcExecuteService {
+ 
+     private final FastStorage fastStorage;
+@@ -35,6 +37,7 @@ public Serializable execute(TransactionCmd transactionCmd) throws TxManagerExcep
+             for (TMProperties props : fastStorage.findTMProperties()) {
+                 tmSet.add(props.getHost() + ":" + props.getTransactionPort());
+             }
++            log.info("Query TM cluster. {}", tmSet);
+             return tmSet;
+         } catch (FastStorageException e) {
+             throw new TxManagerException(e);
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/support/message/TxLcnManagerServer.java
+Patch:
+@@ -51,7 +51,7 @@ public TxLcnManagerServer(TxManagerConfig txManagerConfig, RpcServerInitializer
+     public void init() {
+         // 1. 配置
+         if (rpcConfig.getWaitTime() == -1) {
+-            rpcConfig.setWaitTime(5000);
++            rpcConfig.setWaitTime(3000);
+         }
+ 
+         // 2. 初始化RPC Server
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/message/TCSideRpcInitCallBack.java
+Patch:
+@@ -62,7 +62,6 @@ public TCSideRpcInitCallBack(RpcClient rpcClient, TxClientConfig txClientConfig,
+         new Thread(() -> {
+             try {
+                 clusterCountLatch.await(20, TimeUnit.SECONDS);
+-                log.info("TC[{}] established TM Cluster successfully!", modId);
+                 TMSearcher.search();
+             } catch (InterruptedException e) {
+                 throw new IllegalStateException(e);
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/message/helper/LoopMessenger.java
+Patch:
+@@ -97,7 +97,7 @@ public void reportInvalidTM(HashSet<String> invalidTMSet) throws RpcException {
+     @SuppressWarnings("unchecked")
+     public HashSet<String> queryTMCluster() throws RpcException {
+         MessageDto messageDto = new MessageDto();
+-        messageDto.setAction(MessageConstants.ACTION_REMAIN_TM);
++        messageDto.setAction(MessageConstants.ACTION_QUERY_TM_CLUSTER);
+         messageDto = request(messageDto);
+         if (MessageUtils.statusOk(messageDto)) {
+             return messageDto.loadBean(HashSet.class);
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/support/restapi/AdminController.java
+Patch:
+@@ -21,6 +21,7 @@
+ import com.codingapi.txlcn.commons.exception.TxManagerException;
+ import com.codingapi.txlcn.spi.message.TMCluster;
+ import com.codingapi.txlcn.tm.banner.TxLcnManagerBanner;
++import com.codingapi.txlcn.tm.cluster.TMProperties;
+ import com.codingapi.txlcn.tm.core.storage.FastStorage;
+ import com.codingapi.txlcn.tm.support.restapi.model.*;
+ import com.codingapi.txlcn.tm.support.service.AdminService;
+@@ -30,7 +31,6 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.*;
+ 
+-import javax.xml.crypto.Data;
+ import java.util.List;
+ import java.util.Map;
+ 
+@@ -181,7 +181,7 @@ public Map<String, String> tmCluster() {
+     private FastStorage fastStorage;
+ 
+     @GetMapping("/tm-list")
+-    public List<String> tmList() throws FastStorageException {
+-        return fastStorage.findTMAddresses();
++    public List<TMProperties> tmList() throws FastStorageException {
++        return fastStorage.findTMProperties();
+     }
+ }
+
+File: tx-spi-message-netty/src/main/java/com/codingapi/txlcn/spi/message/netty/impl/NettyRpcClientInitializer.java
+Patch:
+@@ -89,6 +89,7 @@ public synchronized void connect(SocketAddress socketAddress) {
+                     b.handler(nettyRpcClientHandlerInitHandler);
+                     ChannelFuture channelFuture = b.connect(socketAddress).syncUninterruptibly();
+                     channelFuture.addListener(future -> latch.countDown());
++                    connected = true;
+                     break;
+                 } catch (Exception e) {
+                     log.warn("Connect socket({}) fail. {}ms latter try again.", socketAddress, rpcConfig.getReconnectDelay());
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/support/template/TransactionControlTemplate.java
+Patch:
+@@ -145,7 +145,6 @@ public void notifyGroup(String groupId, String unitId, String transactionType, i
+         try {
+             reliableMessenger.notifyGroup(groupId, state);
+             transactionCleanTemplate.clean(groupId, unitId, transactionType, state);
+-            tracerHelper.createGroupId(null);
+             log.debug("{} > close transaction group.", transactionType);
+         } catch (TransactionClearException e) {
+             log.error("clear exception", e);
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/core/message/ManagerRpcExceptionHandler.java
+Patch:
+@@ -55,7 +55,7 @@ public void handleNotifyUnitBusinessException(Object params, Throwable e) {
+     public void handleNotifyUnitMessageException(Object params, Throwable e) {
+         // notify unit message error, write txEx
+         List paramList = ((List) params);
+-        String modName = rpcClient.getAppName((String) paramList.get(1));
++        String modName = (String) paramList.get(1);
+ 
+         NotifyUnitParams notifyUnitParams = (NotifyUnitParams) paramList.get(0);
+         WriteTxExceptionDTO writeTxExceptionReq = new WriteTxExceptionDTO(notifyUnitParams.getGroupId(),
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/core/storage/TransactionUnit.java
+Patch:
+@@ -15,9 +15,9 @@
+ public class TransactionUnit implements Serializable {
+ 
+     /**
+-     * 事务单元标识
++     * 事务单元所在模块标识
+      */
+-    private String remoteKey;
++    private String modId;
+ 
+     /**
+      * 事务类型
+
+File: tx-spi-message-netty/src/main/java/com/codingapi/txlcn/spi/message/netty/impl/NettyRpcServerInitializer.java
+Patch:
+@@ -69,7 +69,7 @@ public void init(ManagerProperties managerProperties) {
+ 
+             // Start the server.
+             b.bind(port);
+-            log.info("Socket started on port(s):{}(socket)",port);
++            log.info("Socket started on port(s): {}(socket)",port);
+ 
+         } catch (Exception e) {
+             // Shut down all event loops to terminate all threads.
+
+File: tx-spi-message/src/main/java/com/codingapi/txlcn/spi/message/RpcConfig.java
+Patch:
+@@ -30,7 +30,7 @@ public class RpcConfig {
+     /**
+      * 最大等待时间 单位:(ms)
+      */
+-    private long waitTime = 5000;
++    private long waitTime = -1;
+ 
+     /**
+      * 最大缓存锁的数量
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/support/template/TransactionControlTemplate.java
+Patch:
+@@ -145,7 +145,6 @@ public void notifyGroup(String groupId, String unitId, String transactionType, i
+         try {
+             reliableMessenger.notifyGroup(groupId, state);
+             transactionCleanTemplate.clean(groupId, unitId, transactionType, state);
+-            tracerHelper.createGroupId(null);
+             log.debug("{} > close transaction group.", transactionType);
+         } catch (TransactionClearException e) {
+             log.error("clear exception", e);
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/resource/TxcServiceImpl.java
+Patch:
+@@ -80,7 +80,7 @@ public TxcServiceImpl(TxcSqlExecutor txcSqlExecutor, TxcLogHelper txcLogHelper,
+      */
+     private void lockDataLine(String groupId, String unitId, Set<String> lockIdSet, boolean isXLock) throws TxcLogicException {
+         try {
+-            if (!reliableMessenger.acquireLocks(lockIdSet, isXLock ? DTXLocks.X_LOCK : DTXLocks.S_LOCK)) {
++            if (!reliableMessenger.acquireLocks(groupId, lockIdSet, isXLock ? DTXLocks.X_LOCK : DTXLocks.S_LOCK)) {
+                 throw new TxcLogicException("resource is locked! place try again later.");
+             }
+             globalContext.addTxcLockId(groupId, unitId, lockIdSet);
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/message/ReliableMessenger.java
+Patch:
+@@ -13,7 +13,7 @@
+  * @author ujued
+  */
+ public interface ReliableMessenger {
+-    boolean acquireLocks(Set<String> lockIdSet, int type) throws RpcException;
++    boolean acquireLocks(String groupId, Set<String> lockIdSet, int type) throws RpcException;
+ 
+     void releaseLocks(Set<String> lockIdList) throws RpcException;
+ 
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/message/helper/MessageCreator.java
+Patch:
+@@ -76,8 +76,9 @@ public static MessageDto notifyGroup(NotifyGroupParams notifyGroupParams) {
+      * @param lockType lockType
+      * @return message
+      */
+-    public static MessageDto acquireLock(Set<String> locks, int lockType) {
++    public static MessageDto acquireLocks(String groupId, Set<String> locks, int lockType) {
+         DTXLockParams dtxLockParams = new DTXLockParams();
++        dtxLockParams.setGroupId(groupId);
+         dtxLockParams.setContextId(Transactions.APPLICATION_ID_WHEN_RUNNING);
+         dtxLockParams.setLocks(locks);
+         dtxLockParams.setLockType(lockType);
+@@ -93,7 +94,7 @@ public static MessageDto acquireLock(Set<String> locks, int lockType) {
+      * @param locks locks
+      * @return message
+      */
+-    public static MessageDto releaseLock(Set<String> locks) {
++    public static MessageDto releaseLocks(Set<String> locks) {
+         DTXLockParams dtxLockParams = new DTXLockParams();
+         dtxLockParams.setContextId(Transactions.APPLICATION_ID_WHEN_RUNNING);
+         dtxLockParams.setLocks(locks);
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/core/transaction/AcquireDTXLockExecuteService.java
+Patch:
+@@ -33,7 +33,7 @@ public Serializable execute(TransactionCmd transactionCmd) throws TxManagerExcep
+         DTXLockParams dtxLockParams = transactionCmd.getMsg().loadBean(DTXLockParams.class);
+         try {
+             LockValue lockValue = new LockValue();
+-            lockValue.setGroupId(transactionCmd.getGroupId());
++            lockValue.setGroupId(dtxLockParams.getGroupId());
+             lockValue.setLockType(dtxLockParams.getLockType());
+             fastStorage.acquireLocks(dtxLockParams.getContextId(), dtxLockParams.getLocks(), lockValue);
+             return true;
+
+File: tx-spi-message/src/main/java/com/codingapi/txlcn/spi/message/params/DTXLockParams.java
+Patch:
+@@ -3,6 +3,7 @@
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
++import org.springframework.util.StringUtils;
+ 
+ import java.io.Serializable;
+ import java.util.Set;
+@@ -17,6 +18,7 @@
+ @NoArgsConstructor
+ @Data
+ public class DTXLockParams implements Serializable {
++    private String groupId;
+     private String contextId;
+     private Set<String> locks;
+     private int lockType;
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/tcc/control/TccStartingTransaction.java
+Patch:
+@@ -81,7 +81,7 @@ static TccTransactionInfo prepareTccInfo(TxTransactionInfo info) throws BeforeBu
+     public void preBusinessCode(TxTransactionInfo info) throws BeforeBusinessException {
+         // 缓存TCC事务信息，如果有必要
+         try {
+-            context.tccTransactionInfo(info.getGroupId(), info.getUnitId(), () -> prepareTccInfo(info))
++            context.tccTransactionInfo(info.getUnitId(), () -> prepareTccInfo(info))
+                     .setMethodParameter(info.getTransactionInfo().getArgumentValues());
+         } catch (Throwable throwable) {
+             throw new BeforeBusinessException(throwable);
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/control/TxcTransactionCleanService.java
+Patch:
+@@ -34,7 +34,7 @@
+ public class TxcTransactionCleanService implements TransactionCleanService {
+ 
+     private final TxcService txcService;
+-    
++
+     @Autowired
+     public TxcTransactionCleanService(TxcService txcService) {
+         this.txcService = txcService;
+@@ -44,7 +44,7 @@ public TxcTransactionCleanService(TxcService txcService) {
+     public void clear(String groupId, int state, String unitId, String unitType) throws TransactionClearException {
+         try {
+             // 若需要回滚读undo_log，进行回滚
+-            if (state != 1 && state != -1) {
++            if (state == 0) {
+                 txcService.undo(groupId, unitId);
+             }
+ 
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/resource/TxcModifiedRecordListHandler.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.core.txc.resource.rs;
++package com.codingapi.txlcn.tc.core.txc.resource;
+ 
+ import com.codingapi.txlcn.tc.core.txc.resource.def.bean.FieldValue;
+ import com.codingapi.txlcn.tc.core.txc.resource.def.bean.ModifiedRecord;
+@@ -32,12 +32,12 @@
+  *
+  * @author ujued
+  */
+-public class UpdateSqlPreDataHandler implements ResultSetHandler<List<ModifiedRecord>> {
++public class TxcModifiedRecordListHandler implements ResultSetHandler<List<ModifiedRecord>> {
+ 
+     private final List<String> columns;
+     private final List<String> primaryKeys;
+ 
+-    public UpdateSqlPreDataHandler(List<String> primaryKeys, List<String> columns) {
++    public TxcModifiedRecordListHandler(List<String> primaryKeys, List<String> columns) {
+         this.columns = columns;
+         this.primaryKeys = primaryKeys;
+     }
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/core/txc/resource/def/bean/SelectImageParams.java
+Patch:
+@@ -31,9 +31,6 @@
+ @NoArgsConstructor
+ @Data
+ public class SelectImageParams {
+-    private String groupId;
+-    private String unitId;
+-    private RollbackInfo rollbackInfo;
+     private List<String> primaryKeys;
+     private String sql;
+ }
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/corelog/aspect/AspectLogHelper.java
+Patch:
+@@ -59,7 +59,7 @@ public void init() {
+                 "UNIT_ID_HASH BIGINT NOT NULL," +
+                 "TIME BIGINT NOT NULL, " +
+                 "PRIMARY KEY(ID) )");
+-        log.info("Aspect table TXLCN_LOG finished.");
++        log.info("Aspect log table finished (H2 DATABASE)");
+     }
+ 
+ 
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/corelog/aspect/AsyncH2DBAspectLogger.java
+Patch:
+@@ -51,7 +51,7 @@ public AsyncH2DBAspectLogger(AspectLogHelper txLogHelper) {
+         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+             executorService.shutdown();
+             try {
+-                executorService.awaitTermination(10, TimeUnit.MINUTES);
++                executorService.awaitTermination(6, TimeUnit.SECONDS);
+             } catch (InterruptedException ignored) {
+             }
+         }));
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/message/transaction/DefaultNotifiedUnitService.java
+Patch:
+@@ -69,7 +69,7 @@ public Serializable execute(TransactionCmd transactionCmd) throws TxClientExcept
+                     notifyUnitParams.getUnitId(),
+                     notifyUnitParams.getUnitType(),
+                     notifyUnitParams.getState());
+-            return null;
++            return true;
+         } catch (TransactionClearException | InterruptedException e) {
+             throw new TxClientException(e);
+         }
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/support/checking/SimpleDTXChecking.java
+Patch:
+@@ -145,7 +145,7 @@ public void destroy() throws Exception {
+         scheduledExecutorService.shutdown();
+         try {
+             // for non over tasks.
+-            scheduledExecutorService.awaitTermination(10, TimeUnit.MINUTES);
++            scheduledExecutorService.awaitTermination(6, TimeUnit.SECONDS);
+         } catch (InterruptedException ignored) {
+         }
+     }
+
+File: tx-client/src/main/java/com/codingapi/txlcn/tc/support/context/TransactionAttachmentCache.java
+Patch:
+@@ -13,9 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.codingapi.txlcn.tc.support.cache;
+-
+-import com.codingapi.txlcn.tc.support.context.DTXContext;
++package com.codingapi.txlcn.tc.support.context;
+ 
+ import java.util.Optional;
+ import java.util.function.Supplier;
+
+File: tx-commons/src/main/java/com/codingapi/txlcn/commons/exception/FastStorageException.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.txlcn.tm.core.storage;
++package com.codingapi.txlcn.commons.exception;
+ 
+ import lombok.Data;
+ import lombok.EqualsAndHashCode;
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/TMInitialization.java
+Patch:
+@@ -19,7 +19,7 @@
+ import com.codingapi.txlcn.tm.cluster.TxManagerAutoCluster;
+ import com.codingapi.txlcn.tm.config.TxManagerConfig;
+ import com.codingapi.txlcn.tm.core.storage.FastStorage;
+-import com.codingapi.txlcn.tm.core.storage.FastStorageException;
++import com.codingapi.txlcn.commons.exception.FastStorageException;
+ import com.codingapi.txlcn.tm.support.message.TxLcnManagerServer;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/cluster/DefaultManagerStorage.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import com.codingapi.txlcn.tm.config.TxManagerConfig;
+ import com.codingapi.txlcn.tm.core.storage.FastStorage;
+-import com.codingapi.txlcn.tm.core.storage.FastStorageException;
++import com.codingapi.txlcn.commons.exception.FastStorageException;
+ import org.springframework.beans.factory.DisposableBean;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/core/DefaultDTXContext.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import com.codingapi.txlcn.commons.exception.TransactionException;
+ import com.codingapi.txlcn.tm.core.storage.FastStorage;
+-import com.codingapi.txlcn.tm.core.storage.FastStorageException;
++import com.codingapi.txlcn.commons.exception.FastStorageException;
+ import com.codingapi.txlcn.tm.core.storage.TransactionUnit;
+ 
+ import java.util.List;
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/core/TransactionManager.java
+Patch:
+@@ -71,8 +71,8 @@ public interface TransactionManager {
+     /**
+      * 获取事务状态（补偿机制）。出错返回-1
+      *
+-     * @param dtxContext groupTransaction
++     * @param groupId groupId
+      * @return transactionState
+      */
+-    int transactionState(DTXContext dtxContext);
++    int transactionState(String groupId);
+ }
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/core/transaction/NotifyGroupExecuteService.java
+Patch:
+@@ -67,7 +67,7 @@ public Serializable execute(TransactionCmd transactionCmd) throws TxManagerExcep
+ 
+             int commitState = notifyGroupParams.getState();
+             //获取事务状态（当手动回滚时会先设置状态）
+-            int transactionState = transactionManager.transactionState(dtxContext);
++            int transactionState = transactionManager.transactionState(transactionCmd.getGroupId());
+             boolean hasThrow = false;
+             if (transactionState == 0) {
+                 commitState = 0;
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/core/transaction/ReleaseDTXLockExecuteService.java
+Patch:
+@@ -5,7 +5,7 @@
+ import com.codingapi.txlcn.tm.core.message.RpcExecuteService;
+ import com.codingapi.txlcn.tm.core.message.TransactionCmd;
+ import com.codingapi.txlcn.tm.core.storage.FastStorage;
+-import com.codingapi.txlcn.tm.core.storage.FastStorageException;
++import com.codingapi.txlcn.commons.exception.FastStorageException;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+ 
+@@ -31,7 +31,7 @@ public ReleaseDTXLockExecuteService(FastStorage fastStorage) {
+     public Serializable execute(TransactionCmd transactionCmd) throws TxManagerException {
+         DTXLockParams dtxLockParams = transactionCmd.getMsg().loadBean(DTXLockParams.class);
+         try {
+-            fastStorage.releaseLock(dtxLockParams.getContextId(), dtxLockParams.getLockId());
++            fastStorage.releaseLocks(dtxLockParams.getContextId(), dtxLockParams.getLocks());
+             return true;
+         } catch (FastStorageException e) {
+             throw new TxManagerException(e);
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/support/db/domain/TxException.java
+Patch:
+@@ -55,7 +55,7 @@ public class TxException {
+     private Integer transactionState;
+ 
+     /**
+-     * 上报方 0 TxManager 1 TxClient
++     * 上报方 -1 未知 0 Manager 通知事务失败， 1 client询问事务状态失败2 事务发起方关闭事务组失败
+      */
+     private short registrar;
+ 
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/tm/support/restapi/auth/DefaultTokenStorage.java
+Patch:
+@@ -16,7 +16,7 @@
+ package com.codingapi.txlcn.tm.support.restapi.auth;
+ 
+ import com.codingapi.txlcn.tm.core.storage.FastStorage;
+-import com.codingapi.txlcn.tm.core.storage.FastStorageException;
++import com.codingapi.txlcn.commons.exception.FastStorageException;
+ import com.codingapi.txlcn.tm.support.restapi.auth.sauth.token.TokenStorage;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: tx-spi-message-netty/src/main/java/com/codingapi/txlcn/spi/message/netty/handler/RpcCmdDecoder.java
+Patch:
+@@ -58,7 +58,7 @@ protected void channelRead0(ChannelHandlerContext ctx, NettyRpcCmd cmd) {
+         if (!StringUtils.isEmpty(key)) {
+             RpcContent rpcContent = cmd.loadRpcContent();
+             if (rpcContent != null) {
+-                log.debug("got response message");
++                log.debug("got response message[Netty Handler]");
+                 rpcContent.setRes(cmd.getMsg());
+                 rpcContent.signal();
+             } else {
+
+File: tx-spi-message/src/main/java/com/codingapi/txlcn/spi/message/params/DTXLockParams.java
+Patch:
+@@ -5,6 +5,7 @@
+ import lombok.NoArgsConstructor;
+ 
+ import java.io.Serializable;
++import java.util.Set;
+ 
+ /**
+  * Description:
+@@ -17,6 +18,6 @@
+ @Data
+ public class DTXLockParams implements Serializable {
+     private String contextId;
+-    private String lockId;
++    private Set<String> locks;
+     private int lockType;
+ }
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/manager/core/context/SimpleTransactionManager.java
+Patch:
+@@ -84,7 +84,7 @@ public void join(DTXTransaction dtxTransaction, TransactionUnit transactionUnit)
+         transUnit.setRemoteKey(transactionUnit.messageContextId());
+         transUnit.setUnitType(transactionUnit.unitType());
+         transUnit.setUnitId(transactionUnit.unitId());
+-        log.info("unit:{} joined group:{}", transactionUnit.unitId(), dtxTransaction.groupId());
++        log.debug("unit:{} joined group:{}", transactionUnit.unitId(), dtxTransaction.groupId());
+         try {
+             //手动回滚时设置状态为回滚状态 0
+             if(transactionUnit.getTransactionState()==0){
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/manager/core/message/HashGroupRpcCmdHandler.java
+Patch:
+@@ -75,7 +75,7 @@ public void handleMessage(RpcCmd rpcCmd) {
+             throw new IllegalStateException("bad request! message's groupId not nullable!");
+         }
+         int index = Math.abs(rpcCmd.getMsg().getGroupId().hashCode() % this.concurrentLevel);
+-        log.info("group:{}'s message dispatched executor index: {}", rpcCmd.getMsg().getGroupId(), index);
++        log.debug("group:{}'s message dispatched executor index: {}", rpcCmd.getMsg().getGroupId(), index);
+ 
+         // 提交事务消息，处理
+         executors.get(index).submit(new RpcCmdTask(beanHelper, rpcCmd));
+
+File: tx-client/src/main/java/com/codingapi/txlcn/client/core/txc/resource/def/config/TxcConfig.java
+Patch:
+@@ -42,7 +42,9 @@ public class TxcConfig extends HikariConfig {
+ 
+     @Autowired(required = false)
+     public TxcConfig(DataSourceProperties dataSourceProperties) {
+-        if (Objects.isNull(dataSourceProperties)) {
++        if (Objects.isNull(dataSourceProperties) ||
++                Objects.isNull(dataSourceProperties.getDriverClassName()) ||
++                Objects.isNull(dataSourceProperties.getUrl())) {
+             log.info("TXC Mode Bak-Connection-Pool used user's config.");
+             return;
+         }
+
+File: tx-logger/src/main/java/com/codingapi/txlcn/logger/db/LogDbProperties.java
+Patch:
+@@ -36,7 +36,9 @@ public class LogDbProperties extends HikariConfig {
+ 
+     @Autowired(required = false)
+     public LogDbProperties(DataSourceProperties dataSourceProperties) {
+-        if (Objects.isNull(dataSourceProperties)) {
++        if (Objects.isNull(dataSourceProperties) ||
++                Objects.isNull(dataSourceProperties.getDriverClassName()) ||
++                Objects.isNull(dataSourceProperties.getUrl())) {
+             log.info("TxLogger used user's config.");
+             return;
+         }
+
+File: tx-client-springcloud/src/main/java/com/codingapi/txlcn/client/springcloud/spi/sleuth/TxSpringCloudConfiguration.java
+Patch:
+@@ -26,6 +26,7 @@
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.ComponentScan;
+ import org.springframework.context.annotation.Configuration;
++import org.springframework.context.annotation.Scope;
+ 
+ /**
+  * Description:
+@@ -45,6 +46,7 @@ public class TxSpringCloudConfiguration {
+     @Bean
+     @ConditionalOnMissingBean
+     @ConditionalOnProperty(name = "tx-lcn.springcloud.loadbalance.enabled",havingValue = "true")
++    @Scope("prototype")
+     public IRule ribbonRule(SleuthParamListener sleuthParamListener,
+                             Registration registration){
+         return new TXLCNZoneAvoidanceRule(sleuthParamListener, registration);
+
+File: tx-client-springcloud/src/main/java/com/codingapi/txlcn/client/springcloud/spi/sleuth/ribbon/loadbalance/TXLCNZoneAvoidanceRule.java
+Patch:
+@@ -20,7 +20,6 @@
+ import com.netflix.loadbalancer.ZoneAvoidanceRule;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.cloud.client.serviceregistry.Registration;
+-import org.springframework.context.annotation.Scope;
+ 
+ import java.util.List;
+ 
+@@ -32,7 +31,6 @@
+  * @author ujued
+  */
+ @Slf4j
+-@Scope("prototype")
+ public class TXLCNZoneAvoidanceRule extends ZoneAvoidanceRule {
+ 
+     //针对sleuth 负载控制的ExtraField参数设置
+
+File: tx-spi-message/src/main/java/com/codingapi/txlcn/spi/message/LCNCmdType.java
+Patch:
+@@ -53,7 +53,7 @@ public enum LCNCmdType {
+      * 响应事务状态
+      * 间写 ats
+      */
+-    askTransactionState("ask-transaction-transactionState", MessageConstants.ACTION_ASK_TRANSACTION_STATE),
++    askTransactionState("ask-transaction-state", MessageConstants.ACTION_ASK_TRANSACTION_STATE),
+ 
+     /**
+      * 记录补偿
+
+File: tx-client/src/main/java/com/codingapi/txlcn/client/bean/DTXLocal.java
+Patch:
+@@ -67,7 +67,7 @@ public class DTXLocal {
+     /**
+      * 系统分布式事务状态
+      */
+-    private int sysTransactionState;
++    private int sysTransactionState = 1;
+ 
+     /**
+      * 用户分布式事务状态
+
+File: tx-manager/src/main/java/com/codingapi/txlcn/manager/core/context/SimpleTransactionManager.java
+Patch:
+@@ -89,7 +89,7 @@ public void join(DTXTransaction dtxTransaction, TransactionUnit transactionUnit)
+         log.info("unit:{} joined group:{}", transactionUnit.unitId(), dtxTransaction.groupId());
+         try {
+             //手动回滚时设置状态为回滚状态 0
+-            if(transactionUnit.getTranscationState()==0){
++            if(transactionUnit.getTransactionState()==0){
+                 groupRelationship.setTransactionState(dtxTransaction.groupId(),0);
+             }
+             groupRelationship.joinGroup(dtxTransaction.groupId(), transUnit);
+
+File: tx-spi-message-netty/src/main/java/com/codingapi/txlcn/spi/message/netty/SocketManager.java
+Patch:
+@@ -86,7 +86,7 @@ public void removeChannel(Channel channel) {
+         channels.remove(channel);
+         try {
+             executorService.schedule(() -> {
+-                String key = channel.toString();
++                String key = channel.remoteAddress().toString();
+                 appNames.remove(key);
+             }, attrDelayTime, TimeUnit.SECONDS);
+         } catch (RejectedExecutionException ignored) {
+
+File: example/spring-demo-d/src/main/java/com/codingapi/example/demod/SpringDApplication.java
+Patch:
+@@ -16,5 +16,6 @@ public class SpringDApplication {
+ 
+     public static void main(String[] args) {
+         SpringApplication.run(SpringDApplication.class, args);
++
+     }
+ }
+
+File: example/spring-demo-d/src/main/java/com/codingapi/example/demod/service/impl/DemoServiceImpl.java
+Patch:
+@@ -31,6 +31,7 @@ public class DemoServiceImpl implements DemoService {
+ 
+     @Override
+     @TxcTransaction(dtxp = DTXPropagation.SUPPORTS)
++    @Transactional
+     public String rpc(String value) {
+         Demo demo = new Demo();
+         demo.setCreateTime(new Date());
+
+File: tx-client/src/main/java/com/codingapi/tx/client/TxClientConfiguration.java
+Patch:
+@@ -39,6 +39,7 @@ public TxcSettingFactory txcSettingFactory() {
+         return new DefaultTxcSettingFactory();
+     }
+ 
++
+     @Bean
+     public SmartInitializingSingleton dtxCheckingTransactionCleanTemplateAdapter(DTXChecking dtxChecking,
+                                                                                  TransactionCleanTemplate transactionCleanTemplate) {
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/def/TxcSqlExecutor.java
+Patch:
+@@ -92,4 +92,7 @@ public interface TxcSqlExecutor {
+      * @throws SQLException
+      */
+     void clearUndoLog(String groupId, String unitId) throws SQLException;
++
++
++    void undoRollbackInfoSql(RollbackInfo rollbackInfo) throws SQLException;
+ }
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/separate/TXLCNTransactionServiceExecutor.java
+Patch:
+@@ -64,14 +64,14 @@ public Object transactionRunning(TxTransactionInfo info) throws Throwable {
+ 
+         try {
+             // 5.2 业务执行前
+-            txLogger.trace(info.getGroupId(), info.getUnitId(), "transaction", "pre business code");
++            txLogger.trace(info.getGroupId(), info.getUnitId(), "transaction", "pre service business code");
+             lcnTransactionControl.preBusinessCode(info);
+             // 5.3 执行业务
+-            txLogger.trace(info.getGroupId(), info.getUnitId(), "transaction", "do business code");
++            txLogger.trace(info.getGroupId(), info.getUnitId(), "transaction", "do service business code");
+             Object result = lcnTransactionControl.doBusinessCode(info);
+ 
+             // 5.4 业务执行成功
+-            txLogger.trace(info.getGroupId(), info.getUnitId(), "transaction", "business code success");
++            txLogger.trace(info.getGroupId(), info.getUnitId(), "transaction", "service business success");
+             lcnTransactionControl.onBusinessCodeSuccess(info, result);
+             return result;
+         } catch (BeforeBusinessException e) {
+
+File: tx-spi-message/src/main/java/com/codingapi/tx/client/spi/message/params/TxExceptionParams.java
+Patch:
+@@ -22,6 +22,7 @@ public class TxExceptionParams implements Serializable {
+     public static final short ASK_ERROR = 1;
+ 
+     public static final short NOTIFY_GROUP_ERROR = 2;
++    public static final Short TXC_ROLLBACK_ERROR = 3;
+ 
+     private String groupId;
+ 
+
+File: tx-spi-message-netty/src/main/java/com/codingapi/tx/client/springcloud/spi/message/netty/impl/NettyRpcClientInitializer.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.codingapi.tx.client.springcloud.spi.message.RpcClientInitializer;
+ import com.codingapi.tx.client.springcloud.spi.message.dto.TxManagerHost;
++import com.codingapi.tx.client.springcloud.spi.message.netty.MessageConfig;
+ import com.codingapi.tx.client.springcloud.spi.message.netty.SocketManager;
+ import com.codingapi.tx.client.springcloud.spi.message.netty.em.NettyType;
+ import com.codingapi.tx.client.springcloud.spi.message.netty.handler.NettyRpcClientHandlerInitHandler;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/spi/message/NotifyGroupExecuteService.java
+Patch:
+@@ -91,7 +91,7 @@ public Object execute(TransactionCmd transactionCmd) throws TxManagerException {
+                         // 提交/回滚失败的消息处理
+                         log.error("unit business exception.");
+                         rpcExceptionHandler.handleNotifyUnitBusinessException(
+-                                Arrays.asList(notifyUnitParams, transactionCmd.getRemoteKey()),
++                                Arrays.asList(notifyUnitParams, transUnit.getRemoteKey()),
+                                 SerializerContext.getInstance().deSerialize(respMsg.getBytes(), Throwable.class));
+                     }
+ 
+@@ -101,7 +101,7 @@ public Object execute(TransactionCmd transactionCmd) throws TxManagerException {
+                     // 提交/回滚通讯失败
+                     log.error("unit message exception.");
+                     rpcExceptionHandler.handleNotifyUnitMessageException(
+-                            Arrays.asList(notifyUnitParams, transactionCmd.getRemoteKey()), e);
++                            Arrays.asList(notifyUnitParams, transUnit.getRemoteKey()), e);
+                 }
+             }
+         } catch (SerializerException e) {
+
+File: tx-client/src/main/java/com/codingapi/tx/client/bean/TCCTransactionInfo.java
+Patch:
+@@ -15,7 +15,7 @@ public class TCCTransactionInfo {
+     /**
+      * Tcc 事务 提交/回滚 执行类
+      */
+-    private  Class executeClass;
++    private  Class<?> executeClass;
+ 
+ 
+     /**
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/lcn/control/LCNTypeTransactionSeparator.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.codingapi.tx.client.spi.transaction.lcn.control;
+ 
++import com.codingapi.tx.commons.util.Transactions;
+ import com.codingapi.tx.spi.sleuth.TracerHelper;
+ import com.codingapi.tx.client.bean.TxTransactionInfo;
+ import com.codingapi.tx.client.support.separate.CustomizableTransactionSeparator;
+@@ -43,7 +44,7 @@ public TXLCNTransactionState loadTransactionState(TxTransactionInfo txTransactio
+         // 一个模块存在多个LCN类型的事务单元在一个事务内走DEFAULT
+         Optional<TransactionUnitTypeList> sameTransUnitTypeList =
+                 transactionAttachmentCache.attachment(tracerHelper.getGroupId(), TransactionUnitTypeList.class);
+-        if (sameTransUnitTypeList.isPresent() && sameTransUnitTypeList.get().contains("lcn")) {
++        if (sameTransUnitTypeList.isPresent() && sameTransUnitTypeList.get().contains(Transactions.LCN)) {
+             log.info("Default by LCN assert !");
+             return TXLCNTransactionState.DEFAULT;
+         }
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/separate/TXLCNTransactionServiceExecutor.java
+Patch:
+@@ -43,7 +43,7 @@ public Object transactionRunning(TxTransactionInfo info) throws Throwable {
+ 
+         // 2. 事务状态抉择器
+         TXLCNTransactionSeparator lcnTransactionSeparator =
+-                lcnTransactionBeanHelper.loadLCNTransactionStateResolver(info.getTransactionType());
++                lcnTransactionBeanHelper.loadLCNTransactionStateResolver(transactionType);
+ 
+         // 3. 获取事务状态
+         TXLCNTransactionState lcnTransactionState = lcnTransactionSeparator.loadTransactionState(info);
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/model/ErrorResponse.java
+Patch:
+@@ -9,7 +9,7 @@
+  * Description:
+  * Date: 2018/11/23
+  *
+- * @auther ujued
++ * @author ujued
+  */
+ @AllArgsConstructor
+ @NoArgsConstructor
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/service/WriteTxExceptionDTO.java
+Patch:
+@@ -18,7 +18,7 @@ public class WriteTxExceptionDTO {
+     private String unitId;
+     private String modId;
+     private Short transactionState;
+-    private short exState;
++    private Short exState;
+     private Short registrar;
+ 
+     public WriteTxExceptionDTO(String groupId, String unitId, String modId, Short transactionState) {
+
+File: tx-spi-message/src/main/java/com/codingapi/tx/spi/message/params/TxExceptionParams.java
+Patch:
+@@ -36,5 +36,5 @@ public class TxExceptionParams implements Serializable {
+     /**
+      * 事务状态 0 回滚 1提交
+      */
+-    private short transactionState;
++    private Short transactionState;
+ }
+
+File: example/dubbo-demo-client/src/main/java/com/example/service/impl/DemoApiServiceImpl.java
+Patch:
+@@ -5,7 +5,7 @@
+ import com.codingapi.example.common.db.mapper.DemoMapper;
+ import com.codingapi.example.common.dubbo.DDemoService;
+ import com.codingapi.example.common.dubbo.EDemoService;
+-import com.codingapi.tx.client.bean.TxTransactionLocal;
++import com.codingapi.tx.client.bean.DTXLocal;
+ import com.codingapi.tx.commons.annotation.TxTransaction;
+ import com.example.service.DemoApiService;
+ import org.springframework.beans.factory.annotation.Autowired;
+@@ -55,8 +55,8 @@ public String execute(String name) {
+         demo.setCreateTime(new Date());
+         demo.setAppName(appName);
+         demo.setDemoField(name);
+-        demo.setGroupId(TxTransactionLocal.current().getGroupId());
+-        demo.setUnitId(TxTransactionLocal.current().getUnitId());
++        demo.setGroupId(DTXLocal.cur().getGroupId());
++        demo.setUnitId(DTXLocal.cur().getUnitId());
+         demoMapper.save(demo);
+ //        int a = 1 / 0;
+         return dResp + " > " + eResp + " > " + "client-ok";
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/lcn/control/LCNDefaultTransaction.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.codingapi.tx.client.spi.transaction.lcn.control;
+ 
+ import com.codingapi.tx.client.bean.TxTransactionInfo;
+-import com.codingapi.tx.client.bean.TxTransactionLocal;
++import com.codingapi.tx.client.bean.DTXLocal;
+ import com.codingapi.tx.client.support.separate.TXLCNTransactionControl;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.stereotype.Component;
+@@ -18,6 +18,6 @@ public class LCNDefaultTransaction implements TXLCNTransactionControl {
+     @Override
+     public void preBusinessCode(TxTransactionInfo info) {
+         // LCN 需要代理资源
+-        TxTransactionLocal.makeProxy();
++        DTXLocal.makeProxy();
+     }
+ }
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/lcn/control/LCNRunningTransaction.java
+Patch:
+@@ -1,9 +1,9 @@
+ package com.codingapi.tx.client.spi.transaction.lcn.control;
+ 
++import com.codingapi.tx.client.bean.DTXLocal;
+ import com.codingapi.tx.commons.exception.TransactionClearException;
+ import com.codingapi.tx.spi.sleuth.TracerHelper;
+ import com.codingapi.tx.client.bean.TxTransactionInfo;
+-import com.codingapi.tx.client.bean.TxTransactionLocal;
+ import com.codingapi.tx.client.support.separate.TXLCNTransactionControl;
+ import com.codingapi.tx.client.support.common.cache.TransactionAttachmentCache;
+ import com.codingapi.tx.client.support.common.template.TransactionCleanTemplate;
+@@ -49,7 +49,7 @@ public LCNRunningTransaction(TransactionAttachmentCache transactionAttachmentCac
+     @Override
+     public void preBusinessCode(TxTransactionInfo info) {
+         // LCN 类型事务需要代理资源
+-        TxTransactionLocal.makeProxy();
++        DTXLocal.makeProxy();
+     }
+ 
+ 
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/lcn/resource/LCNTransactionResourceExecutor.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.codingapi.tx.client.spi.transaction.lcn.resource;
+ 
+-import com.codingapi.tx.client.bean.TxTransactionLocal;
++import com.codingapi.tx.client.bean.DTXLocal;
+ import com.codingapi.tx.client.support.resouce.TransactionResourceExecutor;
+ import com.codingapi.tx.client.support.common.cache.TransactionAttachmentCache;
+ import lombok.extern.slf4j.Slf4j;
+@@ -29,8 +29,8 @@ public LCNTransactionResourceExecutor(TransactionAttachmentCache transactionAtta
+ 
+     @Override
+     public Connection proxyConnection(Supplier<Connection> connectionSupplier) throws Throwable {
+-        String groupId = TxTransactionLocal.current().getGroupId();
+-        String unitId = TxTransactionLocal.current().getUnitId();
++        String groupId = DTXLocal.cur().getGroupId();
++        String unitId = DTXLocal.cur().getUnitId();
+         Connection connection = transactionAttachmentCache.attachment(
+                 groupId, unitId, LCNConnectionProxy.class, () -> new LCNConnectionProxy(connectionSupplier.get())
+         );
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/control/TxcDefaultTransaction.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.codingapi.tx.client.spi.transaction.txc.control;
+ 
++import com.codingapi.tx.client.bean.DTXLocal;
+ import com.codingapi.tx.client.bean.TxTransactionInfo;
+-import com.codingapi.tx.client.bean.TxTransactionLocal;
+ import com.codingapi.tx.client.support.separate.TXLCNTransactionControl;
+ import org.springframework.stereotype.Component;
+ 
+@@ -17,6 +17,6 @@ public class TxcDefaultTransaction implements TXLCNTransactionControl {
+     @Override
+     public void preBusinessCode(TxTransactionInfo info) {
+         // TXC 类型事务需要代理资源
+-        TxTransactionLocal.makeProxy();
++        DTXLocal.makeProxy();
+     }
+ }
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/separate/CustomizableTransactionSeparator.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.codingapi.tx.client.support.separate;
+ 
++import com.codingapi.tx.client.bean.DTXLocal;
+ import com.codingapi.tx.client.bean.TxTransactionInfo;
+-import com.codingapi.tx.client.bean.TxTransactionLocal;
+ import lombok.extern.slf4j.Slf4j;
+ 
+ /**
+@@ -17,8 +17,8 @@ public class CustomizableTransactionSeparator implements TXLCNTransactionSeparat
+     public TXLCNTransactionState loadTransactionState(TxTransactionInfo txTransactionInfo) {
+ 
+         // 本线程已经参与分布式事务(本地方法互调)
+-        if (TxTransactionLocal.current().isInUnit()) {
+-            log.info("Default by TxTransactionLocal is not null! {}", TxTransactionLocal.current());
++        if (DTXLocal.cur().isInUnit()) {
++            log.info("Default by DTXLocal is not null! {}", DTXLocal.cur());
+             return TXLCNTransactionState.DEFAULT;
+         }
+ 
+
+File: example/spring-demo-client/src/main/java/com/codingapi/example/client/service/DemoServiceImpl.java
+Patch:
+@@ -5,6 +5,7 @@
+ import com.codingapi.example.common.spring.EDemoClient;
+ import com.codingapi.example.client.mapper.ClientDemoMapper;
+ import com.codingapi.tx.client.bean.TxTransactionLocal;
++import com.codingapi.tx.commons.annotation.LcnTransaction;
+ import com.codingapi.tx.commons.annotation.TxTransaction;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.beans.factory.annotation.Value;
+@@ -35,7 +36,7 @@ public class DemoServiceImpl implements DemoService {
+     private String appName;
+ 
+     @Override
+-    @TxTransaction
++    @LcnTransaction
+     @Transactional
+     public String execute(String value) {
+         String dResp = dDemoClient.rpc(value);
+
+File: example/spring-demo-d/src/main/java/com/codingapi/example/demod/service/impl/DemoServiceImpl.java
+Patch:
+@@ -5,6 +5,7 @@
+ import com.codingapi.example.demod.service.DemoService;
+ import com.codingapi.tx.client.bean.TxTransactionLocal;
+ import com.codingapi.tx.commons.annotation.TxTransaction;
++import com.codingapi.tx.commons.annotation.TxcTransaction;
+ import com.codingapi.tx.commons.util.Transactions;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.beans.factory.annotation.Value;
+@@ -29,7 +30,7 @@ public class DemoServiceImpl implements DemoService {
+ 
+ 
+     @Override
+-    @TxTransaction(type = Transactions.TXC)
++    @TxcTransaction
+     public String rpc(String value) {
+         Demo demo = new Demo();
+         demo.setCreateTime(new Date());
+
+File: tx-client/src/main/java/com/codingapi/tx/client/TxClientConfiguration.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.codingapi.tx.client.spi.transaction.txc.resource.sql.init.TxcSettingFactory;
+ import org.apache.commons.dbutils.QueryRunner;
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
++import org.springframework.boot.context.properties.EnableConfigurationProperties;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.ComponentScan;
+ import org.springframework.context.annotation.Configuration;
+@@ -19,6 +20,7 @@
+  */
+ @Configuration
+ @ComponentScan
++@EnableConfigurationProperties
+ public class TxClientConfiguration {
+ 
+ 
+
+File: tx-client/src/main/java/com/codingapi/tx/client/aspectlog/AspectLogDbHelper.java
+Patch:
+@@ -33,6 +33,7 @@ public class AspectLogDbHelper implements DisposableBean {
+     public void init() {
+         HikariConfig hikariConfig = new HikariConfig();
+         hikariConfig.setDriverClassName(org.h2.Driver.class.getName());
++        log.info("init db at {}", aspectLogDbProperties.getFilePath());
+         hikariConfig.setJdbcUrl(String.format("jdbc:h2:%s",aspectLogDbProperties.getFilePath()));
+         hikariDataSource = new HikariDataSource(hikariConfig);
+         queryRunner = new QueryRunner(hikariDataSource);
+
+File: tx-commons/src/main/java/com/codingapi/tx/commons/annotation/ITxTransaction.java
+Patch:
+@@ -4,4 +4,5 @@
+  * create by lorne on 2018/1/25
+  */
+ public interface ITxTransaction {
++    String transactionType();
+ }
+
+File: tx-commons/src/main/java/com/codingapi/tx/commons/annotation/TccTransaction.java
+Patch:
+@@ -6,13 +6,13 @@
+  * @author 侯存路
+  * @date 2018/12/3
+  * @company codingApi
+- * @description
++ * @description type [tcc] of DTX
+  */
+-@Target({ElementType.METHOD, ElementType.TYPE})
++@Target(ElementType.METHOD)
+ @Retention(RetentionPolicy.RUNTIME)
+ @Inherited
+ @Documented
+-public @interface TCCTransaction {
++public @interface TccTransaction {
+ 
+ 
+ 
+
+File: tx-spi-rpc-netty/src/main/java/com/codingapi/tx/spi/rpc/netty/em/NettyType.java
+Patch:
+@@ -16,6 +16,6 @@ public enum  NettyType {
+     /**
+      * 服务端模式
+      */
+-    server;
++    server
+ 
+ }
+
+File: tx-spi-rpc-netty/src/main/java/com/codingapi/tx/spi/rpc/netty/em/NettyType.java
+Patch:
+@@ -12,7 +12,7 @@ public enum  NettyType {
+     /**
+      * 客户端模式
+      */
+-    clent,
++    client,
+     /**
+      * 服务端模式
+      */
+
+File: tx-spi-rpc-netty/src/main/java/com/codingapi/tx/spi/rpc/netty/handler/RpcCmdDecoder.java
+Patch:
+@@ -30,7 +30,7 @@ protected void channelRead0(ChannelHandlerContext ctx, NettyRpcCmd cmd) {
+ 
+         //心态数据包直接响应
+         if (cmd.getMsg() != null && MessageConstants.ACTION_RPC_HEART.equals(cmd.getMsg().getAction())) {
+-            if (NettyContext.currentType().equals(NettyType.clent)) {
++            if (NettyContext.currentType().equals(NettyType.client)) {
+                 ctx.writeAndFlush(cmd);
+                 return;
+             } else {
+
+File: tx-spi-rpc-netty/src/main/java/com/codingapi/tx/spi/rpc/netty/impl/NettyRpcClientInitializer.java
+Patch:
+@@ -41,7 +41,7 @@ public class NettyRpcClientInitializer implements RpcClientInitializer, Disposab
+ 
+     @Override
+     public void init(List<TxManagerHost> hosts) {
+-        NettyContext.type = NettyType.clent;
++        NettyContext.type = NettyType.client;
+         NettyContext.params = hosts;
+         workerGroup = new NioEventLoopGroup();
+         for(TxManagerHost host:hosts){
+
+File: tx-client/src/main/java/com/codingapi/tx/client/aspectlog/AspectDBConfiguration.java
+Patch:
+@@ -11,7 +11,7 @@
+  * @author codingapi
+  */
+ @Configuration
+-public class DBConfiguration {
++public class AspectDBConfiguration {
+ 
+ 
+     @Bean
+
+File: tx-client/src/main/java/com/codingapi/tx/client/aspectlog/AspectLogDbProperties.java
+Patch:
+@@ -9,7 +9,7 @@
+  * @description
+  */
+ @Data
+-@ConfigurationProperties(value = "tx-lcn.log.db")
++@ConfigurationProperties(value = "tx-lcn.aspect.log")
+ public class AspectLogDbProperties {
+ 
+     private String filePath;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/checking/SimpleDTXChecking.java
+Patch:
+@@ -83,7 +83,7 @@ public void startDelayCheckingAsync(String groupId, String unitId, String transa
+                 String channel = rpcClient.loadRemoteKey();
+                 MessageDto messageDto = rpcClient.request(channel, MessageCreator.askTransactionState(groupId, unitId));
+                 int state = protostuffSerializer.deSerialize(messageDto.getBytes(), Short.class);
+-                log.info("rpc > ask transaction state:{}", state);
++                log.info("support > ask transaction state:{}", state);
+                 txLogger.trace(groupId, unitId, Transactions.TAG_TASK, "ask transaction state " + state);
+                 if (state == -1) {
+                     log.error("delay clean transaction error.");
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/TxManagerApplication.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.codingapi.tx.manager;
+ 
+ import com.codingapi.tx.commons.util.serializer.ProtostuffSerializer;
+-import com.codingapi.tx.manager.rpc.TxManagerManagerRefreshing;
++import com.codingapi.tx.manager.support.TxManagerManagerRefreshing;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/config/TxManagerConfig.java
+Patch:
+@@ -22,7 +22,7 @@ public class TxManagerConfig {
+     private String managerHost;
+ 
+     /**
+-     * rpc  rpcPort
++     * support  rpcPort
+      */
+     private int rpcPort;
+ 
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/TxManagerController.java
+Patch:
+@@ -1,7 +1,7 @@
+-package com.codingapi.tx.manager.restapi;
++package com.codingapi.tx.manager.core.restapi;
+ 
+ import com.codingapi.tx.commons.rpc.params.NotifyConnectParams;
+-import com.codingapi.tx.manager.service.ManagerService;
++import com.codingapi.tx.manager.core.service.ManagerService;
+ import com.codingapi.tx.spi.rpc.exception.RpcException;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.web.bind.annotation.PostMapping;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/auth/DefaultTokenStorage.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.auth;
++package com.codingapi.tx.manager.core.restapi.auth;
+ 
+ import com.codingapi.tx.manager.db.redis.RedisTokenStorage;
+ import org.springframework.context.annotation.Primary;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/auth/TxManagerAdminAuthLogic.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.manager.restapi.auth;
++package com.codingapi.tx.manager.core.restapi.auth;
+ 
+-import com.codingapi.tx.manager.restapi.auth.sauth.DefaultSAuthLogic;
++import com.codingapi.tx.manager.core.restapi.auth.sauth.DefaultSAuthLogic;
+ import org.springframework.stereotype.Component;
+ 
+ import java.util.Arrays;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/auth/sauth/DefaultSAuthLogic.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.manager.restapi.auth.sauth;
++package com.codingapi.tx.manager.core.restapi.auth.sauth;
+ 
+-import com.codingapi.tx.manager.restapi.auth.sauth.token.TokenStorage;
++import com.codingapi.tx.manager.core.restapi.auth.sauth.token.TokenStorage;
+ 
+ /**
+  * Description:
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/auth/sauth/InterceptorConfigurer.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.manager.restapi.auth.sauth;
++package com.codingapi.tx.manager.core.restapi.auth.sauth;
+ 
+-import com.codingapi.tx.manager.restapi.auth.sauth.token.TokenInterceptor;
++import com.codingapi.tx.manager.core.restapi.auth.sauth.token.TokenInterceptor;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+ import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/auth/sauth/SAuthConfiguration.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.manager.restapi.auth.sauth;
++package com.codingapi.tx.manager.core.restapi.auth.sauth;
+ 
+-import com.codingapi.tx.manager.restapi.auth.sauth.token.TokenInterceptor;
++import com.codingapi.tx.manager.core.restapi.auth.sauth.token.TokenInterceptor;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.ComponentScan;
+ import org.springframework.context.annotation.Configuration;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/auth/sauth/SAuthHandleException.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.auth.sauth;
++package com.codingapi.tx.manager.core.restapi.auth.sauth;
+ 
+ /**
+  * Description:
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/auth/sauth/SAuthLogic.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.auth.sauth;
++package com.codingapi.tx.manager.core.restapi.auth.sauth;
+ 
+ 
+ import javax.servlet.http.HttpServletRequest;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/auth/sauth/token/TokenStorage.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.auth.sauth.token;
++package com.codingapi.tx.manager.core.restapi.auth.sauth.token;
+ 
+ /**
+  * Description:
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/model/DTXInfo.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.vo;
++package com.codingapi.tx.manager.core.restapi.model;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/model/ErrorResponse.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.vo;
++package com.codingapi.tx.manager.core.restapi.model;
+ 
+ import com.alibaba.fastjson.JSON;
+ import lombok.AllArgsConstructor;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/model/ExceptionInfo.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.vo;
++package com.codingapi.tx.manager.core.restapi.model;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/model/ExceptionList.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.vo;
++package com.codingapi.tx.manager.core.restapi.model;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/model/Token.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.vo;
++package com.codingapi.tx.manager.core.restapi.model;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/model/TxLogList.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.vo;
++package com.codingapi.tx.manager.core.restapi.model;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/model/TxManagerInfo.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.restapi.vo;
++package com.codingapi.tx.manager.core.restapi.model;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/restapi/model/TxManagerLog.java
+Patch:
+@@ -1,11 +1,9 @@
+-package com.codingapi.tx.manager.restapi.vo;
++package com.codingapi.tx.manager.core.restapi.model;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+ 
+-import java.util.Date;
+-
+ /**
+  * Description:
+  * Date: 2018/12/24
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/service/ManagerService.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.service;
++package com.codingapi.tx.manager.core.service;
+ 
+ import com.codingapi.tx.commons.rpc.params.NotifyConnectParams;
+ import com.codingapi.tx.spi.rpc.exception.RpcException;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/service/WriteTxExceptionDTO.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.service.ao;
++package com.codingapi.tx.manager.core.service;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+@@ -13,15 +13,15 @@
+ @AllArgsConstructor
+ @NoArgsConstructor
+ @Data
+-public class WriteTxExceptionReq {
++public class WriteTxExceptionDTO {
+     private String groupId;
+     private String unitId;
+     private String clientAddress;
+     private Short transactionState;
+     private short exState;
+     private Short registrar;
+ 
+-    public WriteTxExceptionReq(String groupId, String unitId, String clientAddress, Short transactionState) {
++    public WriteTxExceptionDTO(String groupId, String unitId, String clientAddress, Short transactionState) {
+         this.groupId = groupId;
+         this.unitId = unitId;
+         this.transactionState = transactionState;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/core/service/impl/ManagerServiceImpl.java
+Patch:
+@@ -1,8 +1,8 @@
+-package com.codingapi.tx.manager.service.impl;
++package com.codingapi.tx.manager.core.service.impl;
+ 
+ import com.codingapi.tx.commons.rpc.params.NotifyConnectParams;
+-import com.codingapi.tx.manager.rpc.MessageCreator;
+-import com.codingapi.tx.manager.service.ManagerService;
++import com.codingapi.tx.manager.core.service.ManagerService;
++import com.codingapi.tx.manager.support.rpc.MessageCreator;
+ import com.codingapi.tx.spi.rpc.RpcClient;
+ import com.codingapi.tx.spi.rpc.exception.RpcException;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/db/redis/RedisGroupRelationship.java
+Patch:
+@@ -3,8 +3,8 @@
+ import com.alibaba.fastjson.JSON;
+ import com.codingapi.tx.commons.exception.JoinGroupException;
+ import com.codingapi.tx.manager.config.TxManagerConfig;
+-import com.codingapi.tx.manager.group.GroupRelationship;
+-import com.codingapi.tx.manager.group.TransUnit;
++import com.codingapi.tx.manager.support.group.GroupRelationship;
++import com.codingapi.tx.manager.support.group.TransUnit;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.data.redis.core.RedisTemplate;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/db/redis/RedisTokenStorage.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.codingapi.tx.manager.db.redis;
+ 
+-import com.codingapi.tx.manager.restapi.auth.sauth.token.TokenStorage;
++import com.codingapi.tx.manager.core.restapi.auth.sauth.token.TokenStorage;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.data.redis.core.RedisTemplate;
+ import org.springframework.stereotype.Component;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/spi/rpc/InitClientService.java
+Patch:
+@@ -1,12 +1,12 @@
+-package com.codingapi.tx.manager.service.rpc;
++package com.codingapi.tx.manager.spi.rpc;
+ 
+ import com.codingapi.tx.commons.exception.SerializerException;
+ import com.codingapi.tx.commons.exception.TxManagerException;
+ import com.codingapi.tx.commons.rpc.params.InitClientParams;
+ import com.codingapi.tx.commons.util.serializer.ProtostuffSerializer;
+ import com.codingapi.tx.manager.config.TxManagerConfig;
+-import com.codingapi.tx.manager.rpc.RpcExecuteService;
+-import com.codingapi.tx.manager.rpc.TransactionCmd;
++import com.codingapi.tx.manager.support.rpc.RpcExecuteService;
++import com.codingapi.tx.manager.support.TransactionCmd;
+ import com.codingapi.tx.spi.rpc.RpcClient;
+ import com.codingapi.tx.spi.rpc.exception.RpcException;
+ import lombok.extern.slf4j.Slf4j;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/support/ManagerRpcBeanHelper.java
+Patch:
+@@ -1,7 +1,8 @@
+-package com.codingapi.tx.manager.rpc;
++package com.codingapi.tx.manager.support;
+ 
+ 
+ import com.codingapi.tx.commons.rpc.LCNCmdType;
++import com.codingapi.tx.manager.support.rpc.RpcExecuteService;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.context.ApplicationContext;
+ import org.springframework.stereotype.Component;
+@@ -12,7 +13,7 @@
+  * @description BeanName 获取工具类
+  */
+ @Component
+-public class LCNManagerRpcBeanHelper {
++public class ManagerRpcBeanHelper {
+ 
+ 
+     /**
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/support/TransactionCmd.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.rpc;
++package com.codingapi.tx.manager.support;
+ 
+ 
+ import com.codingapi.tx.commons.rpc.LCNCmdType;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/support/TxManagerManagerRefreshing.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.rpc;
++package com.codingapi.tx.manager.support;
+ 
+ import com.codingapi.tx.commons.rpc.params.NotifyConnectParams;
+ import com.codingapi.tx.manager.config.TxManagerConfig;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/support/group/GroupRelationship.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.group;
++package com.codingapi.tx.manager.support.group;
+ 
+ import com.codingapi.tx.commons.exception.JoinGroupException;
+ 
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/support/group/TransUnit.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.group;
++package com.codingapi.tx.manager.support.group;
+ 
+ import com.alibaba.fastjson.JSON;
+ import lombok.AllArgsConstructor;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/support/rpc/MessageCreator.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.rpc;
++package com.codingapi.tx.manager.support.rpc;
+ 
+ import com.codingapi.tx.commons.exception.SerializerException;
+ import com.codingapi.tx.commons.rpc.MessageConstants;
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/support/rpc/RpcExceptionHandler.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.rpc;
++package com.codingapi.tx.manager.support.rpc;
+ 
+ /**
+  * Description:
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/support/rpc/RpcExecuteService.java
+Patch:
+@@ -1,6 +1,7 @@
+-package com.codingapi.tx.manager.rpc;
++package com.codingapi.tx.manager.support.rpc;
+ 
+ import com.codingapi.tx.commons.exception.TxManagerException;
++import com.codingapi.tx.manager.support.TransactionCmd;
+ 
+ /**
+  * @author lorne
+
+File: tx-manager/src/main/java/com/codingapi/tx/manager/support/rpc/ServerRpcAnswer.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.manager.rpc;
++package com.codingapi.tx.manager.support.rpc;
+ 
+ import com.codingapi.tx.spi.rpc.RpcAnswer;
+ import com.codingapi.tx.spi.rpc.RpcClient;
+
+File: tx-spi-rpc-netty/src/main/java/com/codingapi/tx/spi/rpc/netty/RpcNettyConfiguration.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import com.codingapi.tx.spi.rpc.ClientInitCallBack;
+ import com.codingapi.tx.spi.rpc.RpcAnswer;
+-import com.codingapi.tx.spi.rpc.dto.RpcCmd;
+ import com.codingapi.tx.spi.rpc.netty.bean.RpcCmdContext;
+ import lombok.Data;
+ import lombok.extern.slf4j.Slf4j;
+@@ -24,7 +23,7 @@
+ @Configuration
+ @ComponentScan
+ @Slf4j
+-@ConfigurationProperties("tx-lcn.rpc")
++@ConfigurationProperties("tx-lcn.rpc.netty")
+ @Data
+ public class RpcNettyConfiguration {
+ 
+
+File: tx-spi-rpc-netty/src/main/java/com/codingapi/tx/spi/rpc/netty/impl/NettyRpcClient.java
+Patch:
+@@ -55,7 +55,7 @@ public MessageDto request(String remoteKey, MessageDto msg) throws RpcException
+         rpcCmd.setKey(key);
+         rpcCmd.setRemoteKey(remoteKey);
+         MessageDto result = request(rpcCmd);
+-        log.debug("rpc > request > used time: {} ms", System.currentTimeMillis() - startTime);
++        log.debug("cmd request used time: {} ms", System.currentTimeMillis() - startTime);
+         return result;
+     }
+ 
+
+File: tx-spi-rpc/src/main/java/com/codingapi/tx/spi/rpc/RpcServerInitializer.java
+Patch:
+@@ -13,7 +13,7 @@ public interface RpcServerInitializer {
+ 
+ 
+     /**
+-     * rpc server init
++     * support server init
+      *
+      * @param managerProperties   配置信息
+      */
+
+File: tx-client/src/main/java/com/codingapi/tx/client/TxClientConfiguration.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.codingapi.tx.client;
+ 
+-import com.codingapi.tx.client.transaction.txc.sql.init.DefaultTxcSettingFactory;
+-import com.codingapi.tx.client.transaction.txc.sql.init.TxcSettingFactory;
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.init.DefaultTxcSettingFactory;
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.init.TxcSettingFactory;
+ import com.codingapi.tx.commons.util.serializer.ProtostuffSerializer;
+ import org.apache.commons.dbutils.QueryRunner;
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/aspect/control/DataSourceAspect.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.aspect.resource;
++package com.codingapi.tx.client.aspect.control;
+ 
+ import com.codingapi.tx.client.config.TxClientConfig;
+ import lombok.extern.slf4j.Slf4j;
+@@ -8,7 +8,6 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.core.Ordered;
+ import org.springframework.stereotype.Component;
+-import org.springframework.util.StringUtils;
+ 
+ /**
+  * create by lorne on 2018/1/5
+
+File: tx-client/src/main/java/com/codingapi/tx/client/aspect/transaction/TransactionAspect.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.aspect.control;
++package com.codingapi.tx.client.aspect.transaction;
+ 
+ import com.codingapi.tx.client.config.TxClientConfig;
+ import lombok.extern.slf4j.Slf4j;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/aspectlog/AspectLog.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.logdb.txlog.entity;
++package com.codingapi.tx.client.aspectlog;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+@@ -14,7 +14,7 @@
+ @Data
+ @AllArgsConstructor
+ @NoArgsConstructor
+-public class TxLog {
++public class AspectLog {
+ 
+     /**
+      * id自增主键
+
+File: tx-client/src/main/java/com/codingapi/tx/client/aspectlog/AspectLogDbProperties.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.logdb;
++package com.codingapi.tx.client.aspectlog;
+ 
+ import lombok.Data;
+ import org.springframework.boot.context.properties.ConfigurationProperties;
+@@ -10,7 +10,7 @@
+  */
+ @Data
+ @ConfigurationProperties(value = "tx-lcn.log.db")
+-public class LogDbProperties {
++public class AspectLogDbProperties {
+ 
+     private String filePath;
+ 
+
+File: tx-client/src/main/java/com/codingapi/tx/client/aspectlog/ThreadPoolLogger.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.log;
++package com.codingapi.tx.client.aspectlog;
+ 
+ import com.codingapi.tx.commons.bean.TransactionInfo;
+ 
+@@ -8,7 +8,7 @@
+  *
+  * @author ujued
+  */
+-public interface AspectLogger {
++public interface ThreadPoolLogger {
+ 
+     /**
+      * 记录切面日志
+
+File: tx-client/src/main/java/com/codingapi/tx/client/bean/TCCTransactionInfo.java
+Patch:
+@@ -9,7 +9,7 @@
+  * @description
+  */
+ @Data
+-public class TCCInfo {
++public class TCCTransactionInfo {
+ 
+ 
+     /**
+
+File: tx-client/src/main/java/com/codingapi/tx/client/config/TxClientConfig.java
+Patch:
+@@ -19,14 +19,14 @@
+ public class TxClientConfig {
+ 
+     /**
+-     * framework order
++     * support order
+      *
+      * @TxTransaction aop Service
+      */
+     private int controlOrder = 0;
+ 
+     /**
+-     * resource order
++     * control order
+      *
+      * @getConnection() aop service
+      */
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/rpc/callback/TxClientClientInitCallBack.java
+Patch:
+@@ -1,7 +1,7 @@
+-package com.codingapi.tx.client.transaction.common.callback;
++package com.codingapi.tx.client.spi.rpc.callback;
+ 
+ import com.codingapi.tx.client.config.TxClientConfig;
+-import com.codingapi.tx.client.framework.rpc.MessageCreator;
++import com.codingapi.tx.client.support.rpc.MessageCreator;
+ import com.codingapi.tx.commons.exception.SerializerException;
+ import com.codingapi.tx.commons.rpc.params.InitClientParams;
+ import com.codingapi.tx.commons.util.serializer.ProtostuffSerializer;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/rpc/common/RpcNotifyConnectService.java
+Patch:
+@@ -1,7 +1,7 @@
+-package com.codingapi.tx.client.transaction.common.rpc;
++package com.codingapi.tx.client.spi.rpc.common;
+ 
+-import com.codingapi.tx.client.framework.rpc.RpcExecuteService;
+-import com.codingapi.tx.client.framework.rpc.TransactionCmd;
++import com.codingapi.tx.client.support.rpc.RpcExecuteService;
++import com.codingapi.tx.client.support.rpc.TransactionCmd;
+ import com.codingapi.tx.commons.exception.SerializerException;
+ import com.codingapi.tx.commons.exception.TxClientException;
+ import com.codingapi.tx.commons.rpc.params.NotifyConnectParams;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/rpc/tcc/TccNotifiedUnitService.java
+Patch:
+@@ -1,7 +1,7 @@
+-package com.codingapi.tx.client.transaction.tcc.rpc;
++package com.codingapi.tx.client.spi.rpc.tcc;
+ 
+-import com.codingapi.tx.client.transaction.common.DefaultNotifiedUnitService;
+-import com.codingapi.tx.client.transaction.common.template.TransactionCleanTemplate;
++import com.codingapi.tx.client.support.common.DefaultNotifiedUnitService;
++import com.codingapi.tx.client.support.common.template.TransactionCleanTemplate;
+ import com.codingapi.tx.commons.util.serializer.ProtostuffSerializer;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/rpc/txc/TxcNotifiedUnitService.java
+Patch:
+@@ -1,7 +1,7 @@
+-package com.codingapi.tx.client.transaction.txc.rpc;
++package com.codingapi.tx.client.spi.rpc.txc;
+ 
+-import com.codingapi.tx.client.transaction.common.DefaultNotifiedUnitService;
+-import com.codingapi.tx.client.transaction.common.template.TransactionCleanTemplate;
++import com.codingapi.tx.client.support.common.DefaultNotifiedUnitService;
++import com.codingapi.tx.client.support.common.template.TransactionCleanTemplate;
+ import com.codingapi.tx.commons.util.serializer.ProtostuffSerializer;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/rpc/txc/TxcTransactionCleanService.java
+Patch:
+@@ -1,8 +1,8 @@
+-package com.codingapi.tx.client.transaction.txc.rpc;
++package com.codingapi.tx.client.spi.rpc.txc;
+ 
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.TxcService;
+ import com.codingapi.tx.commons.exception.TransactionClearException;
+-import com.codingapi.tx.client.transaction.common.TransactionCleanService;
+-import com.codingapi.tx.client.transaction.txc.sql.def.TxcService;
++import com.codingapi.tx.client.support.common.TransactionCleanService;
+ import com.codingapi.tx.logger.TxLogger;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/lcn/resource/LCNConnectionProxy.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.lcn.resource;
++package com.codingapi.tx.client.spi.transaction.lcn.resource;
+ 
+ import com.codingapi.tx.spi.rpc.dto.RpcResponseState;
+ import lombok.extern.slf4j.Slf4j;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/lcn/resource/LCNTransactionResourceExecutor.java
+Patch:
+@@ -1,8 +1,8 @@
+-package com.codingapi.tx.client.transaction.lcn.resource;
++package com.codingapi.tx.client.spi.transaction.lcn.resource;
+ 
+ import com.codingapi.tx.client.bean.TxTransactionLocal;
+-import com.codingapi.tx.client.framework.resouce.TransactionResourceExecutor;
+-import com.codingapi.tx.client.transaction.common.cache.TransactionAttachmentCache;
++import com.codingapi.tx.client.support.resouce.TransactionResourceExecutor;
++import com.codingapi.tx.client.support.common.cache.TransactionAttachmentCache;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/tcc/resource/TCCTransactionResourceExecutor.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.client.transaction.tcc.resource;
++package com.codingapi.tx.client.spi.transaction.tcc.resource;
+ 
+-import com.codingapi.tx.client.framework.resouce.TransactionResourceExecutor;
++import com.codingapi.tx.client.support.resouce.TransactionResourceExecutor;
+ import org.springframework.stereotype.Service;
+ 
+ import java.sql.Connection;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/TxcTransactionResourceExecutor.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.client.transaction.txc.resource;
++package com.codingapi.tx.client.spi.transaction.txc.resource;
+ 
+-import com.codingapi.tx.client.framework.resouce.TransactionResourceExecutor;
++import com.codingapi.tx.client.support.resouce.TransactionResourceExecutor;
+ import com.codingapi.tx.jdbcproxy.p6spy.spring.ConnectionHelper;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/PrimaryKeyListVisitor.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql;
+ 
+ import net.sf.jsqlparser.expression.Expression;
+ import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/TableStructAnalyser.java
+Patch:
+@@ -1,7 +1,7 @@
+-package com.codingapi.tx.client.transaction.txc.sql;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql;
+ 
+ import com.codingapi.tx.client.bean.TxTransactionLocal;
+-import com.codingapi.tx.client.transaction.txc.sql.def.bean.TableStruct;
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean.TableStruct;
+ import org.apache.commons.dbutils.DbUtils;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/SqlExecuteInterceptor.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def;
+ 
+-import com.codingapi.tx.client.transaction.txc.sql.def.bean.LockableSelect;
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean.LockableSelect;
+ import com.codingapi.tx.jdbcproxy.p6spy.common.StatementInformation;
+ import net.sf.jsqlparser.statement.delete.Delete;
+ import net.sf.jsqlparser.statement.insert.Insert;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/TxcService.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def;
+ 
+-import com.codingapi.tx.client.transaction.txc.sql.def.bean.*;
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean.*;
+ 
+ import java.sql.SQLException;
+ 
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/TxcSqlExecutor.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def;
+ 
+-import com.codingapi.tx.client.transaction.txc.sql.def.bean.*;
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean.*;
+ 
+ import java.sql.SQLException;
+ import java.util.List;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/DeleteImageParams.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/FieldCluster.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/FieldValue.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/LockInfo.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/LockableSelect.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+-import com.codingapi.tx.client.transaction.txc.sql.util.SqlUtils;
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.util.SqlUtils;
+ import net.sf.jsqlparser.statement.select.Select;
+ import org.springframework.util.StringUtils;
+ 
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/ModifiedRecord.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/RollbackInfo.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/SelectImageParams.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/StatementInfo.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/TableStruct.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/UndoLogDO.java
+Patch:
+@@ -1,10 +1,8 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.Data;
+ import lombok.NoArgsConstructor;
+ 
+-import java.util.Date;
+-
+ /**
+  * Description: 撤销日志数据对象
+  * Date: 2018/12/13
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/def/bean/UpdateImageParams.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.def.bean;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.bean;
+ 
+ import lombok.AllArgsConstructor;
+ import lombok.Data;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/init/DefaultTxcSettingFactory.java
+Patch:
+@@ -1,6 +1,4 @@
+-package com.codingapi.tx.client.transaction.txc.sql.init;
+-
+-import com.codingapi.tx.client.transaction.txc.sql.util.SqlUtils;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.init;
+ 
+ /**
+  * Description:
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/init/TxcInitialization.java
+Patch:
+@@ -1,7 +1,7 @@
+-package com.codingapi.tx.client.transaction.txc.sql.init;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.init;
+ 
+-import com.codingapi.tx.client.transaction.txc.sql.TableStructAnalyser;
+-import com.codingapi.tx.client.transaction.txc.sql.def.TxcSqlExecutor;
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.TableStructAnalyser;
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.def.TxcSqlExecutor;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.InitializingBean;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/spi/transaction/txc/resource/sql/init/TxcSettingFactory.java
+Patch:
+@@ -1,6 +1,6 @@
+-package com.codingapi.tx.client.transaction.txc.sql.init;
++package com.codingapi.tx.client.spi.transaction.txc.resource.sql.init;
+ 
+-import com.codingapi.tx.client.transaction.txc.sql.util.SqlUtils;
++import com.codingapi.tx.client.spi.transaction.txc.resource.sql.util.SqlUtils;
+ 
+ /**
+  * Description:
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/checking/DTXChecking.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.checking;
++package com.codingapi.tx.client.support.checking;
+ 
+ /**
+  * Description:分布式事务检测器。未收到通知事务单元指令的超时处理机制
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/checking/DTXExceptionHandler.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.checking;
++package com.codingapi.tx.client.support.checking;
+ 
+ import com.codingapi.tx.commons.exception.BeforeBusinessException;
+ import com.codingapi.tx.commons.exception.TxClientException;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/checking/DefaultDTXExceptionHandler.java
+Patch:
+@@ -1,7 +1,7 @@
+-package com.codingapi.tx.client.framework.checking;
++package com.codingapi.tx.client.support.checking;
+ 
+-import com.codingapi.tx.client.framework.rpc.TxMangerReporter;
+-import com.codingapi.tx.client.transaction.common.template.TransactionCleanTemplate;
++import com.codingapi.tx.client.support.rpc.TxMangerReporter;
++import com.codingapi.tx.client.support.common.template.TransactionCleanTemplate;
+ import com.codingapi.tx.commons.exception.BeforeBusinessException;
+ import com.codingapi.tx.commons.exception.TransactionClearException;
+ import com.codingapi.tx.commons.exception.TxClientException;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/common/TransactionCleanService.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.common;
++package com.codingapi.tx.client.support.common;
+ 
+ import com.codingapi.tx.commons.exception.TransactionClearException;
+ 
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/common/TransactionUnitTypeList.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.common;
++package com.codingapi.tx.client.support.common;
+ 
+ import java.util.ArrayList;
+ 
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/common/cache/MapBasedTransactionAttachmentCache.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.common.cache;
++package com.codingapi.tx.client.support.common.cache;
+ 
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.stereotype.Component;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/common/cache/TransactionAttachmentCache.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.transaction.common.cache;
++package com.codingapi.tx.client.support.common.cache;
+ 
+ import java.util.Optional;
+ import java.util.function.Supplier;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/resouce/TransactionResourceExecutor.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.resouce;
++package com.codingapi.tx.client.support.resouce;
+ 
+ import java.sql.Connection;
+ import java.util.function.Supplier;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/rpc/ClientRpcAnswer.java
+Patch:
+@@ -1,17 +1,16 @@
+-package com.codingapi.tx.client.framework.rpc;
++package com.codingapi.tx.client.support.rpc;
+ 
+ import com.codingapi.tx.spi.rpc.RpcAnswer;
+ import com.codingapi.tx.spi.rpc.RpcClient;
+ import com.codingapi.tx.spi.rpc.dto.MessageDto;
+ import com.codingapi.tx.spi.rpc.dto.RpcCmd;
+ import com.codingapi.tx.spi.rpc.exception.RpcException;
+-import com.codingapi.tx.client.framework.LCNTransactionBeanHelper;
++import com.codingapi.tx.client.support.LCNTransactionBeanHelper;
+ import com.codingapi.tx.commons.exception.TxClientException;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+ 
+-import java.io.Serializable;
+ import java.util.Objects;
+ 
+ /**
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/rpc/MessageCreator.java
+Patch:
+@@ -1,12 +1,11 @@
+-package com.codingapi.tx.client.framework.rpc;
++package com.codingapi.tx.client.support.rpc;
+ 
+ import com.codingapi.tx.commons.exception.SerializerException;
+ import com.codingapi.tx.commons.rpc.MessageConstants;
+ import com.codingapi.tx.commons.rpc.params.*;
+ import com.codingapi.tx.spi.rpc.dto.MessageDto;
+ import com.codingapi.tx.commons.util.serializer.ProtostuffSerializer;
+ 
+-import java.io.Serializable;
+ import java.util.Objects;
+ 
+ /**
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/rpc/MessageParser.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.rpc;
++package com.codingapi.tx.client.support.rpc;
+ 
+ import com.codingapi.tx.commons.exception.SerializerException;
+ import com.codingapi.tx.commons.rpc.LCNCmdType;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/rpc/RpcExecuteService.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.rpc;
++package com.codingapi.tx.client.support.rpc;
+ 
+ 
+ import com.codingapi.tx.commons.exception.TxClientException;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/rpc/TransactionCmd.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.rpc;
++package com.codingapi.tx.client.support.rpc;
+ 
+ 
+ import com.codingapi.tx.commons.rpc.LCNCmdType;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/rpc/TxMangerReporter.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.rpc;
++package com.codingapi.tx.client.support.rpc;
+ 
+ import com.codingapi.tx.commons.rpc.params.TxExceptionParams;
+ import com.codingapi.tx.spi.rpc.RpcClient;
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/separate/DefaultTransactionSeparator.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.control;
++package com.codingapi.tx.client.support.separate;
+ 
+ import org.springframework.stereotype.Component;
+ 
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/separate/TXLCNTransactionControl.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.control;
++package com.codingapi.tx.client.support.separate;
+ 
+ import com.codingapi.tx.client.bean.TxTransactionInfo;
+ import com.codingapi.tx.commons.exception.BeforeBusinessException;
+@@ -9,7 +9,7 @@
+  * @date 2018/12/2
+  * @description LCN分布式事务控制
+  */
+-public interface LCNTransactionControl {
++public interface TXLCNTransactionControl {
+ 
+     /**
+      * 业务代码执行前
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/separate/TXLCNTransactionSeparator.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.framework.control;
++package com.codingapi.tx.client.support.separate;
+ 
+ import com.codingapi.tx.client.bean.TxTransactionInfo;
+ 
+@@ -8,13 +8,13 @@
+  *
+  * @author ujued
+  */
+-public interface LCNTransactionSeparator {
++public interface TXLCNTransactionSeparator {
+ 
+     /**
+      * 判断事务状态
+      *
+      * @param txTransactionInfo
+      * @return
+      */
+-    LCNTransactionState loadTransactionState(TxTransactionInfo txTransactionInfo);
++    TXLCNTransactionState loadTransactionState(TxTransactionInfo txTransactionInfo);
+ }
+
+File: tx-client/src/main/java/com/codingapi/tx/client/support/separate/TXLCNTransactionState.java
+Patch:
+@@ -1,11 +1,11 @@
+-package com.codingapi.tx.client.framework.control;
++package com.codingapi.tx.client.support.separate;
+ 
+ /**
+  * @author lorne
+  * @date 2018/12/2
+  * @description
+  */
+-public enum LCNTransactionState {
++public enum TXLCNTransactionState {
+ 
+     /**
+      * 发起事务状态
+@@ -26,7 +26,7 @@ public enum LCNTransactionState {
+     private String code;
+ 
+ 
+-    LCNTransactionState(String code) {
++    TXLCNTransactionState(String code) {
+         this.code = code;
+     }
+ 
+
+File: tx-logger/src/main/java/com/codingapi/tx/logger/DefaultTxLogger.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.codingapi.tx.logger;
+ 
+-import com.codingapi.tx.logger.db.DbProperties;
++import com.codingapi.tx.logger.db.LogDbProperties;
+ import com.codingapi.tx.logger.db.TxLoggerHelper;
+ import com.codingapi.tx.logger.db.TxLog;
+ import lombok.extern.slf4j.Slf4j;
+@@ -30,12 +30,12 @@ public class DefaultTxLogger implements TxLogger {
+ 
+     private final TxLoggerHelper txLoggerHelper;
+ 
+-    private final DbProperties dbProperties;
++    private final LogDbProperties dbProperties;
+ 
+     private final ExecutorService executor;
+ 
+     @Autowired
+-    public DefaultTxLogger(DbProperties dbProperties, TxLoggerHelper txLoggerHelper) {
++    public DefaultTxLogger(LogDbProperties dbProperties, TxLoggerHelper txLoggerHelper) {
+         this.dbProperties = dbProperties;
+         this.executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+         this.txLoggerHelper = txLoggerHelper;
+
+File: tx-logger/src/main/java/com/codingapi/tx/logger/db/LogDBConfiguration.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.codingapi.tx.client.logdb;
++package com.codingapi.tx.logger.db;
+ 
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+@@ -20,7 +20,7 @@ public LogDbProperties logDbProperties(){
+     }
+ 
+     @Bean
+-    public LogDbHelper h2DbHelper(){
++    public LogDbHelper logDbHelper(){
+         return new LogDbHelper();
+     }
+ 
+
+File: tx-logger/src/main/java/com/codingapi/tx/logger/db/LogDbProperties.java
+Patch:
+@@ -13,6 +13,6 @@
+ @EqualsAndHashCode(callSuper = true)
+ @Data
+ @ConfigurationProperties(value = "tx-lcn.logger")
+-public class DbProperties extends HikariConfig {
++public class LogDbProperties extends HikariConfig {
+     private boolean enabled = false;
+ }
+
+File: tx-logger/src/main/java/com/codingapi/tx/logger/db/TxLoggerHelper.java
+Patch:
+@@ -1,10 +1,8 @@
+ package com.codingapi.tx.logger.db;
+ 
+ import org.apache.commons.dbutils.BasicRowProcessor;
+-import org.apache.commons.dbutils.BeanProcessor;
+ import org.apache.commons.dbutils.GenerousBeanProcessor;
+ import org.apache.commons.dbutils.RowProcessor;
+-import org.apache.commons.dbutils.handlers.BeanHandler;
+ import org.apache.commons.dbutils.handlers.BeanListHandler;
+ import org.apache.commons.dbutils.handlers.ScalarHandler;
+ import org.springframework.beans.factory.annotation.Autowired;
+@@ -24,7 +22,7 @@
+ public class TxLoggerHelper {
+ 
+     @Autowired
+-    private DbHelper dbHelper;
++    private LogDbHelper dbHelper;
+ 
+     private RowProcessor processor = new BasicRowProcessor(new GenerousBeanProcessor());
+ 
+
+File: tx-plugins-db/src/main/java/com/codingapi/tx/datasource/relational/txc/AbstractTxcConnection.java
+Patch:
+@@ -125,6 +125,7 @@ public void close() throws SQLException {
+         connection.close();
+         // 只有提交才需要 开启线程等待
+         if (readOnly || state == 0) {
++            closeConnection();
+             return;
+         }
+         startRunnable();
+
+File: transaction-dubbo/src/main/java/com/codingapi/tx/dubbo/filter/TransactionFilter.java
+Patch:
+@@ -1,5 +1,7 @@
+ package com.codingapi.tx.dubbo.filter;
+ 
++import com.alibaba.dubbo.common.Constants;
++import com.alibaba.dubbo.common.extension.Activate;
+ import com.alibaba.dubbo.rpc.*;
+ import com.codingapi.tx.aop.bean.TxTransactionLocal;
+ import org.slf4j.Logger;
+@@ -8,6 +10,7 @@
+ /**
+  * Created by lorne on 2017/6/30.
+  */
++@Activate(group = Constants.CONSUMER, order = -10001)
+ public class TransactionFilter implements Filter {
+ 
+ 
+
+File: tx-client/src/main/java/com/codingapi/tx/aop/bean/TxTransactionLocal.java
+Patch:
+@@ -116,7 +116,7 @@ public void putLoadBalance(String key, String data){
+         jsonObject.put("d", data);
+         logger.debug("putLoadBalance--> start ");
+         Request request = new Request("plb", jsonObject.toString());
+-        SocketManager.getInstance().onlySendMsg(request);
++        SocketManager.getInstance().sendMsg(request);
+         logger.debug("putLoadBalance--> end");
+     }
+ 
+
+File: tx-client/src/main/java/com/codingapi/tx/aop/service/impl/TxStartTransactionServerImpl.java
+Patch:
+@@ -41,7 +41,7 @@ public Object execute(ProceedingJoinPoint point,final TxTransactionInfo info) th
+ 
+         int state = 0;
+ 
+-        final String groupId = KidUtils.generateShortUuid();
++        final String groupId = TxCompensateLocal.current()==null?KidUtils.generateShortUuid():TxCompensateLocal.current().getGroupId();
+ 
+         //创建事务组
+         txManagerService.createTransactionGroup(groupId);
+
+File: tx-manager/src/main/java/com/codingapi/tm/manager/service/impl/TxManagerSenderServiceImpl.java
+Patch:
+@@ -118,7 +118,7 @@ private boolean transaction(final TxGroup txGroup, final int checkSate) {
+         if (checkSate == 1) {
+ 
+             //补偿请求，加载历史数据
+-            if (txGroup.getIsCommit() == 1) {
++            if (txGroup.getIsCompensate() == 1) {
+                 compensateService.reloadCompensate(txGroup);
+             }
+ 
+@@ -136,7 +136,7 @@ public Boolean execute() {
+                             jsonObject.put("a", "t");
+ 
+ 
+-                            if (txGroup.getIsCommit() == 1) {   //补偿请求
++                            if (txGroup.getIsCompensate() == 1) {   //补偿请求
+                                 jsonObject.put("c", txInfo.getIsCommit());
+                             } else { //正常业务
+                                 jsonObject.put("c", checkSate);
+
+File: tx-manager/src/main/java/com/codingapi/tm/manager/service/impl/TxManagerServiceImpl.java
+Patch:
+@@ -50,7 +50,7 @@ public class TxManagerServiceImpl implements TxManagerService {
+     public TxGroup createTransactionGroup(String groupId) {
+         TxGroup txGroup = new TxGroup();
+         if (compensateService.getCompensateByGroupId(groupId)!=null) {
+-            txGroup.setIsCommit(1);
++            txGroup.setIsCompensate(1);
+         }
+ 
+         txGroup.setStartTime(System.currentTimeMillis());
+
+File: tx-client/src/main/java/com/codingapi/tx/config/ConfigReader.java
+Patch:
+@@ -29,7 +29,7 @@ public String getTxUrl() {
+         try {
+             txManagerTxUrlService =  spring.getBean(TxManagerTxUrlService.class);
+         }catch (Exception e){
+-            logger.error(e.getLocalizedMessage());
++            logger.debug("load default txManagerTxUrlService ");
+         }
+ 
+         if(txManagerTxUrlService == null){
+
+File: tx-client/src/main/java/com/codingapi/tx/netty/service/TxManagerHttpRequestHelper.java
+Patch:
+@@ -27,7 +27,7 @@ private void reloadHttpRequestService(){
+         try {
+             httpRequestService = spring.getBean(TxManagerHttpRequestService.class);
+         }catch (Exception e){
+-            logger.error(e.getLocalizedMessage());
++            logger.debug("load default httpRequestService ");
+         }
+ 
+         if(httpRequestService==null){
+
+File: transaction-springcloud/src/main/java/com/codingapi/ribbon/loadbalancer/LcnLoadBalancerRule.java
+Patch:
+@@ -35,8 +35,8 @@ public Server proxy(List<Server> servers,Server server){
+ 			String key = MD5Util.md5((groupId + "_" + appName).getBytes());
+ 
+ 			Server oldServer =getServer(txTransactionLocal,servers,key);
+-			if(oldServer == null){
+-				logger.info("The server of key:" + key + " has not been cached yet!");
++			if(oldServer != null){
++				logger.info("LCNBalanceProxy - > load old server ");
+ 				return server;
+ 			}
+ 
+
+File: tx-manager/src/main/java/com/codingapi/tm/compensate/service/impl/CompensateServiceImpl.java
+Patch:
+@@ -203,7 +203,7 @@ public void reloadCompensate(TxGroup txGroup) {
+             }
+         }
+ 
+-        System.out.println("补偿以后->"+JSON.toJSONString(txGroup));
++        logger.info("加载补偿以后->"+JSON.toJSONString(txGroup));
+     }
+ 
+     private TxGroup getCompensateByGroupId(String groupId) {
+
+File: tx-manager/src/main/java/com/lorne/tx/controller/TxManagerController.java
+Patch:
+@@ -41,7 +41,7 @@ public int getServerGroupState(@RequestParam("groupId") String groupId,@RequestP
+ 
+     @RequestMapping("/sendMsg")
+     @ResponseBody
+-    public boolean sendMsg(@RequestParam("msg") String msg,@RequestParam("model") String model) {
++    public String sendMsg(@RequestParam("msg") String msg,@RequestParam("model") String model) {
+         return txService.sendMsg(model,msg);
+     }
+ 
+
+File: tx-manager/src/main/java/com/lorne/tx/service/TxService.java
+Patch:
+@@ -12,7 +12,7 @@ public interface TxService {
+ 
+     TxState getState();
+ 
+-    boolean sendMsg(String model,String msg);
++    String sendMsg(String model,String msg);
+ 
+     boolean checkClearGroup(String groupId, String taskId, int isGroup);
+ 
+
+File: tx-manager/src/main/java/com/lorne/tx/service/impl/TransactionConfirmServiceImpl.java
+Patch:
+@@ -96,7 +96,7 @@ private void awaitSend(Task task, TxInfo txInfo,String msg){
+             }
+ 
+             if(txInfo.getChannel()!=null) {
+-                txInfo.getChannel().send(msg);
++                txInfo.getChannel().send(msg,task);
+             }else{
+                 task.setBack(new IBack() {
+                     @Override
+
+File: tx-manager/src/main/java/com/lorne/tx/controller/TxManagerController.java
+Patch:
+@@ -41,7 +41,7 @@ public int getServerGroupState(@RequestParam("groupId") String groupId,@RequestP
+ 
+     @RequestMapping("/sendMsg")
+     @ResponseBody
+-    public boolean sendMsg(@RequestParam("msg") String msg,@RequestParam("model") String model) {
++    public String sendMsg(@RequestParam("msg") String msg,@RequestParam("model") String model) {
+         return txService.sendMsg(model,msg);
+     }
+ 
+
+File: tx-manager/src/main/java/com/lorne/tx/service/TxService.java
+Patch:
+@@ -12,7 +12,7 @@ public interface TxService {
+ 
+     TxState getState();
+ 
+-    boolean sendMsg(String model,String msg);
++    String sendMsg(String model,String msg);
+ 
+     boolean checkClearGroup(String groupId, String taskId, int isGroup);
+ 
+
+File: tx-manager/src/main/java/com/lorne/tx/service/impl/TransactionConfirmServiceImpl.java
+Patch:
+@@ -96,7 +96,7 @@ private void awaitSend(Task task, TxInfo txInfo,String msg){
+             }
+ 
+             if(txInfo.getChannel()!=null) {
+-                txInfo.getChannel().send(msg);
++                txInfo.getChannel().send(msg,task);
+             }else{
+                 task.setBack(new IBack() {
+                     @Override
+
+File: tx-manager/src/main/java/com/lorne/tx/service/impl/TransactionConfirmServiceImpl.java
+Patch:
+@@ -135,7 +135,7 @@ public Boolean execute() {
+                             ScheduledFuture future = executorService.schedule(new Runnable() {
+                                 @Override
+                                 public void run() {
+-                                    Task task = ConditionUtils.getInstance().createTask(key);
++                                    Task task = ConditionUtils.getInstance().getTask(key);
+                                     if(task!=null&&!task.isNotify()) {
+                                         task.setBack(new IBack() {
+                                             @Override
+

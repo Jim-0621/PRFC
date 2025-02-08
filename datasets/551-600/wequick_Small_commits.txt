@@ -1,0 +1,399 @@
+File: Android/DevSample/small/src/main/java/net/wequick/small/util/ReflectAccelerator.java
+Patch:
+@@ -580,7 +580,7 @@ public static void ensureCacheResources() {
+         Set<?> resourceKeys = sResourceImpls.keySet();
+         for (Object resourceKey : resourceKeys) {
+             WeakReference resourceImpl = (WeakReference)sResourceImpls.get(resourceKey);
+-            if (resourceImpl != null && resourceImpl.get() == null) {
++            if (resourceImpl != null && resourceImpl.get() != sMergedResourcesImpl) {
+                 // Sometimes? the weak reference for the key was released by what
+                 // we can not find the cache resources we had merged before.
+                 // And the system will recreate a new one which only build with host resources.
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -237,7 +237,7 @@ private boolean relaunchActivityIfNeeded(Message msg) {
+ 
+                 if (mApplicationConfig == null) {
+                     // The application config is not ready yet.
+-                    // This may be called on Android 7.0 multi-window-mode. Fix #548.
++                    // This may be called on Android 7.0 multi-window-mode.
+                     return false;
+                 }
+ 
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -568,7 +568,6 @@ public void onCreate(Application app) {
+         List<ProviderInfo> providers;
+         Instrumentation base;
+         ApkBundleLauncher.InstrumentationWrapper wrapper;
+-        ApkBundleLauncher.ActivityThreadHandlerCallback callback;
+         Field f;
+ 
+         // Get activity thread
+@@ -603,7 +602,6 @@ public void onCreate(Application app) {
+         sActivityThread = thread;
+         sProviders = providers;
+         sHostInstrumentation = base;
+-        sActivityThreadHandlerCallback = callback;
+         sBundleInstrumentation = wrapper;
+     }
+ 
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -582,6 +582,7 @@ public void onCreate(Application app) {
+             f.setAccessible(true);
+             Handler ah = (Handler) f.get(thread);
+             f = Handler.class.getDeclaredField("mCallback");
++            f.setAccessible(true);
+             callback = new ActivityThreadHandlerCallback();
+             f.set(ah, callback);
+         } catch (Exception e) {
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -216,6 +216,7 @@ public void callActivityOnCreate(Activity activity, android.os.Bundle icicle) {
+                 if (ai == null) break;
+ 
+                 applyActivityInfo(activity, ai);
++                ReflectAccelerator.ensureCacheResources();
+             } while (false);
+             sHostInstrumentation.callActivityOnCreate(activity, icicle);
+ 
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -128,7 +128,7 @@ public boolean handleMessage(Message msg) {
+ 
+             ActivityInfo targetInfo;
+             if (!Small.hasSetUp()) {
+-                // If Small has not yet set up, STUB activities would not be unrecognized.
++                // If Small has not yet set up, STUB activities would not be recognized.
+                 // We need to start the `SetUpActivity` to set up Small first.
+                 // This is happens when the application was restarted in the background somehow.
+                 Context context = Small.getContext();
+
+File: Android/Sample/jni_plugin/src/androidTest/java/com/example/hellojni/ApplicationTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.example.hellojni.HelloPluginJni;
++package com.example.hellojni;
+ 
+ import android.app.Application;
+ import android.test.ApplicationTestCase;
+
+File: Android/Sample/jni_plugin/src/test/java/com/example/hellojni/ExampleUnitTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.example.hellojni.HelloPluginJni;
++package com.example.hellojni;
+ 
+ import org.junit.Test;
+ 
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/Bundle.java
+Patch:
+@@ -405,7 +405,7 @@ private Boolean matchesRule(Uri uri) {
+         if (this.uriString == null || !uriString.startsWith(this.uriString)) return false;
+ 
+         String srcPath = uriString.substring(this.uriString.length());
+-        String srcQuery = uri.getQuery();
++        String srcQuery = uri.getEncodedQuery();
+         if (srcQuery != null) {
+             srcPath = srcPath.substring(0, srcPath.length() - srcQuery.length() - 1);
+         }
+
+File: Android/Sample/web.about/src/main/java/net/wequick/example/small/web/about/MainActivity.java
+Patch:
+@@ -10,6 +10,8 @@ public class MainActivity extends AppCompatActivity {
+     @Override
+     protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
++        Small.preSetUp(getApplication());
++        Small.setUp(this, null);
+         Small.openUri("file:///android_asset/index.html", MainActivity.this);
+         finish();
+     }
+
+File: Android/Sample/lib.style/src/main/java/com/example/mysmall/lib/style/StyleManager.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import android.app.Application;
+ 
+-import net.wequick.small.Small;
++//import net.wequick.small.Small;
+ 
+ /**
+  * Created by galen on 16/8/9.
+@@ -12,6 +12,6 @@ public class StyleManager extends Application {
+     @Override
+     public void onCreate() {
+         super.onCreate();
+-        Small.setWebActivityTheme(R.style.AppTheme);
++//        Small.setWebActivityTheme(R.style.AppTheme);
+     }
+ }
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -526,7 +526,6 @@ public void run() {
+         }
+ 
+         // Record activities for intent redirection
+-        bundle.setEntrance(pluginInfo.activities[0].name);
+         if (sLoadedActivities == null) sLoadedActivities = new ConcurrentHashMap<String, ActivityInfo>();
+         for (ActivityInfo ai : pluginInfo.activities) {
+             sLoadedActivities.put(ai.name, ai);
+@@ -540,6 +539,9 @@ public void run() {
+             }
+             sLoadedIntentFilters.putAll(filters);
+         }
++
++        // Set entrance activity
++        bundle.setEntrance(parser.getDefaultActivityName());
+     }
+ 
+     @Override
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/Bundle.java
+Patch:
+@@ -24,7 +24,6 @@
+ import android.os.Message;
+ 
+ import net.wequick.small.util.FileUtils;
+-import net.wequick.small.webkit.WebViewPool;
+ 
+ import org.json.JSONArray;
+ import org.json.JSONException;
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/Small.java
+Patch:
+@@ -63,7 +63,7 @@ public final class Small {
+     private static final String SHARED_PREFERENCES_BUNDLE_MODIFIES = "small.app-modifies";
+     private static final String SHARED_PREFERENCES_BUNDLE_UPGRADES = "small.app-upgrades";
+ 
+-    private static Context sContext = null;
++    private static Application sContext = null;
+     private static String sBaseUri = ""; // base url of uri
+     private static boolean sIsNewHostApp; // first launched or upgraded
+     private static int sWebActivityTheme;
+@@ -74,7 +74,7 @@ public interface OnCompleteListener {
+         void onComplete();
+     }
+ 
+-    public static Context getContext() {
++    public static Application getContext() {
+         return sContext;
+     }
+ 
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/BundleParser.java
+Patch:
+@@ -461,8 +461,9 @@ public void run() {
+                     InputStream is = zipFile.getInputStream(je);
+                     RandomAccessFile out = new RandomAccessFile(extractFile, "rw");
+                     byte[] buffer = new byte[8192];
+-                    while (is.read(buffer, 0, buffer.length) != -1) {
+-                        out.write(buffer);
++                    int len;
++                    while ((len = is.read(buffer, 0, buffer.length)) != -1) {
++                        out.write(buffer, 0, len);
+                     }
+                     out.close();
+                 } catch (IOException e) {
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/BundleParser.java
+Patch:
+@@ -461,8 +461,9 @@ public void run() {
+                     InputStream is = zipFile.getInputStream(je);
+                     RandomAccessFile out = new RandomAccessFile(extractFile, "rw");
+                     byte[] buffer = new byte[8192];
+-                    while (is.read(buffer, 0, buffer.length) != -1) {
+-                        out.write(buffer);
++                    int count;
++                    while ((count=is.read(buffer, 0, buffer.length)) != -1) {
++                        out.write(buffer,0,count);
+                     }
+                     out.close();
+                 } catch (IOException e) {
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -387,7 +387,7 @@ public void loadBundle(Bundle bundle) {
+ 
+             // Expand the native library directories if plugin has any JNIs. (#79)
+             int abiFlags = parser.getABIFlags();
+-            String abiPath = JNIUtils.getExtractABI(abiFlags);
++            String abiPath = JNIUtils.getExtractABI(abiFlags, Bundle.is64bit());
+             if (abiPath != null) {
+                 String libDir = FD_LIBRARY + File.separator + abiPath + File.separator;
+                 File libPath = new File(packagePath, libDir);
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ActivityLauncher.java
+Patch:
+@@ -77,7 +77,7 @@ public void setUp(Context context) {
+ 
+     @Override
+     public boolean preloadBundle(Bundle bundle) {
+-        if (bundle.getBuiltinFile().exists()) return false;
++        if (bundle.getBuiltinFile() != null && bundle.getBuiltinFile().exists()) return false;
+ 
+         String packageName = bundle.getPackageName();
+         Context context = Small.getContext();
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -461,6 +461,7 @@ private static void applyActivityInfo(Activity activity, ActivityInfo ai) {
+         activity.setTheme(ai.getThemeResource());
+         // Apply plugin softInputMode
+         activity.getWindow().setSoftInputMode(ai.softInputMode);
++        activity.setRequestedOrientation(ai.screenOrientation);
+     }
+ 
+     /**
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -399,13 +399,13 @@ public void prelaunchBundle(Bundle bundle) {
+         if (!sLoadedActivities.containsKey(activityName)) {
+             if (!activityName.endsWith("Activity")) {
+                 throw new ActivityNotFoundException("Unable to find explicit activity class { " +
+-                        activityName + "}");
++                        activityName + " }");
+             }
+ 
+             String tempActivityName = activityName + "Activity";
+             if (!sLoadedActivities.containsKey(tempActivityName)) {
+                 throw new ActivityNotFoundException("Unable to find explicit activity class { " +
+-                        activityName + "or" + tempActivityName + "}");
++                        activityName + " or " + tempActivityName + " }");
+             }
+ 
+             activityName = tempActivityName;
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -171,6 +171,9 @@ private void wrapIntent(Intent intent, int requestCode, android.os.Bundle option
+                 intent.putExtra(Small.KEY_START_OPTIONS, options);
+             }
+ 
++            ComponentName component = intent.getComponent();
++            if (component == null) return; // ignore system intent
++
+             String realClazz = intent.getComponent().getClassName();
+             if (sLoadedActivities == null) return;
+ 
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/Small.java
+Patch:
+@@ -57,8 +57,9 @@
+ public final class Small {
+     public static final String EVENT_OPENURI = "small-open";
+     public static final String KEY_QUERY = "small-query";
+-    public static final String KEY_ACTIVITY = "small-act";
+     public static final String KEY_SAVED_INSTANCE_STATE = "small-sis";
++    public static final String KEY_START_REQUEST_CODE = "small-rc";
++    public static final String KEY_START_OPTIONS = "small-opt";
+     public static final String EXTRAS_KEY_RET = "small-ret";
+     public static final String SHARED_PREFERENCES_SMALL = "small";
+     public static final String SHARED_PREFERENCES_KEY_UPGRADE = "upgrade";
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -302,7 +302,7 @@ public void loadBundle(Bundle bundle) {
+ 
+         File patch = bundle.getPatchFile();
+         if (patch.exists()) {
+-            PackageInfo patchInfo = pm.getPackageArchiveInfo(plugin.getPath(),
++            PackageInfo patchInfo = pm.getPackageArchiveInfo(patch.getPath(),
+                     PackageManager.GET_ACTIVITIES);
+             if (patchInfo.versionCode < pluginInfo.versionCode) {
+                 Log.d(TAG, "Patch file should be later than built-in!");
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/Bundle.java
+Patch:
+@@ -121,6 +121,7 @@ public static void loadLaunchableBundles(Small.OnCompleteListener listener) {
+         Context context = Small.getContext();
+         // Read manifest file
+         File manifestFile = new File(context.getFilesDir(), BUNDLE_MANIFEST_NAME);
++        manifestFile.delete();
+         String manifestJson;
+         if (!manifestFile.exists()) {
+             // Copy asset to files
+@@ -264,7 +265,6 @@ private Boolean matchesRule(Uri uri) {
+         if (srcPath.equals("")) {
+             dstPath = srcPath;
+         } else {
+-            srcPath = srcPath.substring(1); // bypass '/'
+             for (String key : this.rules.keySet()) {
+                 // TODO: regex match and replace
+                 if (key.equals(srcPath)) dstPath = this.rules.get(key);
+@@ -334,7 +334,7 @@ private void initWithMap(JSONObject map) throws JSONException {
+             Iterator<String> it = rulesObj.keys();
+             while (it.hasNext()) {
+                 String key = it.next();
+-                this.rules.put(key, rulesObj.getString(key));
++                this.rules.put("/" + key, rulesObj.getString(key));
+             }
+         }
+     }
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/ApkBundleLauncher.java
+Patch:
+@@ -148,6 +148,8 @@ public void callActivityOnDestroy(Activity activity) {
+ 
+         private void wrapIntent(Intent intent) {
+             String realClazz = intent.getComponent().getClassName();
++            if (sLoadedActivities == null) return;
++
+             ActivityInfo ai = sLoadedActivities.get(realClazz);
+             if (ai == null) return;
+ 
+
+File: Android/Sample/app/src/test/java/net/wequick/example/small/ExampleUnitTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package net.wequick.example.small.
++package net.wequick.example.small;
+ 
+ import org.junit.Test;
+ 
+
+File: Android/Sample/app/src/test/java/net/wequick/example/small/ExampleUnitTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package net.wequick.example.small.
++package net.wequick.example.small;
+ 
+ import org.junit.Test;
+ 
+
+File: Android/DevSample/small/src/main/java/net/wequick/small/Bundle.java
+Patch:
+@@ -267,7 +267,7 @@ public static Bundle getLaunchableBundle(Uri uri) {
+                 e.printStackTrace();
+             }
+             bundle.prepareForLaunch();
+-            bundle.setQuery(uri.getQuery());
++            bundle.setQuery(uri.getEncodedQuery()); // Fix issue #6 from Spring-Xu.
+             bundle.mApplicableLauncher = new WebBundleLauncher();
+             bundle.mApplicableLauncher.prelaunchBundle(bundle);
+             return bundle;
+
+File: Android/aar-small/src/main/java/net/wequick/small/util/ReflectAccelerator.java
+Patch:
+@@ -69,7 +69,9 @@ public static int addAssetPath(AssetManager assets, String path) {
+                     "addAssetPath", new Class[]{String.class});
+         }
+         if (sAddAssetPath == null) return 0;
+-        int ret = invoke(sAddAssetPath, assets, path);
++        // Fix issue #4 by hpj831112
++        Integer ret = invoke(sAddAssetPath, assets, path);
++        if (ret == null) return 0;
+         return ret;
+     }
+ 
+

@@ -1,0 +1,369 @@
+File: relay-java/src/main/java/com/genymobile/gnirehtet/relay/DatagramBuffer.java
+Patch:
+@@ -65,8 +65,8 @@ public boolean hasEnoughSpaceFor(int datagramLength) {
+             // there is at least the extra space for storing 1 packet
+             return true;
+         }
+-        int remaining = tail - head - 1;
+-        return HEADER_LENGTH + datagramLength < remaining;
++        int remaining = tail - head - 1; // 1 extra byte to distinguish empty vs full
++        return HEADER_LENGTH + datagramLength <= remaining;
+     }
+ 
+     public int capacity() {
+
+File: relay-java/src/main/java/com/genymobile/gnirehtet/relay/DatagramBuffer.java
+Patch:
+@@ -62,7 +62,7 @@ public boolean isEmpty() {
+ 
+     public boolean hasEnoughSpaceFor(int datagramLength) {
+         if (head >= tail) {
+-            // there is at leat the extra space for storing 1 packet
++            // there is at least the extra space for storing 1 packet
+             return true;
+         }
+         int remaining = tail - head - 1;
+
+File: app/src/main/java/com/genymobile/gnirehtet/Forwarder.java
+Patch:
+@@ -37,7 +37,7 @@ public class Forwarder {
+ 
+     private static final String TAG = Forwarder.class.getSimpleName();
+ 
+-    private static final int BUFSIZE = 4096;
++    private static final int BUFSIZE = 0x10000;
+ 
+     private static final byte[] DUMMY_ADDRESS = {42, 42, 42, 42};
+     private static final int DUMMY_PORT = 4242;
+
+File: app/src/main/java/com/genymobile/gnirehtet/Binary.java
+Patch:
+@@ -49,7 +49,7 @@ public static String buildPacketString(byte[] data, int len) {
+             builder.append(String.format("%02X", data[i] & 0xff));
+         }
+         if (limit < len) {
+-            builder.append(" ... +").append(len - limit). append(" bytes");
++            builder.append(" ... +").append(len - limit).append(" bytes");
+         }
+         return builder.toString();
+     }
+
+File: relay-java/src/main/java/com/genymobile/gnirehtet/relay/Relay.java
+Patch:
+@@ -53,11 +53,9 @@ public void run() throws IOException {
+             Set<SelectionKey> selectedKeys = selector.selectedKeys();
+ 
+             long now = System.currentTimeMillis();
+-            if (now >= nextCleaningDeadline) {
++            if (now >= nextCleaningDeadline || selectedKeys.isEmpty()) {
+                 tunnelServer.cleanUp();
+                 nextCleaningDeadline = now + CLEANING_INTERVAL;
+-            } else if (selectedKeys.isEmpty()) {
+-                throw new AssertionError("selector.select() returned without any event, an invalid SelectionKey was probably been registered");
+             }
+ 
+             for (SelectionKey selectedKey : selectedKeys) {
+
+File: relay-java/src/main/java/com/genymobile/gnirehtet/relay/Relay.java
+Patch:
+@@ -53,11 +53,9 @@ public void run() throws IOException {
+             Set<SelectionKey> selectedKeys = selector.selectedKeys();
+ 
+             long now = System.currentTimeMillis();
+-            if (now >= nextCleaningDeadline) {
++            if (now >= nextCleaningDeadline || selectedKeys.isEmpty()) {
+                 tunnelServer.cleanUp();
+                 nextCleaningDeadline = now + CLEANING_INTERVAL;
+-            } else if (selectedKeys.isEmpty()) {
+-                throw new AssertionError("selector.select() returned without any event, an invalid SelectionKey was probably been registered");
+             }
+ 
+             for (SelectionKey selectedKey : selectedKeys) {
+
+File: relay-java/src/main/java/com/genymobile/gnirehtet/relay/Binary.java
+Patch:
+@@ -34,7 +34,6 @@ public static String toString(byte[] data, int offset, int length) {
+             } else if (i % 8 == 0) {
+                 builder.append(' ');
+             }
+-            ++i;
+             builder.append(String.format("%02X ", b & 0xff));
+         }
+         return builder.toString();
+
+File: app/src/test/java/com/genymobile/gnirehtet/TestIPPacketOutputSteam.java
+Patch:
+@@ -16,8 +16,7 @@
+ 
+ package com.genymobile.gnirehtet;
+ 
+-import junit.framework.Assert;
+-
++import org.junit.Assert;
+ import org.junit.Test;
+ 
+ import java.io.ByteArrayOutputStream;
+
+File: app/src/main/java/com/genymobile/gnirehtet/RelayTunnel.java
+Patch:
+@@ -20,7 +20,6 @@
+ import android.util.Log;
+ 
+ import java.io.IOException;
+-import java.net.Inet4Address;
+ import java.net.InetSocketAddress;
+ import java.nio.ByteBuffer;
+ import java.nio.channels.ReadableByteChannel;
+@@ -46,7 +45,7 @@ public static RelayTunnel open(VpnService vpnService) throws IOException {
+     }
+ 
+     public void connect() throws IOException {
+-        channel.connect(new InetSocketAddress(Inet4Address.getLocalHost(), DEFAULT_PORT));
++        channel.connect(new InetSocketAddress(Net.getLocalhostIPv4(), DEFAULT_PORT));
+         readClientId(channel);
+     }
+ 
+
+File: relay-java/src/main/java/com/genymobile/gnirehtet/Main.java
+Patch:
+@@ -206,7 +206,7 @@ private static void execAdb(String serial, List<String> adbArgList) throws Inter
+     }
+ 
+     private static void execSync(List<String> command) throws InterruptedException, IOException, CommandExecutionException {
+-        Log.i(TAG, "Execute: " + command);
++        Log.d(TAG, "Execute: " + command);
+         ProcessBuilder processBuilder = new ProcessBuilder(command);
+         processBuilder.redirectOutput(ProcessBuilder.Redirect.INHERIT).redirectError(ProcessBuilder.Redirect.INHERIT);
+         Process process = processBuilder.start();
+@@ -217,8 +217,9 @@ private static void execSync(List<String> command) throws InterruptedException,
+     }
+ 
+     private static boolean isGnirehtetInstalled(String serial) throws InterruptedException, IOException, CommandExecutionException {
++        Log.i(TAG, "Checking client...");
+         List<String> command = createAdbCommand(serial, "shell", "pm", "list", "packages", "com.genymobile.gnirehtet");
+-        Log.i(TAG, "Execute: " + command);
++        Log.d(TAG, "Execute: " + command);
+         Process process = new ProcessBuilder(command).start();
+         int exitCode = process.waitFor();
+         if (exitCode != 0) {
+
+File: relay/src/main/java/com/genymobile/relay/Packetizer.java
+Patch:
+@@ -76,7 +76,7 @@ private IPv4Packet inflate() {
+         responseTransportHeader.setPayloadLength(payloadLength);
+ 
+         // In order to avoid copies, buffer is shared with this IPv4Packet instance that is returned.
+-        // Don't use it after another call to createPacket()!
++        // Don't use it after another call to packetize()!
+         IPv4Packet packet = new IPv4Packet(buffer);
+         packet.computeChecksums();
+         return packet;
+
+File: relay/src/main/java/com/genymobile/relay/StreamBuffer.java
+Patch:
+@@ -92,7 +92,7 @@ public void readFrom(ByteBuffer buffer) {
+ 
+     /**
+      * To avoid unnecessary copies, StreamBuffer writes at most until the "end" of the circular
+-     * buffer, which is subobtimal (it could have written more data if they have been contiguous).
++     * buffer, which is suboptimal (it could have written more data if they have been contiguous).
+      * <p>
+      * In order to minimize the occurrence of this event, reset the head and tail to 0 when the
+      * buffer is empty (no copy is involved).
+
+File: relay/src/main/java/com/genymobile/relay/Relay.java
+Patch:
+@@ -51,15 +51,16 @@ public void start() throws IOException {
+ 
+         while (true) {
+             selector.select();
++            Set<SelectionKey> selectedKeys = selector.selectedKeys();
+ 
+             if (selectorAlarm.accept()) {
+                 cleanUp();
++            } else if (selectedKeys.isEmpty()) {
++                throw new AssertionError("selector.select() returned without any event, an invalid SelectionKey was probably been registered");
+             }
+ 
+-            Set<SelectionKey> selectedKeys = selector.selectedKeys();
+             for (SelectionKey selectedKey : selectedKeys) {
+                 SelectionHandler selectionHandler = (SelectionHandler) selectedKey.attachment();
+-                //Log.d(TAG, "selected… " + selectedKey.readyOps());
+                 selectionHandler.onReady(selectedKey);
+             }
+             // by design, we handled everything
+
+File: relay/src/main/java/com/genymobile/relay/Log.java
+Patch:
+@@ -21,7 +21,7 @@ enum Level {
+         }
+     }
+ 
+-    private static Level threshold = Level.DEBUG;
++    private static Level threshold = Level.INFO;
+ 
+     private static final DateFormat FORMAT = new SimpleDateFormat("YYYY-MM-dd HH:mm:ss.SSS");
+     private static final Date date = new Date();
+
+File: relay/src/main/java/com/genymobile/relay/Log.java
+Patch:
+@@ -27,13 +27,14 @@ enum Level {
+     private static final Date date = new Date();
+ 
+     private Log() {
++        // not instantiable
+     }
+ 
+-    private static Level getThreshold() {
++    public static Level getThreshold() {
+         return threshold;
+     }
+ 
+-    private static void setThreshold(Level threshold) {
++    public static void setThreshold(Level threshold) {
+         Log.threshold = threshold;
+     }
+ 
+
+File: relay/src/main/java/com/genymobile/relay/Client.java
+Patch:
+@@ -38,7 +38,7 @@ public Client(Selector selector, SocketChannel clientChannel, RemoveHandler<Clie
+                 updateInterests();
+             }
+         };
+-        // on start, we are interested only in reading (there is nothing to onWritable)
++        // on start, we are interested only in reading (there is nothing to write)
+         selectionKey = clientChannel.register(selector, SelectionKey.OP_READ, selectionHandler);
+ 
+         this.removeHandler = removeHandler;
+@@ -98,7 +98,7 @@ private void destroy() {
+     }
+ 
+     private void updateInterests() {
+-        int interestingOps = SelectionKey.OP_READ; // we always want to onReadable
++        int interestingOps = SelectionKey.OP_READ; // we always want to read
+         if (!networkToClient.isEmpty()) {
+             interestingOps |= SelectionKey.OP_WRITE;
+         }
+
+File: app/src/main/java/com/genymobile/gnirehtet/GnirehtetControlService.java
+Patch:
+@@ -40,6 +40,7 @@ public class GnirehtetControlService extends Service {
+     @Override
+     public int onStartCommand(Intent intent, int flags, int startId) {
+         String action = intent.getAction();
++        Log.d(TAG, "Received request " + action);
+         if (ACTION_GNIREHTET_START.equals(action)) {
+             VpnConfiguration config = createConfig(intent);
+             startGnirehtet(config);
+@@ -59,14 +60,13 @@ private static VpnConfiguration createConfig(Intent intent) {
+     }
+ 
+     private void startGnirehtet(VpnConfiguration config) {
+-        Log.d(TAG, "Received request " + ACTION_GNIREHTET_START);
+         Intent vpnIntent = VpnService.prepare(this);
+         if (vpnIntent == null) {
+             Log.d(TAG, "VPN was already authorized");
+             // we got the permission, start the service now
+             GnirehtetService.start(this, config);
+         } else {
+-            Log.d(TAG, "VPN requires the authorization from the user, requesting...");
++            Log.w(TAG, "VPN requires the authorization from the user, requesting...");
+             requestAuthorization(vpnIntent, config);
+         }
+     }
+
+File: app/src/main/java/com/genymobile/gnirehtet/GnirehtetService.java
+Patch:
+@@ -47,6 +47,7 @@ public static void stop(Context context) {
+     @Override
+     public int onStartCommand(Intent intent, int flags, int startId) {
+         String action = intent.getAction();
++        Log.d(TAG, "Received request " + action);
+         if (ACTION_START_VPN.equals(action)) {
+             if (isRunning()) {
+                 Log.d(TAG, "VPN already running, ignore START request");
+
+File: relay/src/main/java/com/genymobile/relay/Log.java
+Patch:
+@@ -23,7 +23,7 @@ enum Level {
+ 
+     private static Level threshold = Level.DEBUG;
+ 
+-    private static final DateFormat FORMAT = new SimpleDateFormat("YYYY-MM-dd HH:mm:ss.S");
++    private static final DateFormat FORMAT = new SimpleDateFormat("YYYY-MM-dd HH:mm:ss.SSS");
+     private static final Date date = new Date();
+ 
+     private Log() {
+
+File: relay/src/main/java/com/genymobile/relay/TCPConnection.java
+Patch:
+@@ -147,7 +147,7 @@ private SocketChannel createChannel() throws IOException {
+         Route.Key key = route.getKey();
+         SocketChannel channel = SocketChannel.open();
+         channel.configureBlocking(false);
+-        channel.connect(key.getDestination());
++        channel.connect(getRewrittenDestination());
+         Log.i(TAG, "Creating new connection: " + route.getKey());
+         return channel;
+     }
+
+File: relay/src/main/java/com/genymobile/relay/UDPConnection.java
+Patch:
+@@ -75,7 +75,7 @@ private DatagramChannel createChannel() throws IOException {
+         Route.Key key = route.getKey();
+         DatagramChannel channel = DatagramChannel.open();
+         channel.configureBlocking(false);
+-        channel.connect(key.getDestination());
++        channel.connect(getRewrittenDestination());
+         Log.d(TAG, "Creating new connection: " + route.getKey());
+         return channel;
+     }
+
+File: relay/src/test/java/com/genymobile/relay/InetAddressTest.java
+Patch:
+@@ -10,14 +10,14 @@ public class InetAddressTest {
+     @Test
+     public void testIntToInetAddress() {
+         int ip = 0x01020304;
+-        InetAddress addr = Route.toInetAddress(ip);
++        InetAddress addr = Net.toInetAddress(ip);
+         Assert.assertEquals("1.2.3.4", addr.getHostAddress());
+     }
+ 
+     @Test
+     public void testUnsignedIntToInetAddress() {
+         int ip = 0xff020304;
+-        InetAddress addr = Route.toInetAddress(ip);
++        InetAddress addr = Net.toInetAddress(ip);
+         Assert.assertEquals("255.2.3.4", addr.getHostAddress());
+     }
+ }
+
+File: relay/src/main/java/com/genymobile/relay/TCPConnection.java
+Patch:
+@@ -224,9 +224,10 @@ private void handleDuplicateSyn(IPv4Packet packet) {
+ 
+     private void handleFin(IPv4Packet packet) {
+         TCPHeader tcpHeader = (TCPHeader) packet.getTransportHeader();
+-        acknowledgementNumber = tcpHeader.getSequenceNumber() + 2; // FIN counts for 1 byte
++        acknowledgementNumber = tcpHeader.getSequenceNumber() + 1;
+         if (remoteClosed) {
+             state = State.LAST_ACK;
++            Log.d(TAG, route.getKey() + " Received a FIN from the client, sending ACK+FIN " + acknowledgementNumber + " (seq=" + sequenceNumber+ ")");
+             IPv4Packet response = createEmptyResponsePacket(TCPHeader.FLAG_FIN | TCPHeader.FLAG_ACK);
+             ++sequenceNumber; // FIN counts for 1 byte
+             sendToClient(response);
+
+File: relay/src/main/java/com/genymobile/relay/StreamBuffer.java
+Patch:
+@@ -21,7 +21,7 @@ public boolean isEmpty() {
+     }
+ 
+     public boolean isFull() {
+-        return head + 1 == tail;
++        return (head + 1) % data.length == tail;
+     }
+ 
+     public int size() {
+

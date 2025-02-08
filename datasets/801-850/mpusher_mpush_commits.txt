@@ -1,0 +1,1229 @@
+File: mpush-common/src/main/java/com/mpush/common/ErrorCode.java
+Patch:
+@@ -31,6 +31,9 @@ public enum ErrorCode {
+     ACK_TIMEOUT(4, "ack timeout"),
+     DISPATCH_ERROR(100, "handle message error"),
+     UNSUPPORTED_CMD(101, "unsupported command"),
++    REPEAT_HANDSHAKE(102, "repeat handshake"),
++    SESSION_EXPIRED(103, "session expired"),
++    INVALID_DEVICE(104, "invalid device"),
+     UNKNOWN(-1, "unknown");
+ 
+     ErrorCode(int code, String errorMsg) {
+
+File: mpush-common/src/main/java/com/mpush/common/message/ErrorMessage.java
+Patch:
+@@ -116,6 +116,7 @@ public String toString() {
+         return "ErrorMessage{" +
+                 "reason='" + reason + '\'' +
+                 ", code=" + code +
++                ", data=" + data +
+                 ", packet=" + packet +
+                 '}';
+     }
+
+File: mpush-api/src/main/java/com/mpush/api/service/BaseService.java
+Patch:
+@@ -40,7 +40,7 @@ public boolean isRunning() {
+         return started.get();
+     }
+ 
+-    protected void tryStart(Listener l, Function function) {
++    protected void tryStart(Listener l, FunctionEx function) {
+         FutureListener listener = wrap(l);
+         if (started.compareAndSet(false, true)) {
+             try {
+@@ -56,7 +56,7 @@ protected void tryStart(Listener l, Function function) {
+         }
+     }
+ 
+-    protected void tryStop(Listener l, Function function) {
++    protected void tryStop(Listener l, FunctionEx function) {
+         FutureListener listener = wrap(l);
+         if (started.compareAndSet(true, false)) {
+             try {
+@@ -111,7 +111,7 @@ protected void doStop(Listener listener) throws Throwable {
+         listener.onSuccess();
+     }
+ 
+-    protected interface Function {
++    protected interface FunctionEx {
+         void apply(Listener l) throws Throwable;
+     }
+ 
+
+File: mpush-common/src/main/java/com/mpush/common/ServerNodes.java
+Patch:
+@@ -36,7 +36,7 @@
+ public class ServerNodes {
+     public static final ServiceNode CS = cs();
+     public static final ServiceNode GS = gs();
+-    public static final ServiceNode WS = gs();
++    public static final ServiceNode WS = ws();
+ 
+ 
+     private static ServiceNode cs() {
+
+File: mpush-api/src/main/java/com/mpush/api/router/ClientLocation.java
+Patch:
+@@ -170,7 +170,7 @@ public int hashCode() {
+     @Override
+     public String toString() {
+         return "ClientLocation{" +
+-                "host='" + host + '\'' +
++                "host='" + host + ":" + port + "\'" +
+                 ", osName='" + osName + '\'' +
+                 ", clientVersion='" + clientVersion + '\'' +
+                 ", deviceId='" + deviceId + '\'' +
+
+File: mpush-netty/src/main/java/com/mpush/netty/http/HttpClientHandler.java
+Patch:
+@@ -47,7 +47,7 @@ public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
+                         String location = getRedirectLocation(context.request, response);
+                         if (location != null && location.length() > 0) {
+                             context.cancelled.set(false);
+-                            context.request = context.request.copy().setUri(location);
++                            context.request.setUri(location);
+                             client.request(context);
+                             return;
+                         }
+
+File: mpush-common/src/main/java/com/mpush/common/push/GatewayPushResult.java
+Patch:
+@@ -32,6 +32,9 @@ public final class GatewayPushResult {
+     public Integer clientType;
+     public Object[] timePoints;
+ 
++    public GatewayPushResult() {
++    }
++
+     public GatewayPushResult(String userId, Integer clientType, Object[] timePoints) {
+         this.userId = userId;
+         this.timePoints = timePoints;
+
+File: mpush-core/src/main/java/com/mpush/core/server/ServerConnectionManager.java
+Patch:
+@@ -141,6 +141,7 @@ private class HeartbeatCheckTask implements ConnectionHolder, TimerTask {
+ 
+         private HeartbeatCheckTask(Connection connection) {
+             this.connection = connection;
++            this.startTimeout();
+         }
+ 
+         void startTimeout() {
+
+File: mpush-core/src/main/java/com/mpush/core/handler/BindUserHandler.java
+Patch:
+@@ -121,7 +121,7 @@ private void unbind(BindUserMessage message) {
+             //2.先删除远程路由, 必须是同一个设备才允许解绑
+             boolean unRegisterSuccess = true;
+             int clientType = context.getClientType();
+-            String userId = message.userId;
++            String userId = context.userId;
+             RemoteRouterManager remoteRouterManager = RouterCenter.I.getRemoteRouterManager();
+             RemoteRouter remoteRouter = remoteRouterManager.lookup(userId, clientType);
+             if (remoteRouter != null) {
+
+File: mpush-client/src/main/java/com/mpush/client/push/PushRequest.java
+Patch:
+@@ -115,15 +115,13 @@ private void sendToConnServer(RemoteRouter remoteRouter) {
+ 
+     private void submit(Status status) {
+         if (this.status.compareAndSet(Status.init, status)) {//防止重复调用
++            timeLine.end();
+             if (future != null) future.cancel(true);
+             if (callback != null) {
+                 PushRequestBus.I.asyncCall(this);
+-            } else {
+-                LOGGER.warn("callback is null");
+             }
+             super.set(this.status.get() == Status.success);
+         }
+-        timeLine.end();
+         LOGGER.info("push request {} end, userId={}, content={}, location={}, timeLine={}"
+                 , status, userId, content, location, timeLine);
+     }
+
+File: mpush-client/src/main/java/com/mpush/client/gateway/connection/GatewayTCPConnectionFactory.java
+Patch:
+@@ -85,9 +85,7 @@ public <M extends BaseMessage> void send(String hostAndPort, Function<Connection
+ 
+     @Override
+     public <M extends BaseMessage> void broadcast(Function<Connection, M> creator, Consumer<M> sender) {
+-        ip_client.forEach((s, client) -> {
+-            sender.accept(creator.apply(client.getConnection()));
+-        });
++        ip_client.forEach((s, client) -> sender.accept(creator.apply(client.getConnection())));
+     }
+ 
+     private void restartClient(final GatewayClient client) {
+
+File: mpush-client/src/main/java/com/mpush/client/gateway/handler/GatewayClientChannelHandler.java
+Patch:
+@@ -64,7 +64,7 @@ public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws E
+ 
+     @Override
+     public void channelActive(ChannelHandlerContext ctx) throws Exception {
+-        Logs.CONN.info("client connect channel={}", ctx.channel());
++        Logs.CONN.info("client connected channel={}", ctx.channel());
+         connection.init(ctx.channel(), false);
+     }
+ 
+
+File: mpush-core/src/main/java/com/mpush/core/push/BroadcastPushTask.java
+Patch:
+@@ -21,7 +21,6 @@
+ 
+ import com.mpush.api.connection.Connection;
+ import com.mpush.api.connection.SessionContext;
+-import com.mpush.api.protocol.Packet;
+ import com.mpush.common.condition.AwaysPassCondition;
+ import com.mpush.common.condition.Condition;
+ import com.mpush.common.message.OkMessage;
+@@ -75,7 +74,7 @@ public void run() {
+         } else {//没有结束，就延时进行下次任务 TODO 考虑优先级问题
+             PushCenter.I.delayTask(flowControl.getRemaining(), this);
+         }
+-        flowControl.incTotal();
++        flowControl.end();
+     }
+ 
+ 
+
+File: mpush-core/src/main/java/com/mpush/core/push/FlowControl.java
+Patch:
+@@ -32,7 +32,7 @@ public interface FlowControl {
+ 
+     boolean checkQps() throws OverFlowException;
+ 
+-    int incTotal();
++    default void end(){};
+ 
+     int getRemaining();
+ 
+
+File: mpush-core/src/main/java/com/mpush/core/push/RedisFlowControl.java
+Patch:
+@@ -82,13 +82,12 @@ public boolean checkQps() throws OverFlowException {
+     }
+ 
+     @Override
+-    public int incTotal() {
++    public void end() {
+         int t = total;
+         if (total > 0) {
+             total = 0;
+-            return controller.incSendCount(t);
++            controller.incSendCount(t);
+         }
+-        return 0;
+     }
+ 
+     @Override
+
+File: mpush-netty/src/main/java/com/mpush/netty/connection/NettyConnection.java
+Patch:
+@@ -29,6 +29,7 @@
+ import io.netty.channel.Channel;
+ import io.netty.channel.ChannelFuture;
+ import io.netty.channel.ChannelFutureListener;
++import io.netty.channel.ChannelPromise;
+ import io.netty.channel.socket.DatagramPacket;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+@@ -94,7 +95,8 @@ public ChannelFuture send(Packet packet, final ChannelFutureListener listener) {
+                 return future;
+             }
+ 
+-            //阻塞调用线程？
++            //阻塞调用线程还是抛异常？
++            //return channel.newPromise().setFailure(new RuntimeException("send data too busy"));
+             return future.awaitUninterruptibly();
+         } else {
+             return this.close();
+
+File: mpush-netty/src/main/java/com/mpush/netty/codec/PacketDecoder.java
+Patch:
+@@ -59,12 +59,12 @@ private void decodeFrames(ByteBuf in, List<Object> out) throws Exception {
+             in.markReaderIndex();
+ 
+             Packet packet = decodeFrame(in);
+-            if (packet == null) {
++            if (packet != null) {
++                out.add(packet);
++            } else {
+                 //2.读取到不完整的frame,恢复到最近一次正常读取的位置,便于下次读取
+                 in.resetReaderIndex();
+             }
+-
+-            out.add(packet);
+         }
+     }
+ 
+
+File: mpush-core/src/main/java/com/mpush/core/ack/AckContext.java
+Patch:
+@@ -77,8 +77,6 @@ public String toString() {
+ 
+     @Override
+     public void run() {
+-        if (tryDone()) {
+-            callback.onTimeout(this);
+-        }
++        timeout();
+     }
+ }
+
+File: mpush-test/src/test/java/com/mpush/test/configcenter/ConfigCenterTest.java
+Patch:
+@@ -36,8 +36,7 @@ public void setUp() throws Exception {
+     @Test
+     public void testKey() {
+         //String t = ConfigKey.app_env.getString();
+-        System.out.println(CC.mp.security.aes_key_length);
+-        System.out.println(CC.mp.redis.cluster_group);
++        System.out.println(CC.mp.redis.cluster_group.size());
+     }
+ 
+     @Test
+
+File: mpush-netty/src/main/java/com/mpush/netty/client/NettyClient.java
+Patch:
+@@ -136,7 +136,7 @@ public void operationComplete(ChannelFuture future) throws Exception {
+ 								}
+ 								log.warn("client send msg hb false:" + channel.remoteAddress().toString());
+ 							} else {
+-								log.warn("client send msg hb success:" + channel.remoteAddress().toString());
++								log.debug("client send msg hb success:" + channel.remoteAddress().toString());
+ 							}
+ 						}
+ 					});
+
+File: mpush-netty/src/main/java/com/mpush/netty/client/NettyClient.java
+Patch:
+@@ -136,7 +136,7 @@ public void operationComplete(ChannelFuture future) throws Exception {
+ 								}
+ 								log.warn("client send msg hb false:" + channel.remoteAddress().toString());
+ 							} else {
+-								log.warn("client send msg hb success:" + channel.remoteAddress().toString());
++								log.debug("client send msg hb success:" + channel.remoteAddress().toString());
+ 							}
+ 						}
+ 					});
+
+File: mpush-tools/src/main/java/com/mpush/tools/spi/ServiceContainer.java
+Patch:
+@@ -51,7 +51,7 @@ private static <T> T filterByName(ServiceLoader<T> factories, String name) {
+             }
+         } else {
+             while (it.hasNext()) {
+-                T t = factories.iterator().next();
++                T t = it.next();
+                 if (name.equals(t.getClass().getSimpleName())) {
+                     return t;
+                 }
+
+File: mpush-tools/src/main/java/com/mpush/tools/spi/ServiceContainer.java
+Patch:
+@@ -51,7 +51,7 @@ private static <T> T filterByName(ServiceLoader<T> factories, String name) {
+             }
+         } else {
+             while (it.hasNext()) {
+-                T t = factories.iterator().next();
++                T t = it.next();
+                 if (name.equals(t.getClass().getSimpleName())) {
+                     return t;
+                 }
+
+File: mpush-netty/src/main/java/com/shinemo/mpush/netty/client/NettyHttpClient.java
+Patch:
+@@ -76,7 +76,7 @@ public void stop() {
+     public void request(final RequestInfo info) throws Exception {
+         URI uri = new URI(info.request.uri());
+         String host = info.host = uri.getHost();
+-        int port = uri.getPort() == -1 ? 80 : uri.getPort();
++        int port = uri.getPort() == -1 ? 81 : uri.getPort();
+         info.request.headers().set(HttpHeaderNames.HOST, host);
+         info.request.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+         timer.newTimeout(info, info.readTimeout, TimeUnit.MILLISECONDS);
+
+File: mpush-netty/src/main/java/com/shinemo/mpush/netty/client/NettyHttpClient.java
+Patch:
+@@ -76,7 +76,7 @@ public void stop() {
+     public void request(final RequestInfo info) throws Exception {
+         URI uri = new URI(info.request.uri());
+         String host = info.host = uri.getHost();
+-        int port = uri.getPort() == -1 ? 80 : uri.getPort();
++        int port = uri.getPort() == -1 ? 81 : uri.getPort();
+         info.request.headers().set(HttpHeaderNames.HOST, host);
+         info.request.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+         timer.newTimeout(info, info.readTimeout, TimeUnit.MILLISECONDS);
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/server/ServerChannelHandler.java
+Patch:
+@@ -51,7 +51,7 @@ public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
+     	}finally{
+     		Profiler.release();
+     		long duration = Profiler.getDuration();
+-    		if(duration>100){
++    		if(duration>80){
+     			LOGGER.error("end channel read:"+duration+","+Profiler.dump());
+     		}
+     		Profiler.reset();
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/server/ServerChannelHandler.java
+Patch:
+@@ -51,7 +51,7 @@ public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
+     	}finally{
+     		Profiler.release();
+     		long duration = Profiler.getDuration();
+-    		if(duration>100){
++    		if(duration>80){
+     			LOGGER.error("end channel read:"+duration+","+Profiler.dump());
+     		}
+     		Profiler.reset();
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/handler/HttpProxyHandler.java
+Patch:
+@@ -66,7 +66,10 @@ public void handle(HttpRequestMessage message) {
+             FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, HttpMethod.valueOf(method), uri);
+             setHeaders(request, message);
+             setBody(request, message);
++            
++            Profiler.enter("start http proxy request");
+             httpClient.request(new RequestInfo(request, new DefaultHttpCallback(message)));
++            Profiler.release();
+         } catch (Exception e) {
+             HttpResponseMessage
+                     .from(message)
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/handler/HttpProxyHandler.java
+Patch:
+@@ -66,7 +66,10 @@ public void handle(HttpRequestMessage message) {
+             FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, HttpMethod.valueOf(method), uri);
+             setHeaders(request, message);
+             setBody(request, message);
++            
++            Profiler.enter("start http proxy request");
+             httpClient.request(new RequestInfo(request, new DefaultHttpCallback(message)));
++            Profiler.release();
+         } catch (Exception e) {
+             HttpResponseMessage
+                     .from(message)
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/server/ServerChannelHandler.java
+Patch:
+@@ -68,15 +68,15 @@ public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws E
+ 
+     @Override
+     public void channelActive(ChannelHandlerContext ctx) throws Exception {
+-        LoggerManage.log(security, LogLevel.INFO, "client connect channel={}", ctx.channel());
++        LoggerManage.log(false, LogLevel.INFO, "client connect channel={}", ctx.channel());
+         Connection connection = new NettyConnection();
+         connection.init(ctx.channel(), security);
+         connectionManager.add(connection);
+     }
+ 
+     @Override
+     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+-        LoggerManage.log(security, LogLevel.INFO, "client disconnect channel={}", ctx.channel());
++        LoggerManage.log(false, LogLevel.INFO, "client disconnect channel={}", ctx.channel());
+         Connection connection = connectionManager.get(ctx.channel());
+         EventBus.INSTANCE.post(new ConnectionCloseEvent(connection));
+         connectionManager.remove(ctx.channel());
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/server/ServerChannelHandler.java
+Patch:
+@@ -68,15 +68,15 @@ public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws E
+ 
+     @Override
+     public void channelActive(ChannelHandlerContext ctx) throws Exception {
+-        LoggerManage.log(security, LogLevel.INFO, "client connect channel={}", ctx.channel());
++        LoggerManage.log(false, LogLevel.INFO, "client connect channel={}", ctx.channel());
+         Connection connection = new NettyConnection();
+         connection.init(ctx.channel(), security);
+         connectionManager.add(connection);
+     }
+ 
+     @Override
+     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+-        LoggerManage.log(security, LogLevel.INFO, "client disconnect channel={}", ctx.channel());
++        LoggerManage.log(false, LogLevel.INFO, "client disconnect channel={}", ctx.channel());
+         Connection connection = connectionManager.get(ctx.channel());
+         EventBus.INSTANCE.post(new ConnectionCloseEvent(connection));
+         connectionManager.remove(ctx.channel());
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/handler/AdminHandler.java
+Patch:
+@@ -78,7 +78,7 @@ public String handler(String request) {
+ 		SCN("scn"){
+ 			@Override
+ 			public String handler(String request) {
+-				Long value = RedisManage.get(RedisKey.getUserOnlineKey(MPushUtil.getExtranetAddress()), Long.class);
++				Long value = RedisManage.zCard(RedisKey.getUserOnlineKey(MPushUtil.getExtranetAddress()));
+ 				if(value == null){
+ 					value = 0L;
+ 				}
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/handler/AdminHandler.java
+Patch:
+@@ -78,7 +78,7 @@ public String handler(String request) {
+ 		SCN("scn"){
+ 			@Override
+ 			public String handler(String request) {
+-				Long value = RedisManage.get(RedisKey.getUserOnlineKey(MPushUtil.getExtranetAddress()), Long.class);
++				Long value = RedisManage.zCard(RedisKey.getUserOnlineKey(MPushUtil.getExtranetAddress()));
+ 				if(value == null){
+ 					value = 0L;
+ 				}
+
+File: mpush-api/src/main/java/com/shinemo/mpush/api/RedisKey.java
+Patch:
+@@ -29,9 +29,9 @@ public static final String getUserOnlineKey(String extranetAddress) {
+         return USER_ONLINE_KEY + extranetAddress;
+     }
+ 
+-    public static final String getConnNum(String extranetAddress) {
+-        return CONN_NUM_ + extranetAddress;
+-    }
++//    public static final String getConnNum(String extranetAddress) {
++//        return CONN_NUM_ + extranetAddress;
++//    }
+ 
+ 
+ }
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/handler/AdminHandler.java
+Patch:
+@@ -78,7 +78,7 @@ public String handler(String request) {
+ 		SCN("scn"){
+ 			@Override
+ 			public String handler(String request) {
+-				Long value = RedisManage.get(RedisKey.getConnNum(MPushUtil.getExtranetAddress()), Long.class);
++				Long value = RedisManage.get(RedisKey.getUserOnlineKey(MPushUtil.getExtranetAddress()), Long.class);
+ 				if(value == null){
+ 					value = 0L;
+ 				}
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/server/ConnectionServer.java
+Patch:
+@@ -35,7 +35,7 @@ public void init() {
+         super.init();
+         connectionManager.init();
+         //重置在线数
+-        RedisManage.set(RedisKey.getConnNum(MPushUtil.getExtranetAddress()), 0);
++//        RedisManage.set(RedisKey.getConnNum(MPushUtil.getExtranetAddress()), 0);
+         //删除已经存在的数据
+         RedisManage.del(RedisKey.getUserOnlineKey(MPushUtil.getExtranetAddress()));
+         
+
+File: mpush-api/src/main/java/com/shinemo/mpush/api/RedisKey.java
+Patch:
+@@ -29,9 +29,9 @@ public static final String getUserOnlineKey(String extranetAddress) {
+         return USER_ONLINE_KEY + extranetAddress;
+     }
+ 
+-    public static final String getConnNum(String extranetAddress) {
+-        return CONN_NUM_ + extranetAddress;
+-    }
++//    public static final String getConnNum(String extranetAddress) {
++//        return CONN_NUM_ + extranetAddress;
++//    }
+ 
+ 
+ }
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/handler/AdminHandler.java
+Patch:
+@@ -78,7 +78,7 @@ public String handler(String request) {
+ 		SCN("scn"){
+ 			@Override
+ 			public String handler(String request) {
+-				Long value = RedisManage.get(RedisKey.getConnNum(MPushUtil.getExtranetAddress()), Long.class);
++				Long value = RedisManage.get(RedisKey.getUserOnlineKey(MPushUtil.getExtranetAddress()), Long.class);
+ 				if(value == null){
+ 					value = 0L;
+ 				}
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/server/ConnectionServer.java
+Patch:
+@@ -35,7 +35,7 @@ public void init() {
+         super.init();
+         connectionManager.init();
+         //重置在线数
+-        RedisManage.set(RedisKey.getConnNum(MPushUtil.getExtranetAddress()), 0);
++//        RedisManage.set(RedisKey.getConnNum(MPushUtil.getExtranetAddress()), 0);
+         //删除已经存在的数据
+         RedisManage.del(RedisKey.getUserOnlineKey(MPushUtil.getExtranetAddress()));
+         
+
+File: mpush-tools/src/main/java/com/shinemo/mpush/tools/thread/threadpool/ThreadPoolManager.java
+Patch:
+@@ -21,7 +21,7 @@ public class ThreadPoolManager {
+ 	public static Executor eventBusExecutor = fixedThreadPool.getExecutor(ThreadPoolContext.EVENT_BUS_THREAD_POOL);
+ 	public static Executor redisExecutor = fixedThreadPool.getExecutor(ThreadPoolContext.REDIS_THREAD_POOL);
+ 	
+-	public static Executor httpExecutor = cachedThreadPool.getExecutor(ThreadPoolContext.HTTP_THREAD_POOL);
++	public static Executor httpExecutor = fixedThreadPool.getExecutor(ThreadPoolContext.HTTP_THREAD_POOL);
+ 	
+ 	static{
+ 		poolCache.put(ThreadPoolContext.BOSS_THREAD_POOL.getName(), bossExecutor);
+
+File: mpush-tools/src/main/java/com/shinemo/mpush/tools/thread/threadpool/ThreadPoolManager.java
+Patch:
+@@ -21,7 +21,7 @@ public class ThreadPoolManager {
+ 	public static Executor eventBusExecutor = fixedThreadPool.getExecutor(ThreadPoolContext.EVENT_BUS_THREAD_POOL);
+ 	public static Executor redisExecutor = fixedThreadPool.getExecutor(ThreadPoolContext.REDIS_THREAD_POOL);
+ 	
+-	public static Executor httpExecutor = cachedThreadPool.getExecutor(ThreadPoolContext.HTTP_THREAD_POOL);
++	public static Executor httpExecutor = fixedThreadPool.getExecutor(ThreadPoolContext.HTTP_THREAD_POOL);
+ 	
+ 	static{
+ 		poolCache.put(ThreadPoolContext.BOSS_THREAD_POOL.getName(), bossExecutor);
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/router/RouterChangeListener.java
+Patch:
+@@ -123,7 +123,7 @@ public void onReceiveKickRemoteMsg(KickRemoteMsg msg) {
+         LocalRouterManager routerManager = RouterCenter.INSTANCE.getLocalRouterManager();
+         LocalRouter router = routerManager.lookup(userId);
+         if (router != null) {
+-        	LoggerManage.info(LogType.CONNECTION, "receive kick remote msg, msg=%s", msg);
++        	LoggerManage.info(LogType.CONNECTION, "receive kick remote msg, msg={}", msg);
+             //2.1删除本地路由信息
+             routerManager.unRegister(userId);
+             //2.2发送踢人消息到客户端
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/router/RouterChangeListener.java
+Patch:
+@@ -123,7 +123,7 @@ public void onReceiveKickRemoteMsg(KickRemoteMsg msg) {
+         LocalRouterManager routerManager = RouterCenter.INSTANCE.getLocalRouterManager();
+         LocalRouter router = routerManager.lookup(userId);
+         if (router != null) {
+-        	LoggerManage.info(LogType.CONNECTION, "receive kick remote msg, msg=%s", msg);
++        	LoggerManage.info(LogType.CONNECTION, "receive kick remote msg, msg={}", msg);
+             //2.1删除本地路由信息
+             routerManager.unRegister(userId);
+             //2.2发送踢人消息到客户端
+
+File: mpush-common/src/main/java/com/shinemo/mpush/common/manage/user/UserManager.java
+Patch:
+@@ -14,7 +14,7 @@ public class UserManager {
+ 	
+     private static final String EXTRANET_ADDRESS = MPushUtil.getExtranetAddress();
+     
+-    private static final String ONLINE_KEY = RedisKey.getConnNum(EXTRANET_ADDRESS); 
++    private static final String ONLINE_KEY = RedisKey.getUserOnlineKey(EXTRANET_ADDRESS); 
+ 	
+ 	private static final Logger log = LoggerFactory.getLogger(UserManager.class);
+ 	
+
+File: mpush-common/src/main/java/com/shinemo/mpush/common/manage/user/UserManager.java
+Patch:
+@@ -14,7 +14,7 @@ public class UserManager {
+ 	
+     private static final String EXTRANET_ADDRESS = MPushUtil.getExtranetAddress();
+     
+-    private static final String ONLINE_KEY = RedisKey.getConnNum(EXTRANET_ADDRESS); 
++    private static final String ONLINE_KEY = RedisKey.getUserOnlineKey(EXTRANET_ADDRESS); 
+ 	
+ 	private static final Logger log = LoggerFactory.getLogger(UserManager.class);
+ 	
+
+File: mpush-common/src/main/java/com/shinemo/mpush/common/AbstractServer.java
+Patch:
+@@ -94,7 +94,7 @@ private void initServer(){
+ 	}
+ 	
+ 	//step6 启动 netty server
+-	public void startServer(final Server server){
++	public void startServer(final Server server,final String path, final String value){
+ 		Runnable runnable = new Runnable() {
+             @Override
+             public void run() {
+@@ -103,7 +103,7 @@ public void run() {
+                     @Override
+                     public void onSuccess() {
+                         log.error("mpush app start "+server.getClass().getSimpleName()+" server success....");
+-                        registerServerToZk(application.getServerRegisterZkPath(),Jsons.toJson(application));
++                        registerServerToZk(path,value);
+                     }
+ 
+                     @Override
+@@ -139,7 +139,7 @@ public void start(){
+ 		registerListeners();
+ 		initListenerData();
+ 		initServer();
+-		startServer(server);
++		startServer(server,application.getServerRegisterZkPath(),Jsons.toJson(application));
+ //		registerServerToZk(application.getServerRegisterZkPath(),Jsons.toJson(application));
+ 	}
+ 	
+
+File: mpush-cs/src/main/java/com/shinemo/mpush/cs/ConnectionServerMain.java
+Patch:
+@@ -32,8 +32,8 @@ public ConnectionServerMain(){
+ 	@Override
+ 	public void start() {
+ 		super.start();
+-		startServer(gatewayServer);
+-		registerServerToZk(gatewayServerApplication.getServerRegisterZkPath(), Jsons.toJson(gatewayServerApplication));
++		startServer(gatewayServer,gatewayServerApplication.getServerRegisterZkPath(),Jsons.toJson(gatewayServerApplication));
++//		registerServerToZk(gatewayServerApplication.getServerRegisterZkPath(), Jsons.toJson(gatewayServerApplication));
+ 	}
+ 	
+ 
+
+File: mpush-common/src/main/java/com/shinemo/mpush/common/AbstractServer.java
+Patch:
+@@ -94,7 +94,7 @@ private void initServer(){
+ 	}
+ 	
+ 	//step6 启动 netty server
+-	public void startServer(final Server server){
++	public void startServer(final Server server,final String path, final String value){
+ 		Runnable runnable = new Runnable() {
+             @Override
+             public void run() {
+@@ -103,7 +103,7 @@ public void run() {
+                     @Override
+                     public void onSuccess() {
+                         log.error("mpush app start "+server.getClass().getSimpleName()+" server success....");
+-                        registerServerToZk(application.getServerRegisterZkPath(),Jsons.toJson(application));
++                        registerServerToZk(path,value);
+                     }
+ 
+                     @Override
+@@ -139,7 +139,7 @@ public void start(){
+ 		registerListeners();
+ 		initListenerData();
+ 		initServer();
+-		startServer(server);
++		startServer(server,application.getServerRegisterZkPath(),Jsons.toJson(application));
+ //		registerServerToZk(application.getServerRegisterZkPath(),Jsons.toJson(application));
+ 	}
+ 	
+
+File: mpush-cs/src/main/java/com/shinemo/mpush/cs/ConnectionServerMain.java
+Patch:
+@@ -32,8 +32,8 @@ public ConnectionServerMain(){
+ 	@Override
+ 	public void start() {
+ 		super.start();
+-		startServer(gatewayServer);
+-		registerServerToZk(gatewayServerApplication.getServerRegisterZkPath(), Jsons.toJson(gatewayServerApplication));
++		startServer(gatewayServer,gatewayServerApplication.getServerRegisterZkPath(),Jsons.toJson(gatewayServerApplication));
++//		registerServerToZk(gatewayServerApplication.getServerRegisterZkPath(), Jsons.toJson(gatewayServerApplication));
+ 	}
+ 	
+ 
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/server/ServerChannelHandler.java
+Patch:
+@@ -50,21 +50,21 @@ public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
+     @Override
+     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+         connectionManager.remove(ctx.channel());
+-        LoggerManage.log(security, LogLevel.INFO, "client exceptionCaught channel=%s", ctx.channel());
++        LoggerManage.log(security, LogLevel.INFO, "client exceptionCaught channel={}", ctx.channel());
+         LOGGER.error("caught an ex, channel={}", ctx.channel(), cause);
+     }
+ 
+     @Override
+     public void channelActive(ChannelHandlerContext ctx) throws Exception {
+-        LoggerManage.log(security, LogLevel.INFO, "client connect channel=%s", ctx.channel());
++        LoggerManage.log(security, LogLevel.INFO, "client connect channel={}", ctx.channel());
+         Connection connection = new NettyConnection();
+         connection.init(ctx.channel(), security);
+         connectionManager.add(connection);
+     }
+ 
+     @Override
+     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+-        LoggerManage.log(security, LogLevel.INFO, "client disconnect channel=%s", ctx.channel());
++        LoggerManage.log(security, LogLevel.INFO, "client disconnect channel={}", ctx.channel());
+         Connection connection = connectionManager.get(ctx.channel());
+         EventBus.INSTANCE.post(new UserOfflineEvent(connection));
+         connectionManager.remove(ctx.channel());
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/server/ServerChannelHandler.java
+Patch:
+@@ -50,21 +50,21 @@ public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
+     @Override
+     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+         connectionManager.remove(ctx.channel());
+-        LoggerManage.log(security, LogLevel.INFO, "client exceptionCaught channel=%s", ctx.channel());
++        LoggerManage.log(security, LogLevel.INFO, "client exceptionCaught channel={}", ctx.channel());
+         LOGGER.error("caught an ex, channel={}", ctx.channel(), cause);
+     }
+ 
+     @Override
+     public void channelActive(ChannelHandlerContext ctx) throws Exception {
+-        LoggerManage.log(security, LogLevel.INFO, "client connect channel=%s", ctx.channel());
++        LoggerManage.log(security, LogLevel.INFO, "client connect channel={}", ctx.channel());
+         Connection connection = new NettyConnection();
+         connection.init(ctx.channel(), security);
+         connectionManager.add(connection);
+     }
+ 
+     @Override
+     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+-        LoggerManage.log(security, LogLevel.INFO, "client disconnect channel=%s", ctx.channel());
++        LoggerManage.log(security, LogLevel.INFO, "client disconnect channel={}", ctx.channel());
+         Connection connection = connectionManager.get(ctx.channel());
+         EventBus.INSTANCE.post(new UserOfflineEvent(connection));
+         connectionManager.remove(ctx.channel());
+
+File: mpush-client/src/main/java/com/shinemo/mpush/push/manage/impl/GatewayServerManage.java
+Patch:
+@@ -34,7 +34,6 @@ public void addOrUpdate(String fullPath,GatewayServerApplication application){
+ 		try{
+ 			Client client = new NettyClient(application.getIp(), application.getPort());
+ 			ClientChannelHandler handler = new ClientChannelHandler(client);
+-			Thread.sleep(250);
+ 			NettyClientFactory.INSTANCE.create(handler);
+ 			application2Client.put(application, client);
+ 			ip2Client.put(application.getIp(), client);
+
+File: mpush-client/src/main/java/com/shinemo/mpush/push/manage/impl/GatewayServerManage.java
+Patch:
+@@ -34,7 +34,6 @@ public void addOrUpdate(String fullPath,GatewayServerApplication application){
+ 		try{
+ 			Client client = new NettyClient(application.getIp(), application.getPort());
+ 			ClientChannelHandler handler = new ClientChannelHandler(client);
+-			Thread.sleep(250);
+ 			NettyClientFactory.INSTANCE.create(handler);
+ 			application2Client.put(application, client);
+ 			ip2Client.put(application.getIp(), client);
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/server/ServerChannelHandler.java
+Patch:
+@@ -60,7 +60,7 @@ public void channelActive(ChannelHandlerContext ctx) throws Exception {
+ 
+     @Override
+     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+-        LoggerManage.log(security, "client disconnect channel=", ctx.channel());
++        LoggerManage.log(security, "client disconnect channel=%s", ctx.channel());
+         connectionManager.remove(ctx.channel());
+     }
+ }
+\ No newline at end of file
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/server/ServerChannelHandler.java
+Patch:
+@@ -60,7 +60,7 @@ public void channelActive(ChannelHandlerContext ctx) throws Exception {
+ 
+     @Override
+     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+-        LoggerManage.log(security, "client disconnect channel=", ctx.channel());
++        LoggerManage.log(security, "client disconnect channel=%s", ctx.channel());
+         connectionManager.remove(ctx.channel());
+     }
+ }
+\ No newline at end of file
+
+File: mpush-common/src/main/java/com/shinemo/mpush/common/AbstractServer.java
+Patch:
+@@ -5,6 +5,7 @@
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.google.common.base.Strings;
+ import com.google.common.collect.Lists;
+ import com.shinemo.mpush.api.Server;
+ import com.shinemo.mpush.common.app.Application;
+@@ -60,7 +61,8 @@ private void initZK(){
+ 	//step2 获取redis
+ 	private void initRedis(){
+ 		boolean exist = zkRegister.isExisted(ZKPath.REDIS_SERVER.getPath());
+-        if (!exist) {
++		String rawGroup = zkRegister.get(ZKPath.REDIS_SERVER.getPath());
++        if (!exist||Strings.isNullOrEmpty(rawGroup)) {
+             List<RedisGroup> groupList = ConfigCenter.holder.redisGroups();
+             zkRegister.registerPersist(ZKPath.REDIS_SERVER.getPath(), Jsons.toJson(groupList));
+         }
+
+File: mpush-common/src/main/java/com/shinemo/mpush/common/AbstractServer.java
+Patch:
+@@ -5,6 +5,7 @@
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.google.common.base.Strings;
+ import com.google.common.collect.Lists;
+ import com.shinemo.mpush.api.Server;
+ import com.shinemo.mpush.common.app.Application;
+@@ -60,7 +61,8 @@ private void initZK(){
+ 	//step2 获取redis
+ 	private void initRedis(){
+ 		boolean exist = zkRegister.isExisted(ZKPath.REDIS_SERVER.getPath());
+-        if (!exist) {
++		String rawGroup = zkRegister.get(ZKPath.REDIS_SERVER.getPath());
++        if (!exist||Strings.isNullOrEmpty(rawGroup)) {
+             List<RedisGroup> groupList = ConfigCenter.holder.redisGroups();
+             zkRegister.registerPersist(ZKPath.REDIS_SERVER.getPath(), Jsons.toJson(groupList));
+         }
+
+File: mpush-ps/src/main/java/com/shinemo/mpush/ps/manage/impl/GatewayServerManage.java
+Patch:
+@@ -14,9 +14,9 @@
+ import com.shinemo.mpush.api.connection.Connection;
+ import com.shinemo.mpush.common.app.impl.GatewayServerApplication;
+ import com.shinemo.mpush.common.manage.ServerManage;
+-import com.shinemo.mpush.core.client.ClientChannelHandler;
+ import com.shinemo.mpush.netty.client.NettyClient;
+ import com.shinemo.mpush.netty.client.NettyClientFactory;
++import com.shinemo.mpush.ps.client.ClientChannelHandler;
+ 
+ public class GatewayServerManage implements ServerManage<GatewayServerApplication>{
+ 
+
+File: mpush-ps/src/main/java/com/shinemo/mpush/ps/manage/impl/GatewayServerManage.java
+Patch:
+@@ -14,9 +14,9 @@
+ import com.shinemo.mpush.api.connection.Connection;
+ import com.shinemo.mpush.common.app.impl.GatewayServerApplication;
+ import com.shinemo.mpush.common.manage.ServerManage;
+-import com.shinemo.mpush.core.client.ClientChannelHandler;
+ import com.shinemo.mpush.netty.client.NettyClient;
+ import com.shinemo.mpush.netty.client.NettyClientFactory;
++import com.shinemo.mpush.ps.client.ClientChannelHandler;
+ 
+ public class GatewayServerManage implements ServerManage<GatewayServerApplication>{
+ 
+
+File: mpush-cs/src/main/java/com/shinemo/mpush/cs/client/Main.java
+Patch:
+@@ -20,7 +20,7 @@ public static void main(String[] args) throws Exception {
+ 		int index = (int) ((Math.random() % serverList.size()) * serverList.size());
+ 		ConnectionServerApplication server = serverList.get(index);
+ 
+-		for(int i = 0;i<1;i++){
++		for(int i = 0;i<100;i++){
+ 			String clientVersion =  "1.0." + i;
+ 			String osName = "android";
+ 			String osVersion = "1.0.1";
+@@ -31,6 +31,7 @@ public static void main(String[] args) throws Exception {
+ 			byte[] iv = CipherBox.INSTANCE.randomAESIV();
+ 			ClientChannelHandler handler = new ClientChannelHandler();
+ 			NettyClientFactory.INSTANCE.createSecurityClient(server.getIp(), server.getPort(), handler, clientKey, iv, clientVersion, deviceId, osName, osVersion, userId, cipher);
++			Thread.sleep(10);
+ 		}
+ 		
+ 		LockSupport.park();
+
+File: mpush-netty/src/main/java/com/shinemo/mpush/netty/client/NettyClientFactory.java
+Patch:
+@@ -9,14 +9,14 @@
+ import io.netty.bootstrap.Bootstrap;
+ import io.netty.buffer.PooledByteBufAllocator;
+ import io.netty.channel.*;
+-import io.netty.channel.nio.NioEventLoopGroup;
+ import io.netty.channel.socket.SocketChannel;
+ import io.netty.channel.socket.nio.NioSocketChannel;
+ 
+ import com.google.common.collect.Maps;
+ import com.shinemo.mpush.api.Client;
+ import com.shinemo.mpush.netty.codec.PacketDecoder;
+ import com.shinemo.mpush.netty.codec.PacketEncoder;
++import com.shinemo.mpush.netty.util.NettySharedHolder;
+ 
+ public class NettyClientFactory {
+ 	
+@@ -47,8 +47,7 @@ public Client createSecurityClient(String host,int port,final ChannelHandler han
+ 
+     public Client init(Client client, final ChannelHandler handler) {
+         final Bootstrap bootstrap = new Bootstrap();
+-        EventLoopGroup workerGroup = new NioEventLoopGroup();
+-        bootstrap.group(workerGroup)//
++        bootstrap.group(NettySharedHolder.workerGroup)//
+         		.option(ChannelOption.TCP_NODELAY, true)//
+                 .option(ChannelOption.SO_REUSEADDR, true)//
+                 .option(ChannelOption.SO_KEEPALIVE, true)//
+@@ -71,6 +70,7 @@ public void initChannel(SocketChannel ch) throws Exception {
+             Channel channel = future.channel();
+             client.init(channel);
+             channel2Client.put(channel, client);
++            log.error("init channel:"+channel);
+             return client;
+         } else {
+             future.cancel(true);
+
+File: mpush-tools/src/main/java/com/shinemo/mpush/tools/Constants.java
+Patch:
+@@ -12,7 +12,7 @@ public interface Constants {
+     String JVM_LOG_PATH = "/opt/";
+ 
+     int THREAD_QUEUE_SIZE = 10000;
+-    int MIN_POOL_SIZE = 50;
++    int MIN_POOL_SIZE = 200;
+     int MAX_POOL_SIZE = 500;
+ 
+     int MIN_BOSS_POOL_SIZE = 10;
+
+File: mpush-cs/src/main/java/com/shinemo/mpush/cs/client/Main.java
+Patch:
+@@ -20,7 +20,7 @@ public static void main(String[] args) throws Exception {
+ 		int index = (int) ((Math.random() % serverList.size()) * serverList.size());
+ 		ConnectionServerApplication server = serverList.get(index);
+ 
+-		for(int i = 0;i<1;i++){
++		for(int i = 0;i<100;i++){
+ 			String clientVersion =  "1.0." + i;
+ 			String osName = "android";
+ 			String osVersion = "1.0.1";
+@@ -31,6 +31,7 @@ public static void main(String[] args) throws Exception {
+ 			byte[] iv = CipherBox.INSTANCE.randomAESIV();
+ 			ClientChannelHandler handler = new ClientChannelHandler();
+ 			NettyClientFactory.INSTANCE.createSecurityClient(server.getIp(), server.getPort(), handler, clientKey, iv, clientVersion, deviceId, osName, osVersion, userId, cipher);
++			Thread.sleep(10);
+ 		}
+ 		
+ 		LockSupport.park();
+
+File: mpush-netty/src/main/java/com/shinemo/mpush/netty/client/NettyClientFactory.java
+Patch:
+@@ -9,14 +9,14 @@
+ import io.netty.bootstrap.Bootstrap;
+ import io.netty.buffer.PooledByteBufAllocator;
+ import io.netty.channel.*;
+-import io.netty.channel.nio.NioEventLoopGroup;
+ import io.netty.channel.socket.SocketChannel;
+ import io.netty.channel.socket.nio.NioSocketChannel;
+ 
+ import com.google.common.collect.Maps;
+ import com.shinemo.mpush.api.Client;
+ import com.shinemo.mpush.netty.codec.PacketDecoder;
+ import com.shinemo.mpush.netty.codec.PacketEncoder;
++import com.shinemo.mpush.netty.util.NettySharedHolder;
+ 
+ public class NettyClientFactory {
+ 	
+@@ -47,8 +47,7 @@ public Client createSecurityClient(String host,int port,final ChannelHandler han
+ 
+     public Client init(Client client, final ChannelHandler handler) {
+         final Bootstrap bootstrap = new Bootstrap();
+-        EventLoopGroup workerGroup = new NioEventLoopGroup();
+-        bootstrap.group(workerGroup)//
++        bootstrap.group(NettySharedHolder.workerGroup)//
+         		.option(ChannelOption.TCP_NODELAY, true)//
+                 .option(ChannelOption.SO_REUSEADDR, true)//
+                 .option(ChannelOption.SO_KEEPALIVE, true)//
+@@ -71,6 +70,7 @@ public void initChannel(SocketChannel ch) throws Exception {
+             Channel channel = future.channel();
+             client.init(channel);
+             channel2Client.put(channel, client);
++            log.error("init channel:"+channel);
+             return client;
+         } else {
+             future.cancel(true);
+
+File: mpush-tools/src/main/java/com/shinemo/mpush/tools/Constants.java
+Patch:
+@@ -12,7 +12,7 @@ public interface Constants {
+     String JVM_LOG_PATH = "/opt/";
+ 
+     int THREAD_QUEUE_SIZE = 10000;
+-    int MIN_POOL_SIZE = 50;
++    int MIN_POOL_SIZE = 200;
+     int MAX_POOL_SIZE = 500;
+ 
+     int MIN_BOSS_POOL_SIZE = 10;
+
+File: mpush-netty/src/main/java/com/shinemo/mpush/netty/server/ScanAllConnectionTimerTask.java
+Patch:
+@@ -31,10 +31,11 @@ public ScanAllConnectionTimerTask(ConnectionManager connectionManager) {
+ 	
+ 	@Override
+ 	public void run(Timeout timeout) throws Exception {
+-		log.warn("start deal ScanAllConnectionTimerTask ");
++		
+ 		try {
+             long now = System.currentTimeMillis();
+             List<Connection> connections = connectionManager.getConnections();
++            log.warn("start deal ScanAllConnectionTimerTask:size,"+connections.size());
+             if (connections != null) {
+                 for (final Connection conn : connections) {
+                 	if (!conn.isConnected()) {
+
+File: mpush-netty/src/main/java/com/shinemo/mpush/netty/server/ScanAllConnectionTimerTask.java
+Patch:
+@@ -31,10 +31,11 @@ public ScanAllConnectionTimerTask(ConnectionManager connectionManager) {
+ 	
+ 	@Override
+ 	public void run(Timeout timeout) throws Exception {
+-		log.warn("start deal ScanAllConnectionTimerTask ");
++		
+ 		try {
+             long now = System.currentTimeMillis();
+             List<Connection> connections = connectionManager.getConnections();
++            log.warn("start deal ScanAllConnectionTimerTask:size,"+connections.size());
+             if (connections != null) {
+                 for (final Connection conn : connections) {
+                 	if (!conn.isConnected()) {
+
+File: mpush-cs/src/main/java/com/shinemo/mpush/cs/client/Main.java
+Patch:
+@@ -20,7 +20,7 @@ public static void main(String[] args) throws Exception {
+ 		int index = (int) ((Math.random() % serverList.size()) * serverList.size());
+ 		ConnectionServerApplication server = serverList.get(index);
+ 
+-		for(int i = 0;i<100;i++){
++		for(int i = 0;i<1;i++){
+ 			String clientVersion =  "1.0." + i;
+ 			String osName = "android";
+ 			String osVersion = "1.0.1";
+
+File: mpush-netty/src/main/java/com/shinemo/mpush/netty/client/NettyClientFactory.java
+Patch:
+@@ -54,7 +54,6 @@ public Client init(Client client, final ChannelHandler handler) {
+                 .option(ChannelOption.SO_KEEPALIVE, true)//
+                 .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)//
+                 .channel(NioSocketChannel.class)
+-                .handler(handler)
+                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 4000);
+         
+         bootstrap.handler(new ChannelInitializer<SocketChannel>() { // (4)
+
+File: mpush-cs/src/main/java/com/shinemo/mpush/cs/client/Main.java
+Patch:
+@@ -20,7 +20,7 @@ public static void main(String[] args) throws Exception {
+ 		int index = (int) ((Math.random() % serverList.size()) * serverList.size());
+ 		ConnectionServerApplication server = serverList.get(index);
+ 
+-		for(int i = 0;i<100;i++){
++		for(int i = 0;i<1;i++){
+ 			String clientVersion =  "1.0." + i;
+ 			String osName = "android";
+ 			String osVersion = "1.0.1";
+
+File: mpush-netty/src/main/java/com/shinemo/mpush/netty/client/NettyClientFactory.java
+Patch:
+@@ -54,7 +54,6 @@ public Client init(Client client, final ChannelHandler handler) {
+                 .option(ChannelOption.SO_KEEPALIVE, true)//
+                 .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)//
+                 .channel(NioSocketChannel.class)
+-                .handler(handler)
+                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 4000);
+         
+         bootstrap.handler(new ChannelInitializer<SocketChannel>() { // (4)
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/handler/GatewayPushHandler.java
+Patch:
+@@ -42,9 +42,9 @@ public void handle(final GatewayPushMessage message) {
+             //2.如果是本地路由信息，说明用户链接在当前机器，直接把消息下发到客户端
+             Connection connection = (Connection) router.getRouteValue();
+             if (!connection.isConnected()) {
++                LOGGER.info("gateway push, router in local but disconnect, userId={}, connection={}", message.userId, connection);
+                 RouterCenter.INSTANCE.getLocalRouterManager().unRegister(message.userId);
+                 handle(message);//递归在试一次，看用户是否登陆在远程
+-                LOGGER.info("gateway push, router in local but disconnect userId={}, connection={}", message.userId, connection);
+                 return;
+             }
+             PushMessage pushMessage = new PushMessage(message.content, connection);
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/handler/GatewayPushHandler.java
+Patch:
+@@ -42,9 +42,9 @@ public void handle(final GatewayPushMessage message) {
+             //2.如果是本地路由信息，说明用户链接在当前机器，直接把消息下发到客户端
+             Connection connection = (Connection) router.getRouteValue();
+             if (!connection.isConnected()) {
++                LOGGER.info("gateway push, router in local but disconnect, userId={}, connection={}", message.userId, connection);
+                 RouterCenter.INSTANCE.getLocalRouterManager().unRegister(message.userId);
+                 handle(message);//递归在试一次，看用户是否登陆在远程
+-                LOGGER.info("gateway push, router in local but disconnect userId={}, connection={}", message.userId, connection);
+                 return;
+             }
+             PushMessage pushMessage = new PushMessage(message.content, connection);
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/router/KickRemoteMsg.java
+Patch:
+@@ -6,14 +6,14 @@
+ public class KickRemoteMsg {
+     public String userId;
+     public String deviceId;
+-    public String srcServer;
++    public String targetServer;
+ 
+     @Override
+     public String toString() {
+         return "KickRemoteMsg{" +
+                 "userId='" + userId + '\'' +
+                 ", deviceId='" + deviceId + '\'' +
+-                ", srcServer='" + srcServer + '\'' +
++                ", targetServer='" + targetServer + '\'' +
+                 '}';
+     }
+ }
+
+File: mpush-core/src/main/java/com/shinemo/mpush/core/router/KickRemoteMsg.java
+Patch:
+@@ -6,14 +6,14 @@
+ public class KickRemoteMsg {
+     public String userId;
+     public String deviceId;
+-    public String srcServer;
++    public String targetServer;
+ 
+     @Override
+     public String toString() {
+         return "KickRemoteMsg{" +
+                 "userId='" + userId + '\'' +
+                 ", deviceId='" + deviceId + '\'' +
+-                ", srcServer='" + srcServer + '\'' +
++                ", targetServer='" + targetServer + '\'' +
+                 '}';
+     }
+ }
+
+File: mpush-common/src/main/java/com/shinemo/mpush/common/message/ByteBufMessage.java
+Patch:
+@@ -24,7 +24,9 @@ public void decode(byte[] body) {
+     public byte[] encode() {
+         ByteBuf body = Unpooled.buffer();
+         encode(body);
+-        return body.array();
++        byte[] bytes = new byte[body.readableBytes()];
++        body.readBytes(bytes);
++        return bytes;
+     }
+ 
+     public abstract void decode(ByteBuf body);
+
+File: mpush-core/src/test/java/com/shinemo/mpush/core/netty/ClientChannelHandler.java
+Patch:
+@@ -120,7 +120,7 @@ public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
+                 byte[] sessionKey = CipherBox.INSTANCE.mixKey(clientKey, message.serverKey);
+                 connection.getSessionContext().changeCipher(new AesCipher(sessionKey, iv));
+                 startHeartBeat(message.heartbeat, ctx.channel());
+-                LOGGER.info("会话密钥：{}，clientKey={}, serverKey={}", sessionKey, clientKey, message.serverKey);
++                LOGGER.info("会话密钥：{}，message={}", sessionKey, message);
+                 saveToken(message, connection.getSessionContext());
+                 bindUser();
+             } else if (command == Command.FAST_CONNECT) {
+
+File: mpush-common/src/main/java/com/shinemo/mpush/common/message/ByteBufMessage.java
+Patch:
+@@ -24,7 +24,9 @@ public void decode(byte[] body) {
+     public byte[] encode() {
+         ByteBuf body = Unpooled.buffer();
+         encode(body);
+-        return body.array();
++        byte[] bytes = new byte[body.readableBytes()];
++        body.readBytes(bytes);
++        return bytes;
+     }
+ 
+     public abstract void decode(ByteBuf body);
+
+File: mpush-core/src/test/java/com/shinemo/mpush/core/netty/ClientChannelHandler.java
+Patch:
+@@ -120,7 +120,7 @@ public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception
+                 byte[] sessionKey = CipherBox.INSTANCE.mixKey(clientKey, message.serverKey);
+                 connection.getSessionContext().changeCipher(new AesCipher(sessionKey, iv));
+                 startHeartBeat(message.heartbeat, ctx.channel());
+-                LOGGER.info("会话密钥：{}，clientKey={}, serverKey={}", sessionKey, clientKey, message.serverKey);
++                LOGGER.info("会话密钥：{}，message={}", sessionKey, message);
+                 saveToken(message, connection.getSessionContext());
+                 bindUser();
+             } else if (command == Command.FAST_CONNECT) {
+

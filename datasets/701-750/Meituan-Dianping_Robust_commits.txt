@@ -1,0 +1,549 @@
+File: auto-patch-plugin/src/main/java/com/meituan/robust/utils/JavaUtils.java
+Patch:
+@@ -209,7 +209,7 @@ public static String getRealParamtersBody() {
+         realParameterBuilder.append("if (args == null || args.length < 1) {");
+         realParameterBuilder.append(" return args;");
+         realParameterBuilder.append("}");
+-        realParameterBuilder.append(" Object[] realParameter = new Object[args.length];");
++        realParameterBuilder.append(" Object[] realParameter = (Object[]) java.lang.reflect.Array.newInstance(args.getClass().getComponentType(), args.length);");
+         realParameterBuilder.append("for (int i = 0; i < args.length; i++) {");
+         realParameterBuilder.append("if (args[i] instanceof Object[]) {");
+         realParameterBuilder.append("realParameter[i] =" + Constants.GET_REAL_PARAMETER + "((Object[]) args[i]);");
+
+File: gradle-plugin/src/main/groovy/robust/gradle/plugin/asm/AsmInsertImpl.java
+Patch:
+@@ -59,6 +59,7 @@ protected void insertCode(List<CtClass> box, File jarFile) throws IOException, C
+                 zipFile(ctClass.toBytecode(), outStream, ctClass.getName().replaceAll("\\.", "/") + ".class");
+ 
+             }
++            ctClass.defrost();
+         }
+         outStream.close();
+     }
+
+File: gradle-plugin/src/main/groovy/robust/gradle/plugin/asm/AsmInsertImpl.java
+Patch:
+@@ -59,6 +59,7 @@ protected void insertCode(List<CtClass> box, File jarFile) throws IOException, C
+                 zipFile(ctClass.toBytecode(), outStream, ctClass.getName().replaceAll("\\.", "/") + ".class");
+ 
+             }
++            ctClass.defrost();
+         }
+         outStream.close();
+     }
+
+File: gradle-plugin/src/main/groovy/robust/gradle/plugin/asm/RobustAsmUtils.java
+Patch:
+@@ -346,7 +346,7 @@ private static boolean castPrimateToObj(MethodVisitor mv, String typeS) {
+         }
+         if ("C".equals(typeS)) {
+             mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Character");//强制转化类型
+-            mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Character", "intValue", "()C");
++            mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Character", "charValue", "()C");
+             return true;
+         }
+         if ("S".equals(typeS)) {
+
+File: gradle-plugin/src/main/groovy/robust/gradle/plugin/asm/RobustAsmUtils.java
+Patch:
+@@ -30,7 +30,7 @@ public static void createInsertCode(GeneratorAdapter mv, String className, List<
+         mv.visitMethodInsn(Opcodes.INVOKESTATIC,
+                 PROXYCLASSNAME,
+                 "proxy",
+-                "([Ljava/lang/Object;Ljava/lang/Object;" + REDIRECTCLASSNAME + "ZI[Ljava/lang/Class;Ljava/lang/Class;)Ljava/lang/Object;",
++                "([Ljava/lang/Object;Ljava/lang/Object;" + REDIRECTCLASSNAME + "ZI[Ljava/lang/Class;Ljava/lang/Class;)Lcom/meituan/robust/PatchProxyResult;",
+                 false);
+ 
+         int local = mv.newLocal(Type.getType("Lcom/meituan/robust/PatchProxyResult;"));
+
+File: gradle-plugin/src/main/groovy/robust/gradle/plugin/asm/RobustAsmUtils.java
+Patch:
+@@ -30,7 +30,7 @@ public static void createInsertCode(GeneratorAdapter mv, String className, List<
+         mv.visitMethodInsn(Opcodes.INVOKESTATIC,
+                 PROXYCLASSNAME,
+                 "proxy",
+-                "([Ljava/lang/Object;Ljava/lang/Object;" + REDIRECTCLASSNAME + "ZI[Ljava/lang/Class;Ljava/lang/Class;)Ljava/lang/Object;",
++                "([Ljava/lang/Object;Ljava/lang/Object;" + REDIRECTCLASSNAME + "ZI[Ljava/lang/Class;Ljava/lang/Class;)Lcom/meituan/robust/PatchProxyResult;",
+                 false);
+ 
+         int local = mv.newLocal(Type.getType("Lcom/meituan/robust/PatchProxyResult;"));
+
+File: auto-patch-plugin/src/main/java/com/meituan/robust/autopatch/Config.java
+Patch:
+@@ -5,6 +5,7 @@
+ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.HashSet;
++import java.util.LinkedHashMap;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Set;
+@@ -32,7 +33,7 @@ public final class Config {
+     public static Set newlyAddedMethodSet = new HashSet<String>();
+     public static List<String> modifiedClassNameList = new ArrayList<String>();
+     public static List<String> hotfixPackageList = new ArrayList<>();
+-    public static HashMap<String, Integer> methodMap = new HashMap();
++    public static LinkedHashMap<String, Integer> methodMap = new LinkedHashMap<>();
+     public static  String robustGenerateDirectory;
+     public static Map<String, List<CtMethod>> invokeSuperMethodMap = new HashMap<>();
+     public static ClassPool classPool = new ClassPool();
+
+File: gradle-plugin/src/main/groovy/robust/gradle/plugin/InsertcodeStrategy.java
+Patch:
+@@ -4,6 +4,7 @@
+ import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.HashMap;
++import java.util.LinkedHashMap;
+ import java.util.List;
+ import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.zip.ZipEntry;
+@@ -34,8 +35,8 @@ public abstract class InsertcodeStrategy {
+     //a switch control whether need to filter method in exceptMethodList, if false ,exceptMethodList will be ignored
+     protected boolean isExceptMethodLevel = false;
+     protected AtomicInteger insertMethodCount = new AtomicInteger(0);
+-    //record every method with unique method number
+-    public HashMap<String, Integer> methodMap = new HashMap();
++    //record every method with unique method number, use LinkedHashMap to keep order for printing
++    public HashMap<String, Integer> methodMap = new LinkedHashMap<>();
+ 
+     public InsertcodeStrategy(List<String> hotfixPackageList, List<String> hotfixMethodList, List<String> exceptPackageList, List<String> exceptMethodList, boolean isHotfixMethodLevel, boolean isExceptMethodLevel) {
+         this.hotfixPackageList = hotfixPackageList;
+
+File: auto-patch-plugin/src/main/java/com/meituan/robust/autopatch/Config.java
+Patch:
+@@ -5,6 +5,7 @@
+ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.HashSet;
++import java.util.LinkedHashMap;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Set;
+@@ -32,7 +33,7 @@ public final class Config {
+     public static Set newlyAddedMethodSet = new HashSet<String>();
+     public static List<String> modifiedClassNameList = new ArrayList<String>();
+     public static List<String> hotfixPackageList = new ArrayList<>();
+-    public static HashMap<String, Integer> methodMap = new HashMap();
++    public static LinkedHashMap<String, Integer> methodMap = new LinkedHashMap<>();
+     public static  String robustGenerateDirectory;
+     public static Map<String, List<CtMethod>> invokeSuperMethodMap = new HashMap<>();
+     public static ClassPool classPool = new ClassPool();
+
+File: gradle-plugin/src/main/groovy/robust/gradle/plugin/InsertcodeStrategy.java
+Patch:
+@@ -4,6 +4,7 @@
+ import java.io.IOException;
+ import java.util.ArrayList;
+ import java.util.HashMap;
++import java.util.LinkedHashMap;
+ import java.util.List;
+ import java.util.concurrent.atomic.AtomicInteger;
+ import java.util.zip.ZipEntry;
+@@ -34,8 +35,8 @@ public abstract class InsertcodeStrategy {
+     //a switch control whether need to filter method in exceptMethodList, if false ,exceptMethodList will be ignored
+     protected boolean isExceptMethodLevel = false;
+     protected AtomicInteger insertMethodCount = new AtomicInteger(0);
+-    //record every method with unique method number
+-    public HashMap<String, Integer> methodMap = new HashMap();
++    //record every method with unique method number, use LinkedHashMap to keep order for printing
++    public HashMap<String, Integer> methodMap = new LinkedHashMap<>();
+ 
+     public InsertcodeStrategy(List<String> hotfixPackageList, List<String> hotfixMethodList, List<String> exceptPackageList, List<String> exceptMethodList, boolean isHotfixMethodLevel, boolean isExceptMethodLevel) {
+         this.hotfixPackageList = hotfixPackageList;
+
+File: auto-patch-plugin/src/main/java/com/meituan/robust/utils/SmaliTool.java
+Patch:
+@@ -137,7 +137,8 @@ public int compare(String o1, String o2) {
+                 // 字段处理
+                 //sget-object v4, Lcom/sankuai/meituan/fingerprint/FingerprintConfig;->accelerometerInfoList:Ljava/util/List;
+                 String fieldName = result.substring(packageNameIndex + packageNameList.get(index).length() + 3, result.lastIndexOf(":"));
+-                result = result.replace(fieldName, getObscuredMemberName(packageNameList.get(index).replaceAll("/", "\\."), fieldName));
++                // 前后都加上 "->" 是为了避免类名中包含字段名时，类名被误修改导致patch生成错误
++                result = result.replaceFirst("->" + fieldName, "->" + getObscuredMemberName(packageNameList.get(index).replaceAll("/", "\\."), fieldName));
+             }
+         }
+         for (int index = 0; packageNameList != null && index < packageNameList.size(); index++) {
+
+File: auto-patch-plugin/src/main/java/com/meituan/robust/utils/SmaliTool.java
+Patch:
+@@ -137,7 +137,8 @@ public int compare(String o1, String o2) {
+                 // 字段处理
+                 //sget-object v4, Lcom/sankuai/meituan/fingerprint/FingerprintConfig;->accelerometerInfoList:Ljava/util/List;
+                 String fieldName = result.substring(packageNameIndex + packageNameList.get(index).length() + 3, result.lastIndexOf(":"));
+-                result = result.replace(fieldName, getObscuredMemberName(packageNameList.get(index).replaceAll("/", "\\."), fieldName));
++                // 前后都加上 "->" 是为了避免类名中包含字段名时，类名被误修改导致patch生成错误
++                result = result.replaceFirst("->" + fieldName, "->" + getObscuredMemberName(packageNameList.get(index).replaceAll("/", "\\."), fieldName));
+             }
+         }
+         for (int index = 0; packageNameList != null && index < packageNameList.size(); index++) {
+
+File: app/src/main/java/com/meituan/sample/robusttest/JustTest.java
+Patch:
+@@ -4,7 +4,4 @@
+  * Created by mivanzhang on 16/10/21.
+  */
+ public class JustTest {
+-    public void test(NoField n) {
+-        n.hashCode();
+-    }
+ }
+
+File: auto-patch-plugin/src/main/java/com/meituan/robust/autopatch/Config.java
+Patch:
+@@ -27,7 +27,7 @@ public final class Config {
+     public static boolean isManual = false;
+     public static String patchPackageName = Constants.PATCH_PACKAGENAME;
+     public static String mappingFilePath;
+-    public static Set<String> patchMethodSignureSet = new HashSet<>();
++    public static Set<String> patchMethodSignatureSet = new HashSet<>();
+     public static List<String> newlyAddedClassNameList = new ArrayList<String>();
+     public static Set newlyAddedMethodSet = new HashSet<String>();
+     public static List<String> modifiedClassNameList = new ArrayList<String>();
+@@ -47,7 +47,7 @@ public static void init() {
+         isManual = false;
+         patchPackageName = Constants.PATCH_PACKAGENAME;
+         mappingFilePath = DEFAULT_MAPPING_FILE;
+-        patchMethodSignureSet = new HashSet<>();
++        patchMethodSignatureSet = new HashSet<>();
+         newlyAddedClassNameList = new ArrayList<String>();
+         modifiedClassNameList = new ArrayList<String>();
+         hotfixPackageList = new ArrayList<>();
+
+File: auto-patch-plugin/src/main/java/com/meituan/robust/autopatch/Config.java
+Patch:
+@@ -27,7 +27,7 @@ public final class Config {
+     public static boolean isManual = false;
+     public static String patchPackageName = Constants.PATCH_PACKAGENAME;
+     public static String mappingFilePath;
+-    public static Set<String> patchMethodSignureSet = new HashSet<>();
++    public static Set<String> patchMethodSignatureSet = new HashSet<>();
+     public static List<String> newlyAddedClassNameList = new ArrayList<String>();
+     public static Set newlyAddedMethodSet = new HashSet<String>();
+     public static List<String> modifiedClassNameList = new ArrayList<String>();
+@@ -47,7 +47,7 @@ public static void init() {
+         isManual = false;
+         patchPackageName = Constants.PATCH_PACKAGENAME;
+         mappingFilePath = DEFAULT_MAPPING_FILE;
+-        patchMethodSignureSet = new HashSet<>();
++        patchMethodSignatureSet = new HashSet<>();
+         newlyAddedClassNameList = new ArrayList<String>();
+         modifiedClassNameList = new ArrayList<String>();
+         hotfixPackageList = new ArrayList<>();
+
+File: app/src/main/java/com/meituan/sample/MainActivity.java
+Patch:
+@@ -104,9 +104,6 @@ public void onClick(View v) {
+             e.printStackTrace();
+         }
+ 
+-        MainActivity2 mainActivity2=new MainActivity2(new Object[]{1,2,3});
+-        mainActivity2.run(new Object[]{1,2,3});
+-//
+         System.out.println(" run(String x) "+run("robust ",123));
+         System.out.println("  run(People x) "+run(new People(),123d));
+         System.out.println("  run(float x) "+run(123f));
+
+File: app/src/main/java/com/meituan/sample/MainActivity.java
+Patch:
+@@ -104,9 +104,6 @@ public void onClick(View v) {
+             e.printStackTrace();
+         }
+ 
+-        MainActivity2 mainActivity2=new MainActivity2(new Object[]{1,2,3});
+-        mainActivity2.run(new Object[]{1,2,3});
+-//
+         System.out.println(" run(String x) "+run("robust ",123));
+         System.out.println("  run(People x) "+run(new People(),123d));
+         System.out.println("  run(float x) "+run(123f));
+
+File: patch/src/main/java/com/meituan/robust/RobustCallBack.java
+Patch:
+@@ -1,5 +1,7 @@
+ package com.meituan.robust;
+ 
++import java.util.List;
++
+ /**
+  * Created by hedex on 17/1/22.
+  */
+@@ -11,7 +13,7 @@ public interface RobustCallBack {
+      * @param result 补丁
+      * @param isNet  补丁
+      */
+-    void onPatchListFetched(boolean result, boolean isNet);
++    void onPatchListFetched(boolean result, boolean isNet, List<Patch> patches);
+ 
+ 
+     /**
+
+File: autopatchbase/src/main/java/com/meituan/robust/Constants.java
+Patch:
+@@ -48,10 +48,11 @@ public class Constants {
+     public static Class AddAnnotationClass = null;
+ 
+     public final static String[] LIB_NAME_ARRAY = {"baksmali-2.1.2.jar", "smali-2.1.2.jar", "dx.jar"};
+-    public static final String PACKNAME_START = "L";
+     public static final String PACKNAME_END = ";";
+     public final static String PRIMITIVE_TYPE = "ZCBSIJFDV";
++    public final static String ARRAY_TYPE = "[";
+     public final static char OBJECT_TYPE = 'L';
++    public static final String PACKNAME_START = String.valueOf(OBJECT_TYPE);
+     public static final Boolean OBSCURE = true;
+     //    public static final Boolean OBSCURE = false;
+     //    public static final Boolean isLogging = false;
+
+File: autopatchbase/src/main/java/com/meituan/robust/Constants.java
+Patch:
+@@ -48,10 +48,11 @@ public class Constants {
+     public static Class AddAnnotationClass = null;
+ 
+     public final static String[] LIB_NAME_ARRAY = {"baksmali-2.1.2.jar", "smali-2.1.2.jar", "dx.jar"};
+-    public static final String PACKNAME_START = "L";
+     public static final String PACKNAME_END = ";";
+     public final static String PRIMITIVE_TYPE = "ZCBSIJFDV";
++    public final static String ARRAY_TYPE = "[";
+     public final static char OBJECT_TYPE = 'L';
++    public static final String PACKNAME_START = String.valueOf(OBJECT_TYPE);
+     public static final Boolean OBSCURE = true;
+     //    public static final Boolean OBSCURE = false;
+     //    public static final Boolean isLogging = false;
+
+File: auto-patch-plugin/src/main/java/com/meituan/robust/autopatch/ClassMapping.java
+Patch:
+@@ -44,9 +44,9 @@ public boolean equals(Object o) {
+         if (this == o) return true;
+         if (!(o instanceof ClassMapping)) return false;
+ 
+-        ClassMapping that = (ClassMapping) o;
++        ClassMapping classMapping = (ClassMapping) o;
+ 
+-        return getClassName() != null ? getClassName().equals(that.getClassName()) : that.getClassName() == null;
++        return getClassName() != null ? getClassName().equals(classMapping.getClassName()) : classMapping.getClassName() == null;
+ 
+     }
+ 
+
+File: app/src/main/java/com/meituan/sample/robusttest/AbstractClass.java
+Patch:
+@@ -14,6 +14,6 @@ public int getInt(int dex) {
+     }
+ 
+     public String getA() {
+-        return "new";
++        return " !!! ";
+     }
+ }
+
+File: app/src/main/java/com/meituan/sample/robusttest/AbstractClass.java
+Patch:
+@@ -14,6 +14,6 @@ public int getInt(int dex) {
+     }
+ 
+     public String getA() {
+-        return "new";
++        return " !!! ";
+     }
+ }
+
+File: app/src/main/java/com/meituan/sample/robusttest/AbstractClass.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ /**
+  * Created by mivanzhang on 16/11/10.
+
+File: app/src/main/java/com/meituan/sample/robusttest/CallBack.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ /**
+  * Created by mivanzhang on 16/12/30.
+
+File: app/src/main/java/com/meituan/sample/robusttest/ConcreateClass.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ /**
+  * Created by mivanzhang on 16/11/10.
+
+File: app/src/main/java/com/meituan/sample/robusttest/ImageQualityUtil.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ /**
+  * Created by mivanzhang on 16/10/24.
+
+File: app/src/main/java/com/meituan/sample/robusttest/InnerTest.java
+Patch:
+@@ -1,6 +1,7 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ import com.meituan.robust.patch.annotaion.Add;
++import com.meituan.sample.SecondActivity;
+ 
+ /**
+  * Created by mivanzhang on 17/2/8.
+
+File: app/src/main/java/com/meituan/sample/robusttest/JustTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ /**
+  * Created by mivanzhang on 16/10/21.
+
+File: app/src/main/java/com/meituan/sample/robusttest/NewAddCLass.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ import com.meituan.robust.patch.annotaion.Add;
+ 
+
+File: app/src/main/java/com/meituan/sample/robusttest/NoField.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ import android.util.Log;
+ 
+
+File: app/src/main/java/com/meituan/sample/robusttest/People.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ /**
+  * Created by mivanzhang on 16/10/20.
+
+File: app/src/main/java/com/meituan/sample/robusttest/SampleClass.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ import com.meituan.robust.patch.annotaion.Modify;
+ 
+
+File: app/src/main/java/com/meituan/sample/robusttest/State.java
+Patch:
+@@ -1,8 +1,8 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ import android.util.Log;
+ 
+-import com.meituan.Hll;
++import com.meituan.sample.robusttest.other.Hll;
+ 
+ import java.util.ArrayList;
+ import java.util.List;
+
+File: app/src/main/java/com/meituan/sample/robusttest/Super.java
+Patch:
+@@ -1,9 +1,10 @@
+-package com.meituan.sample;
++package com.meituan.sample.robusttest;
+ 
+ import android.util.Log;
+ 
+-import com.meituan.Hll;
++import com.meituan.sample.robusttest.other.Hll;
+ import com.meituan.robust.patch.annotaion.Modify;
++import com.meituan.sample.SecondActivity;
+ 
+ /**
+  * Created by mivanzhang on 16/7/21.
+
+File: app/src/main/java/com/meituan/sample/robusttest/other/Hll.java
+Patch:
+@@ -1,12 +1,12 @@
+-package com.meituan;
++package com.meituan.sample.robusttest.other;
+ 
+ 
+ import android.util.Log;
+ 
+-import com.meituan.sample.CallBack;
++import com.meituan.sample.robusttest.CallBack;
+ 
+ import static android.R.attr.name;
+-import static com.meituan.sample.State.index;
++import static com.meituan.sample.robusttest.State.index;
+ 
+ /**
+  * Created by c_kunwu on 16/5/13.
+
+File: auto-patch-plugin/src/main/java/com/meituan/robust/autopatch/Config.java
+Patch:
+@@ -22,6 +22,7 @@
+ 
+ public final class Config {
+     public static boolean catchReflectException = false;
++    public static boolean supportProGuard = true;
+     public static boolean isLogging = true;
+     public static boolean isManual = false;
+     public static String patchPackageName = Constants.PATCH_PACKAGENAME;
+@@ -57,6 +58,7 @@ public static void init() {
+         addedSuperMethodList = new ArrayList<>();
+         noNeedReflectClassSet = new HashSet<>();
+         noNeedReflectClassSet.addAll(Constants.NO_NEED_REFLECT_CLASS);
++        supportProGuard=true;
+     }
+ 
+ }
+
+File: auto-patch-plugin/src/main/java/com/meituan/robust/autopatch/PatchesInfoFactory.java
+Patch:
+@@ -29,9 +29,7 @@ private CtClass createPatchesInfoClass() {
+             methodBody.append("public java.util.List getPatchedClassesInfo() {");
+             methodBody.append("  java.util.List patchedClassesInfos = new java.util.ArrayList();");
+             for (int i = 0; i < Config.modifiedClassNameList.size(); i++) {
+-                System.out.println("ReflectUtils.getFullClassNameFromFile(file)  " + Config.modifiedClassNameList.get(i));
+                 if (Constants.OBSCURE) {
+-                    System.out.println("Config.modifiedClassNameList.get(i)).getValueName()  " + ReadMapping.getInstance().getClassMapping(Config.modifiedClassNameList.get(i)));
+                     methodBody.append("com.meituan.robust.PatchedClassInfo patchedClass" + i + " = new com.meituan.robust.PatchedClassInfo(\"" + ReadMapping.getInstance().getClassMappingOrDefault(Config.modifiedClassNameList.get(i)).getValueName() + "\",\"" + NameManger.getInstance().getPatchControlName(Config.modifiedClassNameList.get(i).substring(Config.modifiedClassNameList.get(i).lastIndexOf('.') + 1)) + "\");");
+                 } else {
+                     methodBody.append("com.meituan.robust.PatchedClassInfo patchedClass" + i + " = new com.meituan.robust.PatchedClassInfo(\"" + Config.modifiedClassNameList.get(i) + "\",\"" + NameManger.getInstance().getPatchControlName(Config.modifiedClassNameList.get(i).substring(Config.modifiedClassNameList.get(i).lastIndexOf('.') + 1)) + "\");");
+
+File: auto-patch-plugin/src/main/java/com/meituan/robust/utils/JavaUtils.java
+Patch:
+@@ -279,10 +279,10 @@ public static void printList(List<String> list) {
+ 
+     public static String getFullClassNameFromFile(String path) {
+         if (path.indexOf("classout") > 0) {
+-            return path.substring(path.indexOf("classout") + "classout".length() + 1, path.lastIndexOf(".smali")).replace('/', '.');
++            return path.substring(path.indexOf("classout") + "classout".length() + 1, path.lastIndexOf(".smali")).replace(File.separatorChar, '.');
+         }
+         if (path.indexOf("main") > 0) {
+-            return path.substring(path.indexOf("main") + "main".length() + 1, path.lastIndexOf(".class")).replace('/', '.');
++            return path.substring(path.indexOf("main") + "main".length() + 1, path.lastIndexOf(".class")).replace(File.separatorChar, '.');
+         }
+         throw new RuntimeException("can not analysis " + path + "  get full class name error!!");
+     }
+
+File: patch/src/main/java/com/meituan/robust/PatchExecutor.java
+Patch:
+@@ -86,6 +86,7 @@ protected boolean patch(Context context, Patch patch) {
+             robustCallBack.logNotify("verifyPatch failure, patch info:" + "id = " + patch.getName() + ",md5 = " + patch.getMd5(), "class:PatchExecutor method:patch line:107");
+             return false;
+         }
++
+         DexClassLoader classLoader = new DexClassLoader(patch.getTempPath(), context.getCacheDir().getAbsolutePath(),
+                 null, PatchExecutor.class.getClassLoader());
+         patch.delete(patch.getTempPath());
+

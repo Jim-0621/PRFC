@@ -1,0 +1,130 @@
+File: src/main/java/com/oreilly/learningsparkexamples/java/KafkaInput.java
+Patch:
+@@ -24,9 +24,8 @@ public static void main(String[] args) throws Exception {
+     String zkQuorum = args[0];
+     String group = args[1];
+     SparkConf conf = new SparkConf().setAppName("KafkaInput");
+-		JavaSparkContext sc = new JavaSparkContext(conf);
+     // Create a StreamingContext with a 1 second batch size
+-    JavaStreamingContext jssc = new JavaStreamingContext(sc, new Duration(1000));
++    JavaStreamingContext jssc = new JavaStreamingContext(conf, new Duration(1000));
+     Map<String, Integer> topics = new HashMap<String, Integer>();
+     topics.put("pandas", 1);
+     JavaPairDStream<String, String> input = KafkaUtils.createStream(jssc, zkQuorum, group, topics);
+
+File: src/main/java/com/oreilly/learningsparkexamples/java/LoadHive.java
+Patch:
+@@ -39,7 +39,7 @@ public static void main(String[] args) throws Exception {
+ 		JavaSparkContext sc = new JavaSparkContext(
+       master, "loadhive", System.getenv("SPARK_HOME"), System.getenv("JARS"));
+     JavaHiveContext hiveCtx = new JavaHiveContext(sc);
+-    JavaSchemaRDD rdd = hiveCtx.hql("SELECT key, value FROM src");
++    JavaSchemaRDD rdd = hiveCtx.sql("SELECT key, value FROM src");
+     JavaRDD<Integer> squaredKeys = rdd.map(new SquareKey());
+     List<Integer> result = squaredKeys.collect();
+     for (Integer elem : result) {
+
+File: src/main/java/com/oreilly/learningsparkexamples/java/SparkSQLTwitter.java
+Patch:
+@@ -31,7 +31,7 @@ public static void main(String[] args) {
+     // Register the input schema RDD
+     input.registerTempTable("tweets");
+     // Select tweets based on the retweetCount
+-    JavaSchemaRDD topTweets = hiveCtx.hql("SELECT text, retweetCount FROM tweets ORDER BY retweetCount LIMIT 10");
++    JavaSchemaRDD topTweets = hiveCtx.sql("SELECT text, retweetCount FROM tweets ORDER BY retweetCount LIMIT 10");
+     List<Row> result = topTweets.collect();
+     for (Row row : result) {
+       System.out.println(row.get(0));
+@@ -53,7 +53,7 @@ public Integer call(String str) throws Exception {
+           return str.length();
+         }
+       }, DataType.IntegerType);
+-    JavaSchemaRDD tweetLength = hiveCtx.hql("SELECT stringLengthJava('text') FROM tweets LIMIT 10");
++    JavaSchemaRDD tweetLength = hiveCtx.sql("SELECT stringLengthJava('text') FROM tweets LIMIT 10");
+     List<Row> lengths = tweetLength.collect();
+     for (Row row : result) {
+       System.out.println(row.get(0));
+
+File: src/main/java/com/oreilly/learningsparkexamples/java/logs/LogAnalyzerAppMain.java
+Patch:
+@@ -74,8 +74,7 @@ public static void main(String[] args) throws IOException {
+     // Startup the Spark Conf.
+     SparkConf conf = new SparkConf()
+         .setAppName("A Databricks Reference Application: Logs Analysis with Spark");
+-    JavaSparkContext sc = new JavaSparkContext(conf);
+-    JavaStreamingContext jssc = new JavaStreamingContext(sc,
++    JavaStreamingContext jssc = new JavaStreamingContext(conf,
+         Flags.getInstance().getSlideInterval());
+ 
+     // Checkpointing must be enabled to use the updateStateByKey function & windowed operations.
+
+File: src/main/java/com/oreilly/learningsparkexamples/java/ChapterSixExample.java
+Patch:
+@@ -130,14 +130,13 @@ public Integer call(Integer x, Integer y) {
+     }
+     // Read in the call sign table
+     // Lookup the countries for each call sign in the
+-    // contactCounts RDD
++    // contactCounts RDD.
+     final Broadcast<String[]> signPrefixes = sc.broadcast(loadCallSignTable());
+     JavaPairRDD<String, Integer> countryContactCounts = contactCounts.mapToPair(
+       new PairFunction<Tuple2<String, Integer>, String, Integer> (){
+         public Tuple2<String, Integer> call(Tuple2<String, Integer> callSignCount) {
+           String sign = callSignCount._1();
+-          String[] callSignInfo = signPrefixes.value();
+-          String country = lookupCountry(sign, callSignInfo);
++          String country = lookupCountry(sign, callSignInfo.value());
+           return new Tuple2(country, callSignCount._2());
+         }}).reduceByKey(new SumInts());
+     countryContactCounts.saveAsTextFile(outputDir + "/countries.txt");
+
+File: src/main/java/com/oreilly/learningsparkexamples/java/ChapterSixExample.java
+Patch:
+@@ -189,9 +189,7 @@ public Iterable<Tuple2<String, QSO[]>> call(Iterator<String> input) {
+           return latLons;
+         }
+       });
+-    ArrayList<String> command = new ArrayList<String>();
+-    command.add(SparkFiles.get(distScriptName));
+-    JavaRDD<String> distance = pipeInputs.pipe(command);
++    JavaRDD<String> distance = pipeInputs.pipe(SparkFiles.get(distScriptName));
+     // First we need to convert our RDD of String to a DoubleRDD so we can
+     // access the stats function
+     JavaDoubleRDD distanceDouble = distance.mapToDouble(new DoubleFunction<String>() {
+
+File: src/main/java/com/oreilly/learningsparkexamples/java/BasicAvgWithKryo.java
+Patch:
+@@ -15,7 +15,7 @@
+ import org.apache.spark.api.java.function.Function2;
+ 
+ import com.esotericsoftware.kryo.Kryo;
+-
++import com.esotericsoftware.kryo.serializers.FieldSerializer;
+ 
+ public final class BasicAvgWithKryo {
+   // This is our custom class we will configure Kyro to serialize
+@@ -37,7 +37,7 @@ public float avg() {
+ 
+   public static class AvgRegistrator implements KryoRegistrator {
+     public void registerClasses(Kryo kryo) {
+-      kryo.register(AvgCount.class);
++      kryo.register(AvgCount.class, new FieldSerializer(kryo, AvgCount.class));
+     }
+   }
+ 
+
+File: src/main/java/com/oreilly/learningsparkexamples/java/BasicMap.java
+Patch:
+@@ -22,9 +22,9 @@ public static void main(String[] args) throws Exception {
+ 		}
+ 		JavaSparkContext sc = new JavaSparkContext(
+       master, "basicmap", System.getenv("SPARK_HOME"), System.getenv("JARS"));
+-    JavaRDD<Integer> rdd = sc.parallelize(Arrays.asList(1,2,3, 4));
++    JavaRDD<Integer> rdd = sc.parallelize(Arrays.asList(1, 2, 3, 4));
+     JavaRDD<Integer> result = rdd.map(
+-        new Function<Integer, Integer>() { public Integer call(Integer x) { return x*x;}});
++      new Function<Integer, Integer>() { public Integer call(Integer x) { return x*x;}});
+     System.out.println(StringUtils.join(result.collect(), ","));
+ 	}
+ }
+

@@ -1,0 +1,372 @@
+File: src/main/java/com/zzg/mybatis/generator/controller/OverSshController.java
+Patch:
+@@ -202,7 +202,7 @@ public void saveConfig() {
+         }
+         try {
+             ConfigHelper.saveDatabaseConfig(this.isUpdate, primayKey, databaseConfig);
+-            getDialogStage().close();
++            this.tabPaneController.getDialogStage().close();
+             mainUIController.loadLeftDBTree();
+         } catch (Exception e) {
+             logger.error(e.getMessage(), e);
+
+File: src/main/java/com/zzg/mybatis/generator/controller/TabPaneController.java
+Patch:
+@@ -51,7 +51,9 @@ public void initialize(URL location, ResourceBundle resources) {
+     public void setMainUIController(MainUIController mainUIController) {
+         this.mainUIController = mainUIController;
+         this.tabControlAController.setMainUIController(mainUIController);
++        this.tabControlAController.setTabPaneController(this);
+         this.tabControlBController.setMainUIController(mainUIController);
++        this.tabControlBController.setTabPaneController(this);
+     }
+ 
+     public void setConfig(DatabaseConfig selectedConfig) {
+
+File: src/main/java/com/zzg/mybatis/generator/model/DbType.java
+Patch:
+@@ -7,7 +7,7 @@ public enum DbType {
+ 
+     MySQL("com.mysql.jdbc.Driver", "jdbc:mysql://%s:%s/%s?useUnicode=true&useSSL=false&characterEncoding=%s", "mysql-connector-java-5.1.38.jar"),
+     MySQL_8("com.mysql.cj.jdbc.Driver", "jdbc:mysql://%s:%s/%s?serverTimezone=UTC&useUnicode=true&useSSL=false&characterEncoding=%s", "mysql-connector-java-8.0.11.jar"),
+-    Oracle("oracle.jdbc.driver.OracleDriver", "jdbc:oracle:thin:@%s:%s:%s", "ojdbc14.jar"),
++    Oracle("oracle.jdbc.OracleDriver", "jdbc:oracle:thin:@//%s:%s/%s", "ojdbc6.jar"),
+     PostgreSQL("org.postgresql.Driver", "jdbc:postgresql://%s:%s/%s", "postgresql-9.4.1209.jar"),
+ 	SQL_Server("com.microsoft.sqlserver.jdbc.SQLServerDriver", "jdbc:sqlserver://%s:%s;databaseName=%s", "sqljdbc4-4.0.jar"),
+ 	Sqlite("org.sqlite.JDBC", "jdbc:sqlite:%s", "sqlite-jdbc-3.19.3.jar");
+
+File: src/main/java/com/zzg/mybatis/generator/util/DbUtil.java
+Patch:
+@@ -83,7 +83,7 @@ public static List<UITableColumnVO> getTableColumns(DatabaseConfig dbConfig, Str
+ 		Connection conn = getConnection(dbConfig);
+ 		try {
+ 			DatabaseMetaData md = conn.getMetaData();
+-			ResultSet rs = md.getColumns(null, null, tableName, null);
++			ResultSet rs = md.getColumns(dbConfig.getSchema(), null, tableName, null);
+ 			List<UITableColumnVO> columns = new ArrayList<>();
+ 			while (rs.next()) {
+ 				UITableColumnVO columnVO = new UITableColumnVO();
+
+File: src/main/java/com/zzg/mybatis/generator/bridge/MybatisGeneratorBridge.java
+Patch:
+@@ -69,7 +69,8 @@ public void generate() throws Exception {
+             tableConfig.setDeleteByExampleStatementEnabled(false);
+             tableConfig.setSelectByExampleStatementEnabled(false);
+         }
+-        tableConfig.setCatalog(selectedDatabaseConfig.getSchema());
++
++        tableConfig.setSchema(selectedDatabaseConfig.getSchema());
+ 
+         // 针对 postgresql 单独配置
+         if (DbType.valueOf(selectedDatabaseConfig.getDbType()).getDriverClass() == "org.postgresql.Driver") {
+
+File: src/main/java/com/zzg/mybatis/generator/bridge/MybatisGeneratorBridge.java
+Patch:
+@@ -69,6 +69,7 @@ public void generate() throws Exception {
+             tableConfig.setDeleteByExampleStatementEnabled(false);
+             tableConfig.setSelectByExampleStatementEnabled(false);
+         }
++        tableConfig.setCatalog(selectedDatabaseConfig.getSchema());
+ 
+         // 针对 postgresql 单独配置
+         if (DbType.valueOf(selectedDatabaseConfig.getDbType()).getDriverClass() == "org.postgresql.Driver") {
+
+File: src/main/java/com/zzg/mybatis/generator/util/DbUtil.java
+Patch:
+@@ -75,7 +75,9 @@ public static List<String> getTableNames(DatabaseConfig config) throws Exception
+ 		    } 
+ 		    else {
+ 			    // rs = md.getTables(null, config.getUsername().toUpperCase(), null, null);
+-				rs = md.getTables(null, "%", "%", new String[] {"TABLE", "VIEW"});			//针对 postgresql 的左侧数据表显示
++
++
++				rs = md.getTables(config.getSchema(), null, "%", new String[] {"TABLE", "VIEW"});			//针对 postgresql 的左侧数据表显示
+ 		    }
+ 		    while (rs.next()) {
+ 			    tables.add(rs.getString(3));
+
+File: src/main/java/com/zzg/mybatis/generator/bridge/MybatisGeneratorBridge.java
+Patch:
+@@ -127,6 +127,8 @@ public void generate() throws Exception {
+             commentConfig.addProperty("annotations", "true");
+         }
+         context.setCommentGeneratorConfiguration(commentConfig);
++        // set java file encoding
++        context.addProperty(PropertyRegistry.CONTEXT_JAVA_FILE_ENCODING, generatorConfig.getEncoding());
+         
+         //实体添加序列化
+         PluginConfiguration serializablePluginConfiguration = new PluginConfiguration();
+
+File: src/main/java/com/zzg/mybatis/generator/controller/MainUIController.java
+Patch:
+@@ -87,7 +87,8 @@ public class MainUIController extends BaseFXController {
+ 
+     private List<ColumnOverride> columnOverrides;
+ 
+-
++    @FXML
++    private ChoiceBox<String> encodingChoice;
+ 
+     @Override
+     public void initialize(URL location, ResourceBundle resources) {
+@@ -305,6 +306,7 @@ public GeneratorConfig getGeneratorConfigFromUI() {
+         generatorConfig.setNeedToStringHashcodeEquals(needToStringHashcodeEquals.isSelected());
+         generatorConfig.setAnnotation(annotationCheckBox.isSelected());
+         generatorConfig.setUseActualColumnNames(useActualColumnNamesCheckbox.isSelected());
++        generatorConfig.setEncoding(encodingChoice.getValue());
+         return generatorConfig;
+     }
+ 
+
+File: src/main/java/com/zzg/mybatis/generator/plugins/DbRemarksCommentGenerator.java
+Patch:
+@@ -87,7 +87,7 @@ public void addModelClassComment(TopLevelClass topLevelClass,
+         topLevelClass.addJavaDocLine(" * @author ");
+         topLevelClass.addJavaDocLine(" */");
+         if(isAnnotations) {
+-            topLevelClass.addAnnotation("@Talbe(name=\"" + introspectedTable.getFullyQualifiedTableNameAtRuntime() + "\")");
++            topLevelClass.addAnnotation("@Table(name=\"" + introspectedTable.getFullyQualifiedTableNameAtRuntime() + "\")");
+         }
+     }
+ 
+
+File: src/main/java/com/zzg/mybatis/generator/bridge/MybatisGeneratorBridge.java
+Patch:
+@@ -12,7 +12,6 @@
+ import org.mybatis.generator.api.ShellCallback;
+ import org.mybatis.generator.config.*;
+ import org.mybatis.generator.internal.DefaultShellCallback;
+-import org.mybatis.generator.internal.ObjectFactory;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -21,8 +20,6 @@
+ import java.util.List;
+ import java.util.Set;
+ 
+-import static org.mybatis.generator.internal.util.ClassloaderUtility.getCustomClassloader;
+-
+ /**
+  * The bridge between GUI and the mybatis generator. All the operation to  mybatis generator should proceed through this
+  * class
+
+File: src/main/java/com/zzg/mybatis/generator/controller/DbConnectionController.java
+Patch:
+@@ -36,6 +36,7 @@ public class DbConnectionController extends BaseFXController {
+ 	private ChoiceBox<String> dbTypeChoice;
+ 	private MainUIController mainUIController;
+ 	private boolean isUpdate = false;
++	private Integer primayKey;
+ 
+ 
+ 	@Override
+@@ -49,7 +50,7 @@ void saveConnection() {
+ 			return;
+ 		}
+ 		try {
+-			ConfigHelper.saveDatabaseConfig(this.isUpdate, config);
++			ConfigHelper.saveDatabaseConfig(this.isUpdate, primayKey, config);
+ 			getDialogStage().close();
+ 			mainUIController.loadLeftDBTree();
+ 		} catch (Exception e) {
+@@ -110,6 +111,7 @@ private DatabaseConfig extractConfigForUI() {
+ 
+ 	public void setConfig(DatabaseConfig config) {
+ 		isUpdate = true;
++		primayKey = config.getId(); // save id for update config
+ 		nameField.setText(config.getName());
+ 		hostField.setText(config.getHost());
+ 		portField.setText(config.getPort());
+
+File: src/main/java/com/zzg/mybatis/generator/plugins/DbRemarksCommentGenerator.java
+Patch:
+@@ -87,7 +87,6 @@ public void addModelClassComment(TopLevelClass topLevelClass,
+         topLevelClass.addJavaDocLine(" * @author ");
+         topLevelClass.addJavaDocLine(" */");
+         if(isAnnotations) {
+-
+             topLevelClass.addAnnotation("@Talbe(name=\"" + introspectedTable.getFullyQualifiedTableNameAtRuntime() + "\")");
+         }
+     }
+
+File: src/main/java/com/zzg/mybatis/generator/view/LeftDbTreeCell.java
+Patch:
+@@ -4,7 +4,6 @@
+ import javafx.beans.InvalidationListener;
+ import javafx.beans.Observable;
+ import javafx.beans.WeakInvalidationListener;
+-import javafx.scene.Node;
+ import javafx.scene.control.TreeCell;
+ import javafx.scene.control.TreeItem;
+ import javafx.scene.layout.HBox;
+
+File: src/main/java/com/zzg/mybatis/generator/bridge/MybatisGeneratorBridge.java
+Patch:
+@@ -139,13 +139,13 @@ public void generate() throws Exception {
+         
+         // limit/offset插件
+         if (generatorConfig.isOffsetLimit()) {
+-            PluginConfiguration pluginConfiguration = new PluginConfiguration();
+             if (DbType.MySQL.name().equals(selectedDatabaseConfig.getDbType())
+ 		            || DbType.PostgreSQL.name().equals(selectedDatabaseConfig.getDbType())) {
++                PluginConfiguration pluginConfiguration = new PluginConfiguration();
+                 pluginConfiguration.addProperty("type", "com.zzg.mybatis.generator.plugins.MySQLLimitPlugin");
+                 pluginConfiguration.setConfigurationType("com.zzg.mybatis.generator.plugins.MySQLLimitPlugin");
++                context.addPluginConfiguration(pluginConfiguration);
+             }
+-            context.addPluginConfiguration(pluginConfiguration);
+         }
+         context.setTargetRuntime("MyBatis3");
+ 
+
+File: src/main/java/com/zzg/mybatis/generator/util/DbUtil.java
+Patch:
+@@ -35,7 +35,7 @@ public static List<String> getTableNames(DatabaseConfig config) throws Exception
+         DriverManager.setLoginTimeout(DB_CONNECTION_TIMEOUTS_SECONDS);
+         Connection conn = DriverManager.getConnection(url, config.getUsername(), config.getPassword());
+         DatabaseMetaData md = conn.getMetaData();
+-        ResultSet rs = md.getTables(null, null, null, null);
++        ResultSet rs = md.getTables(null, config.getUsername().toUpperCase(), null, null);
+         List<String> tables = new ArrayList<>();
+         while (rs.next()) {
+             tables.add(rs.getString(3));
+
+File: src/main/java/com/zzg/mybatis/generator/controller/GeneratorConfigController.java
+Patch:
+@@ -19,6 +19,8 @@
+ import java.util.ResourceBundle;
+ 
+ /**
++ * 管理GeneratorConfig的Controller
++ *
+  * Created by Owen on 8/21/16.
+  */
+ public class GeneratorConfigController extends BaseFXController {
+@@ -49,6 +51,7 @@ protected void updateItem(Object item, boolean empty) {
+                     super.updateItem(item, empty);
+                     if (item == null || empty) {
+                         setText(null);
++                        setGraphic(null);
+                     } else {
+                         Button btn1 = new Button("应用");
+                         Button btn2 = new Button("删除");
+
+File: src/main/java/com/zzg/mybatis/generator/controller/MainUIController.java
+Patch:
+@@ -106,11 +106,11 @@ public void initialize(URL location, ResourceBundle resources) {
+                 TreeItem<String> treeItem = treeCell.getTreeItem();
+                 if (level == 1) {
+                     final ContextMenu contextMenu = new ContextMenu();
+-                    MenuItem item1 = new MenuItem("Close Connection");
++                    MenuItem item1 = new MenuItem("新建连接");
+                     item1.setOnAction(event1 -> {
+                         treeItem.getChildren().clear();
+                     });
+-                    MenuItem item2 = new MenuItem("Delete Connection");
++                    MenuItem item2 = new MenuItem("删除连接");
+                     item2.setOnAction(event1 -> {
+                         DatabaseConfig selectedConfig = (DatabaseConfig) treeItem.getGraphic().getUserData();
+                         try {
+
+File: src/main/java/com/zzg/mybatis/generator/controller/BaseFXController.java
+Patch:
+@@ -26,9 +26,9 @@ public abstract class BaseFXController implements Initializable {
+ 
+     private static Map<FXMLPage, SoftReference<? extends BaseFXController>> cacheNodeMap = new HashMap<>();
+ 
+-    public BaseFXController loadFXMLPage(String title, FXMLPage fxmlPage) {
++    public BaseFXController loadFXMLPage(String title, FXMLPage fxmlPage, boolean cache) {
+         SoftReference<? extends BaseFXController> parentNodeRef = cacheNodeMap.get(fxmlPage);
+-        if (parentNodeRef != null) {
++        if (cache && parentNodeRef != null) {
+             return parentNodeRef.get();
+         }
+         URL skeletonResource = Thread.currentThread().getContextClassLoader().getResource(fxmlPage.getFxml());
+
+File: src/main/java/com/zzg/mybatis/generator/controller/MainUIController.java
+Patch:
+@@ -99,8 +99,9 @@ public void initialize(URL location, ResourceBundle resources) {
+         dbImage.setFitWidth(40);
+         connectionLabel.setGraphic(dbImage);
+         connectionLabel.setOnMouseClicked(event -> {
+-            NewConnectionController controller = (NewConnectionController) loadFXMLPage("New Connection", FXMLPage.NEW_CONNECTION);
++            NewConnectionController controller = (NewConnectionController) loadFXMLPage("New Connection", FXMLPage.NEW_CONNECTION, false);
+             controller.setMainUIController(this);
++            controller.showDialogStage();
+         });
+ 
+         leftDBTree.setShowRoot(false);
+@@ -260,7 +261,7 @@ public void openTableColumnCustomizationPage() {
+             AlertUtil.showErrorAlert("Please select table from left DB treee first");
+             return;
+         }
+-        SelectTableColumnController controller = (SelectTableColumnController) loadFXMLPage("Select Columns", FXMLPage.SELECT_TABLE_COLUMN);
++        SelectTableColumnController controller = (SelectTableColumnController) loadFXMLPage("Select Columns", FXMLPage.SELECT_TABLE_COLUMN, true);
+         controller.setMainUIController(this);
+         try {
+             // If select same schema and another table, update table data
+
+File: src/main/java/com/zzg/mybatis/generator/model/DbType.java
+Patch:
+@@ -6,7 +6,8 @@
+ public enum DbType {
+ 
+     MySQL("com.mysql.jdbc.Driver", "jdbc:mysql://%s:%s/%s?useUnicode=true&useSSL=false&characterEncoding=%s"),
+-    Oracle("oracle.jdbc.driver.OracleDriver", "jdbc:oracle:thin:@%s:%s:%s");
++    Oracle("oracle.jdbc.driver.OracleDriver", "jdbc:oracle:thin:@%s:%s:%s"),
++    PostgreSQL("org.postgresql.Driver", "jdbc:postgresql://%s:%s/%s");
+ 
+     private final String driverClass;
+     private final String connectionUrlPattern;
+
+File: src/main/java/com/zzg/mybatis/generator/util/DbUtil.java
+Patch:
+@@ -59,7 +59,7 @@ public static List<UITableColumnVO> getTableColumns(DatabaseConfig dbConfig, Str
+             String columnName = rs.getString("COLUMN_NAME");
+             columnVO.setColumnName(columnName);
+             columnVO.setJdbcType(rs.getString("TYPE_NAME"));
+-            columnVO.setPropertyName(StringUtils.dbStringToCamelStyle(columnName));
++            columnVO.setPropertyName(StringUtils.dbStringToCamelStyle2(columnName));
+             columns.add(columnVO);
+         }
+         return columns;
+
+File: src/main/java/com/zzg/mybatis/generator/controller/MainUIController.java
+Patch:
+@@ -291,9 +291,9 @@ public void setGeneratorConfigIntoUI(GeneratorConfig generatorConfig) {
+         connectorPathField.setText(generatorConfig.getConnectorJarPath());
+         projectFolderField.setText(generatorConfig.getProjectFolder());
+         modelTargetPackage.setText(generatorConfig.getModelPackage());
+-        modelTargetProject.setText(generatorConfig.getModelPackage());
++        modelTargetProject.setText(generatorConfig.getModelPackageTargetFolder());
+         daoTargetPackage.setText(generatorConfig.getDaoPackage());
+-        daoTargetProject.setText(generatorConfig.getDaoPackage());
++        daoTargetProject.setText(generatorConfig.getDaoTargetFolder());
+         mapperTargetPackage.setText(generatorConfig.getMappingXMLPackage());
+         mappingTargetProject.setText(generatorConfig.getMappingXMLTargetFolder());
+     }
+
+File: src/main/java/com/zzg/mybatis/generator/MainUI.java
+Patch:
+@@ -24,6 +24,7 @@ public void start(Stage primaryStage) throws Exception {
+         primaryStage.show();
+ 
+         MainUIController controller = fxmlLoader.getController();
++`        XMLConfigHelper.createEmptyFiles();
+         GeneratorConfig config = XMLConfigHelper.loadGeneratorConfig();
+         if (config != null) {
+             controller.setGeneratorConfigIntoUI(config);
+
+File: src/main/java/com/zzg/mybatis/generator/util/StringUtils.java
+Patch:
+@@ -8,7 +8,8 @@ public class StringUtils {
+     public static String dbStringToCamelStyle(String str) {
+         if (str != null) {
+             StringBuilder sb = new StringBuilder();
+-            for (int i = 0; i < str.length(); i++) {
++            sb.append(String.valueOf(str.charAt(0)).toUpperCase());
++            for (int i = 1; i < str.length(); i++) {
+                 char c = str.charAt(i);
+                 if (c != '_') {
+                     sb.append(c);
+

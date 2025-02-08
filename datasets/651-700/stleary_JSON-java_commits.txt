@@ -1,0 +1,3309 @@
+File: src/main/java/org/json/JSONParserConfiguration.java
+Patch:
+@@ -27,7 +27,9 @@ public JSONParserConfiguration() {
+     protected JSONParserConfiguration clone() {
+         JSONParserConfiguration clone = new JSONParserConfiguration();
+         clone.overwriteDuplicateKey = overwriteDuplicateKey;
++        clone.strictMode = strictMode;
+         clone.maxNestingDepth = maxNestingDepth;
++        clone.keepStrings = keepStrings;
+         return clone;
+     }
+ 
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -481,7 +481,7 @@ public void unquotedText() {
+             System.out.println("Skipping JSONArrayTest unquotedText() when strictMode default is true");
+         } else {
+             String str = "[value1, something!, (parens), foo@bar.com, 23, 23+45]";
+-            JSONArray jsonArray = new JSONArray(str);
++                JSONArray jsonArray = new JSONArray(str);
+             List<Object> expected = Arrays.asList("value1", "something!", "(parens)", "foo@bar.com", 23, "23+45");
+             assertEquals(expected, jsonArray.toList());
+         }
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -83,7 +83,7 @@ public void tearDown() {
+         Singleton.getInstance().setSomeInt(0);
+         Singleton.getInstance().setSomeString(null);
+     }
+-    
++
+     /**
+      * Tests that the similar method is working as expected.
+      */
+
+File: src/test/java/org/json/junit/JSONMLTest.java
+Patch:
+@@ -625,7 +625,7 @@ public void toJSONObjectToJSONArray() {
+                                 "\"subValue\","+
+                                 "{\"svAttr\":\"svValue\"},"+
+                                 "\"abc\""+
+-                            "],"+
++                            "]"+
+                         "],"+
+                         "[\"value\",3],"+
+                         "[\"value\",4.1],"+
+
+File: src/test/java/org/json/junit/JSONPointerTest.java
+Patch:
+@@ -384,8 +384,7 @@ public void queryFromJSONObjectUsingPointer0() {
+     	String str = "{"+
+                 "\"string\\\\\\\\Key\":\"hello world!\","+
+ 
+-                "\"\\\\\":\"slash test\"," + 
+-                "}"+
++                "\"\\\\\":\"slash test\"" +
+                 "}";
+             JSONObject jsonObject = new JSONObject(str);
+             //Summary of issue: When a KEY in the jsonObject is "\\\\" --> it's held
+
+File: src/test/java/org/json/junit/XMLConfigurationTest.java
+Patch:
+@@ -270,9 +270,9 @@ public void shouldHandleSimpleXML() {
+ 
+         String expectedStr = 
+             "{\"addresses\":{\"address\":{\"street\":\"[CDATA[Baker street 5]\","+
+-            "\"name\":\"Joe Tester\",\"NothingHere\":\"\",TrueValue:true,\n"+
++            "\"name\":\"Joe Tester\",\"NothingHere\":\"\",\"TrueValue\":true,\n"+
+             "\"FalseValue\":false,\"NullValue\":null,\"PositiveValue\":42,\n"+
+-            "\"NegativeValue\":-23,\"DoubleValue\":-23.45,\"Nan\":-23x.45,\n"+
++            "\"NegativeValue\":-23,\"DoubleValue\":-23.45,\"Nan\":\"-23x.45\",\n"+
+             "\"ArrayOfNum\":\"1, 2, 3, 4.1, 5.2\"\n"+
+             "},\"xsi:noNamespaceSchemaLocation\":"+
+             "\"test.xsd\",\"xmlns:xsi\":\"http://www.w3.org/2001/"+
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -1939,7 +1939,7 @@ private void addAll(Object array, boolean wrap, int recursionDepth, JSONParserCo
+             // JSONArray
+             this.myArrayList.addAll(((JSONArray)array).myArrayList);
+         } else if (array instanceof Collection) {
+-            this.addAll((Collection<?>)array, wrap, recursionDepth);
++            this.addAll((Collection<?>)array, wrap, recursionDepth, jsonParserConfiguration);
+         } else if (array instanceof Iterable) {
+             this.addAll((Iterable<?>)array, wrap);
+         } else {
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -2001,7 +2001,7 @@ private void addAll(Object array, boolean wrap, int recursionDepth, JSONParserCo
+             // JSONArray
+             this.myArrayList.addAll(((JSONArray)array).myArrayList);
+         } else if (array instanceof Collection) {
+-            this.addAll((Collection<?>)array, wrap, recursionDepth);
++            this.addAll((Collection<?>)array, wrap, recursionDepth, jsonParserConfiguration);
+         } else if (array instanceof Iterable) {
+             this.addAll((Iterable<?>)array, wrap);
+         } else {
+
+File: src/main/java/org/json/JSONTokener.java
+Patch:
+@@ -53,7 +53,7 @@ public JSONTokener(Reader reader) {
+         this.character = 1;
+         this.characterPreviousLine = 0;
+         this.line = 1;
+-        this.smallCharMemory = new ArrayList<>(2);
++        this.smallCharMemory = new ArrayList<Character>(2);
+     }
+ 
+ 
+
+File: src/main/java/org/json/JSONTokener.java
+Patch:
+@@ -527,7 +527,7 @@ private Object parsedUnquotedText(char c, boolean strictMode) {
+     }
+ 
+     private Object getValidNumberOrBooleanFromObject(Object value) {
+-        if (value instanceof Number || value instanceof Boolean) {
++        if (value instanceof Number || value instanceof Boolean || value.equals(JSONObject.NULL)) {
+             return value;
+         }
+ 
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -107,7 +107,7 @@ public JSONArray(JSONTokener x, JSONParserConfiguration jsonParserConfiguration)
+         }
+         if (nextChar != ']') {
+             x.back();
+-            for (; ; ) {
++            for (;;) {
+                 if (x.nextClean() == ',') {
+                     x.back();
+                     this.myArrayList.add(JSONObject.NULL);
+
+File: src/main/java/org/json/JSONTokener.java
+Patch:
+@@ -284,10 +284,11 @@ public char nextClean() throws JSONException {
+      * Backslash processing is done. The formal JSON format does not
+      * allow strings in single quotes, but an implementation is allowed to
+      * accept them.
+-     * If strictMode is true, this implementation will not accept unbalanced quotes (e.g will not accept <code>"test'</code>)
++     * If strictMode is true, this implementation will not accept unbalanced quotes (e.g will not accept <code>"test'</code>).
+      * @param quote The quoting character, either
+      *      <code>"</code>&nbsp;<small>(double quote)</small> or
+      *      <code>'</code>&nbsp;<small>(single quote)</small>.
++     * @param strictMode If true, this implementation will not accept unbalanced quotes (e.g will not accept <code>"test'</code>).
+      * @return A String.
+      * @throws JSONException Unterminated string or unbalanced quotes if strictMode == true.
+      */
+
+File: src/test/java/org/json/junit/JSONParserConfigurationTest.java
+Patch:
+@@ -218,6 +218,7 @@ public void verifyMaxDepthThenDuplicateKey() {
+      */
+     private List<String> getNonCompliantJSONList() {
+         return Arrays.asList(
++            "[[a]]",
+             "[]asdf",
+             "[]]",
+             "[]}",
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -107,7 +107,7 @@ public JSONArray(JSONTokener x, JSONParserConfiguration jsonParserConfiguration)
+         }
+         if (nextChar != ']') {
+             x.back();
+-            for (;;) {
++            for (; ; ) {
+                 if (x.nextClean() == ',') {
+                     x.back();
+                     this.myArrayList.add(JSONObject.NULL);
+@@ -158,9 +158,9 @@ public JSONArray(JSONTokener x, JSONParserConfiguration jsonParserConfiguration)
+      * @throws JSONException if input is not compliant with strict mode guidelines;
+      */
+     private void validateInput(JSONTokener x) {
+-        char nextChar = x.getPrevious();
++        char cursor = x.getPrevious();
+ 
+-        boolean isEndOfArray = nextChar == ']';
++        boolean isEndOfArray = cursor == ']';
+         boolean nextCharacterIsNotEoF = x.nextClean() != 0;
+ 
+         if (isEndOfArray && nextCharacterIsNotEoF) {
+
+File: src/test/java/org/json/junit/XMLTest.java
+Patch:
+@@ -350,7 +350,7 @@ public void shouldHandleCommentsInXML() {
+                 "   <address>\n"+
+                 "       <![CDATA[ this is -- <another> comment ]]>\n"+
+                 "       <name>Joe Tester</name>\n"+
+-                "       <!-- this is a - multi in line \n"+
++                "       <!-- this is a - multi line \n"+
+                 "            comment -->\n"+
+                 "       <street>Baker street 5</street>\n"+
+                 "   </address>\n"+
+
+File: src/test/java/org/json/junit/XMLConfigurationTest.java
+Patch:
+@@ -298,7 +298,7 @@ public void shouldHandleCommentsInXML() {
+                 "   <address>\n"+
+                 "       <![CDATA[ this is -- <another> comment ]]>\n"+
+                 "       <name>Joe Tester</name>\n"+
+-                "       <!-- this is a - multi in line \n"+
++                "       <!-- this is a - multi line \n"+
+                 "            comment -->\n"+
+                 "       <street>Baker street 5</street>\n"+
+                 "   </address>\n"+
+
+File: src/test/java/org/json/junit/JSONTokenerTest.java
+Patch:
+@@ -254,7 +254,7 @@ public void testNextBackComboWithNewLines() {
+         assertEquals(" at index 8 [character number 0 in line 2]", tokener.toString());
+         tokener.skipTo('\r');
+         assertEquals("skipTo() improperly modifying indexes"," at index 14 [character number 6 in line 2]", tokener.toString());
+-        // verify \r\n combo doesn't increment the in line twice
++        // verify \r\n combo doesn't increment the line twice
+         assertEquals('\r', tokener.next());
+         assertEquals(" at index 15 [character number 0 in line 3]", tokener.toString());
+         assertEquals('\n', tokener.next());
+
+File: src/test/java/org/json/junit/JSONTokenerTest.java
+Patch:
+@@ -259,7 +259,7 @@ public void testNextBackComboWithNewLines() {
+         assertEquals(" at index 15 [character number 0 in line 3]", tokener.toString());
+         assertEquals('\n', tokener.next());
+         assertEquals(" at index 16 [character number 0 in line 3]", tokener.toString());
+-        // verify stepping back after reading the \n of an \r\n combo doesn't  increment the in line incorrectly
++        // verify stepping back after reading the \n of an \r\n combo doesn't  increment the line incorrectly
+         tokener.back();
+         assertEquals(" at index 15 [character number 6 in line 2]", tokener.toString());
+         assertEquals('\n', tokener.next());
+
+File: src/test/java/org/json/junit/JSONTokenerTest.java
+Patch:
+@@ -233,7 +233,7 @@ public void testSkipToSuccessWithStringReader() throws IOException {
+ 
+     /**
+      * Verify that next and back are working properly and tracking the correct positions
+-     * with different new in line combinations.
++     * with different new line combinations.
+      */
+     @Test
+     public void testNextBackComboWithNewLines() {
+
+File: src/test/java/org/json/junit/JSONMLTest.java
+Patch:
+@@ -682,7 +682,7 @@ public void commentsInXML() {
+                 "<address>\n"+
+                     "<!-- <!--[CDATA[ this is -- <another> comment ]] -->\n"+
+                     "<name>Joe Tester</name>\n"+
+-                    "<!-- this is a - multi in line \n"+
++                    "<!-- this is a - multi line \n"+
+                     "comment -->\n"+
+                     "<street>Baker street 5</street>\n"+
+                 "</address>\n"+
+
+File: src/test/java/org/json/junit/JSONParserConfigurationTest.java
+Patch:
+@@ -23,7 +23,7 @@ public void testThrowException() {
+     @Test
+     public void testOverwrite() {
+         JSONObject jsonObject = new JSONObject(TEST_SOURCE,
+-            new JSONParserConfiguration().withOverwriteDuplicateKey(true));
++                new JSONParserConfiguration().withOverwriteDuplicateKey(true));
+ 
+         assertEquals("duplicate key should be overwritten", "value2", jsonObject.getString("key"));
+     }
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -1694,7 +1694,7 @@ public String toString() {
+      */
+     @SuppressWarnings("resource")
+     public String toString(int indentFactor) throws JSONException {
+-        // each value requires a comma, so multiply the count my 2
++        // each value requires a comma, so multiply the count by 2
+         // We don't want to oversize the initial capacity
+         int initialSize = myArrayList.size() * 2;
+         Writer sw = new StringBuilderWriter(Math.max(initialSize, 16));
+
+File: src/main/java/org/json/JSONObject.java
+Patch:
+@@ -2716,7 +2716,7 @@ static final Writer writeValue(Writer writer, Object value,
+             } catch (Exception e) {
+                 throw new JSONException(e);
+             }
+-            writer.write(o != null ? o.toString() : "\"\"");
++            writer.write(o != null ? o.toString() : quote(value.toString()));
+         } else if (value instanceof Number) {
+             // not all Numbers may match actual JSON Numbers. i.e. fractions or Imaginary
+             final String numberAsString = numberToString((Number) value);
+
+File: src/main/java/org/json/JSONPropertyName.java
+Patch:
+@@ -21,6 +21,7 @@
+ @Target({METHOD})
+ public @interface JSONPropertyName {
+     /**
++     * The value of the JSON property.
+      * @return The name of the property as to be used in the JSON Object.
+      */
+     String value();
+
+File: src/main/java/org/json/XML.java
+Patch:
+@@ -56,6 +56,9 @@ public class XML {
+      */
+     public static final String NULL_ATTR = "xsi:nil";
+ 
++    /**
++     * Represents the XML attribute name for specifying type information.
++     */
+     public static final String TYPE_ATTR = "xsi:type";
+ 
+     /**
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -1359,7 +1359,8 @@ public JSONArray put(int index, long value) throws JSONException {
+      *            The subscript.
+      * @param value
+      *            The Map value.
+-     * @return this.
++     * @return
++     *             reference to self
+      * @throws JSONException
+      *             If the index is negative or if the value is an invalid
+      *             number.
+@@ -1381,7 +1382,7 @@ public JSONArray put(int index, Map<?, ?> value) throws JSONException {
+      *          The Map value.
+      * @param jsonParserConfiguration
+      *          Configuration object for the JSON parser
+-     * @return
++     * @return reference to self
+      * @throws JSONException
+      *          If the index is negative or if the value is an invalid
+      *          number.
+
+File: src/main/java/org/json/JSONMLParserConfiguration.java
+Patch:
+@@ -55,11 +55,13 @@ protected JSONMLParserConfiguration clone() {
+         );
+     }
+ 
++    @SuppressWarnings("unchecked")
+     @Override
+     public JSONMLParserConfiguration withKeepStrings(final boolean newVal) {
+         return super.withKeepStrings(newVal);
+     }
+ 
++    @SuppressWarnings("unchecked")
+     @Override
+     public JSONMLParserConfiguration withMaxNestingDepth(int maxNestingDepth) {
+         return super.withMaxNestingDepth(maxNestingDepth);
+
+File: src/main/java/org/json/JSONParserConfiguration.java
+Patch:
+@@ -17,6 +17,7 @@ protected JSONParserConfiguration clone() {
+     return new JSONParserConfiguration();
+   }
+ 
++  @SuppressWarnings("unchecked")
+   @Override
+   public JSONParserConfiguration withMaxNestingDepth(final int maxNestingDepth) {
+     return super.withMaxNestingDepth(maxNestingDepth);
+
+File: src/main/java/org/json/ParserConfiguration.java
+Patch:
+@@ -75,6 +75,7 @@ public boolean isKeepStrings() {
+      * 
+      * @return The existing configuration will not be modified. A new configuration is returned.
+      */
++    @SuppressWarnings("unchecked")
+     public <T extends ParserConfiguration> T withKeepStrings(final boolean newVal) {
+         T newConfig = (T)this.clone();
+         newConfig.keepStrings = newVal;
+@@ -101,6 +102,7 @@ public int getMaxNestingDepth() {
+      * 
+      * @return The existing configuration will not be modified. A new configuration is returned.
+      */
++    @SuppressWarnings("unchecked")
+     public <T extends ParserConfiguration> T withMaxNestingDepth(int maxNestingDepth) {
+         T newConfig = (T)this.clone();
+ 
+
+File: src/main/java/org/json/XMLParserConfiguration.java
+Patch:
+@@ -192,6 +192,7 @@ protected XMLParserConfiguration clone() {
+      *
+      * @return The existing configuration will not be modified. A new configuration is returned.
+      */
++    @SuppressWarnings("unchecked")
+     @Override
+     public XMLParserConfiguration withKeepStrings(final boolean newVal) {
+         return super.withKeepStrings(newVal);
+@@ -309,14 +310,15 @@ public XMLParserConfiguration withForceList(final Set<String> forceList) {
+      * @param maxNestingDepth the maximum nesting depth allowed to the XML parser
+      * @return The existing configuration will not be modified. A new configuration is returned.
+      */
++    @SuppressWarnings("unchecked")
+     @Override
+     public XMLParserConfiguration withMaxNestingDepth(int maxNestingDepth) {
+         return super.withMaxNestingDepth(maxNestingDepth);
+     }
+ 
+     /**
+      * To enable explicit end tag with empty value.
+-     * @param closeEmptyTag
++     * @param closeEmptyTag new value for the closeEmptyTag property
+      * @return same instance of configuration with empty tag config updated
+      */
+     public XMLParserConfiguration withCloseEmptyTag(boolean closeEmptyTag){
+
+File: src/test/java/org/json/junit/data/WeirdList.java
+Patch:
+@@ -12,7 +12,7 @@
+  */
+ public class WeirdList {
+     /** */
+-    private final List<Integer> list = new ArrayList();
++    private final List<Integer> list = new ArrayList<>();
+ 
+     /**
+      * @param vals
+@@ -25,14 +25,14 @@ public WeirdList(Integer... vals) {
+      * @return a copy of the list
+      */
+     public List<Integer> get() {
+-        return new ArrayList(this.list);
++        return new ArrayList<>(this.list);
+     }
+ 
+     /**
+      * @return a copy of the list
+      */
+     public List<Integer> getALL() {
+-        return new ArrayList(this.list);
++        return new ArrayList<>(this.list);
+     }
+ 
+     /**
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -32,6 +32,7 @@
+ import org.json.JSONString;
+ import org.json.JSONTokener;
+ import org.json.junit.data.MyJsonString;
++import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import com.jayway.jsonpath.Configuration;
+@@ -1384,14 +1385,15 @@ public void jsonArrayClearMethodTest() {
+     /**
+     * Tests for stack overflow. See https://github.com/stleary/JSON-java/issues/654
+     */
++    @Ignore("This test relies on system constraints and may not always pass. See: https://github.com/stleary/JSON-java/issues/821")
+     @Test(expected = JSONException.class)
+     public void issue654StackOverflowInputWellFormed() {
+         //String input = new String(java.util.Base64.getDecoder().decode(base64Bytes));
+         final InputStream resourceAsStream = JSONArrayTest.class.getClassLoader().getResourceAsStream("Issue654WellFormedArray.json");
+         JSONTokener tokener = new JSONTokener(resourceAsStream);
+         JSONArray json_input = new JSONArray(tokener);
+         assertNotNull(json_input);
+-        fail("Excepected Exception.");
++        fail("Excepected Exception due to stack overflow.");
+         Util.checkJSONArrayMaps(json_input);
+     }
+ 
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -55,6 +55,7 @@
+ import org.json.junit.data.Singleton;
+ import org.json.junit.data.SingletonEnum;
+ import org.json.junit.data.WeirdList;
++import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import com.jayway.jsonpath.Configuration;
+@@ -3665,14 +3666,15 @@ public void issue654IncorrectNestingNoKey2() {
+     /**
+     * Tests for stack overflow. See https://github.com/stleary/JSON-java/issues/654
+     */
++    @Ignore("This test relies on system constraints and may not always pass. See: https://github.com/stleary/JSON-java/issues/821")
+     @Test(expected = JSONException.class)
+     public void issue654StackOverflowInputWellFormed() {
+         //String input = new String(java.util.Base64.getDecoder().decode(base64Bytes));
+         final InputStream resourceAsStream = JSONObjectTest.class.getClassLoader().getResourceAsStream("Issue654WellFormedObject.json");
+         JSONTokener tokener = new JSONTokener(resourceAsStream);
+         JSONObject json_input = new JSONObject(tokener);
+         assertNotNull(json_input);
+-        fail("Excepected Exception.");
++        fail("Excepected Exception due to stack overflow.");
+     }
+ 
+     @Test
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -32,6 +32,7 @@
+ import org.json.JSONString;
+ import org.json.JSONTokener;
+ import org.json.junit.data.MyJsonString;
++import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import com.jayway.jsonpath.Configuration;
+@@ -1384,14 +1385,15 @@ public void jsonArrayClearMethodTest() {
+     /**
+     * Tests for stack overflow. See https://github.com/stleary/JSON-java/issues/654
+     */
++    @Ignore("This test relies on system constraints and may not always pass. See: https://github.com/stleary/JSON-java/issues/821")
+     @Test(expected = JSONException.class)
+     public void issue654StackOverflowInputWellFormed() {
+         //String input = new String(java.util.Base64.getDecoder().decode(base64Bytes));
+         final InputStream resourceAsStream = JSONArrayTest.class.getClassLoader().getResourceAsStream("Issue654WellFormedArray.json");
+         JSONTokener tokener = new JSONTokener(resourceAsStream);
+         JSONArray json_input = new JSONArray(tokener);
+         assertNotNull(json_input);
+-        fail("Excepected Exception.");
++        fail("Excepected Exception due to stack overflow.");
+         Util.checkJSONArrayMaps(json_input);
+     }
+ 
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -55,6 +55,7 @@
+ import org.json.junit.data.Singleton;
+ import org.json.junit.data.SingletonEnum;
+ import org.json.junit.data.WeirdList;
++import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import com.jayway.jsonpath.Configuration;
+@@ -3665,14 +3666,15 @@ public void issue654IncorrectNestingNoKey2() {
+     /**
+     * Tests for stack overflow. See https://github.com/stleary/JSON-java/issues/654
+     */
++    @Ignore("This test relies on system constraints and may not always pass. See: https://github.com/stleary/JSON-java/issues/821")
+     @Test(expected = JSONException.class)
+     public void issue654StackOverflowInputWellFormed() {
+         //String input = new String(java.util.Base64.getDecoder().decode(base64Bytes));
+         final InputStream resourceAsStream = JSONObjectTest.class.getClassLoader().getResourceAsStream("Issue654WellFormedObject.json");
+         JSONTokener tokener = new JSONTokener(resourceAsStream);
+         JSONObject json_input = new JSONObject(tokener);
+         assertNotNull(json_input);
+-        fail("Excepected Exception.");
++        fail("Excepected Exception due to stack overflow.");
+     }
+ 
+     @Test
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -331,7 +331,7 @@ public Number getNumber(int index) throws JSONException {
+             if (object instanceof Number) {
+                 return (Number)object;
+             }
+-            return JSONObject.stringToNumber(object.toString());
++            return NumberConversionUtil.stringToNumber(object.toString());
+         } catch (Exception e) {
+             throw wrongValueFormatException(index, "number", object, e);
+         }
+@@ -1078,7 +1078,7 @@ public Number optNumber(int index, Number defaultValue) {
+         
+         if (val instanceof String) {
+             try {
+-                return JSONObject.stringToNumber((String) val);
++                return NumberConversionUtil.stringToNumber((String) val);
+             } catch (Exception e) {
+                 return defaultValue;
+             }
+
+File: src/test/java/org/json/junit/XMLTest.java
+Patch:
+@@ -1234,7 +1234,7 @@ public void testIndentComplicatedJsonObjectWithArrayAndWithConfig(){
+                 for (int numRead; (numRead = in.read(buffer, 0, buffer.length)) > 0; ) {
+                     expected.append(buffer, 0, numRead);
+                 }
+-                assertEquals(expected.toString(), actualString);
++                assertTrue(XML.toJSONObject(expected.toString()).similar(XML.toJSONObject(actualString)));
+             }
+         } catch (IOException e) {
+             fail("file writer error: " +e.getMessage());
+
+File: src/test/java/org/json/junit/JSONMLTest.java
+Patch:
+@@ -762,8 +762,8 @@ public void testToJSONObject_reversibility() {
+         final String xml = JSONML.toString(originalObject);
+         final JSONObject revertedObject = JSONML.toJSONObject(xml, false);
+         final String newJson = revertedObject.toString();
+-        assertTrue("JSON Objects are not similar",originalObject.similar(revertedObject));
+-        assertEquals("original JSON does not equal the new JSON",originalJson, newJson);
++        assertTrue("JSON Objects are not similar", originalObject.similar(revertedObject));
++        assertTrue("JSON Strings are not similar", new JSONObject(originalJson).similar(new JSONObject(newJson)));
+     }
+ 
+ // these tests do not pass for the following reasons:
+
+File: src/test/java/org/json/junit/XMLTest.java
+Patch:
+@@ -1234,7 +1234,7 @@ public void testIndentComplicatedJsonObjectWithArrayAndWithConfig(){
+                 for (int numRead; (numRead = in.read(buffer, 0, buffer.length)) > 0; ) {
+                     expected.append(buffer, 0, numRead);
+                 }
+-                assertEquals(expected.toString(), actualString);
++                assertTrue(XML.toJSONObject(expected.toString()).similar(XML.toJSONObject(actualString)));
+             }
+         } catch (IOException e) {
+             fail("file writer error: " +e.getMessage());
+
+File: src/test/java/org/json/junit/JSONMLTest.java
+Patch:
+@@ -8,7 +8,6 @@
+ 
+ import org.json.*;
+ import org.junit.Test;
+-import org.skyscreamer.jsonassert.JSONAssert;
+ 
+ /**
+  * Tests for org.json.JSONML.java
+@@ -763,8 +762,7 @@ public void testToJSONObject_reversibility() {
+         final String xml = JSONML.toString(originalObject);
+         final JSONObject revertedObject = JSONML.toJSONObject(xml, false);
+         final String newJson = revertedObject.toString();
+-        assertTrue("JSON Objects are not similar",originalObject.similar(revertedObject));
+-        JSONAssert.assertEquals("original JSON does not equal the new JSON", originalJson, newJson, false);
++        assertTrue("original JSON does not equal the new JSON", originalObject.similar(revertedObject));
+     }
+ 
+ // these tests do not pass for the following reasons:
+
+File: src/test/java/org/json/junit/JSONMLTest.java
+Patch:
+@@ -8,6 +8,7 @@
+ 
+ import org.json.*;
+ import org.junit.Test;
++import org.skyscreamer.jsonassert.JSONAssert;
+ 
+ /**
+  * Tests for org.json.JSONML.java
+@@ -763,7 +764,7 @@ public void testToJSONObject_reversibility() {
+         final JSONObject revertedObject = JSONML.toJSONObject(xml, false);
+         final String newJson = revertedObject.toString();
+         assertTrue("JSON Objects are not similar",originalObject.similar(revertedObject));
+-        assertEquals("original JSON does not equal the new JSON",originalJson, newJson);
++        JSONAssert.assertEquals("original JSON does not equal the new JSON", originalJson, newJson, false);
+     }
+ 
+ // these tests do not pass for the following reasons:
+
+File: src/test/java/org/json/junit/XMLTest.java
+Patch:
+@@ -1239,7 +1239,8 @@ public void testIndentComplicatedJsonObjectWithArrayAndWithConfig(){
+                     for (int numRead; (numRead = in.read(buffer, 0, buffer.length)) > 0; ) {
+                         expected.append(buffer, 0, numRead);
+                     }
+-                    assertEquals(expected.toString(), actualString.replaceAll("\\n|\\r\\n", System.getProperty("line.separator")));
++                    assertEquals(expected.toString().replaceAll("\\n|\\r\\n", System.lineSeparator()),
++                            actualString.replaceAll("\\n|\\r\\n", System.lineSeparator()));
+                 } finally {
+                     if (xmlStream != null) {
+                         xmlStream.close();
+
+File: src/test/java/org/json/junit/data/GenericBean.java
+Patch:
+@@ -9,7 +9,7 @@
+  * @param <T>
+  *            generic number value
+  */
+-public class GenericBean<T extends Number & Comparable<T>> implements MyBean {
++public class GenericBean<T extends Number> implements MyBean {
+     /**
+      * @param genericValue
+      *            value to initiate with
+
+File: src/test/java/org/json/junit/XMLTest.java
+Patch:
+@@ -1239,7 +1239,8 @@ public void testIndentComplicatedJsonObjectWithArrayAndWithConfig(){
+                     for (int numRead; (numRead = in.read(buffer, 0, buffer.length)) > 0; ) {
+                         expected.append(buffer, 0, numRead);
+                     }
+-                    assertEquals(expected.toString(), actualString.replaceAll("\\n|\\r\\n", System.getProperty("line.separator")));
++                    assertEquals(expected.toString().replaceAll("\\n|\\r\\n", System.getProperty("line.separator")),
++                            actualString.replaceAll("\\n|\\r\\n", System.getProperty("line.separator")));
+                 } finally {
+                     if (xmlStream != null) {
+                         xmlStream.close();
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -1369,7 +1369,7 @@ public void jsonArrayClearMethodTest() {
+     @Test(expected = JSONException.class)
+     public void issue654StackOverflowInputWellFormed() {
+         //String input = new String(java.util.Base64.getDecoder().decode(base64Bytes));
+-        final InputStream resourceAsStream = JSONObjectTest.class.getClassLoader().getResourceAsStream("Issue654WellFormedArray.json");
++        final InputStream resourceAsStream = JSONArrayTest.class.getClassLoader().getResourceAsStream("Issue654WellFormedArray.json");
+         JSONTokener tokener = new JSONTokener(resourceAsStream);
+         JSONArray json_input = new JSONArray(tokener);
+         assertNotNull(json_input);
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -3288,6 +3288,7 @@ public void testWierdListBean() {
+      * Sample test case from https://github.com/stleary/JSON-java/issues/531
+      * which verifies that no regression in double/BigDecimal support is present.
+      */
++    @Test
+     public void testObjectToBigDecimal() {  
+         double value = 1412078745.01074;  
+         Reader reader = new StringReader("[{\"value\": " + value + "}]");
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -1369,7 +1369,7 @@ public void jsonArrayClearMethodTest() {
+     @Test(expected = JSONException.class)
+     public void issue654StackOverflowInputWellFormed() {
+         //String input = new String(java.util.Base64.getDecoder().decode(base64Bytes));
+-        final InputStream resourceAsStream = JSONObjectTest.class.getClassLoader().getResourceAsStream("Issue654WellFormedArray.json");
++        final InputStream resourceAsStream = JSONArrayTest.class.getClassLoader().getResourceAsStream("Issue654WellFormedArray.json");
+         JSONTokener tokener = new JSONTokener(resourceAsStream);
+         JSONArray json_input = new JSONArray(tokener);
+         assertNotNull(json_input);
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -3288,6 +3288,7 @@ public void testWierdListBean() {
+      * Sample test case from https://github.com/stleary/JSON-java/issues/531
+      * which verifies that no regression in double/BigDecimal support is present.
+      */
++    @Test
+     public void testObjectToBigDecimal() {  
+         double value = 1412078745.01074;  
+         Reader reader = new StringReader("[{\"value\": " + value + "}]");
+
+File: src/test/java/org/json/junit/JSONMLTest.java
+Patch:
+@@ -8,6 +8,7 @@
+ 
+ import org.json.*;
+ import org.junit.Test;
++import org.skyscreamer.jsonassert.JSONAssert;
+ 
+ /**
+  * Tests for org.json.JSONML.java
+@@ -763,7 +764,7 @@ public void testToJSONObject_reversibility() {
+         final JSONObject revertedObject = JSONML.toJSONObject(xml, false);
+         final String newJson = revertedObject.toString();
+         assertTrue("JSON Objects are not similar",originalObject.similar(revertedObject));
+-        assertEquals("original JSON does not equal the new JSON",originalJson, newJson);
++        JSONAssert.assertEquals("original JSON does not equal the new JSON", originalJson, newJson, false);
+     }
+ 
+ // these tests do not pass for the following reasons:
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -625,13 +625,10 @@ public void jsonObjectByBean1() {
+         assertTrue("expected h\be\tllo w\u1234orld!", "h\be\tllo w\u1234orld!".equals(jsonObject.query("/escapeStringKey")));
+         assertTrue("expected 42", Integer.valueOf("42").equals(jsonObject.query("/intKey")));
+         assertTrue("expected -23.45e7", Double.valueOf("-23.45e7").equals(jsonObject.query("/doubleKey")));
+-<<<<<<< HEAD
+         // sorry, mockito artifact
+         assertTrue("expected 2 mockitoInterceptor items", ((Map<?,?>)(JsonPath.read(doc, "$.mockitoInterceptor"))).size() == 2);
+         assertTrue("expected 0 mockitoInterceptor.serializationSupport items",
+                 ((Map<?,?>)(JsonPath.read(doc, "$.mockitoInterceptor.serializationSupport"))).size() == 0);
+-=======
+->>>>>>> 88968f3 (Updated mockito)
+         Util.checkJSONObjectMaps(jsonObject);
+     }
+ 
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -2230,9 +2230,9 @@ public void jsonObjectParsingErrors() {
+             String str = "{\"myKey\":true, \0\"myOtherKey\":false}";
+             assertNull("Expected an exception",new JSONObject(str));
+         } catch (JSONException e) {
+-          assertEquals("Expecting an exception message",
+-              "A JSONObject text must end with '}' at 15 [character 16 line 1]",
+-              e.getMessage());
++            assertEquals("Expecting an exception message",
++                    "A JSONObject text must end with '}' at 15 [character 16 line 1]",
++                    e.getMessage());
+         }
+         try {
+             // append to wrong key
+
+File: src/test/java/org/json/junit/XMLTest.java
+Patch:
+@@ -18,6 +18,7 @@
+ import java.io.InputStreamReader;
+ import java.io.Reader;
+ import java.io.StringReader;
++import java.nio.charset.Charset;
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+@@ -915,7 +916,7 @@ public void testIssue537CaseSensitiveHexEscapeFullFile(){
+             InputStream xmlStream = null;
+             try {
+                 xmlStream = XMLTest.class.getClassLoader().getResourceAsStream("Issue537.xml");
+-                Reader xmlReader = new InputStreamReader(xmlStream);
++                Reader xmlReader = new InputStreamReader(xmlStream, Charset.forName("UTF-8"));
+                 JSONObject actual = XML.toJSONObject(xmlReader, true);
+                 InputStream jsonStream = null;
+                 try {
+
+File: src/test/java/org/json/junit/XMLTest.java
+Patch:
+@@ -18,6 +18,7 @@
+ import java.io.InputStreamReader;
+ import java.io.Reader;
+ import java.io.StringReader;
++import java.nio.charset.Charset;
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+@@ -915,7 +916,7 @@ public void testIssue537CaseSensitiveHexEscapeFullFile(){
+             InputStream xmlStream = null;
+             try {
+                 xmlStream = XMLTest.class.getClassLoader().getResourceAsStream("Issue537.xml");
+-                Reader xmlReader = new InputStreamReader(xmlStream);
++                Reader xmlReader = new InputStreamReader(xmlStream, Charset.forName("UTF-8"));
+                 JSONObject actual = XML.toJSONObject(xmlReader, true);
+                 InputStream jsonStream = null;
+                 try {
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -6,7 +6,6 @@
+ 
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
+-import static org.junit.Assert.assertNotEquals;
+ import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertNull;
+ import static org.junit.Assert.assertTrue;
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -6,7 +6,6 @@
+ 
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertFalse;
+-import static org.junit.Assert.assertNotEquals;
+ import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertNull;
+ import static org.junit.Assert.assertTrue;
+
+File: src/test/java/org/json/junit/XMLConfigurationTest.java
+Patch:
+@@ -1056,7 +1056,7 @@ public void testEmptyTagForceList() {
+     public void testMaxNestingDepthIsSet() {
+         XMLParserConfiguration xmlParserConfiguration = XMLParserConfiguration.ORIGINAL;
+ 
+-        assertEquals(xmlParserConfiguration.getMaxNestingDepth(), XMLParserConfiguration.UNDEFINED_MAXIMUM_NESTING_DEPTH);
++        assertEquals(xmlParserConfiguration.getMaxNestingDepth(), XMLParserConfiguration.DEFAULT_MAXIMUM_NESTING_DEPTH);
+ 
+         xmlParserConfiguration = xmlParserConfiguration.withMaxNestingDepth(42);
+ 
+
+File: src/main/java/org/json/JSONPropertyIgnore.java
+Patch:
+@@ -11,13 +11,13 @@
+ import java.lang.annotation.Retention;
+ import java.lang.annotation.Target;
+ 
+-@Documented
+-@Retention(RUNTIME)
+-@Target({METHOD})
+ /**
+  * Use this annotation on a getter method to override the Bean name
+  * parser for Bean -&gt; JSONObject mapping. If this annotation is
+  * present at any level in the class hierarchy, then the method will
+  * not be serialized from the bean into the JSONObject.
+  */
++@Documented
++@Retention(RUNTIME)
++@Target({METHOD})
+ public @interface JSONPropertyIgnore { }
+
+File: src/main/java/org/json/JSONPropertyName.java
+Patch:
+@@ -11,14 +11,14 @@
+ import java.lang.annotation.Retention;
+ import java.lang.annotation.Target;
+ 
+-@Documented
+-@Retention(RUNTIME)
+-@Target({METHOD})
+ /**
+  * Use this annotation on a getter method to override the Bean name
+  * parser for Bean -&gt; JSONObject mapping. A value set to empty string <code>""</code>
+  * will have the Bean parser fall back to the default field name processing.
+  */
++@Documented
++@Retention(RUNTIME)
++@Target({METHOD})
+ public @interface JSONPropertyName {
+     /**
+      * @return The name of the property as to be used in the JSON Object.
+
+File: src/main/java/org/json/JSONPropertyIgnore.java
+Patch:
+@@ -11,13 +11,13 @@
+ import java.lang.annotation.Retention;
+ import java.lang.annotation.Target;
+ 
+-@Documented
+-@Retention(RUNTIME)
+-@Target({METHOD})
+ /**
+  * Use this annotation on a getter method to override the Bean name
+  * parser for Bean -&gt; JSONObject mapping. If this annotation is
+  * present at any level in the class hierarchy, then the method will
+  * not be serialized from the bean into the JSONObject.
+  */
++@Documented
++@Retention(RUNTIME)
++@Target({METHOD})
+ public @interface JSONPropertyIgnore { }
+
+File: src/main/java/org/json/JSONPropertyName.java
+Patch:
+@@ -11,14 +11,14 @@
+ import java.lang.annotation.Retention;
+ import java.lang.annotation.Target;
+ 
+-@Documented
+-@Retention(RUNTIME)
+-@Target({METHOD})
+ /**
+  * Use this annotation on a getter method to override the Bean name
+  * parser for Bean -&gt; JSONObject mapping. A value set to empty string <code>""</code>
+  * will have the Bean parser fall back to the default field name processing.
+  */
++@Documented
++@Retention(RUNTIME)
++@Target({METHOD})
+ public @interface JSONPropertyName {
+     /**
+      * @return The name of the property as to be used in the JSON Object.
+
+File: src/main/java/org/json/XML.java
+Patch:
+@@ -26,7 +26,6 @@ of this software and associated documentation files (the "Software"), to deal
+ 
+ import java.io.Reader;
+ import java.io.StringReader;
+-import java.lang.reflect.Method;
+ import java.math.BigDecimal;
+ import java.math.BigInteger;
+ import java.util.Iterator;
+
+File: src/test/java/org/json/junit/JSONMLTest.java
+Patch:
+@@ -158,7 +158,7 @@ public void emptyTagException() {
+             assertTrue("Expecting an exception", false);
+         } catch (JSONException e) {
+             assertEquals("Expecting an exception message",
+-                "JSONArray[0] is not a String.",
++                "JSONArray[0] is not a String (class org.json.JSONArray).",
+                 e.getMessage());
+         }
+     }
+
+File: src/main/java/org/json/XML.java
+Patch:
+@@ -26,7 +26,6 @@ of this software and associated documentation files (the "Software"), to deal
+ 
+ import java.io.Reader;
+ import java.io.StringReader;
+-import java.lang.reflect.Method;
+ import java.math.BigDecimal;
+ import java.math.BigInteger;
+ import java.util.Iterator;
+
+File: src/test/java/org/json/junit/CDLTest.java
+Patch:
+@@ -190,7 +190,7 @@ public void badEscapedQuote(){
+                    CDL.toJSONArray(badLine);
+                    fail("Expecting an exception");
+                } catch (JSONException e) {
+-            	   System.out.println("Message" + e.getMessage());
++            	   //System.out.println("Message" + e.getMessage());
+                    assertEquals("Expecting an exception message",
+                            "Bad character 'V' (86). at 20 [character 9 line 2]",
+                            e.getMessage());
+
+File: src/main/java/org/json/JSONObject.java
+Patch:
+@@ -37,9 +37,10 @@ of this software and associated documentation files (the "Software"), to deal
+ import java.math.BigDecimal;
+ import java.math.BigInteger;
+ import java.util.Collection;
++import java.util.Collections;
+ import java.util.Enumeration;
+ import java.util.HashMap;
+-import java.util.HashSet;
++import java.util.IdentityHashMap;
+ import java.util.Iterator;
+ import java.util.Locale;
+ import java.util.Map;
+@@ -1526,7 +1527,7 @@ public String optString(String key, String defaultValue) {
+      *            the bean
+      */
+     private void populateMap(Object bean) {
+-        populateMap(bean, new HashSet<Object>());
++        populateMap(bean, Collections.newSetFromMap(new IdentityHashMap<Object, Boolean>()));
+     }
+ 
+     private void populateMap(Object bean, Set<Object> objectsRecord) {
+
+File: src/test/java/org/json/junit/JSONPointerTest.java
+Patch:
+@@ -60,7 +60,7 @@ private Object query(String pointer) {
+ 
+     @Test
+     public void emptyPointer() {
+-        assertEquals(new JSONObject(EXPECTED_COMPLETE_DOCUMENT).toString(), query("").toString());
++        assertTrue(new JSONObject(EXPECTED_COMPLETE_DOCUMENT).similar(query("")));
+     }
+ 
+     @SuppressWarnings("unused")
+@@ -147,7 +147,7 @@ public void uriFragmentNotation() {
+ 
+     @Test
+     public void uriFragmentNotationRoot() {
+-        assertEquals(new JSONObject(EXPECTED_COMPLETE_DOCUMENT).toString(), query("#").toString());
++        assertTrue(new JSONObject(EXPECTED_COMPLETE_DOCUMENT).similar(query("#")));
+     }
+ 
+     @Test
+
+File: src/test/java/org/json/junit/JSONPointerTest.java
+Patch:
+@@ -25,7 +25,6 @@ of this software and associated documentation files (the "Software"), to deal
+ */
+ 
+ import static org.junit.Assert.assertEquals;
+-import static org.junit.Assert.assertSame;
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.fail;
+ 
+@@ -61,7 +60,7 @@ private Object query(String pointer) {
+ 
+     @Test
+     public void emptyPointer() {
+-        assertEquals(EXPECTED_COMPLETE_DOCUMENT, query("").toString());
++        assertEquals(new JSONObject(EXPECTED_COMPLETE_DOCUMENT).toString(), query("").toString());
+     }
+ 
+     @SuppressWarnings("unused")
+@@ -148,7 +147,7 @@ public void uriFragmentNotation() {
+ 
+     @Test
+     public void uriFragmentNotationRoot() {
+-        assertEquals(EXPECTED_COMPLETE_DOCUMENT, query("#").toString());
++        assertEquals(new JSONObject(EXPECTED_COMPLETE_DOCUMENT).toString(), query("#").toString());
+     }
+ 
+     @Test
+
+File: src/main/java/org/json/Cookie.java
+Patch:
+@@ -109,7 +109,7 @@ public static JSONObject toJSONObject(String string) {
+         // parse the remaining cookie attributes
+         while (x.more()) {
+             name = unescape(x.nextTo("=;")).trim().toLowerCase(Locale.ROOT);
+-            // don't allow a cookies attributes to overwrite it's name or value.
++            // don't allow a cookies attributes to overwrite its name or value.
+             if("name".equalsIgnoreCase(name)) {
+                 throw new JSONException("Illegal attribute name: 'name'");
+             }
+
+File: src/main/java/org/json/JSONObject.java
+Patch:
+@@ -645,7 +645,7 @@ public BigInteger getBigInteger(String key) throws JSONException {
+ 
+     /**
+      * Get the BigDecimal value associated with a key. If the value is float or
+-     * double, the the {@link BigDecimal#BigDecimal(double)} constructor will
++     * double, the {@link BigDecimal#BigDecimal(double)} constructor will
+      * be used. See notes on the constructor for conversion issues that may
+      * arise.
+      *
+@@ -1613,7 +1613,7 @@ private static String getKeyNameFromMethod(Method method) {
+      * @param annotationClass
+      *            annotation to look for
+      * @return the {@link Annotation} if the annotation exists on the current method
+-     *         or one of it's super class definitions
++     *         or one of its super class definitions
+      */
+     private static <A extends Annotation> A getAnnotation(final Method m, final Class<A> annotationClass) {
+         // if we have invalid data the result is null
+@@ -2236,7 +2236,7 @@ protected static Number stringToNumber(final String val) throws NumberFormatExce
+             // This will narrow any values to the smallest reasonable Object representation
+             // (Integer, Long, or BigInteger)
+ 
+-            // BigInteger down conversion: We use a similar bitLenth compare as
++            // BigInteger down conversion: We use a similar bitLength compare as
+             // BigInteger#intValueExact uses. Increases GC, but objects hold
+             // only what they need. i.e. Less runtime overhead if the value is
+             // long lived.
+
+File: src/main/java/org/json/XML.java
+Patch:
+@@ -532,7 +532,7 @@ private static Number stringToNumber(final String val) throws NumberFormatExcept
+             // This will narrow any values to the smallest reasonable Object representation
+             // (Integer, Long, or BigInteger)
+             
+-            // BigInteger down conversion: We use a similar bitLenth compare as
++            // BigInteger down conversion: We use a similar bitLength compare as
+             // BigInteger#intValueExact uses. Increases GC, but objects hold
+             // only what they need. i.e. Less runtime overhead if the value is
+             // long lived.
+
+File: src/test/java/org/json/junit/EnumTest.java
+Patch:
+@@ -93,7 +93,7 @@ public void jsonObjectFromEnum() {
+ 
+     /**
+      * To serialize an enum by its set of allowed values, use getNames()
+-     * and the the JSONObject Object with names constructor. 
++     * and the JSONObject Object with names constructor.
+      */
+     @Test
+     public void jsonObjectFromEnumWithNames() {
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -1678,7 +1678,7 @@ public void jsonObjectIncrement() {
+         // correct implementation (with change of behavior) would be:
+         // this.put(key, new Float((Float) value + 1)); 
+         // Probably it would be better to deprecate the method and remove some day, while convenient processing the "payload" is not
+-        // really in the the scope of a JSON-library (IMHO.)
++        // really in the scope of a JSON-library (IMHO.)
+ 
+     }
+ 
+
+File: src/main/java/org/json/Cookie.java
+Patch:
+@@ -109,7 +109,7 @@ public static JSONObject toJSONObject(String string) {
+         // parse the remaining cookie attributes
+         while (x.more()) {
+             name = unescape(x.nextTo("=;")).trim().toLowerCase(Locale.ROOT);
+-            // don't allow a cookies attributes to overwrite it's name or value.
++            // don't allow a cookies attributes to overwrite its name or value.
+             if("name".equalsIgnoreCase(name)) {
+                 throw new JSONException("Illegal attribute name: 'name'");
+             }
+
+File: src/main/java/org/json/JSONObject.java
+Patch:
+@@ -645,7 +645,7 @@ public BigInteger getBigInteger(String key) throws JSONException {
+ 
+     /**
+      * Get the BigDecimal value associated with a key. If the value is float or
+-     * double, the the {@link BigDecimal#BigDecimal(double)} constructor will
++     * double, the {@link BigDecimal#BigDecimal(double)} constructor will
+      * be used. See notes on the constructor for conversion issues that may
+      * arise.
+      *
+@@ -1613,7 +1613,7 @@ private static String getKeyNameFromMethod(Method method) {
+      * @param annotationClass
+      *            annotation to look for
+      * @return the {@link Annotation} if the annotation exists on the current method
+-     *         or one of it's super class definitions
++     *         or one of its super class definitions
+      */
+     private static <A extends Annotation> A getAnnotation(final Method m, final Class<A> annotationClass) {
+         // if we have invalid data the result is null
+@@ -2236,7 +2236,7 @@ protected static Number stringToNumber(final String val) throws NumberFormatExce
+             // This will narrow any values to the smallest reasonable Object representation
+             // (Integer, Long, or BigInteger)
+ 
+-            // BigInteger down conversion: We use a similar bitLenth compare as
++            // BigInteger down conversion: We use a similar bitLength compare as
+             // BigInteger#intValueExact uses. Increases GC, but objects hold
+             // only what they need. i.e. Less runtime overhead if the value is
+             // long lived.
+
+File: src/main/java/org/json/XML.java
+Patch:
+@@ -532,7 +532,7 @@ private static Number stringToNumber(final String val) throws NumberFormatExcept
+             // This will narrow any values to the smallest reasonable Object representation
+             // (Integer, Long, or BigInteger)
+             
+-            // BigInteger down conversion: We use a similar bitLenth compare as
++            // BigInteger down conversion: We use a similar bitLength compare as
+             // BigInteger#intValueExact uses. Increases GC, but objects hold
+             // only what they need. i.e. Less runtime overhead if the value is
+             // long lived.
+
+File: src/test/java/org/json/junit/EnumTest.java
+Patch:
+@@ -93,7 +93,7 @@ public void jsonObjectFromEnum() {
+ 
+     /**
+      * To serialize an enum by its set of allowed values, use getNames()
+-     * and the the JSONObject Object with names constructor. 
++     * and the JSONObject Object with names constructor.
+      */
+     @Test
+     public void jsonObjectFromEnumWithNames() {
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -1678,7 +1678,7 @@ public void jsonObjectIncrement() {
+         // correct implementation (with change of behavior) would be:
+         // this.put(key, new Float((Float) value + 1)); 
+         // Probably it would be better to deprecate the method and remove some day, while convenient processing the "payload" is not
+-        // really in the the scope of a JSON-library (IMHO.)
++        // really in the scope of a JSON-library (IMHO.)
+ 
+     }
+ 
+
+File: src/main/java/org/json/JSONObject.java
+Patch:
+@@ -128,6 +128,7 @@ protected final Object clone() {
+          *         null.
+          */
+         @Override
++        @SuppressWarnings("lgtm[java/unchecked-cast-in-equals]")
+         public boolean equals(Object object) {
+             return object == null || object == this;
+         }
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -1383,7 +1383,9 @@ public boolean similar(Object other) {
+                     return false;
+                 }
+             } else if (valueThis instanceof Number && valueOther instanceof Number) {
+-                return JSONObject.isNumberSimilar((Number)valueThis, (Number)valueOther);
++                if (!JSONObject.isNumberSimilar((Number)valueThis, (Number)valueOther)) {
++                	return false;
++                }
+             } else if (!valueThis.equals(valueOther)) {
+                 return false;
+             }
+
+File: src/main/java/org/json/JSONObject.java
+Patch:
+@@ -2108,7 +2108,9 @@ public boolean similar(Object other) {
+                         return false;
+                     }
+                 } else if (valueThis instanceof Number && valueOther instanceof Number) {
+-                    return isNumberSimilar((Number)valueThis, (Number)valueOther);
++                    if (!isNumberSimilar((Number)valueThis, (Number)valueOther)) {
++                    	return false;
++                    };
+                 } else if (!valueThis.equals(valueOther)) {
+                     return false;
+                 }
+
+File: src/main/java/org/json/JSONPointer.java
+Patch:
+@@ -188,7 +188,7 @@ public JSONPointer(List<String> refTokens) {
+     }
+ 
+     /**
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     private static String unescape(String token) {
+         return token.replace("~1", "/").replace("~0", "~");
+@@ -268,7 +268,7 @@ public String toString() {
+      * @param token the JSONPointer segment value to be escaped
+      * @return the escaped value for the token
+      * 
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     private static String escape(String token) {
+         return token.replace("~", "~0")
+
+File: src/test/java/org/json/junit/JSONPointerTest.java
+Patch:
+@@ -120,7 +120,7 @@ public void tildeEscaping() {
+     /**
+      * We pass backslashes as-is
+      * 
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     @Test
+     public void backslashHandling() {
+@@ -130,7 +130,7 @@ public void backslashHandling() {
+     /**
+      * We pass quotations as-is
+      * 
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     @Test
+     public void quotationHandling() {
+
+File: src/test/java/org/json/junit/data/ExceptionalBean.java
+Patch:
+@@ -8,7 +8,7 @@
+ import java.lang.reflect.InvocationTargetException;
+ 
+ /**
+- * Object for testing the exception handling in {@link JSONObject#populateMap}.
++ * Object for testing the exception handling in {@link org.json.JSONObject#populateMap}.
+  * 
+  * @author John Aylward
+  */
+
+File: src/main/java/org/json/JSONPointer.java
+Patch:
+@@ -188,7 +188,7 @@ public JSONPointer(List<String> refTokens) {
+     }
+ 
+     /**
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     private static String unescape(String token) {
+         return token.replace("~1", "/").replace("~0", "~");
+@@ -268,7 +268,7 @@ public String toString() {
+      * @param token the JSONPointer segment value to be escaped
+      * @return the escaped value for the token
+      * 
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     private static String escape(String token) {
+         return token.replace("~", "~0")
+
+File: src/test/java/org/json/junit/JSONPointerTest.java
+Patch:
+@@ -120,7 +120,7 @@ public void tildeEscaping() {
+     /**
+      * We pass backslashes as-is
+      * 
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     @Test
+     public void backslashHandling() {
+@@ -130,7 +130,7 @@ public void backslashHandling() {
+     /**
+      * We pass quotations as-is
+      * 
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     @Test
+     public void quotationHandling() {
+
+File: src/test/java/org/json/junit/data/ExceptionalBean.java
+Patch:
+@@ -8,7 +8,7 @@
+ import java.lang.reflect.InvocationTargetException;
+ 
+ /**
+- * Object for testing the exception handling in {@link JSONObject#populateMap}.
++ * Object for testing the exception handling in {@link org.json.JSONObject#populateMap}.
+  * 
+  * @author John Aylward
+  */
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -126,6 +126,7 @@ public void verifySimilar() {
+         
+         assertTrue("Should eval to true", obj1.similar(obj4));
+         
++        // verify that a double and big decimal are "similar"
+         assertTrue("should eval to true",new JSONObject().put("a",1.1d).similar(new JSONObject("{\"a\":1.1}")));
+         
+     }
+@@ -942,7 +943,7 @@ public void stringToValueNumbersTest() {
+         assertTrue("-0 Should be a Double!",JSONObject.stringToValue("-0")  instanceof Double);
+         assertTrue("-0.0 Should be a Double!",JSONObject.stringToValue("-0.0") instanceof Double);
+         assertTrue("'-' Should be a String!",JSONObject.stringToValue("-") instanceof String);
+-        assertTrue( "0.2 should be a Double!",
++        assertTrue( "0.2 should be a BigDecimal!",
+                 JSONObject.stringToValue( "0.2" ) instanceof BigDecimal );
+         assertTrue( "Doubles should be BigDecimal, even when incorrectly converting floats!",
+                 JSONObject.stringToValue( new Double( "0.2f" ).toString() ) instanceof BigDecimal );
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -126,6 +126,8 @@ public void verifySimilar() {
+         
+         assertTrue("Should eval to true", obj1.similar(obj4));
+         
++        assertTrue("should eval to true",new JSONObject().put("a",1.1d).similar(new JSONObject("{\"a\":1.1}")));
++        
+     }
+     
+     @Test
+
+File: src/main/java/org/json/JSONObject.java
+Patch:
+@@ -1639,9 +1639,6 @@ private static <A extends Annotation> A getAnnotation(final Method m, final Clas
+      * implementations and interfaces has the annotation. Returns the depth of the
+      * annotation in the hierarchy.
+      *
+-     * @param <A>
+-     *            type of the annotation
+-     *
+      * @param m
+      *            method to check
+      * @param annotationClass
+
+File: src/main/java/org/json/JSONPointer.java
+Patch:
+@@ -188,7 +188,7 @@ public JSONPointer(List<String> refTokens) {
+     }
+ 
+     /**
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     private static String unescape(String token) {
+         return token.replace("~1", "/").replace("~0", "~");
+@@ -268,7 +268,7 @@ public String toString() {
+      * @param token the JSONPointer segment value to be escaped
+      * @return the escaped value for the token
+      * 
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     private static String escape(String token) {
+         return token.replace("~", "~0")
+
+File: src/test/java/org/json/junit/JSONPointerTest.java
+Patch:
+@@ -120,7 +120,7 @@ public void tildeEscaping() {
+     /**
+      * We pass backslashes as-is
+      * 
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     @Test
+     public void backslashHandling() {
+@@ -130,7 +130,7 @@ public void backslashHandling() {
+     /**
+      * We pass quotations as-is
+      * 
+-     * @see https://tools.ietf.org/html/rfc6901#section-3
++     * @see <a href="https://tools.ietf.org/html/rfc6901#section-3">rfc6901 section 3</a>
+      */
+     @Test
+     public void quotationHandling() {
+
+File: src/test/java/org/json/junit/data/ExceptionalBean.java
+Patch:
+@@ -8,7 +8,7 @@
+ import java.lang.reflect.InvocationTargetException;
+ 
+ /**
+- * Object for testing the exception handling in {@link JSONObject#populateMap}.
++ * Object for testing the exception handling in {@link org.json.JSONObject#populateMap}.
+  * 
+  * @author John Aylward
+  */
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -1383,7 +1383,9 @@ public boolean similar(Object other) {
+                     return false;
+                 }
+             } else if (valueThis instanceof Number && valueOther instanceof Number) {
+-                return JSONObject.isNumberSimilar((Number)valueThis, (Number)valueOther);
++                if (!JSONObject.isNumberSimilar((Number)valueThis, (Number)valueOther)) {
++                	return false;
++                }
+             } else if (!valueThis.equals(valueOther)) {
+                 return false;
+             }
+
+File: src/main/java/org/json/JSONObject.java
+Patch:
+@@ -2092,7 +2092,9 @@ public boolean similar(Object other) {
+                         return false;
+                     }
+                 } else if (valueThis instanceof Number && valueOther instanceof Number) {
+-                    return isNumberSimilar((Number)valueThis, (Number)valueOther);
++                    if (!isNumberSimilar((Number)valueThis, (Number)valueOther)) {
++                    	return false;
++                    };
+                 } else if (!valueThis.equals(valueOther)) {
+                     return false;
+                 }
+
+File: src/main/java/org/json/JSONObject.java
+Patch:
+@@ -1627,9 +1627,6 @@ private static <A extends Annotation> A getAnnotation(final Method m, final Clas
+      * implementations and interfaces has the annotation. Returns the depth of the
+      * annotation in the hierarchy.
+      *
+-     * @param <A>
+-     *            type of the annotation
+-     *
+      * @param m
+      *            method to check
+      * @param annotationClass
+
+File: src/main/java/org/json/XMLParserConfiguration.java
+Patch:
+@@ -94,7 +94,7 @@ public XMLParserConfiguration (final boolean keepStrings) {
+      * Configure the parser string processing to try and convert XML values to JSON values and
+      * use the passed CDATA Tag Name the processing value. Pass <code>null</code> to
+      * disable CDATA processing
+-     * @param cDataTagName<code>null</code> to disable CDATA processing. Any other value
++     * @param cDataTagName <code>null</code> to disable CDATA processing. Any other value
+      *      to use that value as the JSONObject key name to process as CDATA.
+      * @deprecated This constructor has been deprecated in favor of using the new builder
+      *      pattern for the configuration.
+@@ -109,7 +109,7 @@ public XMLParserConfiguration (final String cDataTagName) {
+      * Configure the parser to use custom settings.
+      * @param keepStrings <code>true</code> to parse all values as string.
+      *      <code>false</code> to try and convert XML string values into a JSON value.
+-     * @param cDataTagName<code>null</code> to disable CDATA processing. Any other value
++     * @param cDataTagName <code>null</code> to disable CDATA processing. Any other value
+      *      to use that value as the JSONObject key name to process as CDATA.
+      * @deprecated This constructor has been deprecated in favor of using the new builder
+      *      pattern for the configuration.
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -326,7 +326,7 @@ public double getDouble(int index) throws JSONException {
+     public float getFloat(int index) throws JSONException {
+         final Object object = this.get(index);
+         if(object instanceof Number) {
+-            return ((Float)object).floatValue();
++            return ((Number)object).floatValue();
+         }
+         try {
+             return Float.parseFloat(object.toString());
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -364,6 +364,8 @@ public void getArrayValues() {
+                 new Double(23.45e-4).equals(jsonArray.getDouble(5)));
+         assertTrue("Array string double",
+                 new Double(23.45).equals(jsonArray.getDouble(6)));
++        assertTrue("Array double can be float",
++                new Float(23.45e-4f).equals(jsonArray.getFloat(5)));
+         // ints
+         assertTrue("Array value int",
+                 new Integer(42).equals(jsonArray.getInt(7)));
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -326,7 +326,7 @@ public double getDouble(int index) throws JSONException {
+     public float getFloat(int index) throws JSONException {
+         final Object object = this.get(index);
+         if(object instanceof Number) {
+-            return ((Float)object).floatValue();
++            return ((Number)object).floatValue();
+         }
+         try {
+             return Float.parseFloat(object.toString());
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -364,6 +364,8 @@ public void getArrayValues() {
+                 new Double(23.45e-4).equals(jsonArray.getDouble(5)));
+         assertTrue("Array string double",
+                 new Double(23.45).equals(jsonArray.getDouble(6)));
++        assertTrue("Array double can be float",
++                new Float(23.45e-4f).equals(jsonArray.getFloat(5)));
+         // ints
+         assertTrue("Array value int",
+                 new Integer(42).equals(jsonArray.getInt(7)));
+
+File: src/main/java/org/json/JSONStringer.java
+Patch:
+@@ -50,7 +50,7 @@ of this software and associated documentation files (the "Software"), to deal
+  * <p>
+  * The first method called must be <code>array</code> or <code>object</code>.
+  * There are no methods for adding commas or colons. JSONStringer adds them for
+- * you. Objects and arrays can be nested up to 20 levels deep.
++ * you. Objects and arrays can be nested up to 200 levels deep.
+  * <p>
+  * This can sometimes be easier than using a JSONObject to build a string.
+  * @author JSON.org
+
+File: src/main/java/org/json/JSONStringer.java
+Patch:
+@@ -50,7 +50,7 @@ of this software and associated documentation files (the "Software"), to deal
+  * <p>
+  * The first method called must be <code>array</code> or <code>object</code>.
+  * There are no methods for adding commas or colons. JSONStringer adds them for
+- * you. Objects and arrays can be nested up to 20 levels deep.
++ * you. Objects and arrays can be nested up to 200 levels deep.
+  * <p>
+  * This can sometimes be easier than using a JSONObject to build a string.
+  * @author JSON.org
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -1374,6 +1374,8 @@ public boolean similar(Object other) {
+                 if (!((JSONArray)valueThis).similar(valueOther)) {
+                     return false;
+                 }
++            } else if (valueThis instanceof Number && valueOther instanceof Number) {
++                return JSONObject.isNumberSimilar((Number)valueThis, (Number)valueOther);
+             } else if (!valueThis.equals(valueOther)) {
+                 return false;
+             }
+
+File: src/main/java/org/json/JSONArray.java
+Patch:
+@@ -1374,6 +1374,8 @@ public boolean similar(Object other) {
+                 if (!((JSONArray)valueThis).similar(valueOther)) {
+                     return false;
+                 }
++            } else if (valueThis instanceof Number && valueOther instanceof Number) {
++                return JSONObject.isNumberSimilar((Number)valueThis, (Number)valueOther);
+             } else if (!valueThis.equals(valueOther)) {
+                 return false;
+             }
+
+File: src/main/java/org/json/XMLTokener.java
+Patch:
+@@ -167,7 +167,7 @@ static String unescapeEntity(String e) {
+         // if our entity is an encoded unicode point, parse it.
+         if (e.charAt(0) == '#') {
+             int cp;
+-            if (e.charAt(1) == 'x') {
++            if (e.charAt(1) == 'x' || e.charAt(1) == 'X') {
+                 // hex encoded unicode
+                 cp = Integer.parseInt(e.substring(2), 16);
+             } else {
+
+File: src/main/java/org/json/XMLTokener.java
+Patch:
+@@ -167,7 +167,7 @@ static String unescapeEntity(String e) {
+         // if our entity is an encoded unicode point, parse it.
+         if (e.charAt(0) == '#') {
+             int cp;
+-            if (e.charAt(1) == 'x') {
++            if (e.charAt(1) == 'x' || e.charAt(1) == 'X') {
+                 // hex encoded unicode
+                 cp = Integer.parseInt(e.substring(2), 16);
+             } else {
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -946,7 +946,7 @@ public void stringToValueNumbersTest() {
+         assertTrue( "Integer.MAX_VALUE should still be an Integer!",
+                 JSONObject.stringToValue( new Integer( Integer.MAX_VALUE ).toString() ) instanceof Integer );
+         assertTrue( "Large integers should be a Long!",
+-                JSONObject.stringToValue( new Long( Long.sum( Integer.MAX_VALUE, 1 ) ).toString() ) instanceof Long );
++                JSONObject.stringToValue( Long.valueOf(((long)Integer.MAX_VALUE) + 1 ) .toString() ) instanceof Long );
+         assertTrue( "Long.MAX_VALUE should still be an Integer!",
+                 JSONObject.stringToValue( new Long( Long.MAX_VALUE ).toString() ) instanceof Long );
+ 
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -946,7 +946,7 @@ public void stringToValueNumbersTest() {
+         assertTrue( "Integer.MAX_VALUE should still be an Integer!",
+                 JSONObject.stringToValue( new Integer( Integer.MAX_VALUE ).toString() ) instanceof Integer );
+         assertTrue( "Large integers should be a Long!",
+-                JSONObject.stringToValue( new Long( Long.sum( Integer.MAX_VALUE, 1 ) ).toString() ) instanceof Long );
++                JSONObject.stringToValue( Long.valueOf(((long)Integer.MAX_VALUE) + 1 ) .toString() ) instanceof Long );
+         assertTrue( "Long.MAX_VALUE should still be an Integer!",
+                 JSONObject.stringToValue( new Long( Long.MAX_VALUE ).toString() ) instanceof Long );
+ 
+
+File: src/test/java/org/json/junit/JSONPointerTest.java
+Patch:
+@@ -29,7 +29,6 @@ of this software and associated documentation files (the "Software"), to deal
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.fail;
+ 
+-import java.io.IOException;
+ import java.io.InputStream;
+ 
+ import org.json.JSONArray;
+@@ -61,6 +60,7 @@ public void emptyPointer() {
+         assertSame(document, query(""));
+     }
+ 
++    @SuppressWarnings("unused")
+     @Test(expected = NullPointerException.class)
+     public void nullPointer() {
+         new JSONPointer((String) null);
+@@ -150,6 +150,7 @@ public void uriFragmentPercentHandling() {
+         assertSame(document.get("m~n"), query("#/m~0n"));
+     }
+ 
++    @SuppressWarnings("unused")
+     @Test(expected = IllegalArgumentException.class)
+     public void syntaxError() {
+         new JSONPointer("key");
+
+File: src/test/java/org/json/junit/data/ExceptionalBean.java
+Patch:
+@@ -7,8 +7,6 @@
+ import java.io.IOException;
+ import java.lang.reflect.InvocationTargetException;
+ 
+-import org.json.JSONObject;
+-
+ /**
+  * Object for testing the exception handling in {@link JSONObject#populateMap}.
+  * 
+@@ -56,7 +54,6 @@ public static final class MyCloseable implements Closeable {
+         /**
+          * @return a string
+          */
+-        @SuppressWarnings("unused")
+         public String getString() {
+             return "Yup, it's closeable";
+         }
+
+File: src/test/java/org/json/junit/data/MyEnumClass.java
+Patch:
+@@ -8,13 +8,13 @@ public class MyEnumClass {
+     private MyEnumField myEnumField;
+ 
+     public MyEnum getMyEnum() {
+-        return myEnum;
++        return this.myEnum;
+     }
+     public void setMyEnum(MyEnum myEnum) {
+         this.myEnum = myEnum;
+     }
+     public MyEnumField getMyEnumField() {
+-        return myEnumField;
++        return this.myEnumField;
+     }
+     public void setMyEnumField(MyEnumField myEnumField) {
+         this.myEnumField = myEnumField;
+
+File: src/test/java/org/json/junit/data/MyLocaleBean.java
+Patch:
+@@ -4,9 +4,9 @@ public class MyLocaleBean {
+     private final String id = "beanId";
+     private final String i = "beanI";
+     public String getId() {
+-        return id;
++        return this.id;
+     }
+     public String getI() {
+-        return i;
++        return this.i;
+     }
+ }
+
+File: src/test/java/org/json/junit/data/SingletonEnum.java
+Patch:
+@@ -19,7 +19,7 @@ public enum SingletonEnum {
+     /** single instance. */
+ 
+     /**
+-     * @return the singleton instance. I a real application, I'd hope no one did
++     * @return the singleton instance. In a real application, I'd hope no one did
+      *         this to an enum singleton.
+      */
+     public static final SingletonEnum getInstance() {
+@@ -32,7 +32,7 @@ private SingletonEnum() {
+ 
+     /** @return someInt */
+     public int getSomeInt() {
+-        return someInt;
++        return this.someInt;
+     }
+ 
+     /**
+@@ -47,7 +47,7 @@ public void setSomeInt(int someInt) {
+ 
+     /** @return someString */
+     public String getSomeString() {
+-        return someString;
++        return this.someString;
+     }
+ 
+     /**
+
+File: src/test/java/org/json/junit/data/WeirdList.java
+Patch:
+@@ -53,6 +53,7 @@ public Integer get(int i) {
+      *            index to get
+      * @return the value at the index
+      */
++    @SuppressWarnings("boxing")
+     public int getInt(int i) {
+         return this.list.get(i);
+     }
+
+File: src/test/java/org/json/junit/JSONPointerTest.java
+Patch:
+@@ -29,7 +29,6 @@ of this software and associated documentation files (the "Software"), to deal
+ import static org.junit.Assert.assertTrue;
+ import static org.junit.Assert.fail;
+ 
+-import java.io.IOException;
+ import java.io.InputStream;
+ 
+ import org.json.JSONArray;
+@@ -61,6 +60,7 @@ public void emptyPointer() {
+         assertSame(document, query(""));
+     }
+ 
++    @SuppressWarnings("unused")
+     @Test(expected = NullPointerException.class)
+     public void nullPointer() {
+         new JSONPointer((String) null);
+@@ -150,6 +150,7 @@ public void uriFragmentPercentHandling() {
+         assertSame(document.get("m~n"), query("#/m~0n"));
+     }
+ 
++    @SuppressWarnings("unused")
+     @Test(expected = IllegalArgumentException.class)
+     public void syntaxError() {
+         new JSONPointer("key");
+
+File: src/test/java/org/json/junit/data/ExceptionalBean.java
+Patch:
+@@ -7,8 +7,6 @@
+ import java.io.IOException;
+ import java.lang.reflect.InvocationTargetException;
+ 
+-import org.json.JSONObject;
+-
+ /**
+  * Object for testing the exception handling in {@link JSONObject#populateMap}.
+  * 
+@@ -56,7 +54,6 @@ public static final class MyCloseable implements Closeable {
+         /**
+          * @return a string
+          */
+-        @SuppressWarnings("unused")
+         public String getString() {
+             return "Yup, it's closeable";
+         }
+
+File: src/test/java/org/json/junit/data/MyEnumClass.java
+Patch:
+@@ -8,13 +8,13 @@ public class MyEnumClass {
+     private MyEnumField myEnumField;
+ 
+     public MyEnum getMyEnum() {
+-        return myEnum;
++        return this.myEnum;
+     }
+     public void setMyEnum(MyEnum myEnum) {
+         this.myEnum = myEnum;
+     }
+     public MyEnumField getMyEnumField() {
+-        return myEnumField;
++        return this.myEnumField;
+     }
+     public void setMyEnumField(MyEnumField myEnumField) {
+         this.myEnumField = myEnumField;
+
+File: src/test/java/org/json/junit/data/MyLocaleBean.java
+Patch:
+@@ -4,9 +4,9 @@ public class MyLocaleBean {
+     private final String id = "beanId";
+     private final String i = "beanI";
+     public String getId() {
+-        return id;
++        return this.id;
+     }
+     public String getI() {
+-        return i;
++        return this.i;
+     }
+ }
+
+File: src/test/java/org/json/junit/data/SingletonEnum.java
+Patch:
+@@ -19,7 +19,7 @@ public enum SingletonEnum {
+     /** single instance. */
+ 
+     /**
+-     * @return the singleton instance. I a real application, I'd hope no one did
++     * @return the singleton instance. In a real application, I'd hope no one did
+      *         this to an enum singleton.
+      */
+     public static final SingletonEnum getInstance() {
+@@ -32,7 +32,7 @@ private SingletonEnum() {
+ 
+     /** @return someInt */
+     public int getSomeInt() {
+-        return someInt;
++        return this.someInt;
+     }
+ 
+     /**
+@@ -47,7 +47,7 @@ public void setSomeInt(int someInt) {
+ 
+     /** @return someString */
+     public String getSomeString() {
+-        return someString;
++        return this.someString;
+     }
+ 
+     /**
+
+File: src/test/java/org/json/junit/data/WeirdList.java
+Patch:
+@@ -53,6 +53,7 @@ public Integer get(int i) {
+      *            index to get
+      * @return the value at the index
+      */
++    @SuppressWarnings("boxing")
+     public int getInt(int i) {
+         return this.list.get(i);
+     }
+
+File: XMLTokener.java
+Patch:
+@@ -152,7 +152,7 @@ public Object nextEntity(@SuppressWarnings("unused") char ampersand) throws JSON
+     }
+     
+     /**
+-     * Unescapes an XML entity encoding;
++     * Unescape an XML entity encoding;
+      * @param e entity (only the actual entity value, not the preceding & or ending ;
+      * @return
+      */
+
+File: XMLTokener.java
+Patch:
+@@ -152,7 +152,7 @@ public Object nextEntity(@SuppressWarnings("unused") char ampersand) throws JSON
+     }
+     
+     /**
+-     * Unescapes an XML entity encoding;
++     * Unescape an XML entity encoding;
+      * @param e entity (only the actual entity value, not the preceding & or ending ;
+      * @return
+      */
+
+File: JSONArray.java
+Patch:
+@@ -1454,7 +1454,7 @@ public Writer write(Writer writer, int indentFactor, int indent)
+     /**
+      * Returns a java.util.List containing all of the elements in this array.
+      * If an element in the array is a JSONArray or JSONObject it will also
+-     * be converted.
++     * be converted to a List and a Map respectively.
+      * <p>
+      * Warning: This method assumes that the data structure is acyclical.
+      *
+
+File: JSONArray.java
+Patch:
+@@ -1454,7 +1454,7 @@ public Writer write(Writer writer, int indentFactor, int indent)
+     /**
+      * Returns a java.util.List containing all of the elements in this array.
+      * If an element in the array is a JSONArray or JSONObject it will also
+-     * be converted.
++     * be converted to a List and a Map respectively.
+      * <p>
+      * Warning: This method assumes that the data structure is acyclical.
+      *
+
+File: XMLTokener.java
+Patch:
+@@ -232,6 +232,7 @@ public Object nextMeta() throws JSONException {
+                 }
+                 switch (c) {
+                 case 0:
++                    throw syntaxError("Unterminated string");
+                 case '<':
+                 case '>':
+                 case '/':
+
+File: XMLTokener.java
+Patch:
+@@ -232,6 +232,7 @@ public Object nextMeta() throws JSONException {
+                 }
+                 switch (c) {
+                 case 0:
++                    throw syntaxError("Unterminated string");
+                 case '<':
+                 case '>':
+                 case '/':
+
+File: JSONObject.java
+Patch:
+@@ -1496,11 +1496,11 @@ && isValidMethodName(method.getName())) {
+         }
+     }
+ 
+-    private boolean isValidMethodName(String name) {
++    private static boolean isValidMethodName(String name) {
+         return !"getClass".equals(name) && !"getDeclaringClass".equals(name);
+     }
+ 
+-    private String getKeyNameFromMethod(Method method) {
++    private static String getKeyNameFromMethod(Method method) {
+         final int ignoreDepth = getAnnotationDepth(method, JSONPropertyIgnore.class);
+         if (ignoreDepth > 0) {
+             final int forcedNameDepth = getAnnotationDepth(method, JSONPropertyName.class);
+
+File: JSONPointer.java
+Patch:
+@@ -186,7 +186,7 @@ public JSONPointer(List<String> refTokens) {
+         this.refTokens = new ArrayList<String>(refTokens);
+     }
+ 
+-    private String unescape(String token) {
++    private static String unescape(String token) {
+         return token.replace("~1", "/").replace("~0", "~")
+                 .replace("\\\"", "\"")
+                 .replace("\\\\", "\\");
+@@ -228,7 +228,7 @@ public Object queryFrom(Object document) throws JSONPointerException {
+      * @return the matched object. If no matching item is found a
+      * @throws JSONPointerException is thrown if the index is out of bounds
+      */
+-    private Object readByIndexToken(Object current, String indexToken) throws JSONPointerException {
++    private static Object readByIndexToken(Object current, String indexToken) throws JSONPointerException {
+         try {
+             int index = Integer.parseInt(indexToken);
+             JSONArray currentArr = (JSONArray) current;
+@@ -267,7 +267,7 @@ public String toString() {
+      * @param token the JSONPointer segment value to be escaped
+      * @return the escaped value for the token
+      */
+-    private String escape(String token) {
++    private static String escape(String token) {
+         return token.replace("~", "~0")
+                 .replace("/", "~1")
+                 .replace("\\", "\\\\")
+
+File: CDL.java
+Patch:
+@@ -55,7 +55,7 @@ public class CDL {
+     private static String getValue(JSONTokener x) throws JSONException {
+         char c;
+         char q;
+-        StringBuffer sb;
++        StringBuilder sb;
+         do {
+             c = x.next();
+         } while (c == ' ' || c == '\t');
+@@ -65,7 +65,7 @@ private static String getValue(JSONTokener x) throws JSONException {
+         case '"':
+         case '\'':
+             q = c;
+-            sb = new StringBuffer();
++            sb = new StringBuilder();
+             for (;;) {
+                 c = x.next();
+                 if (c == q) {
+@@ -275,7 +275,7 @@ public static String toString(JSONArray names, JSONArray ja)
+         if (names == null || names.length() == 0) {
+             return null;
+         }
+-        StringBuffer sb = new StringBuffer();
++        StringBuilder sb = new StringBuilder();
+         for (int i = 0; i < ja.length(); i += 1) {
+             JSONObject jo = ja.optJSONObject(i);
+             if (jo != null) {
+
+File: JSONTokener.java
+Patch:
+@@ -448,7 +448,9 @@ public Object nextValue() throws JSONException {
+             sb.append(c);
+             c = this.next();
+         }
+-        this.back();
++        if (!this.eof) {
++            this.back();
++        }
+ 
+         string = sb.toString().trim();
+         if ("".equals(string)) {
+
+File: JSONPointer.java
+Patch:
+@@ -233,8 +233,8 @@ private Object readByIndexToken(Object current, String indexToken) throws JSONPo
+             int index = Integer.parseInt(indexToken);
+             JSONArray currentArr = (JSONArray) current;
+             if (index >= currentArr.length()) {
+-                throw new JSONPointerException(format("index %d is out of bounds - the array has %d elements", index,
+-                        currentArr.length()));
++                throw new JSONPointerException(format("index %s is out of bounds - the array has %d elements", indexToken,
++                        Integer.valueOf(currentArr.length())));
+             }
+             try {
+ 				return currentArr.get(index);
+
+File: XMLTokener.java
+Patch:
+@@ -135,7 +135,7 @@ public Object nextContent() throws JSONException {
+      * @return  A Character or an entity String if the entity is not recognized.
+      * @throws JSONException If missing ';' in XML entity.
+      */
+-    public Object nextEntity(char ampersand) throws JSONException {
++    public Object nextEntity(@SuppressWarnings("unused") char ampersand) throws JSONException {
+         StringBuilder sb = new StringBuilder();
+         for (;;) {
+             char c = next();
+
+File: JSONWriter.java
+Patch:
+@@ -391,7 +391,7 @@ public JSONWriter value(boolean b) throws JSONException {
+      * @throws JSONException If the number is not finite.
+      */
+     public JSONWriter value(double d) throws JSONException {
+-        return this.value(new Double(d));
++        return this.value(Double.valueOf(d));
+     }
+ 
+     /**
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -667,7 +667,7 @@ public void jsonObjectAppend() {
+         assertTrue("expected 1 top level item", ((Map<?,?>)(JsonPath.read(doc, "$"))).size() == 1);
+         assertTrue("expected 6 myArray items", ((List<?>)(JsonPath.read(doc, "$.myArray"))).size() == 6);
+         assertTrue("expected true", Boolean.TRUE.equals(jsonObject.query("/myArray/0")));
+-        assertTrue("expected false", Boolean.FALSE.equals(jsonObject.query("/myArray/1/")));
++        assertTrue("expected false", Boolean.FALSE.equals(jsonObject.query("/myArray/1")));
+         assertTrue("expected hello world!", "hello world!".equals(jsonObject.query("/myArray/2")));
+         assertTrue("expected h\be\tllo w\u1234orld!", "h\be\tllo w\u1234orld!".equals(jsonObject.query("/myArray/3")));
+         assertTrue("expected 42", Integer.valueOf(42).equals(jsonObject.query("/myArray/4")));
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -667,7 +667,7 @@ public void jsonObjectAppend() {
+         assertTrue("expected 1 top level item", ((Map<?,?>)(JsonPath.read(doc, "$"))).size() == 1);
+         assertTrue("expected 6 myArray items", ((List<?>)(JsonPath.read(doc, "$.myArray"))).size() == 6);
+         assertTrue("expected true", Boolean.TRUE.equals(jsonObject.query("/myArray/0")));
+-        assertTrue("expected false", Boolean.FALSE.equals(jsonObject.query("/myArray/1/")));
++        assertTrue("expected false", Boolean.FALSE.equals(jsonObject.query("/myArray/1")));
+         assertTrue("expected hello world!", "hello world!".equals(jsonObject.query("/myArray/2")));
+         assertTrue("expected h\be\tllo w\u1234orld!", "h\be\tllo w\u1234orld!".equals(jsonObject.query("/myArray/3")));
+         assertTrue("expected 42", Integer.valueOf(42).equals(jsonObject.query("/myArray/4")));
+
+File: src/test/java/org/json/junit/data/GenericBean.java
+Patch:
+@@ -20,7 +20,7 @@ public GenericBean(T genericValue) {
+     }
+ 
+     /** */
+-    private T genericValue;
++    protected T genericValue;
+     /** to be used by the calling test to see how often the getter is called */
+     public int genericGetCounter;
+     /** to be used by the calling test to see how often the setter is called */
+
+File: JSONArray.java
+Patch:
+@@ -1289,7 +1289,7 @@ public boolean similar(Object other) {
+             Object valueThis = this.myArrayList.get(i);
+             Object valueOther = ((JSONArray)other).myArrayList.get(i);
+             if(valueThis == valueOther) {
+-            	return true;
++            	continue;
+             }
+             if(valueThis == null) {
+             	return false;
+
+File: JSONObject.java
+Patch:
+@@ -1844,7 +1844,7 @@ public boolean similar(Object other) {
+                 Object valueThis = entry.getValue();
+                 Object valueOther = ((JSONObject)other).get(name);
+                 if(valueThis == valueOther) {
+-                	return true;
++                	continue;
+                 }
+                 if(valueThis == null) {
+                 	return false;
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -59,7 +59,7 @@ public class JSONArrayTest {
+      * Tests that the similar method is working as expected.
+      */
+     @Test
+-    public void aaaVerifySimilar() {
++    public void verifySimilar() {
+         final String string1 = "HasSameRef";
+         JSONArray obj1 = new JSONArray()
+                 .put("abc")
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -63,7 +63,7 @@ public class JSONObjectTest {
+      * Tests that the similar method is working as expected.
+      */
+     @Test
+-    public void aaaVerifySimilar() {
++    public void verifySimilar() {
+         final String string1 = "HasSameRef";
+         JSONObject obj1 = new JSONObject()
+                 .put("key1", "abc")
+
+File: JSONArray.java
+Patch:
+@@ -1289,7 +1289,7 @@ public boolean similar(Object other) {
+             Object valueThis = this.myArrayList.get(i);
+             Object valueOther = ((JSONArray)other).myArrayList.get(i);
+             if(valueThis == valueOther) {
+-            	return true;
++            	continue;
+             }
+             if(valueThis == null) {
+             	return false;
+
+File: JSONObject.java
+Patch:
+@@ -1844,7 +1844,7 @@ public boolean similar(Object other) {
+                 Object valueThis = entry.getValue();
+                 Object valueOther = ((JSONObject)other).get(name);
+                 if(valueThis == valueOther) {
+-                	return true;
++                	continue;
+                 }
+                 if(valueThis == null) {
+                 	return false;
+
+File: JSONArray.java
+Patch:
+@@ -111,7 +111,7 @@ public JSONArray(JSONTokener x) throws JSONException {
+         char nextChar = x.nextClean();
+         if (nextChar == 0) {
+             // array is unclosed. No ']' found, instead EOF
+-            throw new JSONException(x.syntaxError("Expected a ',' or ']'"));
++            throw x.syntaxError("Expected a ',' or ']'");
+         }
+         if (nextChar != ']') {
+             x.back();
+@@ -126,12 +126,12 @@ public JSONArray(JSONTokener x) throws JSONException {
+                 switch (x.nextClean()) {
+                 case 0:
+                     // array is unclosed. No ']' found, instead EOF
+-                    throw new JSONException(x.syntaxError("Expected a ',' or ']'"));
++                    throw x.syntaxError("Expected a ',' or ']'");
+                 case ',':
+                     nextChar = x.nextClean();
+                     if (nextChar == 0) {
+                         // array is unclosed. No ']' found, instead EOF
+-                        throw new JSONException(x.syntaxError("Expected a ',' or ']'"));
++                        throw x.syntaxError("Expected a ',' or ']'");
+                     }
+                     if (nextChar == ']') {
+                         return;
+
+File: JSONArray.java
+Patch:
+@@ -111,7 +111,7 @@ public JSONArray(JSONTokener x) throws JSONException {
+         char nextChar = x.nextClean();
+         if (nextChar == 0) {
+             // array is unclosed. No ']' found, instead EOF
+-            throw new JSONException(x.syntaxError("Expected a ',' or ']'"));
++            throw x.syntaxError("Expected a ',' or ']'");
+         }
+         if (nextChar != ']') {
+             x.back();
+@@ -126,12 +126,12 @@ public JSONArray(JSONTokener x) throws JSONException {
+                 switch (x.nextClean()) {
+                 case 0:
+                     // array is unclosed. No ']' found, instead EOF
+-                    throw new JSONException(x.syntaxError("Expected a ',' or ']'"));
++                    throw x.syntaxError("Expected a ',' or ']'");
+                 case ',':
+                     nextChar = x.nextClean();
+                     if (nextChar == 0) {
+                         // array is unclosed. No ']' found, instead EOF
+-                        throw new JSONException(x.syntaxError("Expected a ',' or ']'"));
++                        throw x.syntaxError("Expected a ',' or ']'");
+                     }
+                     if (nextChar == ']') {
+                         return;
+
+File: JSONML.java
+Patch:
+@@ -174,7 +174,7 @@ private static Object parse(
+                             if (!(token instanceof String)) {
+                                 throw x.syntaxError("Missing value");
+                             }
+-                            newjo.accumulate(attribute, keepStrings ? XML.unescape((String)token) :XML.stringToValue((String)token));
++                            newjo.accumulate(attribute, keepStrings ? ((String)token) :XML.stringToValue((String)token));
+                             token = null;
+                         } else {
+                             newjo.accumulate(attribute, "");
+
+File: JSONML.java
+Patch:
+@@ -174,7 +174,7 @@ private static Object parse(
+                             if (!(token instanceof String)) {
+                                 throw x.syntaxError("Missing value");
+                             }
+-                            newjo.accumulate(attribute, keepStrings ? XML.unescape((String)token) :XML.stringToValue((String)token));
++                            newjo.accumulate(attribute, keepStrings ? ((String)token) :XML.stringToValue((String)token));
+                             token = null;
+                         } else {
+                             newjo.accumulate(attribute, "");
+
+File: JSONObject.java
+Patch:
+@@ -232,12 +232,13 @@ public JSONObject(JSONTokener x) throws JSONException {
+                 throw x.syntaxError("Expected a ':' after a key");
+             }
+             
+-            // Replace: this.putOnce(key, x.nextValue());
+             // Use syntaxError(..) to include error location
+             
+             if (key != null) {
+                 // Check if key exists
+             	if (this.opt(key) != null) {
++            		// back one token to point to the last key character
++            		x.back();
+                     throw x.syntaxError("Duplicate key \"" + key + "\"");
+             	}
+                 // Only add value if non-null
+
+File: src/test/java/org/json/junit/JunitTestSuite.java
+Patch:
+@@ -17,7 +17,8 @@
+    JSONArrayTest.class,
+    EnumTest.class,
+    JSONPointerTest.class,
+-   JSONStringTest.class
++   JSONStringTest.class,
++   JSONTokenerTest.class
+ })
+ public class JunitTestSuite {
+ }
+
+File: src/test/java/org/json/junit/JunitTestSuite.java
+Patch:
+@@ -17,7 +17,8 @@
+    JSONArrayTest.class,
+    EnumTest.class,
+    JSONPointerTest.class,
+-   JSONStringTest.class
++   JSONStringTest.class,
++   JSONTokenerTest.class
+ })
+ public class JunitTestSuite {
+ }
+
+File: XML.java
+Patch:
+@@ -423,7 +423,7 @@ private static boolean parse(XMLTokener x, JSONObject context, String name, bool
+     }
+     
+     /**
+-     * This method is the same as {@link JSONObject.stringToValue(String)}
++     * This method is the same as {@link JSONObject#stringToValue(String)}
+      * except that this also tries to unescape String values.
+      * 
+      * @param string String to convert
+
+File: JSONArray.java
+Patch:
+@@ -1230,7 +1230,7 @@ public Object optQuery(String jsonPointer) {
+      * Queries and returns a value from this object using {@code jsonPointer}, or
+      * returns null if the query fails due to a missing key.
+      * 
+-     * @param The JSON pointer
++     * @param jsonPointer The JSON pointer
+      * @return the queried value or {@code null}
+      * @throws IllegalArgumentException if {@code jsonPointer} has invalid syntax
+      */
+
+File: JSONObject.java
+Patch:
+@@ -1704,7 +1704,7 @@ public Object optQuery(String jsonPointer) {
+      * Queries and returns a value from this object using {@code jsonPointer}, or
+      * returns null if the query fails due to a missing key.
+      * 
+-     * @param The JSON pointer
++     * @param jsonPointer The JSON pointer
+      * @return the queried value or {@code null}
+      * @throws IllegalArgumentException if {@code jsonPointer} has invalid syntax
+      */
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -74,9 +74,9 @@ public void emptStr() {
+         try {
+             assertNull("Should throw an exception", new JSONArray(str));
+         } catch (JSONException e) {
+-            assertTrue("Expected an exception message", 
+-                    "A JSONArray text must start with '[' at 1 [character 2 line 1]".
+-                    equals(e.getMessage()));
++            assertEquals("Expected an exception message", 
++                    "A JSONArray text must start with '[' at 0 [character 1 line 1]",
++                    e.getMessage());
+         }
+     }
+ 
+
+File: src/test/java/org/json/junit/CDLTest.java
+Patch:
+@@ -81,7 +81,7 @@ public void unbalancedQuoteInValue() {
+             fail("Expecting an exception");
+         } catch (JSONException e) {
+             assertEquals("Expecting an exception message",
+-                    "Missing close quote '\"'. at 22 [character 11 line 3]",
++                    "Missing close quote '\"'. at 22 [character 11 line 2]",
+                     e.getMessage());
+             
+         }
+@@ -117,7 +117,7 @@ public void unbalancedEscapedQuote(){
+                fail("Expecting an exception");
+            } catch (JSONException e) {
+                assertEquals("Expecting an exception message",
+-                       "Missing close quote '\"'. at 26 [character 15 line 3]",
++                       "Missing close quote '\"'. at 26 [character 15 line 2]",
+                        e.getMessage());
+                
+            }
+@@ -168,7 +168,7 @@ public void badEscapedQuote(){
+                } catch (JSONException e) {
+             	   System.out.println("Message" + e.getMessage());
+                    assertEquals("Expecting an exception message",
+-                           "Bad character 'V' (86). at 20 [character 9 line 3]",
++                           "Bad character 'V' (86). at 20 [character 9 line 2]",
+                            e.getMessage());
+                    
+                }
+
+File: src/test/java/org/json/junit/JSONArrayTest.java
+Patch:
+@@ -74,9 +74,9 @@ public void emptStr() {
+         try {
+             assertNull("Should throw an exception", new JSONArray(str));
+         } catch (JSONException e) {
+-            assertTrue("Expected an exception message", 
+-                    "A JSONArray text must start with '[' at 1 [character 2 line 1]".
+-                    equals(e.getMessage()));
++            assertEquals("Expected an exception message", 
++                    "A JSONArray text must start with '[' at 0 [character 1 line 1]",
++                    e.getMessage());
+         }
+     }
+ 
+
+File: src/test/java/org/json/junit/JSONMLTest.java
+Patch:
+@@ -98,7 +98,7 @@ public void nonXMLException() {
+             fail("Expecting an exception");
+         } catch (JSONException e) {
+             assertEquals("Expecting an exception message",
+-                "Bad XML at 24 [character 25 line 1]",
++                "Bad XML at 23 [character 24 line 1]",
+                 e.getMessage());
+         }
+     }
+@@ -226,7 +226,7 @@ public void invalidBangInTagException() {
+             fail("Expecting an exception");
+         } catch (JSONException e) {
+             assertEquals("Expecting an exception message",
+-                "Misshaped meta tag at 216 [character 13 line 7]",
++                "Misshaped meta tag at 215 [character 12 line 7]",
+                 e.getMessage());
+         }
+     }
+@@ -256,7 +256,7 @@ public void invalidBangNoCloseInTagException() {
+             fail("Expecting an exception");
+         } catch (JSONException e) {
+             assertEquals("Expecting an exception message",
+-                "Misshaped meta tag at 215 [character 13 line 7]",
++                "Misshaped meta tag at 214 [character 12 line 7]",
+                 e.getMessage());
+         }
+     }
+
+File: src/test/java/org/json/junit/XMLTest.java
+Patch:
+@@ -103,7 +103,7 @@ public void shouldHandleInvalidBangInTag() {
+             fail("Expecting a JSONException");
+         } catch (JSONException e) {
+             assertEquals("Expecting an exception message",
+-                    "Misshaped meta tag at 215 [character 13 line 7]",
++                    "Misshaped meta tag at 214 [character 12 line 7]",
+                     e.getMessage());
+         }
+     }
+@@ -128,7 +128,7 @@ public void shouldHandleInvalidBangNoCloseInTag() {
+             fail("Expecting a JSONException");
+         } catch (JSONException e) {
+             assertEquals("Expecting an exception message",
+-                    "Misshaped meta tag at 214 [character 13 line 7]",
++                    "Misshaped meta tag at 213 [character 12 line 7]",
+                     e.getMessage());
+         }
+     }
+
+File: src/test/java/org/json/junit/JSONMLTest.java
+Patch:
+@@ -98,7 +98,7 @@ public void nonXMLException() {
+             fail("Expecting an exception");
+         } catch (JSONException e) {
+             assertEquals("Expecting an exception message",
+-                "Bad XML at 23 [character 24 line 1]",
++                "Bad XML at 24 [character 25 line 1]",
+                 e.getMessage());
+         }
+     }
+
+File: src/test/java/org/json/junit/JSONStringTest.java
+Patch:
+@@ -242,7 +242,7 @@ public void testJSONStringExceptionValue() throws IOException {
+             jsonArray.write(writer).toString();
+             fail("Expected an exception, got a String value");
+         } catch (JSONException e) {
+-            assertTrue("Exception message does not match", "the exception value".equals(e.getMessage()));
++            assertEquals("Unable to write JSONArray value at index: 0", e.getMessage());
+         } catch(Exception e) {
+             fail("Expected JSONException");
+         } finally {
+
+File: src/test/java/org/json/junit/JSONStringTest.java
+Patch:
+@@ -242,7 +242,7 @@ public void testJSONStringExceptionValue() throws IOException {
+             jsonArray.write(writer).toString();
+             fail("Expected an exception, got a String value");
+         } catch (JSONException e) {
+-            assertTrue("Exception message does not match", "the exception value".equals(e.getMessage()));
++            assertEquals("Unable to write JSONArray value at index: 0", e.getMessage());
+         } catch(Exception e) {
+             fail("Expected JSONException");
+         } finally {
+
+File: JSONObject.java
+Patch:
+@@ -863,7 +863,7 @@ public Set<String> keySet() {
+      *
+      * @see Map#entrySet()
+      *
+-     * @return A keySet.
++     * @return An Entry Set
+      */
+     protected Set<Entry<String, Object>> entrySet() {
+         return this.map.entrySet();
+@@ -2218,8 +2218,7 @@ static final void indent(Writer writer, int indent) throws IOException {
+     }
+ 
+     /**
+-     * Write the contents of the JSONObject as JSON text to a writer. For
+-     * compactness, no whitespace is added.
++     * Write the contents of the JSONObject as JSON text to a writer.
+      * <p>
+      * Warning: This method assumes that the data structure is acyclical.
+      *
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -1276,7 +1276,7 @@ public void jsonObjectIncrement() {
+          * JSONObject constructor won't handle these types correctly, but
+          * adding them via put works.
+          */
+-        jsonObject.put("keyFloat", new Float(1.1));
++        jsonObject.put("keyFloat", 1.1f);
+         jsonObject.put("keyBigInt", new BigInteger("123456789123456789123456789123456780"));
+         jsonObject.put("keyBigDec", new BigDecimal("123456789123456789123456789123456780.1"));
+         jsonObject.increment("keyFloat");
+@@ -1316,7 +1316,7 @@ public void jsonObjectIncrement() {
+          * missing bits would not fit into the 32 bit float, i.e. the
+          * information needed simply is not there!
+          */
+-        assertTrue("expected 3.0999999046325684", Double.valueOf(3.0999999046325684).equals(jsonObject.query("/keyFloat")));
++        assertEquals(Float.valueOf(3.1f), jsonObject.query("/keyFloat"));
+ 
+         /**
+          * float f = 3.1f; double df = (double) f; double d = 3.1d;
+@@ -1364,7 +1364,7 @@ public void jsonObjectIncrement() {
+         // 3.        A float+float operation will be performed and results into a float primitive.
+         // 4.        There is no method that matches the signature put( String key, float value), java-compiler will choose the method
+         //                put( String key, double value) and does an implicit type-cast(!) by appending zero-bits to the mantissa
+-        assertTrue( "JSONObject increment converts Float to Double", jo.get( "bug" ) instanceof Double );
++        assertTrue( "JSONObject increment converts Float to Double", jo.get( "bug" ) instanceof Float );
+         // correct implementation (with change of behavior) would be:
+         // this.put(key, new Float((Float) value + 1)); 
+         // Probably it would be better to deprecate the method and remove some day, while convenient processing the "payload" is not
+
+File: CookieList.java
+Patch:
+@@ -39,7 +39,7 @@ public class CookieList {
+      * The pairs are separated by ';'. The names and the values
+      * will be unescaped, possibly converting '+' and '%' sequences.
+      *
+-     * To add a cookie to a cooklist,
++     * To add a cookie to a cookie list,
+      * cookielistJSONObject.put(cookieJSONObject.getString("name"),
+      *     cookieJSONObject.getString("value"));
+      * @param string  A cookie list string
+
+File: JSONML.java
+Patch:
+@@ -42,7 +42,7 @@ public class JSONML {
+      * @param arrayForm true if array form, false if object form.
+      * @param ja      The JSONArray that is containing the current tag or null
+      *     if we are at the outermost level.
+-     * @param keepStrings	Don't type-convert text nodes and attibute values
++     * @param keepStrings	Don't type-convert text nodes and attribute values
+      * @return A JSONArray if the value is the outermost tag, otherwise null.
+      * @throws JSONException
+      */
+
+File: JSONStringer.java
+Patch:
+@@ -72,6 +72,7 @@ public JSONStringer() {
+      * <code>endArray</code>).
+      * @return The JSON text.
+      */
++    @Override
+     public String toString() {
+         return this.mode == 'd' ? this.writer.toString() : null;
+     }
+
+File: JSONArray.java
+Patch:
+@@ -816,8 +816,6 @@ public long optLong(int index, long defaultValue) {
+      *
+      * @param index
+      *            The index must be between 0 and length() - 1.
+-     * @param defaultValue
+-     *            The default.
+      * @return An object which is the value.
+      */
+     public Number optNumber(int index) {
+@@ -858,7 +856,7 @@ public Number optNumber(int index, Number defaultValue) {
+     /**
+      * Get the optional string value associated with an index. It returns an
+      * empty string if there is no value at that index. If the value is not a
+-     * string and is not null, then it is coverted to a string.
++     * string and is not null, then it is converted to a string.
+      *
+      * @param index
+      *            The index must be between 0 and length() - 1.
+
+File: JSONObject.java
+Patch:
+@@ -1232,8 +1232,6 @@ public long optLong(String key, long defaultValue) {
+      *
+      * @param key
+      *            A key string.
+-     * @param defaultValue
+-     *            The default.
+      * @return An object which is the value.
+      */
+     public Number optNumber(String key) {
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -1276,7 +1276,7 @@ public void jsonObjectIncrement() {
+          * JSONObject constructor won't handle these types correctly, but
+          * adding them via put works.
+          */
+-        jsonObject.put("keyFloat", new Float(1.1));
++        jsonObject.put("keyFloat", 1.1f);
+         jsonObject.put("keyBigInt", new BigInteger("123456789123456789123456789123456780"));
+         jsonObject.put("keyBigDec", new BigDecimal("123456789123456789123456789123456780.1"));
+         jsonObject.increment("keyFloat");
+@@ -1316,7 +1316,7 @@ public void jsonObjectIncrement() {
+          * missing bits would not fit into the 32 bit float, i.e. the
+          * information needed simply is not there!
+          */
+-        assertTrue("expected 3.0999999046325684", Double.valueOf(3.0999999046325684).equals(jsonObject.query("/keyFloat")));
++        assertEquals(Float.valueOf(3.1f), jsonObject.query("/keyFloat"));
+ 
+         /**
+          * float f = 3.1f; double df = (double) f; double d = 3.1d;
+@@ -1364,7 +1364,7 @@ public void jsonObjectIncrement() {
+         // 3.        A float+float operation will be performed and results into a float primitive.
+         // 4.        There is no method that matches the signature put( String key, float value), java-compiler will choose the method
+         //                put( String key, double value) and does an implicit type-cast(!) by appending zero-bits to the mantissa
+-        assertTrue( "JSONObject increment converts Float to Double", jo.get( "bug" ) instanceof Double );
++        assertTrue( "JSONObject increment converts Float to Double", jo.get( "bug" ) instanceof Float );
+         // correct implementation (with change of behavior) would be:
+         // this.put(key, new Float((Float) value + 1)); 
+         // Probably it would be better to deprecate the method and remove some day, while convenient processing the "payload" is not
+
+File: CookieList.java
+Patch:
+@@ -39,7 +39,7 @@ public class CookieList {
+      * The pairs are separated by ';'. The names and the values
+      * will be unescaped, possibly converting '+' and '%' sequences.
+      *
+-     * To add a cookie to a cooklist,
++     * To add a cookie to a cookie list,
+      * cookielistJSONObject.put(cookieJSONObject.getString("name"),
+      *     cookieJSONObject.getString("value"));
+      * @param string  A cookie list string
+
+File: JSONStringer.java
+Patch:
+@@ -72,6 +72,7 @@ public JSONStringer() {
+      * <code>endArray</code>).
+      * @return The JSON text.
+      */
++    @Override
+     public String toString() {
+         return this.mode == 'd' ? this.writer.toString() : null;
+     }
+
+File: src/test/java/org/json/junit/JSONMLTest.java
+Patch:
+@@ -782,7 +782,7 @@ public void testAttributeConversionReversabilityHTML() {
+     
+ // this test does not pass for the following reasons:
+ // 1. Our XML parser does not handle generic HTML entities, only valid XML entities. Hence &nbsp;
+-//    or other HTML specific entites would fail on reversability
++//    or other HTML specific entities would fail on reversability
+ // 2. Our JSON implementation for storing the XML attributes uses the standard unordered map.
+ //    This means that <tag attr1="v1" attr2="v2" /> can not be reversed reliably.  
+ //    /**
+
+File: src/test/java/org/json/junit/EnumTest.java
+Patch:
+@@ -5,7 +5,6 @@
+ import java.util.EnumSet;
+ import java.util.List;
+ import java.util.Map;
+-import java.util.Set;
+ 
+ import org.json.JSONArray;
+ import org.json.JSONObject;
+@@ -92,7 +91,7 @@ public void jsonObjectFromEnumWithNames() {
+         assertTrue("expected 3 top level items", ((Map<?,?>)(JsonPath.read(doc, "$"))).size() == 3);
+         assertTrue("expected VAL1", MyEnumField.VAL1.equals(jsonObject.query("/VAL1")));
+         assertTrue("expected VAL2", MyEnumField.VAL2.equals(jsonObject.query("/VAL2")));
+-        assertTrue("expected VAL3", myEnumField.VAL3.equals(jsonObject.query("/VAL3")));
++        assertTrue("expected VAL3", MyEnumField.VAL3.equals(jsonObject.query("/VAL3")));
+     }
+     
+     /**
+
+File: src/test/java/org/json/junit/MyPublicClass.java
+Patch:
+@@ -3,6 +3,7 @@
+ /**
+  * Need a class with some public data members for testing
+  */
++@SuppressWarnings("boxing")
+ public class MyPublicClass {
+     public Integer publicInt = 42;
+     public String publicString = "abc";
+
+File: src/test/java/org/json/junit/StringsResourceBundle.java
+Patch:
+@@ -6,6 +6,7 @@
+  * A resource bundle class
+  */
+ public class StringsResourceBundle extends ListResourceBundle {
++    @Override
+     public Object[][] getContents() {
+         return contents;
+     }
+
+File: src/test/java/org/json/junit/XMLTest.java
+Patch:
+@@ -4,11 +4,8 @@
+ import static org.junit.Assert.assertNotEquals;
+ import static org.junit.Assert.assertTrue;
+ 
+-import java.io.IOException;
+-
+ import org.json.JSONArray;
+ import org.json.JSONException;
+-import org.json.JSONML;
+ import org.json.JSONObject;
+ import org.json.XML;
+ import org.junit.Rule;
+
+File: JSONML.java
+Patch:
+@@ -42,7 +42,7 @@ public class JSONML {
+      * @param arrayForm true if array form, false if object form.
+      * @param ja      The JSONArray that is containing the current tag or null
+      *     if we are at the outermost level.
+-     * @param keepStrings	Don't type-convert text nodes and attibute values
++     * @param keepStrings	Don't type-convert text nodes and attribute values
+      * @return A JSONArray if the value is the outermost tag, otherwise null.
+      * @throws JSONException
+      */
+
+File: JSONArray.java
+Patch:
+@@ -1015,7 +1015,7 @@ public Object query(JSONPointer jsonPointer) {
+      * @throws IllegalArgumentException if {@code jsonPointer} has invalid syntax
+      */
+     public Object optQuery(String jsonPointer) {
+-    	return query(new JSONPointer(jsonPointer));
++    	return optQuery(new JSONPointer(jsonPointer));
+     }
+     
+     /**
+
+File: HTTP.java
+Patch:
+@@ -25,6 +25,7 @@ of this software and associated documentation files (the "Software"), to deal
+ */
+ 
+ import java.util.Iterator;
++import java.util.Locale;
+ 
+ /**
+  * Convert an HTTP header to a JSONObject and back.
+@@ -74,7 +75,7 @@ public static JSONObject toJSONObject(String string) throws JSONException {
+         String         token;
+ 
+         token = x.nextToken();
+-        if (token.toUpperCase().startsWith("HTTP")) {
++        if (token.toUpperCase(Locale.ROOT).startsWith("HTTP")) {
+ 
+ // Response
+ 
+
+File: JSONObject.java
+Patch:
+@@ -1157,9 +1157,9 @@ private void populateMap(Object bean) {
+                             && Character.isUpperCase(key.charAt(0))
+                             && method.getParameterTypes().length == 0) {
+                         if (key.length() == 1) {
+-                            key = key.toLowerCase();
++                            key = key.toLowerCase(Locale.ROOT);
+                         } else if (!Character.isUpperCase(key.charAt(1))) {
+-                            key = key.substring(0, 1).toLowerCase()
++                            key = key.substring(0, 1).toLowerCase(Locale.ROOT)
+                                     + key.substring(1);
+                         }
+ 
+
+File: HTTP.java
+Patch:
+@@ -25,6 +25,7 @@ of this software and associated documentation files (the "Software"), to deal
+ */
+ 
+ import java.util.Iterator;
++import java.util.Locale;
+ 
+ /**
+  * Convert an HTTP header to a JSONObject and back.
+@@ -74,7 +75,7 @@ public static JSONObject toJSONObject(String string) throws JSONException {
+         String         token;
+ 
+         token = x.nextToken();
+-        if (token.toUpperCase().startsWith("HTTP")) {
++        if (token.toUpperCase(Locale.ROOT).startsWith("HTTP")) {
+ 
+ // Response
+ 
+
+File: JSONObject.java
+Patch:
+@@ -1157,9 +1157,9 @@ private void populateMap(Object bean) {
+                             && Character.isUpperCase(key.charAt(0))
+                             && method.getParameterTypes().length == 0) {
+                         if (key.length() == 1) {
+-                            key = key.toLowerCase();
++                            key = key.toLowerCase(Locale.ROOT);
+                         } else if (!Character.isUpperCase(key.charAt(1))) {
+-                            key = key.substring(0, 1).toLowerCase()
++                            key = key.substring(0, 1).toLowerCase(Locale.ROOT)
+                                     + key.substring(1);
+                         }
+ 
+
+File: JSONML.java
+Patch:
+@@ -175,7 +175,7 @@ private static Object parse(
+                             if (!(token instanceof String)) {
+                                 throw x.syntaxError("Missing value");
+                             }
+-                            newjo.accumulate(attribute, keepStrings ? token :JSONObject.stringToValue((String)token));
++                            newjo.accumulate(attribute, keepStrings ? XML.unescape((String)token) :XML.stringToValue((String)token));
+                             token = null;
+                         } else {
+                             newjo.accumulate(attribute, "");
+@@ -226,7 +226,7 @@ private static Object parse(
+             } else {
+                 if (ja != null) {
+                     ja.put(token instanceof String
+-                        ? keepStrings ? token :JSONObject.stringToValue((String)token)
++                        ? keepStrings ? XML.unescape((String)token) :XML.stringToValue((String)token)
+                         : token);
+                 }
+             }
+
+File: JSONPointer.java
+Patch:
+@@ -138,7 +138,7 @@ public JSONPointer(String pointer) {
+         if (pointer == null) {
+             throw new NullPointerException("pointer cannot be null");
+         }
+-        if (pointer.isEmpty()) {
++        if (pointer.isEmpty() || pointer.equals("#")) {
+             refTokens = Collections.emptyList();
+             return;
+         }
+
+File: XML.java
+Patch:
+@@ -186,7 +186,7 @@ public static String unescape(String string) {
+         StringBuilder sb = new StringBuilder(string.length());
+         for (int i = 0, length = string.length(); i < length; i++) {
+             char c = string.charAt(i);
+-            if (c == AMP) {
++            if (c == '&') {
+                 final int semic = string.indexOf(';', i);
+                 if (semic > i) {
+                     final String entity = string.substring(i + 1, semic);
+@@ -204,15 +204,15 @@ public static String unescape(String string) {
+                         if ("quot".equalsIgnoreCase(entity)) {
+                             sb.append('"');
+                         } else if ("amp".equalsIgnoreCase(entity)) {
+-                            sb.append(AMP);
++                            sb.append('&');
+                         } else if ("apos".equalsIgnoreCase(entity)) {
+                             sb.append('\'');
+                         } else if ("lt".equalsIgnoreCase(entity)) {
+                             sb.append('<');
+                         } else if ("gt".equalsIgnoreCase(entity)) {
+                             sb.append('>');
+                         } else {
+-                            sb.append(AMP).append(entity).append(';');
++                            sb.append('&').append(entity).append(';');
+                         }
+                     }
+                     // skip past the entity we just parsed.
+
+File: src/test/java/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -183,8 +183,8 @@ public void verifyNumberOutput(){
+         jsonObject = new JSONObject();
+         jsonObject.put("myNumber", new MyNumber());
+         actual = jsonObject.toString();
+-        // the output is the toString of the number as a string.
+-        expected = "{\"myNumber\":\"42\"}";
++        // the output is the toString of the number as a number.
++        expected = "{\"myNumber\":42}";
+         assertEquals("Not Equal", expected , actual);
+         
+         jsonObject = new JSONObject(Collections.singletonMap("myNumber", new AtomicInteger(42)));
+
+File: JSONArray.java
+Patch:
+@@ -78,7 +78,7 @@ of this software and associated documentation files (the "Software"), to deal
+  * </ul>
+  *
+  * @author JSON.org
+- * @version 2016-05-20
++ * @version 2016-08/15
+  */
+ public class JSONArray implements Iterable<Object> {
+ 
+@@ -961,7 +961,7 @@ public JSONArray put(int index, Object value) throws JSONException {
+     }
+     
+     /**
+-     * Creates a JSONPointer using an intialization string and tries to 
++     * Creates a JSONPointer using an initialization string and tries to 
+      * match it to an item within this JSONArray. For example, given a
+      * JSONArray initialized with this document:
+      * <pre>
+
+File: src/test/java/org/json/junit/JSONStringTest.java
+Patch:
+@@ -164,7 +164,7 @@ public void testJSONNullStringValue() throws Exception {
+         String output = jsonArray.write(writer).toString();
+         assertTrue("String values should be equal", "[\"the toString value\"]".equals(output));
+ 
+-        // The first different between writeValue() and valueToString():
++        // The only different between writeValue() and valueToString():
+         // in this case, valueToString throws a JSONException
+         try {
+             output = JSONObject.valueToString(jsonString);
+
+File: src/test/org/json/junit/JunitTestSuite.java
+Patch:
+@@ -14,7 +14,8 @@
+    JSONStringerTest.class,
+    JSONObjectTest.class,
+    JSONArrayTest.class,
+-   EnumTest.class
++   EnumTest.class,
++   JSONPointerTest.class
+ })
+ public class JunitTestSuite {   
+-}  
+\ No newline at end of file
++}  
+
+File: src/test/org/json/junit/JunitTestSuite.java
+Patch:
+@@ -14,7 +14,8 @@
+    JSONStringerTest.class,
+    JSONObjectTest.class,
+    JSONArrayTest.class,
+-   EnumTest.class
++   EnumTest.class,
++   JSONPointerTest.class
+ })
+ public class JunitTestSuite {   
+-}  
+\ No newline at end of file
++}  
+
+File: JSONObject.java
+Patch:
+@@ -1842,7 +1842,7 @@ public Writer write(Writer writer, int indentFactor, int indent)
+      * @return a java.util.Map containing the entrys of this object
+      */
+     public Map<String, Object> toMap() {
+-        Map<String, Object> results = new HashMap<>();
++        Map<String, Object> results = new HashMap<String, Object>();
+         for (Entry<String, Object> entry : this.map.entrySet()) {
+             Object value;
+             if (entry.getValue() == null || NULL.equals(entry.getValue())) {
+
+File: JSONObject.java
+Patch:
+@@ -1842,7 +1842,7 @@ public Writer write(Writer writer, int indentFactor, int indent)
+      * @return a java.util.Map containing the entrys of this object
+      */
+     public Map<String, Object> toMap() {
+-        Map<String, Object> results = new HashMap<>();
++        Map<String, Object> results = new HashMap<String, Object>();
+         for (Entry<String, Object> entry : this.map.entrySet()) {
+             Object value;
+             if (entry.getValue() == null || NULL.equals(entry.getValue())) {
+
+File: src/test/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -519,7 +519,9 @@ public void jsonObjectValues() {
+      */
+     @Test
+     public void stringToValueNumbersTest() {
+-       
++        assertTrue("-0 Should be a Double!",JSONObject.stringToValue("-0")  instanceof Double);
++        assertTrue("-0.0 Should be a Double!",JSONObject.stringToValue("-0.0") instanceof Double);
++        assertTrue("'-' Should be a String!",JSONObject.stringToValue("-") instanceof String);
+         assertTrue( "0.2 should be a Double!",
+                 JSONObject.stringToValue( "0.2" ) instanceof Double );
+         assertTrue( "Doubles should be Doubles, even when incorrectly converting floats!",
+
+File: JSONML.java
+Patch:
+@@ -174,7 +174,7 @@ private static Object parse(
+                             if (!(token instanceof String)) {
+                                 throw x.syntaxError("Missing value");
+                             }
+-                            newjo.accumulate(attribute, XML.stringToValue((String)token));
++                            newjo.accumulate(attribute, JSONObject.stringToValue((String)token));
+                             token = null;
+                         } else {
+                             newjo.accumulate(attribute, "");
+@@ -227,7 +227,7 @@ private static Object parse(
+             } else {
+                 if (ja != null) {
+                     ja.put(token instanceof String
+-                        ? XML.stringToValue((String)token)
++                        ? JSONObject.stringToValue((String)token)
+                         : token);
+                 }
+             }
+
+File: src/test/org/json/junit/JSONObjectTest.java
+Patch:
+@@ -520,7 +520,7 @@ public void jsonObjectValues() {
+     @Test
+     public void stringToValueNumbersTest() {
+         assertTrue("-0 Should be a Double!",JSONObject.stringToValue("-0")  instanceof Double);
+-        assertTrue("-0 Should be a Double!",JSONObject.stringToValue("-0.0") instanceof Double);
++        assertTrue("-0.0 Should be a Double!",JSONObject.stringToValue("-0.0") instanceof Double);
+         assertTrue("'-' Should be a String!",JSONObject.stringToValue("-") instanceof String);
+         assertTrue( "0.2 should be a Double!",
+                 JSONObject.stringToValue( "0.2" ) instanceof Double );
+
+File: JSONObject.java
+Patch:
+@@ -1502,7 +1502,7 @@ public static Object stringToValue(String string) {
+             try {
+                 if (string.indexOf('.') > -1 || string.indexOf('e') > -1
+                         || string.indexOf('E') > -1
+-                        || "0".equals(string.substring(1))) {
++                        || "-0".equals(string)) {
+                     d = Double.valueOf(string);
+                     if (!d.isInfinite() && !d.isNaN()) {
+                         return d;
+
+File: XML.java
+Patch:
+@@ -30,7 +30,7 @@ of this software and associated documentation files (the "Software"), to deal
+  * This provides static methods to convert an XML text into a JSONObject,
+  * and to covert a JSONObject into an XML text.
+  * @author JSON.org
+- * @version 2015-10-14
++ * @version 2015-10-18
+  */
+ public class XML {
+ 
+
+File: JSONException.java
+Patch:
+@@ -4,7 +4,7 @@
+  * The JSONException is thrown by the JSON.org classes when things are amiss.
+  *
+  * @author JSON.org
+- * @version 2014-05-03
++ * @version 2015-10-14
+  */
+ public class JSONException extends RuntimeException {
+     /** Serialization ID */
+
+File: XMLTest.java
+Patch:
+@@ -189,7 +189,8 @@ public void shouldHandleInvalidCDATABangInTag() {
+     @Test
+     public void shouldHandleNullJSONXML() {
+         JSONObject jsonObject= null;
+-        XML.toString(jsonObject);
++        String actualXml=XML.toString(jsonObject);
++        assertEquals("generated XML does not equal expected XML","\"null\"",actualXml);
+     }
+ 
+     /**
+
+File: JSONArray.java
+Patch:
+@@ -76,7 +76,7 @@ of this software and associated documentation files (the "Software"), to deal
+  * </ul>
+  *
+  * @author JSON.org
+- * @version 2015-07-06
++ * @version 2015-07-22
+  */
+ public class JSONArray implements Iterable<Object> {
+ 
+
+File: JSONObject.java
+Patch:
+@@ -92,7 +92,7 @@ of this software and associated documentation files (the "Software"), to deal
+  * </ul>
+  *
+  * @author JSON.org
+- * @version 2015-07-06
++ * @version 2015-07-22
+  */
+ public class JSONObject {
+     /**
+
+File: XMLTest.java
+Patch:
+@@ -329,11 +329,11 @@ public void shouldHandleNullNodeValue()
+         inputJSON.put("nullValue", JSONObject.NULL);
+         // This is a possible preferred result
+         String expectedXML = "<nullValue/>";
+-        String actualXML = "<nullValue>null</nullValue>";
+         /**
+          * This is the current behavior. JSONObject.NULL is emitted as 
+          * the string, "null".
+          */
++        String actualXML = "<nullValue>null</nullValue>";
+         String resultXML = XML.toString(inputJSON);
+         assertEquals(actualXML, resultXML);
+     }
+
+File: JSONObjectTest.java
+Patch:
+@@ -648,8 +648,9 @@ public void bigNumberOperations() {
+                 obj.equals(1));
+ 
+         /**
+-         * JSONObject put(String, Object) method stores and serializesbigInt and bigDec
+-         * correctly. Nothing needs to change.
++         * JSONObject tries to parse BigDecimal as a bean, but it has
++         * no getters, The value is lost and no value is stored.
++         * This should be fixed.
+          */
+         BigDecimal bigDecimal = new BigDecimal(
+                 "123456789012345678901234567890.12345678901234567890123456789");
+
+File: Property.java
+Patch:
+@@ -31,7 +31,7 @@ of this software and associated documentation files (the "Software"), to deal
+ /**
+  * Converts a Property file data into JSONObject and back.
+  * @author JSON.org
+- * @version 2014-05-03
++ * @version 2015-05-05
+  */
+ public class Property {
+     /**
+@@ -43,7 +43,7 @@ public class Property {
+     public static JSONObject toJSONObject(java.util.Properties properties) throws JSONException {
+         JSONObject jo = new JSONObject();
+         if (properties != null && !properties.isEmpty()) {
+-            Enumeration enumProperties = properties.propertyNames();
++            Enumeration<?> enumProperties = properties.propertyNames();
+             while(enumProperties.hasMoreElements()) {
+                 String name = (String)enumProperties.nextElement();
+                 jo.put(name, properties.getProperty(name));
+
+File: JSONML.java
+Patch:
+@@ -373,6 +373,8 @@ public static String toString(JSONArray ja) throws JSONException {
+                         sb.append(toString((JSONObject)object));
+                     } else if (object instanceof JSONArray) {
+                         sb.append(toString((JSONArray)object));
++                    } else {
++                        sb.append(object.toString());
+                     }
+                 }
+             } while (i < length);
+
+File: CDL.java
+Patch:
+@@ -26,7 +26,7 @@ of this software and associated documentation files (the "Software"), to deal
+ 
+ /**
+  * This provides static methods to convert comma delimited text into a
+- * JSONArray, and to covert a JSONArray into comma delimited text. Comma
++ * JSONArray, and to convert a JSONArray into comma delimited text. Comma
+  * delimited text is a very popular format for data interchange. It is
+  * understood by most database, spreadsheet, and organizer programs.
+  * <p>
+@@ -41,7 +41,7 @@ of this software and associated documentation files (the "Software"), to deal
+  * The names for the elements in the JSONObjects can be taken from the names
+  * in the first row.
+  * @author JSON.org
+- * @version 2014-05-03
++ * @version 2015-05-01
+  */
+ public class CDL {
+ 
+
+File: JSONML.java
+Patch:
+@@ -373,6 +373,8 @@ public static String toString(JSONArray ja) throws JSONException {
+                         sb.append(toString((JSONObject)object));
+                     } else if (object instanceof JSONArray) {
+                         sb.append(toString((JSONArray)object));
++                    } else {
++                        sb.append(object.toString());
+                     }
+                 }
+             } while (i < length);
+
+File: JSONMLTest.java
+Patch:
+@@ -5,7 +5,6 @@
+ import org.json.*;
+ import org.junit.Test;
+ 
+-
+ /**
+  * Tests for JSON-Java JSONML.java
+  */
+
+File: HTTP.java
+Patch:
+@@ -148,9 +148,9 @@ public static String toString(JSONObject jo) throws JSONException {
+         sb.append(CRLF);
+         while (keys.hasNext()) {
+             string = keys.next().toString();
+-            if (!string.equals("HTTP-Version")      && !string.equals("Status-Code") &&
+-                    !string.equals("Reason-Phrase") && !string.equals("Method") &&
+-                    !string.equals("Request-URI")   && !jo.isNull(string)) {
++            if (!"HTTP-Version".equals(string)      && !"Status-Code".equals(string) &&
++                    !"Reason-Phrase".equals(string) && !"Method".equals(string) &&
++                    !"Request-URI".equals(string)   && !jo.isNull(string)) {
+                 sb.append(string);
+                 sb.append(": ");
+                 sb.append(jo.getString(string));
+
+File: JSONException.java
+Patch:
+@@ -6,8 +6,8 @@
+  * @version 2010-12-24
+  */
+ public class JSONException extends Exception {
+-	private static final long serialVersionUID = 0;
+-	private Throwable cause;
++    private static final long serialVersionUID = 0;
++    private Throwable cause;
+ 
+     /**
+      * Constructs a JSONException with an explanatory message.
+
+File: JSONObject.java
+Patch:
+@@ -967,8 +967,8 @@ private void populateMap(Object bean) {
+                     String name = method.getName();
+                     String key = "";
+                     if (name.startsWith("get")) {
+-                        if (name.equals("getClass") ||
+-                                name.equals("getDeclaringClass")) {
++                        if ("getClass".equals(name) ||
++                                "getDeclaringClass".equals(name)) {
+                             key = "";
+                         } else {
+                             key = name.substring(3);
+

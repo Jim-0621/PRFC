@@ -1,0 +1,604 @@
+File: app/src/main/java/org/bepass/oblivion/utils/FileManager.java
+Patch:
+@@ -196,6 +196,7 @@ public static void cleanOrMigrateSettings(Context context) {
+                 set("USERSETTING_psiphon", false);
+                 set("USERSETTING_lan", false);
+                 set("USERSETTING_proxymode", false);
++                set("USERSETTING_endpoint_type", 0);
+                 set("isFirstValueInit", true);
+             }
+ 
+
+File: app/src/main/java/org/bepass/oblivion/utils/ThemeHelper.java
+Patch:
+@@ -92,7 +92,9 @@ public void updateActivityBackground(View view) {
+         }
+ 
+         // Configure status bar based on theme
+-        configureStatusBar(view.getContext() instanceof Activity ? (Activity) view.getContext() : null);
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
++            configureStatusBar(view.getContext() instanceof Activity ? (Activity) view.getContext() : null);
++        }
+     }
+     @RequiresApi(api = Build.VERSION_CODES.M)
+     private void configureStatusBar(Activity activity) {
+
+File: app/src/main/java/org/bepass/oblivion/service/OblivionVpnService.java
+Patch:
+@@ -44,7 +44,6 @@
+ import java.util.Locale;
+ import java.util.Map;
+ import java.util.Set;
+-import java.util.concurrent.Executor;
+ import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.Executors;
+ import java.util.concurrent.ScheduledExecutorService;
+@@ -329,6 +328,7 @@ private void clearLogFile() {
+     }
+ 
+     private void start() {
++        FileManager.initialize(getApplicationContext());
+         if (lastKnownState != ConnectionState.DISCONNECTED) {
+             onRevoke();
+         }
+@@ -344,7 +344,6 @@ private void start() {
+         }
+ 
+         executorService.execute(() -> {
+-            FileManager.initialize(this);
+             bindAddress = getBindAddress();
+             Log.i(TAG, "Configuring VPN service");
+             try {
+@@ -428,7 +427,6 @@ public void onRevoke() {
+         } else {
+             Log.w(TAG, "No wake lock to release");
+         }
+-        FileManager.initialize(this);
+         // Close the VPN interface
+         try {
+             if (!FileManager.getBoolean("USERSETTING_proxymode")) {
+
+File: app/src/main/java/org/bepass/oblivion/ui/MainActivity.java
+Patch:
+@@ -188,7 +188,7 @@ private void updateUIForConnectingState() {
+     private void updateUIForConnectedState() {
+         binding.switchButton.setEnabled(true);
+         if (FileManager.getBoolean("USERSETTING_proxymode")) {
+-            binding.stateText.setText(String.format(Locale.getDefault(), "socks5 %s on 127.0.0.1:%s", getString(R.string.connected), FileManager.getString("USERSETTING_port")));
++            binding.stateText.setText(String.format(Locale.getDefault(), "%s\nsocks5 on 127.0.0.1:%s", getString(R.string.connected), FileManager.getString("USERSETTING_port")));
+         } else {
+             binding.stateText.setText(R.string.connected);
+         }
+
+File: app/src/main/java/org/bepass/oblivion/base/BaseActivity.java
+Patch:
+@@ -1,16 +1,15 @@
+ package org.bepass.oblivion.base;
+ 
+-import android.content.Intent;
+ import android.os.Build;
+ import android.os.Bundle;
+ 
+-import androidx.activity.result.ActivityResult;
+ import androidx.annotation.Nullable;
+ import androidx.appcompat.app.AppCompatActivity;
+ import androidx.databinding.DataBindingUtil;
+ import androidx.databinding.ViewDataBinding;
+ 
+ import org.bepass.oblivion.utils.ColorUtils;
++import org.bepass.oblivion.utils.FileManager;
+ import org.bepass.oblivion.utils.SystemUtils;
+ 
+ /**
+@@ -42,6 +41,7 @@ public abstract class BaseActivity<B extends ViewDataBinding> extends AppCompatA
+     @Override
+     protected void onCreate(@Nullable Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
++        FileManager.initialize(this); // Initialize FileManager with Activity context
+         // Inflates the layout and initializes the binding object
+         binding = DataBindingUtil.setContentView(this, getLayoutResourceId());
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+@@ -50,4 +50,4 @@ this, getStatusBarColor(), ColorUtils.isColorDark(getStatusBarColor())
+             );
+         }
+     }
+-}
++}
+\ No newline at end of file
+
+File: app/src/main/java/org/bepass/oblivion/base/StateAwareBaseActivity.java
+Patch:
+@@ -18,6 +18,7 @@
+ import org.bepass.oblivion.enums.ConnectionState;
+ import org.bepass.oblivion.service.OblivionVpnService;
+ import org.bepass.oblivion.utils.ColorUtils;
++import org.bepass.oblivion.utils.FileManager;
+ import org.bepass.oblivion.utils.SystemUtils;
+ 
+ /**
+@@ -39,6 +40,7 @@ public abstract class StateAwareBaseActivity<B extends ViewDataBinding> extends
+     @Override
+     protected void onCreate(@Nullable Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
++        FileManager.initialize(this); // Initialize FileManager with Activity context
+         binding = DataBindingUtil.setContentView(this, getLayoutResourceId());
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+             SystemUtils.setStatusBarColor(
+
+File: app/src/main/java/org/bepass/oblivion/ui/SplashScreenActivity.java
+Patch:
+@@ -6,8 +6,10 @@
+ import android.view.View;
+ 
+ import org.bepass.oblivion.R;
++import org.bepass.oblivion.base.ApplicationLoader;
+ import org.bepass.oblivion.base.BaseActivity;
+ import org.bepass.oblivion.databinding.ActivitySplashScreenBinding;
++import org.bepass.oblivion.utils.FileManager;
+ import org.bepass.oblivion.utils.LocaleHandler;
+ import org.bepass.oblivion.utils.ThemeHelper;
+ 
+
+File: app/src/main/java/org/bepass/oblivion/utils/ThemeHelper.java
+Patch:
+@@ -56,8 +56,6 @@ public static synchronized ThemeHelper getInstance() {
+     }
+ 
+     public void init() {
+-        // Initialize the current theme from settings
+-        FileManager.initialize(ApplicationLoader.getAppCtx());
+         int themeMode = FileManager.getInt(FileManager.KeyHolder.DARK_MODE);
+         currentTheme = Theme.fromNightMode(themeMode);
+         applyTheme();
+
+File: app/src/main/java/org/bepass/oblivion/service/OblivionVpnService.java
+Patch:
+@@ -502,6 +502,7 @@ private void setLastKnownState(ConnectionState lastKnownState) {
+     }
+ 
+     private String getNotificationText() {
++        FileManager.initialize(this);
+         boolean usePsiphon = FileManager.getBoolean("USERSETTING_psiphon");
+         boolean useWarp = FileManager.getBoolean("USERSETTING_gool");
+         boolean proxyMode = FileManager.getBoolean("USERSETTING_proxymode");
+@@ -521,6 +522,7 @@ private String getNotificationText() {
+     }
+ 
+     private void createNotification() {
++        FileManager.initialize(this);
+         NotificationManagerCompat notificationManager = NotificationManagerCompat.from(this);
+         NotificationChannelCompat notificationChannel = new NotificationChannelCompat.Builder(
+                 "vpn_service", NotificationManagerCompat.IMPORTANCE_DEFAULT)
+@@ -557,11 +559,9 @@ public void removeConnectionStateObserver(String key) {
+     }
+ 
+     private void configure() throws Exception {
++        FileManager.initialize(this);
+         boolean proxyModeEnabled = FileManager.getBoolean("USERSETTING_proxymode");
+-
+         if (proxyModeEnabled) {
+-            // Syncing FileManager
+-
+             // Proxy mode logic
+             StartOptions so = new StartOptions();
+             so.setPath(getApplicationContext().getFilesDir().getAbsolutePath());
+
+File: app/src/main/java/org/bepass/oblivion/EditSheet.java
+Patch:
+@@ -28,7 +28,6 @@ public class EditSheet {
+ 
+     public EditSheet(Context context, String title, String sharedPrefKey, SheetsCallBack sheetsCallBack) {
+         this.context = context;
+-        fileManager = FileManager.getInstance(context);
+ 
+         this.title = context.getString(R.string.editSheetEndpoint).replace("Endpoint",title);
+         this.sharedPrefKey = sharedPrefKey;
+@@ -61,11 +60,11 @@ public void start() {
+         }
+ 
+         titleView.setText(title);
+-        value.setText(fileManager.getString("USERSETTING_" + sharedPrefKey));
++        value.setText(FileManager.getString("USERSETTING_" + sharedPrefKey));
+ 
+         cancel.setOnClickListener(v -> sheet.cancel());
+         apply.setOnClickListener(v -> {
+-            fileManager.set("USERSETTING_" + sharedPrefKey, value.getText().toString());
++            FileManager.set("USERSETTING_" + sharedPrefKey, value.getText().toString());
+             sheet.cancel();
+         });
+ 
+
+File: app/src/main/java/org/bepass/oblivion/enums/SplitTunnelMode.java
+Patch:
+@@ -6,10 +6,10 @@ public enum SplitTunnelMode {
+     DISABLED,
+     BLACKLIST;
+ 
+-    public static SplitTunnelMode getSplitTunnelMode(FileManager fm) {
++    public static SplitTunnelMode getSplitTunnelMode() {
+         SplitTunnelMode splitTunnelMode;
+         try {
+-            splitTunnelMode = SplitTunnelMode.valueOf(fm.getString("splitTunnelMode", SplitTunnelMode.DISABLED.toString()));
++            splitTunnelMode = SplitTunnelMode.valueOf(FileManager.getString("splitTunnelMode", SplitTunnelMode.DISABLED.toString()));
+         } catch (Exception e) {
+             splitTunnelMode = SplitTunnelMode.DISABLED;
+         }
+
+File: app/src/main/java/org/bepass/oblivion/utils/LocaleHandler.java
+Patch:
+@@ -26,10 +26,9 @@ public LocaleHandler(Context context) {
+     }
+ 
+     public void setPersianAsDefaultLocaleIfNeeds() {
+-        FileManager fileManager = FileManager.getInstance(context);
+-        if (!fileManager.getBoolean(IS_SET_DEFAULT_LOCALE)) {
++        if (!FileManager.getBoolean(IS_SET_DEFAULT_LOCALE)) {
+             AppCompatDelegate.setApplicationLocales(LocaleListCompat.create(configuredLocales.getFirstMatch(new String[] { DEFAULT_LOCALE })));
+-            fileManager.set(IS_SET_DEFAULT_LOCALE, true);
++            FileManager.set(IS_SET_DEFAULT_LOCALE, true);
+         }
+     }
+ 
+
+File: app/src/main/java/org/bepass/oblivion/utils/SystemUtils.java
+Patch:
+@@ -30,11 +30,11 @@ private static void changeStatusBarIconColor(Activity activity, boolean isDark)
+         Window window = activity.getWindow();
+         View decorView = window.getDecorView();
+         int flags = decorView.getSystemUiVisibility();
+-        if (!isDark) {
+-            // Make status bar icons dark (e.g., for light background)
++        if (isDark) {
++            // Make status bar icons dark (e.g., for dark background)
+             flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+         } else {
+-            // Make status bar icons light (e.g., for dark background)
++            // Make status bar icons light (e.g., for light background)
+             flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+         }
+         decorView.setSystemUiVisibility(flags);
+
+File: app/src/main/java/org/bepass/oblivion/ui/MainActivity.java
+Patch:
+@@ -30,7 +30,6 @@
+ import org.bepass.oblivion.R;
+ import org.bepass.oblivion.base.StateAwareBaseActivity;
+ import org.bepass.oblivion.databinding.ActivityMainBinding;
+-import org.bepass.oblivion.utils.ThemeHelper;
+ 
+ import java.util.HashSet;
+ import java.util.Set;
+@@ -137,8 +136,7 @@ private void requestNotificationPermission() {
+     }
+ 
+     private void setupUI() {
+-        binding.floatingActionButton.setOnClickListener(v -> localeHandler.showLanguageSelectionDialog(() ->
+-                localeHandler.restartActivity(this)));
++        binding.floatingActionButton.setOnClickListener(v -> localeHandler.showLanguageSelectionDialog());
+         binding.infoIcon.setOnClickListener(v -> startActivity(new Intent(MainActivity.this, InfoActivity.class)));
+         binding.bugIcon.setOnClickListener(v -> startActivity(new Intent(MainActivity.this, LogActivity.class)));
+         binding.settingIcon.setOnClickListener(v -> startActivity(new Intent(MainActivity.this, SettingsActivity.class)));
+
+File: app/src/main/java/org/bepass/oblivion/service/OblivionVpnService.java
+Patch:
+@@ -578,6 +578,7 @@ private void configure() throws Exception {
+         if (endpoint.equals("engage.cloudflareclient.com:2408")) {
+             endpoint = "";
+         }
++        int endpointType = fileManager.getInt("USERSETTING_endpoint_type");
+ 
+         String license = fileManager.getString("USERSETTING_license", "").trim();
+         boolean enablePsiphon = fileManager.getBoolean("USERSETTING_psiphon", false);
+@@ -591,6 +592,7 @@ private void configure() throws Exception {
+         so.setBindAddress(bindAddress);
+         so.setLicense(license);
+         so.setDNS("1.1.1.1");
++        so.setEndpointType(endpointType);
+ 
+         if (enablePsiphon && !enableGool) {
+             so.setPsiphonEnabled(true);
+
+File: app/src/main/java/org/bepass/oblivion/ui/LogActivity.java
+Patch:
+@@ -45,12 +45,10 @@ protected int getStatusBarColor() {
+     @Override
+     protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+-        setContentView(R.layout.activity_log);
+ 
+-        setupScrollListener();
+         binding.back.setOnClickListener(v -> getOnBackPressedDispatcher().onBackPressed());
+-
+         binding.copytoclip.setOnClickListener(v -> copyLast100LinesToClipboard());
++        setupScrollListener();
+ 
+         logUpdater = new Runnable() {
+             @Override
+
+File: app/src/main/java/org/bepass/oblivion/PublicIPUtils.java
+Patch:
+@@ -9,6 +9,7 @@
+ 
+ import java.net.InetSocketAddress;
+ import java.net.Proxy;
++import java.util.Locale;
+ import java.util.Objects;
+ import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.Executors;
+@@ -61,7 +62,7 @@ public void getIPDetails(IPDetailsCallback callback) {
+                     }
+                     details.ip = jsonData.getString("ip");
+                     details.country = jsonData.getString("country");
+-                    details.flag = EmojiManager.getForAlias(jsonData.getString("country").toLowerCase()).getUnicode();
++                    details.flag = EmojiManager.getForAlias(jsonData.getString("country").toLowerCase(Locale.ROOT)).getUnicode();
+                     handler.post(() -> callback.onDetailsReceived(details));
+                     return;
+                 } catch (Exception e) {
+
+File: app/src/main/java/org/bepass/oblivion/EditSheet.java
+Patch:
+@@ -27,7 +27,7 @@ public EditSheet(Context context, String title, String sharedPrefKey, SheetsCall
+         this.context = context;
+         fileManager = FileManager.getInstance(context);
+ 
+-        this.title = "تغییر مقدار " + title;
++        this.title = context.getString(R.string.editSheetEndpoint).replace("Endpoint",title);
+         this.sharedPrefKey = sharedPrefKey;
+ 
+         this.sheetsCallBack = sheetsCallBack;
+
+File: app/src/main/java/org/bepass/oblivion/SettingsActivity.java
+Patch:
+@@ -72,9 +72,9 @@ public void handleOnBackPressed() {
+ 
+         SheetsCallBack sheetsCallBack = this::settingBasicValuesFromSPF;
+         // Listen to Changes
+-        endpointLayout.setOnClickListener(v -> (new EditSheet(this, "اندپوینت", "endpoint", sheetsCallBack)).start());
+-        portLayout.setOnClickListener(v -> (new EditSheet(this, "پورت", "port", sheetsCallBack)).start());
+-        licenseLayout.setOnClickListener(v -> (new EditSheet(this, "لایسنس", "license", sheetsCallBack)).start());
++        endpointLayout.setOnClickListener(v -> (new EditSheet(this, getString(R.string.endpointText), "endpoint", sheetsCallBack)).start());
++        portLayout.setOnClickListener(v -> (new EditSheet(this, getString(R.string.portTunText), "port", sheetsCallBack)).start());
++        licenseLayout.setOnClickListener(v -> (new EditSheet(this, getString(R.string.licenseText), "license", sheetsCallBack)).start());
+ 
+         ArrayAdapter<CharSequence> adapter = ArrayAdapter.createFromResource(this, R.array.countries, R.layout.country_item_layout);
+         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+
+File: app/src/main/java/org/bepass/oblivion/ConnectionState.java
+Patch:
+@@ -6,4 +6,7 @@ public enum ConnectionState {
+     public boolean isDisconnected() {
+         return this == DISCONNECTED;
+     }
++    public boolean isConnecting(){
++        return this == CONNECTING;
++    }
+ }
+
+File: app/src/main/java/org/bepass/oblivion/BugActivity.java
+Patch:
+@@ -17,7 +17,6 @@
+ public class BugActivity extends AppCompatActivity {
+ 
+     private final Handler handler = new Handler(Looper.getMainLooper());
+-    private ImageView back;
+     private TextView logs;
+     private ScrollView logScrollView;
+     private boolean isUserScrollingUp = false;
+@@ -28,12 +27,12 @@ protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+         setContentView(R.layout.activity_bug);
+ 
+-        back = findViewById(R.id.back);
++        ImageView back = findViewById(R.id.back);
+         logs = findViewById(R.id.logs);
+         logScrollView = findViewById(R.id.logScrollView);
+ 
+         setupScrollListener();
+-        back.setOnClickListener(v -> onBackPressed());
++        back.setOnClickListener(v -> getOnBackPressedDispatcher().onBackPressed());
+         logUpdater = new Runnable() {
+             @Override
+             public void run() {
+
+File: app/src/main/java/org/bepass/oblivion/FileManager.java
+Patch:
+@@ -6,7 +6,6 @@
+ import java.util.Set;
+ 
+ public class FileManager {
+-    public static String currentLog;
+     private static FileManager instance;
+     private final SharedPreferences sharedPreferences;
+ 
+
+File: app/src/main/java/org/bepass/oblivion/MainActivity.java
+Patch:
+@@ -24,7 +24,6 @@ public class MainActivity extends ConnectionAwareBaseActivity {
+     ProgressBar ipProgressBar;
+     FileManager fileManager;
+     PublicIPUtils pIPUtils;
+-    private ActivityResultLauncher<String> pushNotificationPermissionLauncher;
+     private ActivityResultLauncher<Intent> vpnPermissionLauncher;
+     private long backPressedTime;
+     private Toast backToast;
+@@ -49,7 +48,7 @@ public void handleOnBackPressed() {
+                 backPressedTime = System.currentTimeMillis();
+             }
+         });
+-        pushNotificationPermissionLauncher = registerForActivityResult(new ActivityResultContracts.RequestPermission(), isGranted -> {
++        ActivityResultLauncher<String> pushNotificationPermissionLauncher = registerForActivityResult(new ActivityResultContracts.RequestPermission(), isGranted -> {
+             if (!isGranted) {
+                 Toast.makeText(this, "Permission denied", Toast.LENGTH_LONG).show();
+             }
+@@ -76,7 +75,7 @@ public void handleOnBackPressed() {
+         switchButton = findViewById(R.id.switch_button);
+         stateText = findViewById(R.id.state_text);
+         publicIP = findViewById(R.id.publicIP);
+-        ipProgressBar = (ProgressBar) findViewById(R.id.ipProgressBar);
++        ipProgressBar = findViewById(R.id.ipProgressBar);
+ 
+         infoIcon.setOnClickListener(v -> startActivity(new Intent(MainActivity.this, InfoActivity.class)));
+         bugIcon.setOnClickListener(v -> startActivity(new Intent(MainActivity.this, BugActivity.class)));
+
+File: app/src/main/java/org/bepass/oblivion/SplitTunnelOptionsAdapter.java
+Patch:
+@@ -15,7 +15,7 @@ public class SplitTunnelOptionsAdapter extends RecyclerView.Adapter<SplitTunnelO
+ 
+     private final OnSettingsChanged settingsCallback;
+ 
+-    private FileManager fm;
++    private final FileManager fm;
+ 
+ 
+     public SplitTunnelOptionsAdapter(Context context, OnSettingsChanged settingsCallback) {
+@@ -73,7 +73,6 @@ public static class ViewHolder extends RecyclerView.ViewHolder {
+         SwitchMaterial showSystemApps;
+         RadioButton disabled;
+         RadioButton blacklist;
+-        RadioButton whitelist;
+ 
+         public ViewHolder(@NonNull View itemView) {
+             super(itemView);
+
+File: app/src/main/java/org/bepass/oblivion/ConnectionAwareBaseActivity.java
+Patch:
+@@ -41,6 +41,7 @@ public void onServiceDisconnected(ComponentName arg0) {
+     private void observeConnectionStatus() {
+         if (!isBound) return;
+         OblivionVpnService.registerConnectionStateObserver(getKey(), serviceMessenger, state -> {
++            if (lastKnownConnectionState == state) return;
+             lastKnownConnectionState = state;
+             onConnectionStateChange(state);
+         });
+
+File: app/src/main/java/org/bepass/oblivion/MainActivity.java
+Patch:
+@@ -256,7 +256,7 @@ private String calculateArgs() {
+     }
+ 
+     private void startVpnService() {
+-        Toast.makeText(getApplicationContext(), calculateArgs(), Toast.LENGTH_LONG).show();
++        //Toast.makeText(getApplicationContext(), calculateArgs(), Toast.LENGTH_LONG).show();
+         Intent intent = new Intent(this, OblivionVpnService.class);
+         intent.putExtra("command", calculateArgs());
+         intent.putExtra("bindAddress", getBindAddress(false));
+
+File: app/src/main/java/org/bepass/oblivion/MainActivity.java
+Patch:
+@@ -256,7 +256,7 @@ private String calculateArgs() {
+     }
+ 
+     private void startVpnService() {
+-        //Toast.makeText(getApplicationContext(), calculateArgs(), Toast.LENGTH_LONG).show();
++        Toast.makeText(getApplicationContext(), calculateArgs(), Toast.LENGTH_LONG).show();
+         Intent intent = new Intent(this, OblivionVpnService.class);
+         intent.putExtra("command", calculateArgs());
+         intent.putExtra("bindAddress", getBindAddress(false));
+
+File: app/src/main/java/org/bepass/oblivion/OblivionVpnService.java
+Patch:
+@@ -118,7 +118,8 @@ public static String pingOverHTTP(String bindAddress) {
+         try (Response response = client.newCall(request).execute()) {
+             return response.isSuccessful() ? "true" : "false";
+         } catch (IOException e) {
+-            return e.getMessage().contains("ECONNREFUSED") || e.getMessage().contains("general failure") ? "false" : "exception";
++            e.printStackTrace();
++            return e.getMessage().contains("ECONNREFUSED") || e.getMessage().contains("general failure") || e.getMessage().contains("timed out") ? "false" : "exception";
+         }
+     }
+ 
+
+File: app/src/main/java/org/bepass/oblivion/InfoActivity.java
+Patch:
+@@ -22,7 +22,7 @@ protected void onCreate(Bundle savedInstanceState) {
+ 
+         init();
+ 
+-        github.setOnClickListener(v -> openURL("https://github.com/bepass"));
++        github.setOnClickListener(v -> openURL("https://github.com/bepass-org/oblivion"));
+ 
+         back.setOnClickListener(v -> onBackPressed());
+     }
+
+File: app/src/main/java/org/bepass/oblivion/MainActivity.java
+Patch:
+@@ -230,7 +230,7 @@ private String calculateArgs() {
+         boolean enableGool = fileManager.getBoolean("USERSETTING_gool");
+ 
+         if(!endpoint.contains("engage.cloudflareclient.com")) {
+-            Arg = "-e" + endpoint;
++            Arg = "-e " + endpoint;
+         }/* else {
+             Arg = "-scan";
+         }*/
+
+File: app/src/main/java/org/bepass/oblivion/SettingsActivity.java
+Patch:
+@@ -37,16 +37,16 @@ protected void onCreate(Bundle savedInstanceState) {
+ 
+         init();
+ 
+-        // Set Current Values
+-        settingBasicValuesFromSPF();
+-
+         SheetsCallBack sheetsCallBack = this::settingBasicValuesFromSPF;
+         // Listen to Changes
+         endpointLayout.setOnClickListener(v -> (new EditSheet(this, "اندپوینت", "endpoint", sheetsCallBack)).start());
+         portLayout.setOnClickListener(v -> (new EditSheet(this, "پورت", "port", sheetsCallBack)).start());
+         countryLayout.setOnClickListener(v -> (new EditSheet(this, "کشور", "country", sheetsCallBack)).start());
+         licenseLayout.setOnClickListener(v -> (new EditSheet(this, "لایسنس", "license", sheetsCallBack)).start());
+ 
++        // Set Current Values
++        settingBasicValuesFromSPF();
++
+         goolLayout.setOnClickListener(v -> gool.setChecked(!gool.isChecked()));
+         lanLayout.setOnClickListener(v -> lan.setChecked(!lan.isChecked()));
+         psiphonLayout.setOnClickListener(v -> psiphon.setChecked(!psiphon.isChecked()));
+
+File: app/src/main/java/org/bepass/oblivion/MainActivity.java
+Patch:
+@@ -74,7 +74,7 @@ private SwitchButton.OnCheckedChangeListener createSwitchCheckedChangeListener()
+             }
+             if (connectionState == 1 && isChecked) {
+                 // From NoAction to Connecting
+-                stateText.setText("در حال اتصال...");
++                stateText.setText("درحال اتصال ...");
+                 connectionState = 2;
+ 
+                 Intent vpnIntent = OblivionVpnService.prepare(this);
+
+File: app/src/main/java/org/bepass/oblivion/MainActivity.java
+Patch:
+@@ -74,7 +74,7 @@ private SwitchButton.OnCheckedChangeListener createSwitchCheckedChangeListener()
+             }
+             if (connectionState == 1 && isChecked) {
+                 // From NoAction to Connecting
+-                stateText.setText("در حال اتصال...");
++                stateText.setText("درحال اتصال ...");
+                 connectionState = 2;
+ 
+                 Intent vpnIntent = OblivionVpnService.prepare(this);
+
+File: app/src/main/java/org/bepass/oblivion/BugActivity.java
+Patch:
+@@ -11,7 +11,6 @@
+ 
+ import java.io.BufferedReader;
+ import java.io.FileInputStream;
+-import java.io.FileNotFoundException;
+ import java.io.IOException;
+ import java.io.InputStreamReader;
+ 
+
+File: app/src/main/java/org/bepass/oblivion/OblivionVpnService.java
+Patch:
+@@ -43,7 +43,7 @@ public void run() {
+                     e.printStackTrace();
+                 }
+             }
+-            handler.postDelayed(this, 2000); // Poll every second
++            handler.postDelayed(this, 2000); // Poll every 2 seconds
+         }
+     };
+ 
+

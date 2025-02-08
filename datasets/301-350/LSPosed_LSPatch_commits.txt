@@ -1,0 +1,631 @@
+File: meta-loader/src/main/java/org/lsposed/lspatch/metaloader/LSPAppComponentFactoryStub.java
+Patch:
+@@ -71,7 +71,7 @@ public class LSPAppComponentFactoryStub extends AppComponentFactory {
+                 var ipm = IPackageManager.Stub.asInterface(ServiceManager.getService("package"));
+                 ApplicationInfo manager;
+                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+-                    manager = (ApplicationInfo) HiddenApiBypass.invoke(IPackageManager.class, ipm, "getApplicationInfo", Constants.MANAGER_PACKAGE_NAME, 0L, Process.myPid() / 100000);
++                    manager = (ApplicationInfo) HiddenApiBypass.invoke(IPackageManager.class, ipm, "getApplicationInfo", Constants.MANAGER_PACKAGE_NAME, 0L, Process.myUid() / 100000);
+                 } else {
+                     manager = ipm.getApplicationInfo(Constants.MANAGER_PACKAGE_NAME, 0, Process.myUid() / 100000);
+                 }
+
+File: meta-loader/src/main/java/org/lsposed/lspatch/metaloader/LSPAppComponentFactoryStub.java
+Patch:
+@@ -5,6 +5,7 @@
+ import android.content.pm.ApplicationInfo;
+ import android.content.pm.IPackageManager;
+ import android.os.Build;
++import android.os.Process;
+ import android.os.ServiceManager;
+ import android.util.JsonReader;
+ import android.util.Log;
+@@ -70,9 +71,9 @@ public class LSPAppComponentFactoryStub extends AppComponentFactory {
+                 var ipm = IPackageManager.Stub.asInterface(ServiceManager.getService("package"));
+                 ApplicationInfo manager;
+                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+-                    manager = (ApplicationInfo) HiddenApiBypass.invoke(IPackageManager.class, ipm, "getApplicationInfo", Constants.MANAGER_PACKAGE_NAME, 0L, 0);
++                    manager = (ApplicationInfo) HiddenApiBypass.invoke(IPackageManager.class, ipm, "getApplicationInfo", Constants.MANAGER_PACKAGE_NAME, 0L, Process.myPid() / 100000);
+                 } else {
+-                    manager = ipm.getApplicationInfo(Constants.MANAGER_PACKAGE_NAME, 0, 0);
++                    manager = ipm.getApplicationInfo(Constants.MANAGER_PACKAGE_NAME, 0, Process.myUid() / 100000);
+                 }
+                 try (var zip = new ZipFile(new File(manager.sourceDir));
+                      var is = zip.getInputStream(zip.getEntry(Constants.LOADER_DEX_ASSET_PATH));
+
+File: patch-loader/src/main/java/org/lsposed/lspatch/loader/LSPApplication.java
+Patch:
+@@ -85,8 +85,7 @@ public static void onLoad() throws RemoteException, IOException {
+         }
+ 
+         disableProfile(context);
+-        Startup.initXposed(false, ActivityThread.currentProcessName(), ActivityThread.currentApplication().getPackageCodePath(), service);
+-        Log.i(TAG, "Bootstrap Xposed");
++        Startup.initXposed(false, ActivityThread.currentProcessName(), context.getApplicationInfo().dataDir, service);
+         Startup.bootstrapXposed();
+         // WARN: Since it uses `XResource`, the following class should not be initialized
+         // before forkPostCommon is invoke. Otherwise, you will get failure of XResources
+
+File: patch-loader/src/main/java/org/lsposed/lspatch/service/RemoteApplicationService.java
+Patch:
+@@ -34,7 +34,7 @@ public class RemoteApplicationService implements ILSPApplicationService {
+     private static final String TAG = "LSPatch";
+     private static final String MODULE_SERVICE = Constants.MANAGER_PACKAGE_NAME + ".manager.ModuleService";
+ 
+-    private ILSPApplicationService service;
++    private volatile ILSPApplicationService service;
+ 
+     @SuppressLint("DiscouragedPrivateApi")
+     public RemoteApplicationService(Context context) throws RemoteException {
+@@ -48,8 +48,8 @@ public RemoteApplicationService(Context context) throws RemoteException {
+                 @Override
+                 public void onServiceConnected(ComponentName name, IBinder binder) {
+                     Log.i(TAG, "Manager binder received");
+-                    latch.countDown();
+                     service = Stub.asInterface(binder);
++                    latch.countDown();
+                 }
+ 
+                 @Override
+
+File: patch-loader/src/main/java/org/lsposed/lspatch/loader/LSPApplication.java
+Patch:
+@@ -137,6 +137,7 @@ private static Context createLoadedApkWithContext() {
+                     Files.copy(is, cacheApkPath);
+                 }
+             }
++            cacheApkPath.toFile().setWritable(false);
+ 
+             var mPackages = (Map<?, ?>) XposedHelpers.getObjectField(activityThread, "mPackages");
+             mPackages.remove(appInfo.packageName);
+
+File: patch/src/main/java/org/lsposed/patch/LSPatch.java
+Patch:
+@@ -331,7 +331,8 @@ private byte[] modifyManifestFile(InputStream is, String metadata, int minSdkVer
+         property.addApplicationAttribute(new AttributeItem("appComponentFactory", PROXY_APP_COMPONENT_FACTORY));
+         property.addMetaData(new ModificationProperty.MetaData("lspatch", metadata));
+         // TODO: replace query_all with queries -> manager
+-        property.addUsesPermission("android.permission.QUERY_ALL_PACKAGES");
++        if (useManager)
++            property.addUsesPermission("android.permission.QUERY_ALL_PACKAGES");
+ 
+         var os = new ByteArrayOutputStream();
+         (new ManifestEditor(is, os, property)).processManifest();
+
+File: patch-loader/src/main/java/org/lsposed/lspatch/service/LocalApplicationService.java
+Patch:
+@@ -8,6 +8,7 @@
+ import android.util.Log;
+ 
+ import org.lsposed.lspatch.loader.util.FileUtils;
++import org.lsposed.lspatch.share.Constants;
+ import org.lsposed.lspatch.util.ModuleLoader;
+ import org.lsposed.lspd.models.Module;
+ import org.lsposed.lspd.service.ILSPApplicationService;
+@@ -33,7 +34,7 @@ public LocalApplicationService(Context context) {
+                 String modulePath = context.getCacheDir() + "/lspatch/" + packageName + "/";
+                 String cacheApkPath;
+                 try (ZipFile sourceFile = new ZipFile(context.getPackageResourcePath())) {
+-                    cacheApkPath = modulePath + sourceFile.getEntry("assets/lspatch/modules/" + name).getCrc() + ".apk";
++                    cacheApkPath = modulePath + sourceFile.getEntry(Constants.EMBEDDED_MODULES_ASSET_PATH + name).getCrc() + ".apk";
+                 }
+ 
+                 if (!Files.exists(Paths.get(cacheApkPath))) {
+
+File: patch/src/main/java/org/lsposed/patch/LSPatch.java
+Patch:
+@@ -1,6 +1,7 @@
+ package org.lsposed.patch;
+ 
+ import static org.lsposed.lspatch.share.Constants.CONFIG_ASSET_PATH;
++import static org.lsposed.lspatch.share.Constants.EMBEDDED_MODULES_ASSET_PATH;
+ import static org.lsposed.lspatch.share.Constants.LOADER_DEX_ASSET_PATH;
+ import static org.lsposed.lspatch.share.Constants.ORIGINAL_APK_ASSET_PATH;
+ import static org.lsposed.lspatch.share.Constants.PROXY_APP_COMPONENT_FACTORY;
+@@ -306,7 +307,7 @@ private void embedModules(ZFile zFile) {
+                 var manifest = Objects.requireNonNull(ManifestParser.parseManifestFile(xmlIs));
+                 var packageName = manifest.packageName;
+                 logger.i("  - " + packageName);
+-                zFile.add("assets/lspatch/modules/" + packageName + ".apk", fileIs);
++                zFile.add(EMBEDDED_MODULES_ASSET_PATH + packageName + ".apk", fileIs);
+             } catch (NullPointerException | IOException e) {
+                 logger.e(module + " does not exist or is not a valid apk file.");
+             }
+
+File: share/java/src/main/java/org/lsposed/lspatch/share/Constants.java
+Patch:
+@@ -6,6 +6,7 @@ public class Constants {
+     final static public String LOADER_DEX_ASSET_PATH = "assets/lspatch/loader.dex";
+     final static public String META_LOADER_DEX_ASSET_PATH = "assets/lspatch/metaloader.dex";
+     final static public String ORIGINAL_APK_ASSET_PATH = "assets/lspatch/origin.apk";
++    final static public String EMBEDDED_MODULES_ASSET_PATH = "assets/lspatch/modules/";
+ 
+     final static public String PATCH_FILE_SUFFIX = "-lspatched.apk";
+     final static public String PROXY_APP_COMPONENT_FACTORY = "org.lsposed.lspatch.metaloader.LSPAppComponentFactoryStub";
+
+File: meta-loader/src/main/java/org/lsposed/lspatch/metaloader/LSPAppComponentFactoryStub.java
+Patch:
+@@ -9,6 +9,7 @@
+ import android.util.JsonReader;
+ import android.util.Log;
+ 
++import org.lsposed.hiddenapibypass.HiddenApiBypass;
+ import org.lsposed.lspatch.share.Constants;
+ 
+ import java.io.ByteArrayOutputStream;
+@@ -68,7 +69,7 @@ public class LSPAppComponentFactoryStub extends AppComponentFactory {
+                 var ipm = IPackageManager.Stub.asInterface(ServiceManager.getService("package"));
+                 ApplicationInfo manager;
+                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+-                    manager = ipm.getApplicationInfo(Constants.MANAGER_PACKAGE_NAME, 0L, 0);
++                    manager = (ApplicationInfo) HiddenApiBypass.invoke(IPackageManager.class, ipm, "getApplicationInfo", Constants.MANAGER_PACKAGE_NAME, 0L, 0);
+                 } else {
+                     manager = ipm.getApplicationInfo(Constants.MANAGER_PACKAGE_NAME, 0, 0);
+                 }
+
+File: patch-loader/src/main/java/org/lsposed/lspatch/loader/LSPApplication.java
+Patch:
+@@ -133,7 +133,7 @@ private static Context createLoadedApkWithContext() {
+             String originPath = appInfo.dataDir + "/cache/lspatch/origin/";
+             String cacheApkPath;
+             try (ZipFile sourceFile = new ZipFile(appInfo.sourceDir)) {
+-                cacheApkPath = originPath + sourceFile.getEntry(ORIGINAL_APK_ASSET_PATH).getCrc();
++                cacheApkPath = originPath + sourceFile.getEntry(ORIGINAL_APK_ASSET_PATH).getCrc() + ".apk";
+             }
+ 
+             appInfo.sourceDir = cacheApkPath;
+@@ -317,7 +317,7 @@ private static void doSigBypass(Context context) throws IllegalAccessException,
+         if (config.sigBypassLevel >= Constants.SIGBYPASS_LV_PM_OPENAT) {
+             String cacheApkPath;
+             try (ZipFile sourceFile = new ZipFile(context.getPackageResourcePath())) {
+-                cacheApkPath = context.getCacheDir() + "/lspatch/origin/" + sourceFile.getEntry(ORIGINAL_APK_ASSET_PATH).getCrc();
++                cacheApkPath = context.getCacheDir() + "/lspatch/origin/" + sourceFile.getEntry(ORIGINAL_APK_ASSET_PATH).getCrc() + ".apk";
+             }
+             SigBypass.enableOpenatHook(context.getPackageResourcePath(), cacheApkPath);
+         }
+
+File: patch-loader/src/main/java/org/lsposed/lspatch/service/LocalApplicationService.java
+Patch:
+@@ -33,7 +33,7 @@ public LocalApplicationService(Context context) {
+                 String modulePath = context.getCacheDir() + "/lspatch/" + packageName + "/";
+                 String cacheApkPath;
+                 try (ZipFile sourceFile = new ZipFile(context.getPackageResourcePath())) {
+-                    cacheApkPath = modulePath + sourceFile.getEntry("assets/lspatch/modules/" + name).getCrc();
++                    cacheApkPath = modulePath + sourceFile.getEntry("assets/lspatch/modules/" + name).getCrc() + ".apk";
+                 }
+ 
+                 if (!Files.exists(Paths.get(cacheApkPath))) {
+
+File: patch/src/main/java/org/lsposed/patch/LSPatch.java
+Patch:
+@@ -345,7 +345,7 @@ private void embedModules(ZFile zFile) {
+                 var manifest = Objects.requireNonNull(ManifestParser.parseManifestFile(xmlIs));
+                 var packageName = manifest.packageName;
+                 logger.i("  - " + packageName);
+-                zFile.add("assets/lspatch/modules/" + packageName + ".bin", fileIs);
++                zFile.add("assets/lspatch/modules/" + packageName + ".apk", fileIs);
+             } catch (NullPointerException | IOException e) {
+                 logger.e(module + " does not exist or is not a valid apk file.");
+             }
+
+File: share/java/src/main/java/org/lsposed/lspatch/share/Constants.java
+Patch:
+@@ -4,7 +4,7 @@ public class Constants {
+ 
+     final static public String DEX_ASSET_PATH = "assets/lspatch/lsp.dex";
+     final static public String CONFIG_ASSET_PATH = "assets/lspatch/config.json";
+-    final static public String ORIGINAL_APK_ASSET_PATH = "assets/lspatch/origin_apk.bin";
++    final static public String ORIGINAL_APK_ASSET_PATH = "assets/lspatch/origin.apk";
+ 
+     final static public String PROXY_APP_COMPONENT_FACTORY = "org.lsposed.lspatch.appstub.LSPAppComponentFactoryStub";
+     final static public String MANAGER_PACKAGE_NAME = "org.lsposed.lspatch";
+
+File: patch-loader/src/main/java/org/lsposed/lspatch/loader/LSPApplication.java
+Patch:
+@@ -93,10 +93,11 @@ public static void onLoad() {
+         try {
+             disableProfile(context);
+             Startup.initXposed(false, ActivityThread.currentProcessName(), service);
+-            Log.i(TAG, "Start loading modules");
++            Log.i(TAG, "Bootstrap Xposed");
+             Startup.bootstrapXposed();
+             // WARN: Since it uses `XResource`, the following class should not be initialized
+             // before forkPostCommon is invoke. Otherwise, you will get failure of XResources
++            Log.i(TAG, "Load modules");
+             LSPLoader.initModules(appLoadedApk);
+             Log.i(TAG, "Modules initialized");
+ 
+
+File: share/java/src/main/java/org/lsposed/lspatch/share/PatchConfig.java
+Patch:
+@@ -6,11 +6,13 @@ public class PatchConfig {
+     public final int sigBypassLevel;
+     public final String originalSignature;
+     public final String appComponentFactory;
++    public final LSPConfig lspConfig;
+ 
+     public PatchConfig(boolean useManager, int sigBypassLevel, String originalSignature, String appComponentFactory) {
+         this.useManager = useManager;
+         this.sigBypassLevel = sigBypassLevel;
+         this.originalSignature = originalSignature;
+         this.appComponentFactory = appComponentFactory;
++        this.lspConfig = LSPConfig.instance;
+     }
+ }
+
+File: patch/src/main/java/org/lsposed/patch/LSPatch.java
+Patch:
+@@ -223,8 +223,7 @@ public void patch(File srcApkFile, File outputFile) throws PatchError, IOExcepti
+                 var pair = ManifestParser.parseManifestFile(is);
+                 if (pair == null)
+                     throw new PatchError("Failed to parse AndroidManifest.xml");
+-                appComponentFactory = pair.appComponentFactory == null ? "" : pair.appComponentFactory;
+-
++                appComponentFactory = pair.appComponentFactory;
+                 logger.d("original appComponentFactory class: " + appComponentFactory);
+             }
+ 
+
+File: patch/src/main/java/org/lsposed/patch/LSPatch.java
+Patch:
+@@ -217,7 +217,7 @@ public void patch(File srcApkFile, File outputFile) throws PatchError, IOExcepti
+             // parse the app appComponentFactory full name from the manifest file
+             String appComponentFactory;
+             try (var is = manifestEntry.open()) {
+-                var pair =ManifestParser.parseManifestFile(is);
++                var pair = ManifestParser.parseManifestFile(is);
+                 if (pair == null)
+                     throw new PatchError("Failed to parse AndroidManifest.xml");
+                 appComponentFactory = pair.appComponentFactory == null ? "" : pair.appComponentFactory;
+
+File: app/src/main/java/org/lsposed/lspatch/loader/LSPApplication.java
+Patch:
+@@ -143,7 +143,8 @@ private static void initAppComponentFactory(Context context) {
+                     Files.copy(is, Paths.get(cacheApkPath));
+                 }
+             }
+-            var appClassLoader = new DelegateLastClassLoader(cacheApkPath, aInfo.nativeLibraryDir, baseClassLoader.getParent());
++            // TODO: The last param should be baseClassLoader.getParent(), but it breaks sigbypass and I don't know why
++            var appClassLoader = new DelegateLastClassLoader(cacheApkPath, aInfo.nativeLibraryDir, baseClassLoader);
+             AppComponentFactory originalAppComponentFactory;
+             try {
+                 originalAppComponentFactory = (AppComponentFactory) appClassLoader.loadClass(originalAppComponentFactoryClass).newInstance();
+
+File: app/src/main/java/org/lsposed/lspatch/loader/LSPApplication.java
+Patch:
+@@ -241,7 +241,7 @@ public static void loadModules(Context context) {
+         final var new_modules = new JSONArray();
+         LSPApplication.modules.forEach(m -> {
+             try {
+-                m.file = loadModule(m.apkPath);
++                m.file = loadModule(context, m.apkPath);
+                 var module = new JSONObject();
+                 module.put("name", m.packageName);
+                 module.put("enabled", !disabled_modules.contains(m.packageName));
+@@ -297,7 +297,7 @@ private static void readName(ZipFile apkFile, String initName, List<String> name
+         }
+     }
+ 
+-    private static PreLoadedApk loadModule(String path) {
++    private static PreLoadedApk loadModule(Context context, String path) {
+         var file = new PreLoadedApk();
+         var preLoadedDexes = new ArrayList<SharedMemory>();
+         var moduleClassNames = new ArrayList<String>(1);
+@@ -312,6 +312,7 @@ private static PreLoadedApk loadModule(String path) {
+         }
+         if (preLoadedDexes.isEmpty()) return null;
+         if (moduleClassNames.isEmpty()) return null;
++        file.hostApk = context.getApplicationInfo().sourceDir;
+         file.preLoadedDexes = preLoadedDexes;
+         file.moduleClassNames = moduleClassNames;
+         file.moduleLibraryNames = moduleLibraryNames;
+
+File: apkzlib/src/main/java/com/android/tools/build/apkzlib/zip/ZFile.java
+Patch:
+@@ -1556,7 +1556,7 @@ private void computeEocd() throws IOException {
+     }
+ 
+     Verify.verify(eocdComment != null);
+-    Eocd eocd = new Eocd(entries.size(), dirStart, dirSize, eocdComment);
++    Eocd eocd = new Eocd(entries.size() + linkingEntries.size(), dirStart, dirSize, eocdComment);
+     eocdComment = null;
+ 
+     byte[] eocdBytes = eocd.toBytes();
+
+File: apkzlib/src/main/java/com/android/tools/build/apkzlib/zip/StoredEntry.java
+Patch:
+@@ -192,7 +192,7 @@ public class StoredEntry {
+           boolean dummy)
+           throws IOException {
+       this((nestedEntry == null ? linkedEntry: nestedEntry).linkingCentralDirectoryHeader(name, file),
+-              file, linkedEntry.getSource(), storage, linkedEntry, nestedOffset, dummy);
++              file, (nestedEntry == null ? linkedEntry : nestedEntry).getSource(), storage, linkedEntry, nestedOffset, dummy);
+   }
+ 
+   private CentralDirectoryHeader linkingCentralDirectoryHeader(String name, ZFile file) {
+
+File: app/src/main/java/org/lsposed/lspatch/loader/LSPApplication.java
+Patch:
+@@ -38,9 +38,7 @@
+ import java.lang.reflect.Method;
+ import java.lang.reflect.Modifier;
+ import java.nio.charset.StandardCharsets;
+-import java.nio.file.FileAlreadyExistsException;
+ import java.nio.file.Files;
+-import java.nio.file.Paths;
+ import java.nio.file.StandardCopyOption;
+ import java.nio.file.attribute.PosixFilePermissions;
+ import java.util.ArrayList;
+@@ -49,7 +47,6 @@
+ import java.util.HashSet;
+ import java.util.Map;
+ 
+-import dalvik.system.PathClassLoader;
+ import de.robv.android.xposed.XC_MethodHook;
+ import de.robv.android.xposed.XposedBridge;
+ import de.robv.android.xposed.XposedHelpers;
+
+File: app/src/main/java/org/lsposed/lspatch/loader/LSPApplication.java
+Patch:
+@@ -186,9 +186,10 @@ public static void loadModules(Context context) {
+         HashSet<String> embedded_modules = new HashSet<>();
+         HashSet<String> disabled_modules = new HashSet<>();
+         try {
++            var lastInstalledTime = new File(context.getApplicationInfo().sourceDir).lastModified();
+             for (var name : context.getAssets().list("modules")) {
+                 var target = new File(cacheDir, name + ".apk");
+-                if (target.exists()) {
++                if (target.lastModified() > lastInstalledTime) {
+                     embedded_modules.add(name);
+                     LSPApplication.modules.put(name, target.getAbsolutePath());
+                     continue;
+
+File: app/src/main/java/org/lsposed/lspatch/tester/Hook.java
+Patch:
+@@ -8,7 +8,7 @@
+ public class Hook implements IXposedHookLoadPackage {
+     @Override
+     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
+-        XposedHelpers.findAndHookMethod("org.lsposed.org.lsposed.org.lsposed.lspatch.tester.MainActivity", lpparam.classLoader, "checkXposed2", new XC_MethodHook() {
++        XposedHelpers.findAndHookMethod("org.lsposed.lspatch.tester.MainActivity", lpparam.classLoader, "checkXposed2", new XC_MethodHook() {
+             @Override
+             protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                 param.setResult(true);
+
+File: patch/src/main/java/org/lsposed/patch/LSPatch.java
+Patch:
+@@ -53,7 +53,7 @@ public class LSPatch {
+     @Parameter(names = {"-p", "--proxyname"}, description = "Special proxy app name with full dot path")
+     private String proxyName = "org.lsposed.lspatch.appstub.LSPApplicationStub";
+ 
+-    @Parameter(names = {"-d", "--debuggable"}, description = "Set 1 to make the app debuggable = true, set 0 to make the app debuggable = false")
++    @Parameter(names = {"-d", "--debuggable"}, description = "Set true to make the app debuggable, otherwise set 0 (default) to make the app non-debuggable")
+     private boolean debuggableFlag = false;
+ 
+     @Parameter(names = {"-l", "--sigbypasslv"}, description = "Signature bypass level. 0 (disable), 1 (pm), 2 (pm+openat). default 0")
+@@ -267,4 +267,4 @@ private String currentTimeStr() {
+         SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss");
+         return df.format(new Date());
+     }
+-}
+\ No newline at end of file
++}
+
+File: patch/src/main/java/org/lsposed/patch/task/BuildAndSignApkTask.java
+Patch:
+@@ -52,7 +52,7 @@ public void run() {
+                 keyStoreAssetPath = "assets/keystore";
+             }
+ 
+-            try (InputStream inputStream = getClass().getResourceAsStream(keyStoreAssetPath);
++            try (InputStream inputStream = getClass().getClassLoader().getResourceAsStream(keyStoreAssetPath);
+                  FileOutputStream out = new FileOutputStream(keyStoreFilePath)) {
+                 IOUtils.copy(inputStream, out);
+             }
+
+File: patch/src/main/java/org/lsposed/patch/task/SoAndDexCopyTask.java
+Patch:
+@@ -50,7 +50,7 @@ private void copySoFile() {
+         }
+ 
+         if (existLibPathArray.isEmpty()) {
+-            System.out.println("Target app dont have any so in \"lib/{eabi}\" dir, so create default \"armeabi-v7a\"");
++            System.out.println("Target app dont have any so in \"lib/\" dir, so create default \"armeabi-v7a\"");
+             String libPath = APK_LIB_PATH_ARRAY[0];
+             String apkSoFullPath = fullLibPath(libPath);
+             File apkSoFullPathFile = new File(apkSoFullPath);
+
+File: patch/src/main/java/org/lsposed/patch/task/SoAndDexCopyTask.java
+Patch:
+@@ -54,7 +54,7 @@ private void copySoFile() {
+             String libPath = APK_LIB_PATH_ARRAY[0];
+             String apkSoFullPath = fullLibPath(libPath);
+             File apkSoFullPathFile = new File(apkSoFullPath);
+-            if (apkSoFullPathFile.mkdirs()) {
++            if (!apkSoFullPathFile.mkdirs()) {
+                 throw new IllegalStateException("mkdir fail " + apkSoFullPathFile.getAbsolutePath());
+             }
+             existLibPathArray.add(libPath);
+
+File: appstub/src/main/java/org/lsposed/lspatch/appstub/LSPApplicationStub.java
+Patch:
+@@ -73,7 +73,9 @@ protected void attachBaseContext(Context base) {
+ 
+         if (realLSPApplication != null) {
+             try {
+-                realLSPApplication.getClass().getDeclaredMethod("attachBaseContext", Context.class).invoke(realLSPApplication, base);
++                Method method = realLSPApplication.getClass().getDeclaredMethod("attachBaseContext", Context.class);
++                method.setAccessible(true);
++                method.invoke(realLSPApplication, base);
+             }
+             catch (Exception e) {
+                 throw new IllegalStateException("wtf", e);
+
+File: patch/src/main/java/org/lsposed/patch/LSPatch.java
+Patch:
+@@ -19,6 +19,7 @@
+ 
+ import java.io.File;
+ import java.io.IOException;
++import java.nio.charset.Charset;
+ import java.text.SimpleDateFormat;
+ import java.util.Date;
+ import java.util.regex.Pattern;
+@@ -184,7 +185,8 @@ protected void doCommandLine() throws IOException {
+         }
+ 
+         // save lspatch config to asset..
+-        fuckIfFail(new File(unzipApkFilePath, "assets/" + Constants.CONFIG_NAME_SIGBYPASSLV + sigbypassLevel).createNewFile());
++        org.apache.commons.io.FileUtils.write(new File(unzipApkFilePath, "assets" + File.separator + Constants.CONFIG_NAME_SIGBYPASSLV + sigbypassLevel), "lspatch",
++                Charset.defaultCharset());
+ 
+         //  compress all files into an apk and then sign it.
+         new BuildAndSignApkTask(true, unzipApkFilePath, outputPath).run();
+
+File: app/src/main/java/org/lsposed/lspatch/loader/LSPLoader.java
+Patch:
+@@ -68,7 +68,7 @@ public static boolean loadModule(final String moduleApkPath, String moduleLibPat
+         ClassLoader mcl = new DelegateLastClassLoader(moduleApkPath, nativePath.toString(), initLoader);
+ 
+         try {
+-            if (mcl.loadClass(XposedBridge.class.getName()).getClassLoader() != appClassLoader) {
++            if (mcl.loadClass(XposedBridge.class.getName()).getClassLoader() != initLoader) {
+                 Log.e(TAG, "Cannot load module:");
+                 Log.e(TAG, "The Xposed API classes are compiled into the module's APK.");
+                 Log.e(TAG, "This may cause strange issues and must be fixed by the module developer.");
+
+File: patch/src/main/java/org/lsposed/patch/LSPatch.java
+Patch:
+@@ -36,7 +36,7 @@ public class LSPatch extends BaseCommand {
+     private boolean forceOverwrite = false;
+ 
+     @Opt(opt = "p", longOpt = "proxyname", description = "Special proxy app name with full dot path", argName = "name")
+-    private String proxyName = "org.lsposed.lspatch.loader.LSPApplication";
++    private String proxyName = "org.lsposed.lspatch.appstub.LSPApplicationStub";
+ 
+     @Opt(opt = "d", longOpt = "debuggable", description = "Set 1 to make the app debuggable = true, " +
+             "set 0 to make the app debuggable = false", argName = "0 or 1")
+
+File: patch/src/main/java/org/lsposed/patch/LSPatch.java
+Patch:
+@@ -36,7 +36,7 @@ public class LSPatch extends BaseCommand {
+     private boolean forceOverwrite = false;
+ 
+     @Opt(opt = "pn", longOpt = "proxyname", description = "special proxy app name with full dot path", argName = "proxy app name")
+-    private String proxyname = "com.wind.xposed.entry.LSPApplication";
++    private String proxyname = "org.lsposed.lspatch.loader.LSPApplication";
+ 
+     @Opt(opt = "d", longOpt = "debuggable", description = "set 1 to make the app debuggable = true, " +
+             "set 0 to make the app debuggable = false", argName = "0 or 1")
+
+File: xpatch/src/main/java/com/storm/wind/xpatch/task/SoAndDexCopyTask.java
+Patch:
+@@ -122,7 +122,7 @@ private void copyDexFile(int dexFileCount) {
+         if (useWhaleHookFramework) {
+             dexAssetPath = "assets/dex/whale/classes-1.0.dex";
+         } else {
+-            dexAssetPath = "assets/dex/sandhook/classes-1.0.dex";
++            dexAssetPath = "assets/dex/sandhook/classes-2.0.dex";
+         }
+         FileUtils.copyFileFromJar(dexAssetPath, unzipApkFilePath + copiedDexFileName);
+     }
+
+File: xpatch/src/main/java/com/storm/wind/xpatch/task/ApkModifyTask.java
+Patch:
+@@ -36,7 +36,7 @@ public void run() {
+ 
+         String jarOutputPath = unzipApkFile.getParent() + File.separator + JAR_FILE_NAME;
+ 
+-        // classes-1.0.dex
++        // classes.dex
+         String targetDexFileName = dumpJarFile(dexFileCount, unzipApkFilePath, jarOutputPath, applicationName);
+ 
+         if (showAllLogs) {
+@@ -104,12 +104,12 @@ private void jar2DexCmd(String jarFilePath, String dexOutPath) {
+         cmd.doMain(args);
+     }
+ 
+-    // 列出目录下所有dex文件，classes-1.0.dex，classes2.dex，classes3.dex  .....
++    // 列出目录下所有dex文件，classes.dex，classes2.dex，classes3.dex  .....
+     private ArrayList<String> createClassesDotDexFileList(int dexFileCount) {
+         ArrayList<String> list = new ArrayList<>();
+         for (int i = 0; i < dexFileCount; i++) {
+             if (i == 0) {
+-                list.add("classes-1.0.dex");
++                list.add("classes.dex");
+             } else {
+                 list.add("classes" + (i + 1) + ".dex");
+             }
+
+File: xpatch/src/main/java/com/storm/wind/xpatch/task/BuildAndSignApkTask.java
+Patch:
+@@ -58,7 +58,7 @@ private boolean signApk(String apkPath, String keyStorePath, String signedApkPat
+         if (isAndroid()) {
+             boolean success = true;
+             try {
+-                ShellCmdUtil.chmod((new File(apkPath)).getParent(), ShellCmdUtil.FileMode.MODE_755);
++                ShellCmdUtil.chmodNoException((new File(apkPath)).getParent(), ShellCmdUtil.FileMode.MODE_755);
+                 net.fornwall.apksigner.Main.main
+                         ("--password", "123456", keyStorePath, apkPath, signedApkPath);
+             } catch (Exception e1) {
+@@ -83,7 +83,7 @@ private boolean signApk(String apkPath, String keyStorePath, String signedApkPat
+                     String localJarsignerPath = (new File(apkPath)).getParent() + File.separator + "jarsigner-081688";
+                     localJarsignerFile = new File(localJarsignerPath);
+                     FileUtils.copyFileFromJar("assets/jarsigner", localJarsignerPath);
+-                    ShellCmdUtil.chmod(localJarsignerPath, ShellCmdUtil.FileMode.MODE_755);
++                    ShellCmdUtil.chmodNoException(localJarsignerPath, ShellCmdUtil.FileMode.MODE_755);
+                     // ShellCmdUtil.execCmd("chmod -R 777 " + localJarsignerPath, null);
+                     signCmd = new StringBuilder(localJarsignerPath + " ");
+                 }
+
+File: xpatch/src/main/java/com/storm/wind/xpatch/MainCommand.java
+Patch:
+@@ -137,10 +137,10 @@ protected void doCommandLine() {
+         String manifestFilePath = unzipApkFilePath + "AndroidManifest.xml";
+ 
+         // parse the app main application full name from the manifest file
+-        ManifestParser.Pair pair = ManifestParser.parseManidestFile(manifestFilePath);
++        ManifestParser.Pair pair = ManifestParser.parseManifestFile(manifestFilePath);
+         String applicationName;
+-        if (pair != null && pair.applictionName != null) {
+-            applicationName = pair.applictionName;
++        if (pair != null && pair.applicationName != null) {
++            applicationName = pair.applicationName;
+         } else {
+             System.out.println(" Application name not found error !!!!!! ");
+             applicationName = DEFAULT_APPLICATION_NAME;
+
+File: xpatch/src/main/java/com/storm/wind/xpatch/MainCommand.java
+Patch:
+@@ -137,10 +137,10 @@ protected void doCommandLine() {
+         String manifestFilePath = unzipApkFilePath + "AndroidManifest.xml";
+ 
+         // parse the app main application full name from the manifest file
+-        ManifestParser.Pair pair = ManifestParser.parseManidestFile(manifestFilePath);
++        ManifestParser.Pair pair = ManifestParser.parseManifestFile(manifestFilePath);
+         String applicationName;
+-        if (pair != null && pair.applictionName != null) {
+-            applicationName = pair.applictionName;
++        if (pair != null && pair.applicationName != null) {
++            applicationName = pair.applicationName;
+         } else {
+             System.out.println(" Application name not found error !!!!!! ");
+             applicationName = DEFAULT_APPLICATION_NAME;
+
+File: xpatch/src/main/java/com/storm/wind/xpatch/task/SoAndDexCopyTask.java
+Patch:
+@@ -48,10 +48,10 @@ private void copySoFile() {
+         // Try to find so file path in the apk, then copy so into it
+         boolean copySuccess = false;
+         for (String libPath : APK_LIB_PATH_ARRAY) {
+-            copySuccess = copyLibFile(unzipApkFilePath + libPath.replace("/", File.separator),
++            boolean copied = copyLibFile(unzipApkFilePath + libPath.replace("/", File.separator),
+                     SO_FILE_PATH_MAP.get(libPath), false);
+-            if (copySuccess) {
+-                break;
++            if (copied) {
++                copySuccess = true;
+             }
+         }
+ 
+

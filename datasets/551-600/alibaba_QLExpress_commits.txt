@@ -1,0 +1,3172 @@
+File: src/test/java/com/ql/util/express/test/logic/ShortCircuitLogicTest.java
+Patch:
+@@ -28,7 +28,7 @@ public boolean calculateLogicTest(String expression, IExpressContext<String, Obj
+     }
+ 
+     /**
+-     * 测试非短路逻辑,并且输出出错信息
++     * 测试短路逻辑,并且输出出错信息
+      *
+      * @throws Exception
+      */
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorSelfDefineServiceFunction.java
+Patch:
+@@ -72,8 +72,10 @@ public OperatorBase cloneMe(String operatorName, String errorInfo) throws Except
+     public OperateData executeInner(InstructionSetContext parent, ArraySwap list) throws Exception {
+         Object[] parameters = DynamicParamsUtil.transferDynamicParams(parent, list, parameterClasses,
+             this.maybeDynamicParams);
++        boolean oldA = method.isAccessible();
+         method.setAccessible(true);
+         Object obj = this.method.invoke(this.serviceObject, ExpressUtil.transferArray(parameters, parameterClasses));
++        method.setAccessible(oldA);
+         if (obj != null) {
+             return OperateDataCacheManager.fetchOperateData(obj, obj.getClass());
+         }
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorSelfDefineServiceFunction.java
+Patch:
+@@ -72,6 +72,7 @@ public OperatorBase cloneMe(String operatorName, String errorInfo) throws Except
+     public OperateData executeInner(InstructionSetContext parent, ArraySwap list) throws Exception {
+         Object[] parameters = DynamicParamsUtil.transferDynamicParams(parent, list, parameterClasses,
+             this.maybeDynamicParams);
++        method.setAccessible(true);
+         Object obj = this.method.invoke(this.serviceObject, ExpressUtil.transferArray(parameters, parameterClasses));
+         if (obj != null) {
+             return OperateDataCacheManager.fetchOperateData(obj, obj.getClass());
+
+File: src/main/java/com/ql/util/express/parse/KeyWordDefine4Java.java
+Patch:
+@@ -12,7 +12,7 @@ public class KeyWordDefine4Java {
+         ".", ",", ":", ";", "(", ")", "{", "}", "[", "]", "?",
+ 
+         //Boolean运算符号
+-        "!", "<", ">", "<=", ">=", "==", "!=", "&&", "||",
++        "!", "<", ">", "<=", ">=", "==", "!=","<>", "&&", "||",
+ 
+         "=", "/**", "**/",
+ 
+@@ -66,7 +66,7 @@ public class KeyWordDefine4Java {
+         "OP_LEVEL4:TYPE=OPERATOR,DEFINE=*|/|mod|%",
+         "OP_LEVEL5:TYPE=OPERATOR,DEFINE=+|-",
+         "OP_LEVEL6:TYPE=OPERATOR,DEFINE=in|like",
+-        "OP_LEVEL7:TYPE=OPERATOR,DEFINE=>|>=|<|<=|==|!=",
++        "OP_LEVEL7:TYPE=OPERATOR,DEFINE=>|>=|<|<=|==|!=|<>",
+         "OP_LEVEL8:TYPE=OPERATOR,DEFINE=&&",
+         "OP_LEVEL9:TYPE=OPERATOR,DEFINE=OR_INNER|nor",
+ 
+@@ -157,7 +157,7 @@ public class KeyWordDefine4Java {
+         "PROGRAM:TYPE=BLOCK,DEFINE=STAT_LIST#STAT_BLOCK",
+     };
+     public final String[][] instructionFactoryMapping = {
+-        {"^,~,!,++,--,&,|,<<,>>,*,/,mod,%,+,-,like,>,>=,<,<=,==,!=,&&,||,nor,=,return,alias,exportAlias,ARRAY_CALL",
++        {"^,~,!,++,--,&,|,<<,>>,*,/,mod,%,+,-,like,>,>=,<,<=,==,!=,<>,&&,||,nor,=,return,alias,exportAlias,ARRAY_CALL",
+             "com.ql.util.express.instruction.OperatorInstructionFactory"},
+         {"in", "com.ql.util.express.instruction.InInstructionFactory"},
+         {"exportDef", "com.ql.util.express.instruction.OperatorInstructionFactory"},
+
+File: src/test/java/com/ql/util/express/issue/Issue187InEqualitySignTest.java
+Patch:
+@@ -16,7 +16,7 @@ public void test() throws Exception {
+ 
+         String express = "1 <> 2";
+         Object result = runner.execute(express, context, null, true, true);
+-        System.out.println(result);
++        Assert.assertTrue((Boolean)result);
+ 
+     }
+ }
+\ No newline at end of file
+
+File: src/main/java/com/ql/util/express/parse/KeyWordDefine4Java.java
+Patch:
+@@ -37,7 +37,7 @@ public class KeyWordDefine4Java {
+ 
+         "XOR:TYPE=WORDDEF,DEFINE=^",
+         "MAYBE:TYPE=WORDDEF,DEFINE=|",
+-        "OR:TYPE=WORDDEF,DEFINE=||",
++        "OR_INNER:TYPE=WORDDEF,DEFINE=||",
+         "LEFT_COMMENT:TYPE=WORDDEF,DEFINE=/**",
+         "RIGHT_COMMENT:TYPE=WORDDEF,DEFINE=**/",
+         "ARROW:TYPE=WORDDEF,DEFINE=->",
+@@ -68,7 +68,7 @@ public class KeyWordDefine4Java {
+         "OP_LEVEL6:TYPE=OPERATOR,DEFINE=in|like",
+         "OP_LEVEL7:TYPE=OPERATOR,DEFINE=>|>=|<|<=|==|!=",
+         "OP_LEVEL8:TYPE=OPERATOR,DEFINE=&&",
+-        "OP_LEVEL9:TYPE=OPERATOR,DEFINE=OR|nor",
++        "OP_LEVEL9:TYPE=OPERATOR,DEFINE=OR_INNER|nor",
+ 
+         "OP_LIST:TYPE=GROUP,DEFINE=OP_LEVEL1|OP_LEVEL2|OP_LEVEL3|OP_LEVEL4|OP_LEVEL5|OP_LEVEL6|OP_LEVEL7|OP_LEVEL8"
+             + "|OP_LEVEL9|=|LEFT_BRACKET|RIGHT_BRACKET|[|]|{|}",
+
+File: src/main/java/com/ql/util/express/QLambda.java
+Patch:
+@@ -35,7 +35,8 @@ public Object call(Object... params) throws Exception {
+             operateDataLocalVar.setObject(context, params.length > i ? params[i] : null);
+         }
+ 
+-        return InstructionSetRunner.execute(functionSet, context, errorList, environment.isTrace(), false, true);
++        return InstructionSetRunner.execute(functionSet, context, errorList, environment.isTrace(),
++                false, true, environment.getExecuteTimeOut());
+     }
+ 
+     /**
+
+File: src/main/java/com/ql/util/express/instruction/IOperateDataCache.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.ql.util.express.instruction;
+ 
+ import com.ql.util.express.CallResult;
++import com.ql.util.express.ExecuteTimeout;
+ import com.ql.util.express.ExpressLoader;
+ import com.ql.util.express.ExpressRunner;
+ import com.ql.util.express.IExpressContext;
+@@ -28,12 +29,12 @@ public interface IOperateDataCache {
+     OperateDataKeyValue fetchOperateDataKeyValue(OperateData key, OperateData value);
+ 
+     RunEnvironment fetRunEnvironment(InstructionSet instructionSet, InstructionSetContext instructionSetContext,
+-        boolean isTrace);
++                                     boolean isTrace, ExecuteTimeout executeTimeOut);
+ 
+     CallResult fetchCallResult(Object returnValue, boolean isExit);
+ 
+     InstructionSetContext fetchInstructionSetContext(boolean isExpandToParent, ExpressRunner expressRunner,
+-        IExpressContext<String, Object> parent, ExpressLoader expressLoader, boolean isSupportDynamicFieldName);
++                                                     IExpressContext<String, Object> parent, ExpressLoader expressLoader, boolean isSupportDynamicFieldName);
+ 
+     void resetCache();
+ 
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionCallMacro.java
+Patch:
+@@ -23,7 +23,7 @@ public void execute(RunEnvironment environment, List<String> errorList) throws E
+ 
+         Object result = InstructionSetRunner.execute(context.getExpressRunner(), (InstructionSet)functionSet,
+             context.getExpressLoader(), context, errorList, environment.isTrace(), false, false,
+-            environment.getContext().isSupportDynamicFieldName());
++            environment.getContext().isSupportDynamicFieldName(), environment.getExecuteTimeOut());
+         if (result instanceof OperateData) {
+             environment.push((OperateData)result);
+         } else {
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionCallSelfDefineFunction.java
+Patch:
+@@ -58,8 +58,8 @@ public static OperateData executeSelfFunction(RunEnvironment environment, Instru
+             context.addSymbol(operateDataLocalVar.getName(), operateDataLocalVar);
+             operateDataLocalVar.setObject(context, parameters.get(i).getObject(environment.getContext()));
+         }
+-        Object result = InstructionSetRunner.execute(functionSet, context, errorList, environment.isTrace(), false,
+-            true);
++        Object result = InstructionSetRunner.execute(functionSet, context, errorList,
++                environment.isTrace(), false, true, environment.getExecuteTimeOut());
+         return OperateDataCacheManager.fetchOperateData(result, null);
+     }
+ 
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionNewVirClass.java
+Patch:
+@@ -34,7 +34,7 @@ public void execute(RunEnvironment environment, List<String> errorList) throws E
+         OperateDataVirClass result = new OperateDataVirClass(className);
+         environment.push(result);
+         environment.programPointAddOne();
+-        result.initialInstance(environment.getContext(), list, errorList, environment.isTrace());
++        result.initialInstance(environment, list, errorList, environment.isTrace());
+     }
+ 
+     @Override
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorNew.java
+Patch:
+@@ -61,7 +61,7 @@ public OperateData executeInner(InstructionSetContext parent, ArraySwap list) th
+             s.append(")");
+             throw new QLException(s.toString());
+         }
+-
++        QLExpressRunStrategy.assertSecurityRiskConstructor(c);
+         tmpObj = c.newInstance(objs);
+         return OperateDataCacheManager.fetchOperateData(tmpObj, obj);
+     }
+
+File: src/main/java/com/ql/util/express/config/QLExpressRunStrategy.java
+Patch:
+@@ -169,6 +169,7 @@ public static void addSecureMethod(Class<?> clazz, String methodName) {
+     public static void addRiskSecureConstructor(Class<?> clazz){
+         SECURE_RISK_CONSTRUCTOR_LIST.add(clazz.getName());
+     }
++
+     public static void addSecureConstructor(Class<?> clazz) {
+         SECURE_CONSTRUCTOR_LIST.add(clazz.getName());
+     }
+
+File: src/main/java/com/ql/util/express/instruction/ForInstructionFactory.java
+Patch:
+@@ -80,10 +80,10 @@ public boolean createInstruction(ExpressRunner expressRunner, InstructionSet res
+         //修改Break和Continue指令的跳转位置,循环出堆
+         ForRelBreakContinue rel = forStack.pop();
+         for (InstructionGoTo item : rel.breakList) {
+-            item.setOffset(result.getCurrentPoint() - item.getOffset());
++            item.setOffset(result.getCurrentPoint() - item.getOffset() + 1);
+         }
+         for (InstructionGoTo item : rel.continueList) {
+-            item.setOffset(selfAddPoint - item.getOffset() - 1);
++            item.setOffset(selfAddPoint - item.getOffset());
+         }
+ 
+         //生成作用域结束指令
+
+File: src/main/java/com/ql/util/express/instruction/MacroInstructionFactory.java
+Patch:
+@@ -17,7 +17,7 @@ public boolean createInstruction(ExpressRunner expressRunner, InstructionSet res
+         for (ExpressNode tempNode : children[1].getChildrenArray()) {
+             macroRoot.addChild(tempNode);
+         }
+-        InstructionSet macroInstructionSet = expressRunner.createInstructionSet(macroRoot, InstructionSet.TYPE_MARCO);
++        InstructionSet macroInstructionSet = expressRunner.createInstructionSet(macroRoot, InstructionSet.TYPE_MACRO);
+         result.addMacroDefine(macroName, new FunctionInstructionSet(macroName, "macro", macroInstructionSet));
+         return false;
+     }
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionClearDataStack.java
+Patch:
+@@ -8,9 +8,6 @@ public class InstructionClearDataStack extends Instruction {
+     @Override
+     public void execute(RunEnvironment environment, List<String> errorList) {
+         // 目前的模式，不需要执行任何操作
+-        if (environment.isTrace() && log.isDebugEnabled()) {
+-            log.debug(this);
+-        }
+         environment.clearDataStack();
+         environment.programPointAddOne();
+     }
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionCloseNewArea.java
+Patch:
+@@ -9,9 +9,6 @@ public class InstructionCloseNewArea extends Instruction {
+     @Override
+     public void execute(RunEnvironment environment, List<String> errorList) {
+         //目前的模式，不需要执行任何操作
+-        if (environment.isTrace() && log.isDebugEnabled()) {
+-            log.debug(this);
+-        }
+         environment.setContext((InstructionSetContext)environment.getContext().getParent());
+         environment.programPointAddOne();
+     }
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionGoTo.java
+Patch:
+@@ -17,9 +17,6 @@ public InstructionGoTo(int offset) {
+ 
+     @Override
+     public void execute(RunEnvironment environment, List<String> errorList) {
+-        if (environment.isTrace() && log.isDebugEnabled()) {
+-            log.debug(this);
+-        }
+         environment.gotoWithOffset(this.offset);
+     }
+ 
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionLoadLambda.java
+Patch:
+@@ -20,7 +20,7 @@ public InstructionLoadLambda(InstructionSet lambdaSet) {
+     @Override
+     public void execute(RunEnvironment environment, List<String> errorList) {
+         environment.push(
+-            OperateDataCacheManager.fetchOperateData(new QLambda(lambdaSet, environment, errorList, log), null)
++            OperateDataCacheManager.fetchOperateData(new QLambda(lambdaSet, environment, errorList), null)
+         );
+         environment.programPointAddOne();
+     }
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionOpenNewArea.java
+Patch:
+@@ -10,9 +10,6 @@ public class InstructionOpenNewArea extends Instruction {
+     @Override
+     public void execute(RunEnvironment environment, List<String> errorList) {
+         //目前的模式，不需要执行任何操作
+-        if (environment.isTrace() && log.isDebugEnabled()) {
+-            log.debug(this);
+-        }
+         InstructionSetContext parentContext = environment.getContext();
+         environment.setContext(OperateDataCacheManager.fetchInstructionSetContext(
+             true,
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionReturn.java
+Patch:
+@@ -14,9 +14,6 @@ public InstructionReturn(boolean haveReturnValue) {
+     @Override
+     public void execute(RunEnvironment environment, List<String> errorList) throws Exception {
+         //目前的模式，不需要执行任何操作
+-        if (environment.isTrace() && log.isDebugEnabled()) {
+-            log.debug(this);
+-        }
+         if (this.haveReturnValue) {
+             environment.quitExpress(environment.pop().getObject(environment.getContext()));
+         } else {
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorIn.java
+Patch:
+@@ -33,9 +33,7 @@ public Object executeInner(Object[] list) throws Exception {
+             String msg = "对象类型不匹配，只有数字和字符串类型才才能执行 in 操作,当前数据类型是:";
+             throw new QLException(msg + obj.getClass().getName());
+         } else if (list.length == 2 && (list[1].getClass().isArray() || list[1] instanceof List)) {
+-            if (obj.equals(list[1])) {
+-                return true;
+-            } else if (list[1].getClass().isArray()) {
++            if (list[1].getClass().isArray()) {
+                 int len = Array.getLength(list[1]);
+                 for (int i = 0; i < len; i++) {
+                     boolean f = OperatorEqualsLessMore.executeInner("==", obj, Array.get(list[1], i));
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorMethod.java
+Patch:
+@@ -71,6 +71,9 @@ public OperateData executeInner(InstructionSetContext parent, ArraySwap list) th
+                     return appendingClassMethodManager.invoke(appendingClassMethod, parent, list, null);
+                 }
+             }
++            if (QLExpressRunStrategy.isSandboxMode()) {
++                throw new QLException("没有找到方法:" + this.methodName);
++            }
+             Method method = null;
+             // 调用静态方法
+             if (p0 instanceof OperateClass) {
+
+File: src/main/java/com/ql/util/express/parse/KeyWordDefine4Java.java
+Patch:
+@@ -92,8 +92,9 @@ public class KeyWordDefine4Java {
+ 
+         "FUNCTION_CALL:TYPE=EXPRESS,DEFINE=(ID->CONST_STRING|FUNCTION_NAME->CONST_STRING)$PARAMETER_LIST#FUNCTION_CALL",
+ 
+-        "ARRAY_CALL:TYPE=EXPRESS,DEFINE=(FUNCTION_CALL|OBJECT_CALL)$([->ARRAY_CALL^$EXPRESS$]~)^*$"
+-            + "(METHOD_CALL|FIELD_CALL)^*",
++        "ARRAY_CALL:TYPE=EXPRESS,DEFINE=ARRAY_CALL_PRE$ARRAY_CALL_POST^*",
++        "ARRAY_CALL_PRE:TYPE=EXPRESS,DEFINE=(FUNCTION_CALL|OBJECT_CALL)$([->ARRAY_CALL^$EXPRESS$]~)^*",
++        "ARRAY_CALL_POST:TYPE=EXPRESS,DEFINE=(METHOD_CALL|FIELD_CALL)$([->ARRAY_CALL^$EXPRESS$]~)^*",
+ 
+         "CAST_CALL:TYPE=EXPRESS,DEFINE=(LEFT_BRACKET~$CONST_CLASS$RIGHT_BRACKET~#cast)^*$((LAMBDA#LAMBDA)|ARRAY_CALL)",
+         "EXPRESS_OP_L1:TYPE=EXPRESS,DEFINE=OP_LEVEL1^*$CAST_CALL",
+
+File: src/test/java/com/ql/util/express/bugfix/CompileMemoryTest.java
+Patch:
+@@ -5,13 +5,11 @@
+ 
+ import com.ql.util.express.ExpressRunner;
+ import com.ql.util.express.InstructionSet;
+-import com.ql.util.express.match.QLPattern;
+ import org.junit.Test;
+ 
+ public class CompileMemoryTest {
+     @Test
+     public void test() throws Exception {
+-        QLPattern.printStackDepth = true;
+         List<String> expressList = new ArrayList<>();
+ 
+         String demo = "fieldList = formDO.getFieldList();\n" +
+@@ -123,6 +121,5 @@ public void test() throws Exception {
+             InstructionSet result2 = runner2.parseInstructionSet(express);
+             System.out.println(express + " 编译结果如下:\n" + result2);
+         }
+-        QLPattern.printStackDepth = false;
+     }
+ }
+
+File: src/test/java/com/ql/util/express/bugfix/ThrowExceptionTest.java
+Patch:
+@@ -20,7 +20,7 @@ public String testParseLong(String a) {
+     public void runExpress(String exp) throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+         IExpressContext<String, Object> context = new DefaultContext<>();
+-        Object result = runner.execute(exp, context, null, false, false);
++        Object result = runner.execute(exp, context, null, true, false);
+         System.out.println(result);
+     }
+ 
+
+File: src/test/java/com/ql/util/express/example/WorkflowTest.java
+Patch:
+@@ -106,7 +106,7 @@ public void testApprove2() throws Exception {
+         expressContext.put("申请人", "小强");
+         expressContext.put("金额", 5000);
+ 
+-        runner.executeByExpressName("example/approve1", expressContext, null, false, false, null);
++        runner.executeByExpressName("example/approve1", expressContext, null, false, false);
+     }
+ 
+     /**
+@@ -135,7 +135,7 @@ public void testApprove3() throws Exception {
+         expressContext.put("申请人", "小强");
+         expressContext.put("金额", 6000);
+ 
+-        runner.executeByExpressName("example/approve", expressContext, null, false, false, null);
++        runner.executeByExpressName("example/approve", expressContext, null, false, false);
+     }
+ 
+     /**
+@@ -165,6 +165,6 @@ public void testApprove4() throws Exception {
+         expressContext.put("申请人", "小强");
+         expressContext.put("金额", 7000);
+ 
+-        runner.executeByExpressName("example/approve1", expressContext, null, false, false, null);
++        runner.executeByExpressName("example/approve1", expressContext, null, false, false);
+     }
+ }
+
+File: src/test/java/com/ql/util/express/test/AClassDefineSingleTest.java
+Patch:
+@@ -21,7 +21,7 @@ public void testABC() throws Exception {
+         DefaultContext<String, Object> context = new DefaultContext<>();
+         expressRunner.loadMultiExpress("", expressDefine);
+         expressRunner.loadMultiExpress("ClassTest", express);
+-        Object result = expressRunner.executeByExpressName("ClassTest", context, null, true, false, null);
++        Object result = expressRunner.executeByExpressName("ClassTest", context, null, true, false);
+         System.out.println("result = " + result);
+     }
+ }
+
+File: src/test/java/com/ql/util/express/test/AClassDefineTest.java
+Patch:
+@@ -21,7 +21,7 @@ public void testNewVClass() throws Exception {
+         DefaultContext<String, Object> context = new DefaultContext<>();
+         runner.loadMultiExpress("ClassTest", express);
+ 
+-        Object result = runner.executeByExpressName("ClassTest", context, null, false, false, null);
++        Object result = runner.executeByExpressName("ClassTest", context, null, false, false);
+         Assert.assertTrue("VClass的作用域错误", result.toString().equalsIgnoreCase("300"));
+     }
+ 
+@@ -58,7 +58,7 @@ public void testABC() throws Exception {
+         DefaultContext<String, Object> context = new DefaultContext<>();
+         runner.loadMultiExpress("", expressDefine);
+         runner.loadMultiExpress("ClassTest", express);
+-        Object r = runner.executeByExpressName("ClassTest", context, null, false, false, null);
++        Object r = runner.executeByExpressName("ClassTest", context, null, false, false);
+         Assert.assertTrue("VClass的作用域错误", r.toString().equalsIgnoreCase("330--430--xuannan--xuanyu--199.99--11.11"));
+     }
+ }
+
+File: src/test/java/com/ql/util/express/test/ExpressRemoteCacheTest.java
+Patch:
+@@ -21,17 +21,17 @@ public void test_cache() {
+         context.put("b", 2);
+ 
+         if (cacheRunner.getCache("加法计算") != null) {
+-            Object result = cacheRunner.execute("加法计算", context, null, false, true, null);
++            Object result = cacheRunner.execute("加法计算", context, null, false, true);
+             Assert.assertTrue("加法计算", result.toString().equalsIgnoreCase("3"));
+             System.out.println(result);
+         }
+         if (cacheRunner.getCache("加法计算") != null) {
+-            Object result = cacheRunner.execute("减法计算", context, null, false, true, null);
++            Object result = cacheRunner.execute("减法计算", context, null, false, true);
+             Assert.assertTrue("减法计算", result.toString().equalsIgnoreCase("-1"));
+             System.out.println(result);
+         }
+         if (cacheRunner.getCache("乘法计算") != null) {
+-            Object result = cacheRunner.execute("乘法计算", context, null, false, true, null);
++            Object result = cacheRunner.execute("乘法计算", context, null, false, true);
+             Assert.assertTrue("乘法计算", result.toString().equalsIgnoreCase("2"));
+             System.out.println(result);
+         } else {
+
+File: src/test/java/com/ql/util/express/test/rating/RatingTest.java
+Patch:
+@@ -38,7 +38,7 @@ public void testRating() throws Exception {
+         context.put("仓储订单", goodsOrder);
+         context.put("费用科目", subjectValue);
+         //执行指令
+-        runner.executeByExpressName("rating", context, null, false, false, null);
++        runner.executeByExpressName("rating", context, null, false, false);
+         //runner.executeByExpressName("rating", context, null, false, false, null);
+         //while (true) {
+         //    runner.executeByExpressName("rating", context, null, false, false, null);
+
+File: src/test/java/com/ql/util/express/test/rating/RatingWithPropertyTest.java
+Patch:
+@@ -38,7 +38,7 @@ public void testRating() throws Exception {
+         SubjectManager subjectManager = new SubjectManager();
+         context.put("费用", subjectManager);
+ 
+-        runner.executeByExpressName("ratingWithProperty", context, null, false, false, null);
++        runner.executeByExpressName("ratingWithProperty", context, null, false, false);
+         //输出分成结果
+         System.out.println("----------分成结果----------------");
+         for (Object item : subjectManager.getSubjectValues()) {
+
+File: src/main/java/com/ql/util/express/config/QLExpressRunStrategy.java
+Patch:
+@@ -92,7 +92,6 @@ public class QLExpressRunStrategy {
+         }
+         addRiskSecureConstructor(java.lang.ProcessBuilder.class);
+         addRiskSecureConstructor(java.net.Socket.class);
+-        addRiskSecureConstructor(java.io.File.class);
+         addRiskSecureConstructor(java.awt.Desktop.class);
+         addRiskSecureConstructor(java.util.PropertyResourceBundle.class);
+     }
+
+File: src/main/java/com/ql/util/express/config/QLExpressRunStrategy.java
+Patch:
+@@ -95,8 +95,6 @@ public class QLExpressRunStrategy {
+         addRiskSecureConstructor(java.io.File.class);
+         addRiskSecureConstructor(java.awt.Desktop.class);
+         addRiskSecureConstructor(java.util.PropertyResourceBundle.class);
+-        addRiskSecureConstructor(java.nio.file.Files.class);
+-        addRiskSecureConstructor(java.nio.file.Path.class);
+     }
+ 
+     private QLExpressRunStrategy() {
+
+File: src/main/java/com/ql/util/express/QLambda.java
+Patch:
+@@ -35,7 +35,8 @@ public Object call(Object... params) throws Exception {
+             operateDataLocalVar.setObject(context, params.length > i ? params[i] : null);
+         }
+ 
+-        return InstructionSetRunner.execute(functionSet, context, errorList, environment.isTrace(), false, true);
++        return InstructionSetRunner.execute(functionSet, context, errorList, environment.isTrace(),
++                false, true, environment.getExecuteTimeOut());
+     }
+ 
+     /**
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionCallMacro.java
+Patch:
+@@ -23,7 +23,7 @@ public void execute(RunEnvironment environment, List<String> errorList) throws E
+ 
+         Object result = InstructionSetRunner.execute(context.getExpressRunner(), (InstructionSet)functionSet,
+             context.getExpressLoader(), context, errorList, environment.isTrace(), false, false,
+-            environment.getContext().isSupportDynamicFieldName());
++            environment.getContext().isSupportDynamicFieldName(), environment.getExecuteTimeOut());
+         if (result instanceof OperateData) {
+             environment.push((OperateData)result);
+         } else {
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionCallSelfDefineFunction.java
+Patch:
+@@ -58,8 +58,8 @@ public static OperateData executeSelfFunction(RunEnvironment environment, Instru
+             context.addSymbol(operateDataLocalVar.getName(), operateDataLocalVar);
+             operateDataLocalVar.setObject(context, parameters.get(i).getObject(environment.getContext()));
+         }
+-        Object result = InstructionSetRunner.execute(functionSet, context, errorList, environment.isTrace(), false,
+-            true);
++        Object result = InstructionSetRunner.execute(functionSet, context, errorList,
++                environment.isTrace(), false, true, environment.getExecuteTimeOut());
+         return OperateDataCacheManager.fetchOperateData(result, null);
+     }
+ 
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionNewVirClass.java
+Patch:
+@@ -34,7 +34,7 @@ public void execute(RunEnvironment environment, List<String> errorList) throws E
+         OperateDataVirClass result = new OperateDataVirClass(className);
+         environment.push(result);
+         environment.programPointAddOne();
+-        result.initialInstance(environment.getContext(), list, errorList, environment.isTrace());
++        result.initialInstance(environment, list, errorList, environment.isTrace());
+     }
+ 
+     @Override
+
+File: src/test/java/com/ql/util/express/bugfix/ThrowExceptionTest.java
+Patch:
+@@ -20,7 +20,7 @@ public String testParseLong(String a) {
+     public void runExpress(String exp) throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+         IExpressContext<String, Object> context = new DefaultContext<>();
+-        Object result = runner.execute(exp, context, null, false, false);
++        Object result = runner.execute(exp, context, null, true, false);
+         System.out.println(result);
+     }
+ 
+
+File: src/main/java/com/ql/util/express/parse/KeyWordDefine4Java.java
+Patch:
+@@ -92,8 +92,9 @@ public class KeyWordDefine4Java {
+ 
+         "FUNCTION_CALL:TYPE=EXPRESS,DEFINE=(ID->CONST_STRING|FUNCTION_NAME->CONST_STRING)$PARAMETER_LIST#FUNCTION_CALL",
+ 
+-        "ARRAY_CALL:TYPE=EXPRESS,DEFINE=(FUNCTION_CALL|OBJECT_CALL)$([->ARRAY_CALL^$EXPRESS$]~)^*$"
+-            + "(METHOD_CALL|FIELD_CALL)^*",
++        "ARRAY_CALL:TYPE=EXPRESS,DEFINE=ARRAY_CALL_PRE$ARRAY_CALL_POST^*",
++        "ARRAY_CALL_PRE:TYPE=EXPRESS,DEFINE=(FUNCTION_CALL|OBJECT_CALL)$([->ARRAY_CALL^$EXPRESS$]~)^*",
++        "ARRAY_CALL_POST:TYPE=EXPRESS,DEFINE=(METHOD_CALL|FIELD_CALL)$([->ARRAY_CALL^$EXPRESS$]~)^*",
+ 
+         "CAST_CALL:TYPE=EXPRESS,DEFINE=(LEFT_BRACKET~$CONST_CLASS$RIGHT_BRACKET~#cast)^*$((LAMBDA#LAMBDA)|ARRAY_CALL)",
+         "EXPRESS_OP_L1:TYPE=EXPRESS,DEFINE=OP_LEVEL1^*$CAST_CALL",
+
+File: src/main/java/com/ql/util/express/parse/KeyWordDefine4Java.java
+Patch:
+@@ -92,8 +92,9 @@ public class KeyWordDefine4Java {
+ 
+         "FUNCTION_CALL:TYPE=EXPRESS,DEFINE=(ID->CONST_STRING|FUNCTION_NAME->CONST_STRING)$PARAMETER_LIST#FUNCTION_CALL",
+ 
+-        "ARRAY_CALL:TYPE=EXPRESS,DEFINE=(FUNCTION_CALL|OBJECT_CALL)$([->ARRAY_CALL^$EXPRESS$]~)^*$"
+-            + "(METHOD_CALL|FIELD_CALL)^*",
++        "ARRAY_CALL:TYPE=EXPRESS,DEFINE=ARRAY_CALL_PRE$ARRAY_CALL_POST^*",
++        "ARRAY_CALL_PRE:TYPE=EXPRESS,DEFINE=(FUNCTION_CALL|OBJECT_CALL)$([->ARRAY_CALL^$EXPRESS$]~)^*",
++        "ARRAY_CALL_POST:TYPE=EXPRESS,DEFINE=(METHOD_CALL|FIELD_CALL)$([->ARRAY_CALL^$EXPRESS$]~)^*",
+ 
+         "CAST_CALL:TYPE=EXPRESS,DEFINE=(LEFT_BRACKET~$CONST_CLASS$RIGHT_BRACKET~#cast)^*$((LAMBDA#LAMBDA)|ARRAY_CALL)",
+         "EXPRESS_OP_L1:TYPE=EXPRESS,DEFINE=OP_LEVEL1^*$CAST_CALL",
+
+File: src/test/java/com/ql/util/express/test/ExpressCacheTest.java
+Patch:
+@@ -94,9 +94,7 @@ public void testScriptWithMultiCache() throws Exception {
+         // invoke hashTable compare default cache
+         long a = executeScriptWithTimeRecord(syncRunner, context);
+         long b = executeScriptWithTimeRecord(defaultRunner, context);
+-        System.out.println(a);
+-        System.out.println(b);
+-        Assert.assertTrue(a > b);
++        Assert.assertTrue(b < a);
+     }
+ 
+     private void initExpressRunner(ExpressRunner runner) throws Exception {
+
+File: src/main/java/com/ql/util/express/ExpressRunner.java
+Patch:
+@@ -651,7 +651,7 @@ public Object execute(String expressString, IExpressContext<String, Object> cont
+         if (isCache) {
+             parseResult = expressInstructionSetCache.get(expressString);
+             if (parseResult == null) {
+-                expressInstructionSetCache.putIfAbsent(expressString, this.parseInstructionSet(expressString));
++                expressInstructionSetCache.putIfAbsent(expressString, parseResult = this.parseInstructionSet(expressString));
+             }
+         } else {
+             parseResult = this.parseInstructionSet(expressString);
+@@ -724,7 +724,7 @@ public ExportItem[] getExportInfo() {
+     public InstructionSet getInstructionSetFromLocalCache(String expressString) throws Exception {
+         InstructionSet parseResult = expressInstructionSetCache.get(expressString);
+         if (parseResult == null) {
+-            expressInstructionSetCache.putIfAbsent(expressString, this.parseInstructionSet(expressString));
++            expressInstructionSetCache.putIfAbsent(expressString, parseResult = this.parseInstructionSet(expressString));
+         }
+         return parseResult;
+     }
+
+File: src/main/java/com/ql/util/express/instruction/ForInstructionFactory.java
+Patch:
+@@ -80,10 +80,10 @@ public boolean createInstruction(ExpressRunner expressRunner, InstructionSet res
+         //修改Break和Continue指令的跳转位置,循环出堆
+         ForRelBreakContinue rel = forStack.pop();
+         for (InstructionGoTo item : rel.breakList) {
+-            item.setOffset(result.getCurrentPoint() - item.getOffset());
++            item.setOffset(result.getCurrentPoint() - item.getOffset() + 1);
+         }
+         for (InstructionGoTo item : rel.continueList) {
+-            item.setOffset(selfAddPoint - item.getOffset() - 1);
++            item.setOffset(selfAddPoint - item.getOffset());
+         }
+ 
+         //生成作用域结束指令
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorIn.java
+Patch:
+@@ -33,9 +33,7 @@ public Object executeInner(Object[] list) throws Exception {
+             String msg = "对象类型不匹配，只有数字和字符串类型才才能执行 in 操作,当前数据类型是:";
+             throw new QLException(msg + obj.getClass().getName());
+         } else if (list.length == 2 && (list[1].getClass().isArray() || list[1] instanceof List)) {
+-            if (obj.equals(list[1])) {
+-                return true;
+-            } else if (list[1].getClass().isArray()) {
++            if (list[1].getClass().isArray()) {
+                 int len = Array.getLength(list[1]);
+                 for (int i = 0; i < len; i++) {
+                     boolean f = OperatorEqualsLessMore.executeInner("==", obj, Array.get(list[1], i));
+
+File: src/main/java/com/ql/util/express/instruction/ForInstructionFactory.java
+Patch:
+@@ -80,10 +80,10 @@ public boolean createInstruction(ExpressRunner expressRunner, InstructionSet res
+         //修改Break和Continue指令的跳转位置,循环出堆
+         ForRelBreakContinue rel = forStack.pop();
+         for (InstructionGoTo item : rel.breakList) {
+-            item.setOffset(result.getCurrentPoint() - item.getOffset());
++            item.setOffset(result.getCurrentPoint() - item.getOffset() + 1);
+         }
+         for (InstructionGoTo item : rel.continueList) {
+-            item.setOffset(selfAddPoint - item.getOffset() - 1);
++            item.setOffset(selfAddPoint - item.getOffset());
+         }
+ 
+         //生成作用域结束指令
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorIn.java
+Patch:
+@@ -32,7 +32,7 @@ public Object executeInner(Object[] list) throws Exception {
+         } else if (!((obj instanceof Number) || (obj instanceof String))) {
+             String msg = "对象类型不匹配，只有数字和字符串类型才才能执行 in 操作,当前数据类型是:";
+             throw new QLException(msg + obj.getClass().getName());
+-        } else if (list.length == 2 && (list[1].getClass().isArray() || list[1] instanceof List)) {
++        } else if (list.length == 2) {
+             if (obj.equals(list[1])) {
+                 return true;
+             } else if (list[1].getClass().isArray()) {
+
+File: src/main/java/com/ql/util/express/InstructionSet.java
+Patch:
+@@ -29,7 +29,7 @@ public class InstructionSet {
+     private static final transient Log log = LogFactory.getLog(InstructionSet.class);
+     public static final String TYPE_CLASS = "VClass";
+     public static final String TYPE_FUNCTION = "function";
+-    public static final String TYPE_MARCO = "marco";
++    public static final String TYPE_MACRO = "macro";
+ 
+     public static final boolean PRINT_INSTRUCTION_ERROR = false;
+ 
+
+File: src/main/java/com/ql/util/express/instruction/MacroInstructionFactory.java
+Patch:
+@@ -17,7 +17,7 @@ public boolean createInstruction(ExpressRunner expressRunner, InstructionSet res
+         for (ExpressNode tempNode : children[1].getChildrenArray()) {
+             macroRoot.addChild(tempNode);
+         }
+-        InstructionSet macroInstructionSet = expressRunner.createInstructionSet(macroRoot, InstructionSet.TYPE_MARCO);
++        InstructionSet macroInstructionSet = expressRunner.createInstructionSet(macroRoot, InstructionSet.TYPE_MACRO);
+         result.addMacroDefine(macroName, new FunctionInstructionSet(macroName, "macro", macroInstructionSet));
+         return false;
+     }
+
+File: src/main/java/com/ql/util/express/config/QLExpressRunStrategy.java
+Patch:
+@@ -61,6 +61,8 @@ public class QLExpressRunStrategy {
+         SECURITY_RISK_METHOD_LIST.add(Class.class.getName() + ".forName");
+         SECURITY_RISK_METHOD_LIST.add(ClassLoader.class.getName() + ".loadClass");
+         SECURITY_RISK_METHOD_LIST.add(ClassLoader.class.getName() + ".findClass");
++        SECURITY_RISK_METHOD_LIST.add(ClassLoader.class.getName() + ".defineClass");
++        SECURITY_RISK_METHOD_LIST.add(ClassLoader.class.getName() + ".getSystemClassLoader");
+     }
+ 
+     private QLExpressRunStrategy() {
+
+File: src/main/java/com/ql/util/express/InstructionSetContext.java
+Patch:
+@@ -63,7 +63,7 @@ public void exportSymbol(String varName, Object aliasNameObject) throws Exceptio
+ 
+     public void addSymbol(String varName, Object aliasNameObject) throws Exception {
+         if (this.symbolTable.containsKey(varName)) {
+-            throw new QLException("变量" + varName + "已经存在，不能重复定义，也不能再从函数内部 exprot ");
++            throw new QLException("变量" + varName + "已经存在，不能重复定义，也不能再从函数内部 export");
+         }
+         this.symbolTable.put(varName, aliasNameObject);
+     }
+
+File: src/main/java/com/ql/util/express/OperateData.java
+Patch:
+@@ -40,7 +40,7 @@ public Class<?> getDefineType() {
+         throw new RuntimeException(this.getClass().getName() + "必须实现方法:getDefineType");
+     }
+ 
+-    public Class<?> getOrgiType() {
++    public Class<?> getOriginalType() {
+         return this.type;
+     }
+ 
+
+File: src/main/java/com/ql/util/express/instruction/DefineInstructionFactory.java
+Patch:
+@@ -32,7 +32,7 @@ public boolean createInstruction(ExpressRunner aCompile, InstructionSet result,
+         }
+         if (arrayDimeCount > 0) {
+             node.getLeftChildren().get(0).setValue(node.getLeftChildren().get(0).getValue() + tempStr);
+-            node.getLeftChildren().get(0).setOrgiValue(node.getLeftChildren().get(0).getOrgiValue() + tempStr);
++            node.getLeftChildren().get(0).setOriginalValue(node.getLeftChildren().get(0).getOriginalValue() + tempStr);
+             Object objValue = node.getLeftChildren().get(0).getObjectValue();
+             if (objValue instanceof Class) {
+                 Class<?> tmpClass = ExpressUtil.getJavaClass(ExpressUtil.getClassName((Class<?>)objValue) + tempStr);
+
+File: src/main/java/com/ql/util/express/instruction/FunctionInstructionFactory.java
+Patch:
+@@ -15,7 +15,7 @@ public boolean createInstruction(ExpressRunner aCompile, InstructionSet result,
+         throws Exception {
+         ExpressNode[] children = node.getChildren();
+         if (children.length != 3) {
+-            throw new QLException("funciton 操作符需要3个操作数 ");
++            throw new QLException("function 操作符需要3个操作数 ");
+         }
+         String functionName = children[0].getValue();
+         ExpressNode[] varDefines = children[1].getChildren();
+
+File: src/main/java/com/ql/util/express/instruction/NewInstructionFactory.java
+Patch:
+@@ -22,7 +22,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+                 tempStr = tempStr + "[]";
+             }
+             children[0].setValue(tempStr);
+-            children[0].setOrgiValue(tempStr);
++            children[0].setOriginalValue(tempStr);
+             children[0].setObjectValue(ExpressUtil.getJavaClass(tempStr));
+         } else if (node.isTypeEqualsOrChild("anonymousNewArray")) {
+             op = aCompile.getOperatorFactory().newInstance("anonymousNewArray");
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionCallSelfDefineFunction.java
+Patch:
+@@ -81,7 +81,7 @@ public static OperateData executeSelfFunction(RunEnvironment environment, Instru
+         for (int i = 0; i < vars.length; i++) {
+             //注意此处必须new 一个新的对象，否则就会在多次调用的时候导致数据冲突
+             OperateDataLocalVar var = OperateDataCacheManager.fetchOperateDataLocalVar(vars[i].getName(),
+-                vars[i].getOrgiType());
++                vars[i].getOriginalType());
+             context.addSymbol(var.getName(), var);
+             var.setObject(context, parameters.get(i).getObject(environment.getContext()));
+         }
+
+File: src/main/java/com/ql/util/express/instruction/opdata/OperateDataAttr.java
+Patch:
+@@ -22,8 +22,8 @@ public void clearDataAttr() {
+         this.name = null;
+     }
+ 
+-    public void setDefineType(Class<?> orgiType) {
+-        this.type = orgiType;
++    public void setDefineType(Class<?> originalType) {
++        this.type = originalType;
+     }
+ 
+     @Override
+
+File: src/main/java/com/ql/util/express/instruction/opdata/OperateDataVirClass.java
+Patch:
+@@ -48,7 +48,7 @@ public void initialInstance(InstructionSetContext parent, OperateData[] paramete
+         for (int i = 0; i < vars.length; i++) {
+             //注意此处必须new 一个新的对象，否则就会在多次调用的时候导致数据冲突
+             OperateDataLocalVar var = OperateDataCacheManager.fetchOperateDataLocalVar(vars[i].getName(),
+-                vars[i].getOrgiType());
++                vars[i].getOriginalType());
+             this.context.addSymbol(var.getName(), var);
+             var.setObject(context, parameters[i].getObject(parent));
+         }
+@@ -70,7 +70,7 @@ public OperateData callSelfFunction(String functionName, OperateData[] parameter
+         for (int i = 0; i < vars.length; i++) {
+             //注意此处必须new 一个新的对象，否则就会在多次调用的时候导致数据冲突
+             OperateDataLocalVar var = OperateDataCacheManager.fetchOperateDataLocalVar(vars[i].getName(),
+-                vars[i].getOrgiType());
++                vars[i].getOriginalType());
+             tempContext.addSymbol(var.getName(), var);
+             var.setObject(tempContext, parameters[i].getObject(this.context));
+         }
+
+File: src/main/java/com/ql/util/express/parse/KeyWordDefine4Java.java
+Patch:
+@@ -146,7 +146,7 @@ public class KeyWordDefine4Java {
+         "STAT_LIST:TYPE=BLOCK,DEFINE=(STAT_BLOCK|STATEMENT)*",
+         "PROGRAM:TYPE=BLOCK,DEFINE=STAT_LIST#STAT_BLOCK",
+     };
+-    public String[][] instructionFacotryMapping = {
++    public String[][] instructionFactoryMapping = {
+         {"^,~,!,++,--,&,|,<<,>>,*,/,mod,%,+,-,like,>,>=,<,<=,==,!=,&&,||,nor,=,return,alias,exportAlias,ARRAY_CALL",
+             "com.ql.util.express.instruction.OperatorInstructionFactory"},
+         {"in", "com.ql.util.express.instruction.InInstructionFactory"},
+
+File: src/test/java/com/ql/util/express/bugfix/RecursivelyRunnerTest.java
+Patch:
+@@ -24,8 +24,7 @@ public void testEvalOperator() throws Exception {
+ 
+     @Test
+     public void testSubRunner() throws Exception {
+-
+-        //bind SubRunner.evel method
++        //bind SubRunner.eval method
+         SubRunner subRunner = new SubRunner();
+         Method[] methods = SubRunner.class.getDeclaredMethods();
+         for (Method m : methods) {
+
+File: src/test/java/com/ql/util/express/test/DefineTest.java
+Patch:
+@@ -55,9 +55,9 @@ public void testMacro() throws Exception {
+         runner.addOperatorWithAlias("定义宏", "macro", null);
+         DefaultContext<String, Object> context = new DefaultContext<>();
+         context.put("bean", new BeanExample("qhlhl2010@gmail.com"));
+-        context.put("name", "xuannn");
++        context.put("name", "xuannan");
+         Object r = runner.execute(express, context, null, false, false);
+-        Assert.assertTrue("别名宏 错误", r.toString().equalsIgnoreCase("qhlhl2010@gmail.com-xuannn"));
++        Assert.assertTrue("别名宏 错误", r.toString().equalsIgnoreCase("qhlhl2010@gmail.com-xuannan"));
+         System.out.println(r);
+     }
+ 
+@@ -116,7 +116,7 @@ public void testProperty() throws Exception {
+         runner.addFunctionOfServiceMethod("打印", System.out, "println", new String[] {Object.class.getName()}, null);
+         DefaultContext<String, Object> context = new DefaultContext<>();
+         context.put("bean", new BeanExample("qhlhl2010@gmail.com"));
+-        context.put("name", "xuannn");
++        context.put("name", "xuannan");
+         int count = 1;
+         long s = System.currentTimeMillis();
+ 
+
+File: src/test/java/com/ql/util/express/test/FunctionDescTest.java
+Patch:
+@@ -15,8 +15,8 @@ public void testFunctionDesc() throws Exception {
+         runner.addFunctionOfClassMethod("isVIP", BeanExample.class.getName(),
+             "isVIP", new String[] {"String"}, new String[] {"用户名称"}, new String[] {"UserName"}, "$1不是VIP用户");
+         OperatorBase op = runner.getFunction("isVIP");
+-        System.out.println(op.getOperDataDesc());
+-        System.out.println(op.getOperDataAnnotaion());
++        System.out.println(op.getOperatorDataDesc());
++        System.out.println(op.getOperatorDataAnnotation());
+ 
+         Object r = runner.execute(express, context, null, false, false);
+         System.out.println(r);
+
+File: src/test/java/com/ql/util/express/test/InTest.java
+Patch:
+@@ -9,7 +9,7 @@
+ 
+ public class InTest {
+     @Test
+-    public void testOperaterIn() throws Exception {
++    public void testOperatorIn() throws Exception {
+         String express1 = "2 in (2,3) ";
+         String express2 = "2 in a";
+         String express3 = "2 in b";
+
+File: src/test/java/com/ql/util/express/test/LoadExpressFromFileTest.java
+Patch:
+@@ -10,7 +10,7 @@ public class LoadExpressFromFileTest {
+     @Test
+     public void testLoadFromFile() throws Exception {
+         ExpressRunner runner = new ExpressRunner(false, false);
+-        runner.loadExpress("functiondef");
++        runner.loadExpress("functionDef");
+         runner.loadExpress("main");
+         ExportItem[] exports = runner.getExportInfo();
+         for (ExportItem item : exports) {
+
+File: src/test/java/com/ql/util/express/test/ReplaceCompareOperatorTest.java
+Patch:
+@@ -7,8 +7,7 @@
+ /**
+  * Created by tianqiao on 18/4/3.
+  */
+-public class ReplaceComapreOpetatorTest {
+-
++public class ReplaceCompareOperatorTest {
+     @Test
+     public void testReplaceOperatorTest() throws Exception {
+         String express = "null > 1 || null < 1 || null == 1 || null >= 1 || null <= 1 ||null like '%222%'";
+
+File: src/test/java/com/ql/util/express/test/SkylightRuleTransferTest.java
+Patch:
+@@ -21,11 +21,10 @@ public class Rule {
+ 
+         public Rule(String content) throws Exception {
+             this.content = content;
+-            praseContent();
++            parseContent();
+         }
+ 
+-        private void praseContent() throws Exception {
+-
++        private void parseContent() throws Exception {
+             Matcher matcher = pattern2.matcher(content);
+             if (matcher.find()) {
+                 this.code = matcher.group(2);
+
+File: src/test/java/com/ql/util/express/test/rating/RatingTest.java
+Patch:
+@@ -28,7 +28,7 @@ public void testRating() throws Exception {
+         //建立计算器
+         ExpressRunner runner = new ExpressRunner(true, true);
+         //增加自定义函数
+-        runner.addFunction("费用科目", new SujectOperator("费用科目"));
++        runner.addFunction("费用科目", new SubjectOperator("费用科目"));
+         //装载分成规则rating.ql文件
+         runner.loadExpress("rating");
+         //设置上下文
+
+File: src/test/java/com/ql/util/express/test/rating/SubjectManager.java
+Patch:
+@@ -6,7 +6,7 @@
+ import java.util.Map;
+ 
+ @SuppressWarnings({"serial", "rawtypes"})
+-public class SubjectMananger extends HashMap {
++public class SubjectManager extends HashMap {
+     @SuppressWarnings("unchecked")
+     public Object get(Object userName) {
+         UserSubject userSubject = (UserSubject)super.get(userName);
+
+File: src/test/java/com/ql/util/express/test/rating/SubjectOperator.java
+Patch:
+@@ -12,12 +12,12 @@
+  *
+  * @author xuannan
+  */
+-class SujectOperator extends Operator {
+-    public SujectOperator(String aName) {
++class SubjectOperator extends Operator {
++    public SubjectOperator(String aName) {
+         this.name = aName;
+     }
+ 
+-    public SujectOperator(String aAliasName, String aName, String aErrorInfo) {
++    public SubjectOperator(String aAliasName, String aName, String aErrorInfo) {
+         this.name = aName;
+         this.aliasName = aAliasName;
+         this.errorInfo = aErrorInfo;
+
+File: src/main/java/com/ql/util/express/DynamicParamsUtil.java
+Patch:
+@@ -35,7 +35,7 @@ public static Object[] transferDynamicParams(InstructionSetContext context, Arra
+         int beforeCount = paramLength - 1;
+         int paramsCount = list.length - beforeCount;
+ 
+-        if (beforeCount >= 0 && ((Class<?>)(delaredParamsClasses[beforeCount])).isArray() && paramsCount >= 0) {
++        if (beforeCount >= 0 && delaredParamsClasses[beforeCount].isArray() && paramsCount >= 0) {
+             Class<?> componentType = delaredParamsClasses[beforeCount].getComponentType();
+             params = new Object[beforeCount + 1];
+             Object[] lastParameres = (Object[])Array.newInstance(componentType, paramsCount);
+
+File: src/main/java/com/ql/util/express/ExpressLoader.java
+Patch:
+@@ -78,6 +78,6 @@ public ExportItem[] getExportInfo() {
+             result.put(item.getGlobeName(),
+                 new ExportItem(item.getGlobeName(), item.getName(), item.getType(), item.toString()));
+         }
+-        return (ExportItem[])result.values().toArray(new ExportItem[0]);
++        return result.values().toArray(new ExportItem[0]);
+     }
+ }
+
+File: src/main/java/com/ql/util/express/ExpressUtil.java
+Patch:
+@@ -253,7 +253,7 @@ public static Method findMethod(Class<?> baseClass, String methodName,
+         Class<?>[] types, boolean publicOnly, boolean isStatic) {
+         List<Method> candidates = gatherMethodsRecursive(baseClass, methodName,
+             types.length, publicOnly, isStatic, null /* candidates */);
+-        Method method = findMostSpecificMethod(types, (Method[])candidates
++        Method method = findMostSpecificMethod(types, candidates
+             .toArray(new Method[0]));
+         return method;
+     }
+@@ -279,7 +279,7 @@ private static Constructor<?> findConstructor(Class<?> baseClass, Class<?>[] typ
+             }
+         }
+ 
+-        int match = findMostSpecificSignature(types, (Class[][])listClass
++        int match = findMostSpecificSignature(types, listClass
+             .toArray(new Class[0][]));
+         return match == -1 ? null : constructorList.get(match);
+     }
+
+File: src/main/java/com/ql/util/express/InstructionSetRunner.java
+Patch:
+@@ -61,7 +61,7 @@ public static Object execute(InstructionSet set,
+         RunEnvironment environmen;
+         Object result = null;
+         environmen = OperateDataCacheManager.fetRunEnvironment(set,
+-            (InstructionSetContext)context, isTrace);
++            context, isTrace);
+         try {
+             CallResult tempResult = set.excute(environmen, context, errorList,
+                 isReturnLastData, aLog);
+
+File: src/main/java/com/ql/util/express/Operator.java
+Patch:
+@@ -58,7 +58,7 @@ public static boolean objectEquals(Object op1, Object op2) throws Exception {
+         if (op1 instanceof Character || op2 instanceof Character) {
+             int compareResult;
+             if (op1 instanceof Character && op2 instanceof Character) {
+-                return ((Character)op1).equals((Character)op2);
++                return op1.equals(op2);
+             } else if (op1 instanceof Number) {
+                 compareResult = OperatorOfNumber.compareNumber((Number)op1, (int)((Character)op2).charValue());
+                 return compareResult == 0;
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionCallSelfDefineFunction.java
+Patch:
+@@ -84,7 +84,7 @@ public static OperateData executeSelfFunction(RunEnvironment environment, Instru
+             context.addSymbol(var.getName(), var);
+             var.setObject(context, parameters.get(i).getObject(environment.getContext()));
+         }
+-        Object result = InstructionSetRunner.execute((InstructionSet)functionSet,
++        Object result = InstructionSetRunner.execute(functionSet,
+             context, errorList, environment.isTrace(), false, true, log);
+         return OperateDataCacheManager.fetchOperateData(result, null);
+     }
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorArray.java
+Patch:
+@@ -31,7 +31,7 @@ public OperateData executeInner(InstructionSetContext context, ArraySwap list) t
+             //支持data.get(index) ->data[index]
+             if (tmpObject instanceof List && property instanceof Number) {
+                 int index = ((Number)property).intValue();
+-                OperateData result = OperateDataCacheManager.fetchOperateDataArrayItem((OperateData)p0, index);
++                OperateData result = OperateDataCacheManager.fetchOperateDataArrayItem(p0, index);
+                 return result;
+             }
+             //支持data.code -> data['code']
+@@ -42,7 +42,7 @@ public OperateData executeInner(InstructionSetContext context, ArraySwap list) t
+         }
+         //支持原生Array：data[index]
+         int index = ((Number)list.get(1).getObject(context)).intValue();
+-        OperateData result = OperateDataCacheManager.fetchOperateDataArrayItem((OperateData)p0, index);
++        OperateData result = OperateDataCacheManager.fetchOperateDataArrayItem(p0, index);
+         return result;
+     }
+ }
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorDoubleAddReduce.java
+Patch:
+@@ -21,7 +21,7 @@ public OperateData executeInner(InstructionSetContext parent,
+         } else if (this.getName().equals("--")) {
+             result = OperatorOfNumber.subtract(obj, 1, this.isPrecise);
+         }
+-        ((OperateData)list.get(0)).setObject(parent, result);
++        list.get(0).setObject(parent, result);
+ 
+         if (result == null) {
+             return OperateDataCacheManager.fetchOperateData(null, null);
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorFactory.java
+Patch:
+@@ -98,7 +98,7 @@ public void addOperatorWithAlias(String aAliasName, String name, String errorInf
+                 Class<OperatorBase> opClass = (Class<OperatorBase>)orgiOperator.getClass();
+                 Constructor<OperatorBase> constructor;
+                 try {
+-                    constructor = (Constructor<OperatorBase>)opClass
++                    constructor = opClass
+                         .getConstructor(String.class, String.class, String.class);
+                 } catch (Exception e) {
+                     throw new QLException(name + " 不能被设置别名:" + e.getMessage());
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorLike.java
+Patch:
+@@ -55,6 +55,6 @@ public String[] split(String str, String s) {
+             start = end + 1;
+             if (start >= str.length()) {break;}
+         } while (end >= 0);
+-        return (String[])list.toArray(new String[0]);
++        return list.toArray(new String[0]);
+     }
+ }
+
+File: src/main/java/com/ql/util/express/instruction/opdata/OperateDataVirClass.java
+Patch:
+@@ -52,7 +52,7 @@ public void initialInstance(InstructionSetContext parent, OperateData[] paramete
+             this.context.addSymbol(var.getName(), var);
+             var.setObject(context, parameters[i].getObject(parent));
+         }
+-        InstructionSetRunner.execute((InstructionSet)virClassInstructionSet,
++        InstructionSetRunner.execute(virClassInstructionSet,
+             context, errorList, aIsTrace, false, false, log);
+     }
+ 
+@@ -74,7 +74,7 @@ public OperateData callSelfFunction(String functionName, OperateData[] parameter
+             tempContext.addSymbol(var.getName(), var);
+             var.setObject(tempContext, parameters[i].getObject(this.context));
+         }
+-        Object result = InstructionSetRunner.execute((InstructionSet)functionSet,
++        Object result = InstructionSetRunner.execute(functionSet,
+             tempContext, null, this.isTrace, false, true, this.log);
+         return OperateDataCacheManager.fetchOperateData(result, null);
+     }
+
+File: src/main/java/com/ql/util/express/parse/NodeType.java
+Patch:
+@@ -55,7 +55,7 @@ public static String[][] splitProperties(String str) {
+         if (list.size() > 0) {
+             list.get(list.size() - 1)[1] = str.substring(endIndex).trim();
+         }
+-        return (String[][])list.toArray(new String[0][2]);
++        return list.toArray(new String[0][2]);
+     }
+ 
+     public void initial() {
+
+File: src/test/java/com/ql/util/express/annotation/QLAliasContext.java
+Patch:
+@@ -13,7 +13,7 @@ public void putAutoParams(Object... values) {
+             if (value.getClass().isAnnotationPresent(QLAlias.class)) {
+                 QLAlias[] annotations = value.getClass().getAnnotationsByType(QLAlias.class);
+                 for (int i = 0; i < annotations.length; i++) {
+-                    String[] name = ((QLAlias)annotations[i]).value();
++                    String[] name = annotations[i].value();
+                     for (int j = 0; j < annotations.length; j++) {
+                         super.put(name[j], value);
+                     }
+
+File: src/test/java/com/ql/util/express/bugfix/NullCompareTest.java
+Patch:
+@@ -35,7 +35,7 @@ public void testNullCompar() throws Exception {
+             System.out.println(exp);
+             ((DefaultContext<String, Object>)context).put("x", 2);
+             Object result = runner.execute(exp, context, null, true, false);
+-            Assert.assertEquals(false, (boolean)(Boolean)result);
++            Assert.assertEquals(false, (Boolean)result);
+             System.out.println(result);
+         }
+ 
+@@ -49,7 +49,7 @@ public void testNullCompar() throws Exception {
+             System.out.println(exp);
+             ((DefaultContext<String, Object>)context).put("x", 2);
+             Object result = runner.execute(exp, context, null, true, false);
+-            Assert.assertEquals(true, (boolean)(Boolean)result);
++            Assert.assertEquals(true, (Boolean)result);
+             System.out.println(result);
+         }
+     }
+
+File: src/main/java/com/ql/util/express/ExpressLoader.java
+Patch:
+@@ -14,7 +14,7 @@
+  */
+ public class ExpressLoader {
+     private ConcurrentHashMap<String, InstructionSet> expressInstructionSetCache
+-        = new ConcurrentHashMap<String, InstructionSet>();
++        = new ConcurrentHashMap<>();
+     ExpressRunner creator;
+ 
+     public ExpressLoader(ExpressRunner aCreator) {
+@@ -69,7 +69,7 @@ public InstructionSet getInstructionSet(String expressName) {
+     }
+ 
+     public ExportItem[] getExportInfo() {
+-        Map<String, ExportItem> result = new TreeMap<String, ExportItem>();
++        Map<String, ExportItem> result = new TreeMap<>();
+         for (InstructionSet item : expressInstructionSetCache.values()) {
+             for (ExportItem var : item.getExportDef()) {
+                 var.setGlobeName(item.getGlobeName() + "." + var.name);
+
+File: src/main/java/com/ql/util/express/InstructionSetContext.java
+Patch:
+@@ -17,7 +17,7 @@ public class InstructionSetContext implements IExpressContext<String, Object> {
+     /**
+      * 符号表
+      */
+-    private Map<String, Object> symbolTable = new HashMap<String, Object>();
++    private Map<String, Object> symbolTable = new HashMap<>();
+ 
+     private ExpressLoader expressLoader;
+ 
+@@ -137,7 +137,7 @@ public Object put(String key, Object value) {
+             return this.content.put(key, value);
+         } else if (this.isExpandToParent == false) {
+             if (this.content == null) {
+-                this.content = new HashMap<String, Object>();
++                this.content = new HashMap<>();
+             }
+             return this.content.put(key, value);
+         } else if (this.parent != null) {
+
+File: src/main/java/com/ql/util/express/LocalExpressCacheRunner.java
+Patch:
+@@ -10,7 +10,7 @@
+  */
+ public class LocalExpressCacheRunner extends ExpressRemoteCacheRunner {
+ 
+-    private static Map<String, Object> expressMap = new HashMap<String, Object>();
++    private static Map<String, Object> expressMap = new HashMap<>();
+ 
+     private ExpressRunner expressRunner;
+ 
+
+File: src/main/java/com/ql/util/express/annotation/QLAliasUtils.java
+Patch:
+@@ -13,7 +13,7 @@
+ public class QLAliasUtils {
+ 
+     private final static QLAliasUtils instance = new QLAliasUtils();
+-    public static Map<String, Object> fieldsCache = new ConcurrentHashMap<String, Object>();
++    public static Map<String, Object> fieldsCache = new ConcurrentHashMap<>();
+ 
+     protected static QLAliasUtils getInstance() {
+         return instance;
+
+File: src/main/java/com/ql/util/express/config/QLExpressRunStrategy.java
+Patch:
+@@ -51,7 +51,7 @@ public static void setForbiddenInvokeSecurityRiskMethods(boolean forbiddenInvoke
+         QLExpressRunStrategy.forbiddenInvokeSecurityRiskMethods = forbiddenInvokeSecurityRiskMethods;
+     }
+ 
+-    private static List<String> securityRiskMethods = new ArrayList<String>();
++    private static List<String> securityRiskMethods = new ArrayList<>();
+ 
+     static {
+         securityRiskMethods.add(System.class.getName() + "." + "exit");//系统退出
+
+File: src/main/java/com/ql/util/express/instruction/ForRelBreakContinue.java
+Patch:
+@@ -6,7 +6,7 @@
+ import com.ql.util.express.instruction.detail.InstructionGoTo;
+ 
+ public class ForRelBreakContinue {
+-    List<InstructionGoTo> breakList = new ArrayList<InstructionGoTo>();
+-    List<InstructionGoTo> continueList = new ArrayList<InstructionGoTo>();
++    List<InstructionGoTo> breakList = new ArrayList<>();
++    List<InstructionGoTo> continueList = new ArrayList<>();
+ 
+ }
+
+File: src/main/java/com/ql/util/express/instruction/InstructionFactory.java
+Patch:
+@@ -9,7 +9,7 @@
+ import com.ql.util.express.parse.ExpressNode;
+ 
+ public abstract class InstructionFactory {
+-    private static Map<String, InstructionFactory> instructionFactory = new HashMap<String, InstructionFactory>();
++    private static Map<String, InstructionFactory> instructionFactory = new HashMap<>();
+ 
+     public static InstructionFactory getInstructionFactory(String factory) {
+         try {
+
+File: src/main/java/com/ql/util/express/instruction/OperateDataCacheManager.java
+Patch:
+@@ -86,7 +86,7 @@ public static void resetCache(ExpressRunner aRunner) {
+ class RunnerDataCache {
+     IOperateDataCache cache;
+ 
+-    Stack<ExpressRunner> stack = new Stack<ExpressRunner>();
++    Stack<ExpressRunner> stack = new Stack<>();
+ 
+     public void push(ExpressRunner aRunner) {
+         this.cache = aRunner.getOperateDataCache();
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorAnonymousNewList.java
+Patch:
+@@ -20,7 +20,7 @@ public OperatorAnonymousNewList(String aAliasName, String aName, String aErrorIn
+     }
+ 
+     public OperateData executeInner(InstructionSetContext context, ArraySwap list) throws Exception {
+-        List<Object> result = new ArrayList<Object>();
++        List<Object> result = new ArrayList<>();
+         for (int i = 0; i < list.length; i++) {
+             result.add(list.get(i).getObject(context));
+         }
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorAnonymousNewMap.java
+Patch:
+@@ -21,7 +21,7 @@ public OperatorAnonymousNewMap(String aAliasName, String aName, String aErrorInf
+     }
+ 
+     public OperateData executeInner(InstructionSetContext context, ArraySwap list) throws Exception {
+-        Map<Object, Object> result = new HashMap<Object, Object>();
++        Map<Object, Object> result = new HashMap<>();
+         for (int i = 0; i < list.length; i++) {
+             result.put(((OperateDataKeyValue)list.get(i)).getKey().getObject(context), ((OperateDataKeyValue)list.get(
+                 i)).getValue().getObject(context));
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorFactory.java
+Patch:
+@@ -14,7 +14,7 @@ public class OperatorFactory {
+      * 是否需要高精度计算
+      */
+     protected boolean isPrecise = false;
+-    private Map<String, OperatorBase> operator = new HashMap<String, OperatorBase>();
++    private Map<String, OperatorBase> operator = new HashMap<>();
+ 
+     public OperatorFactory(boolean aIsPrecise) {
+         this.isPrecise = aIsPrecise;
+
+File: src/main/java/com/ql/util/express/instruction/op/OperatorLike.java
+Patch:
+@@ -47,7 +47,7 @@ public String[] split(String str, String s) {
+         int start = 0;
+         int end = -1;
+         String tmpStr = "";
+-        ArrayList<String> list = new ArrayList<String>();
++        ArrayList<String> list = new ArrayList<>();
+         do {
+             end = str.indexOf(s, start);
+             if (end < 0) {tmpStr = str.substring(start);} else {tmpStr = str.substring(start, end);}
+
+File: src/main/java/com/ql/util/express/match/QLMatchResult.java
+Patch:
+@@ -4,7 +4,7 @@
+ import java.util.List;
+ 
+ public class QLMatchResult {
+-    private List<QLMatchResultTree> matchs = new ArrayList<QLMatchResultTree>();
++    private List<QLMatchResultTree> matchs = new ArrayList<>();
+     private int matchLastIndex;
+ 
+     public void clear() {
+
+File: src/main/java/com/ql/util/express/match/QLMatchResultTree.java
+Patch:
+@@ -31,21 +31,21 @@ public List<QLMatchResultTree> getLeft() {
+ 
+     public void addLeft(QLMatchResultTree node) {
+         if (this.left == null) {
+-            this.left = new ArrayList<QLMatchResultTree>();
++            this.left = new ArrayList<>();
+         }
+         this.left.add(node);
+     }
+ 
+     public void addLeftAll(List<QLMatchResultTree> list) {
+         if (this.left == null) {
+-            this.left = new ArrayList<QLMatchResultTree>();
++            this.left = new ArrayList<>();
+         }
+         this.left.addAll(list);
+     }
+ 
+     public void addRightAll(List<QLMatchResultTree> list) {
+         if (this.right == null) {
+-            this.right = new ArrayList<QLMatchResultTree>();
++            this.right = new ArrayList<>();
+         }
+         this.right.addAll(list);
+     }
+
+File: src/main/java/com/ql/util/express/match/QLPattern.java
+Patch:
+@@ -25,7 +25,7 @@ public static QLMatchResult findMatchStatement(INodeTypeManager aManager, QLPatt
+         AtomicLong maxMatchPoint = new AtomicLong();
+         AtomicLong maxDeep = new AtomicLong(1);
+         QLMatchResultCache resultCache = new QLMatchResultCache(5);
+-        ArrayListCache<QLMatchResultTree> arrayListCache = new ArrayListCache<QLMatchResultTree>(50);
++        ArrayListCache<QLMatchResultTree> arrayListCache = new ArrayListCache<>(50);
+         MatchParamsPack staticParams = new MatchParamsPack(aManager, nodes, maxDeep, maxMatchPoint, resultCache,
+             arrayListCache);
+         QLMatchResult result = findMatchStatementWithAddRootOptimizeStack(staticParams, pattern, point, true, 1);
+@@ -355,7 +355,7 @@ public ArrayListCache(int aLen) {
+             this.point = this.len - 1;
+             cache = new List[this.len];
+             for (int i = 0; i < this.len; i++) {
+-                cache[i] = new ArrayList<T>();
++                cache[i] = new ArrayList<>();
+             }
+         }
+ 
+@@ -367,7 +367,7 @@ public List<T> fetch() {
+                 point = point - 1;
+                 fetchCount++;
+             } else {
+-                result = new ArrayList<T>();
++                result = new ArrayList<>();
+                 newCount++;
+             }
+             return result;
+
+File: src/main/java/com/ql/util/express/match/QLPatternNode.java
+Patch:
+@@ -94,7 +94,7 @@ public boolean canMergeDetail() {
+     /**
+      * 子匹配模式
+      */
+-    List<QLPatternNode> children = new ArrayList<QLPatternNode>();
++    List<QLPatternNode> children = new ArrayList<>();
+ 
+     protected QLPatternNode(INodeTypeManager aManager, String aName, String aOrgiContent) throws Exception {
+         this(aManager, aName, aOrgiContent, false, 1);
+
+File: src/main/java/com/ql/util/express/parse/AppendingClassFieldManager.java
+Patch:
+@@ -28,7 +28,7 @@ public AppendingField(String name, Class<?> bindingClass, Class<?> returnType, O
+         }
+     }
+ 
+-    private List<AppendingField> Fields = new ArrayList<AppendingField>();
++    private List<AppendingField> Fields = new ArrayList<>();
+ 
+     public void addAppendingField(String name, Class<?> bindingClass, Class<?> returnType, Operator op) {
+         Fields.add(new AppendingField(name, bindingClass, returnType, op));
+
+File: src/main/java/com/ql/util/express/parse/AppendingClassMethodManager.java
+Patch:
+@@ -27,7 +27,7 @@ public AppendingMethod(String name, Class<?> bindingClass, OperatorBase op) {
+         }
+     }
+ 
+-    private List<AppendingMethod> methods = new ArrayList<AppendingMethod>();
++    private List<AppendingMethod> methods = new ArrayList<>();
+ 
+     public void addAppendingMethod(String name, Class<?> bindingClass, OperatorBase op) {
+         methods.add(new AppendingMethod(name, bindingClass, op));
+
+File: src/main/java/com/ql/util/express/parse/ExpressNode.java
+Patch:
+@@ -200,7 +200,7 @@ public void addLeftChild(ExpressNode leftChild) {
+             return;
+         }
+         if (this.leftChildren == null) {
+-            this.leftChildren = new ArrayList<ExpressNode>();
++            this.leftChildren = new ArrayList<>();
+         }
+         this.leftChildren.add(leftChild);
+     }
+@@ -210,13 +210,13 @@ public void addRightChild(ExpressNode rightChild) {
+             return;
+         }
+         if (this.leftChildren == null) {
+-            this.leftChildren = new ArrayList<ExpressNode>();
++            this.leftChildren = new ArrayList<>();
+         }
+         this.leftChildren.add(rightChild);
+     }
+ 
+     public ExpressNode[] getChildren() {
+-        List<ExpressNode> result = new ArrayList<ExpressNode>();
++        List<ExpressNode> result = new ArrayList<>();
+         if (this.leftChildren != null && this.leftChildren.size() > 0) {
+             result.addAll(this.leftChildren);
+         }
+
+File: src/main/java/com/ql/util/express/parse/ExpressPackage.java
+Patch:
+@@ -17,7 +17,7 @@ public ExpressPackage(ExpressPackage aParent) {
+ 
+     public void addPackage(String aPackageName) {
+         if (this.m_packages == null) {
+-            this.m_packages = new ArrayList<String>();
++            this.m_packages = new ArrayList<>();
+         }
+         int point = aPackageName.indexOf(".*");
+         if (point >= 0) {
+@@ -42,7 +42,7 @@ public Class<?> getClass(String name) {
+                 return null;
+             }
+             if (this.name2CallCache == null) {
+-                this.name2CallCache = new ConcurrentHashMap<String, Class<?>>();
++                this.name2CallCache = new ConcurrentHashMap<>();
+             } else {
+                 tempClass = this.name2CallCache.get(name);
+             }
+
+File: src/main/java/com/ql/util/express/parse/NodeType.java
+Patch:
+@@ -40,7 +40,7 @@ protected NodeType(NodeTypeManager aManager, String aName, String aDefineStr) {
+     public static String[][] splitProperties(String str) {
+         Pattern p = Pattern.compile("(,|:)\\s*(([A-Z]|-|_)*)\\s*=");
+         Matcher matcher = p.matcher(str);
+-        List<String[]> list = new ArrayList<String[]>();
++        List<String[]> list = new ArrayList<>();
+         int endIndex = 0;
+         while (matcher.find()) {
+             if (list.size() > 0) {
+
+File: src/main/java/com/ql/util/express/parse/NodeTypeManager.java
+Patch:
+@@ -16,10 +16,10 @@ public class NodeTypeManager implements INodeTypeManager {
+     private String[] keyWords;
+     private String[] nodeTypeDefines;
+     protected String[][] instructionFacotryMapping;
+-    protected Map<String, NodeType> nodeTypes = new HashMap<String, NodeType>();
++    protected Map<String, NodeType> nodeTypes = new HashMap<>();
+ 
+     //所有的函数定义
+-    protected Map<String, String> functions = new HashMap<String, String>();
++    protected Map<String, String> functions = new HashMap<>();
+ 
+     public NodeTypeManager() {
+         this(new KeyWordDefine4Java());
+@@ -155,7 +155,7 @@ public NodeType isExistNodeTypeDefine(String name) {
+     }
+ 
+     public NodeType[] getNodeTypesByKind(NodeTypeKind aKind) {
+-        List<NodeType> result = new ArrayList<NodeType>();
++        List<NodeType> result = new ArrayList<>();
+         for (NodeType item : this.nodeTypes.values()) {
+             if (item.getKind() == aKind) {
+                 result.add(item);
+
+File: src/main/java/com/ql/util/express/parse/WordSplit.java
+Patch:
+@@ -28,7 +28,7 @@ public static Word[] parse(String[] splitWord, String str) throws Exception {
+         }
+         char c;
+         int line = 1;
+-        List<Word> list = new ArrayList<Word>();
++        List<Word> list = new ArrayList<>();
+         int i = 0;
+         int point = 0;
+         // 当前行第一个字符相对脚本起点的偏移量offset
+
+File: src/test/java/com/ql/util/express/annotation/QLAliasTest.java
+Patch:
+@@ -28,7 +28,7 @@ public void testQLAlias() throws Exception {
+         };
+ 
+         //1、测试对象的方法，字段上的别名标签
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Person person = new Patient();
+         person.setName("老王");
+         person.setSex("男");
+
+File: src/test/java/com/ql/util/express/bugfix/ArrayMapTest.java
+Patch:
+@@ -15,7 +15,7 @@ public void testMinus() throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+         //负数需要加括号来解决，就好比 1+(-1)
+         String exp = "Map abc = NewMap(1:(-1),2:2); return abc.get(1) + abc.get(2)";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Object result = runner.execute(exp, context, null, false, true);
+         System.out.println(result);
+     }
+
+File: src/test/java/com/ql/util/express/bugfix/AvoidNullPointMockTest.java
+Patch:
+@@ -54,7 +54,7 @@ public void testNullPoint() throws Exception {
+             "demo.getParent().getCode() in (1,2,3)",
+         };
+         for (String exp : explist) {
+-            IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++            IExpressContext<String, Object> context = new DefaultContext<>();
+             System.out.println(exp);
+             ((DefaultContext<String, Object>)context).put("demo", new DemoObject());
+             Object result = runner.execute(exp, context, null, true, false);
+
+File: src/test/java/com/ql/util/express/bugfix/CheckySyntaxTest.java
+Patch:
+@@ -23,7 +23,7 @@ public void testCheckySyntax0() throws Exception {
+             Assert.assertTrue(runner.checkSyntax(exp));
+         }
+         for (String exp : expList) {
+-            ArrayList<String> mockClasses = new ArrayList<String>();
++            ArrayList<String> mockClasses = new ArrayList<>();
+             Assert.assertTrue(runner.checkSyntax(exp, true, mockClasses));
+             System.out.println("未识别的java类列表:" + mockClasses);
+         }
+@@ -40,7 +40,7 @@ public void testCheckySyntax() throws Exception {
+         };
+ 
+         for (String exp : expList) {
+-            ArrayList<String> mockClasses = new ArrayList<String>();
++            ArrayList<String> mockClasses = new ArrayList<>();
+             Assert.assertTrue(runner.checkSyntax(exp, true, mockClasses));
+             System.out.println("未识别的java类列表:" + mockClasses);
+         }
+
+File: src/test/java/com/ql/util/express/bugfix/CompareObjectTest.java
+Patch:
+@@ -20,7 +20,7 @@ public void test() throws Exception {
+             "test<='a'",
+             "'a'>=test",
+         };
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("test", 'a' + 0);
+         for (String exp : expList) {
+             Object result = runner.execute(exp, context, null, true, false);
+
+File: src/test/java/com/ql/util/express/bugfix/ContextMessagePutTest.java
+Patch:
+@@ -35,7 +35,7 @@ public void test() throws Exception {
+         OperatorBase op = new OperatorContextPut("contextPut");
+         runner.addFunction("contextPut", op);
+         String exp = "contextPut('success','false');contextPut('error','错误信息');contextPut('warning','提醒信息')";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("success", "true");
+         Object result = runner.execute(exp, context, null, false, true);
+         System.out.println(result);
+
+File: src/test/java/com/ql/util/express/bugfix/IgnoreConstCharTest.java
+Patch:
+@@ -15,7 +15,7 @@ public void test() throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+         runner.setIgnoreConstChar(true);
+         String exp = "'1'+'2'==\"12\"";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Object result = runner.execute(exp, context, null, false, true);
+         assert ((Boolean)result);
+     }
+
+File: src/test/java/com/ql/util/express/bugfix/ImportClassPath.java
+Patch:
+@@ -16,7 +16,7 @@ public void test() {
+ 
+         ExpressRunner runner = new ExpressRunner();
+         String exp = "return new SimpleDateFormat(\"yyyy-MM-dd HH:mm:ss\").format(new Date())";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Object result = null;
+         try {
+             result = runner.execute(exp, context, null, false, false);
+@@ -36,7 +36,7 @@ public void test2() throws Exception {
+ 
+         ExpressRunner runner = new ExpressRunner();
+         String exp = "return new java.text.SimpleDateFormat(\"yyyy-MM-dd HH:mm:ss\").format(new Date())";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Object result = null;
+         result = runner.execute(exp, context, null, false, false);
+         System.out.println(result);
+@@ -49,7 +49,7 @@ public void test3() throws Exception {
+         String exp
+             = "import java.text.SimpleDateFormat; return new SimpleDateFormat(\"yyyy-MM-dd HH:mm:ss\").format(new "
+             + "Date())";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Object result = null;
+         result = runner.execute(exp, context, null, false, false);
+         System.out.println(result);
+
+File: src/test/java/com/ql/util/express/bugfix/InOperatorTest.java
+Patch:
+@@ -26,7 +26,7 @@ public Object executeInner(Object[] list) throws Exception {
+         //注意可以使用 data in (2,3,4) ，但无法使用data widelyin (2,3,4)，因为默认addOperator的是二元操作符，
+         // com.ql.util.express.instruction.InInstructionFactory对语法树做了特殊处理
+         String exp = "data widelyin [2,3,4]";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("data", 2);
+         Object result = runner.execute(exp, context, null, false, true);
+         System.out.println(result);
+
+File: src/test/java/com/ql/util/express/bugfix/InvokeSecurityRiskMethodsTest.java
+Patch:
+@@ -38,7 +38,7 @@ public String echo(String a) {
+     public void test() throws Exception {
+ 
+         ExpressRunner runner = new ExpressRunner();
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+ 
+         for (String express : expressList) {
+             try {
+
+File: src/test/java/com/ql/util/express/bugfix/LuofanTest.java
+Patch:
+@@ -25,7 +25,7 @@ public void testDemo() throws Exception {
+         runner.addFunctionOfClassMethod("lenOfAds", LuofanTest.class.getName(), "lenOfAds",
+             new String[] {Response.class.getName()}, null);
+         String exp = "lenOfAds(resp)";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("resp", new Response());
+         Object result = runner.execute(exp, context, null, false, true);
+         System.out.println(result);
+
+File: src/test/java/com/ql/util/express/bugfix/NullCompareTest.java
+Patch:
+@@ -31,7 +31,7 @@ public void testNullCompar() throws Exception {
+             "x != 2",
+         };
+         for (String exp : explist) {
+-            IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++            IExpressContext<String, Object> context = new DefaultContext<>();
+             System.out.println(exp);
+             ((DefaultContext<String, Object>)context).put("x", 2);
+             Object result = runner.execute(exp, context, null, true, false);
+@@ -45,7 +45,7 @@ public void testNullCompar() throws Exception {
+             "x == 2",
+         };
+         for (String exp : explist) {
+-            IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++            IExpressContext<String, Object> context = new DefaultContext<>();
+             System.out.println(exp);
+             ((DefaultContext<String, Object>)context).put("x", 2);
+             Object result = runner.execute(exp, context, null, true, false);
+
+File: src/test/java/com/ql/util/express/bugfix/RecursivelyTest.java
+Patch:
+@@ -20,7 +20,7 @@ public class RecursivelyTest {
+             @Override
+             public Object executeInner(Object[] list) throws Exception {
+                 System.out.println("executeInner:r_exeAll");
+-                IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++                IExpressContext<String, Object> context = new DefaultContext<>();
+                 runnerInner.execute("1+2", context, null, false, true);
+                 System.out.println(list[0]);
+                 return null;
+@@ -35,7 +35,7 @@ public Object executeInner(Object[] list) throws Exception {
+     public void testAllByFunction() throws Exception {
+ 
+         String exp = "r_exeAll(1,2,3)";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         runner.execute(exp, context, null, false, true);
+     }
+ }
+
+File: src/test/java/com/ql/util/express/bugfix/StringTest.java
+Patch:
+@@ -16,7 +16,7 @@ public void testFunction() throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+         String exp = "a = \"11111,2222\";p = a.split(\",\");";
+         System.out.println(exp);
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Object result = runner.execute(exp, context, null, false, false);
+         System.out.println(result);
+     }
+
+File: src/test/java/com/ql/util/express/bugfix/TestAdjustTypes.java
+Patch:
+@@ -35,15 +35,15 @@ public void testDemo() throws Exception {
+         runner.addFunctionOfServiceMethod("test", instance, "test", new Class[] {Integer.class}, null);
+         runner.addFunctionOfServiceMethod("testString", instance, "test", new Class[] {String.class}, null);
+         String exp = "test(1) +test(1) + testString('aaaa')";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Object result = runner.execute(exp, context, null, false, true);
+         System.out.println(result);
+     }
+ 
+     @Test
+     public void testDemo2() throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("testAdjustTypes", instance);
+         String exp = "testAdjustTypes.test(1) + testAdjustTypes.test(1) + testAdjustTypes.test('aaaa')";
+         Object result = runner.execute(exp, context, null, false, true);
+@@ -53,7 +53,7 @@ public void testDemo2() throws Exception {
+     @Test
+     public void testDemo3() throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("testAdjustTypes", instance);
+         String exp
+             = "testAdjustTypes.test(1) + testAdjustTypes.test(1) + testAdjustTypes.test('aaaa')+ testAdjustTypes.test"
+
+File: src/test/java/com/ql/util/express/bugfix/TestCompileMemory.java
+Patch:
+@@ -15,7 +15,7 @@ public void test() throws Exception {
+ 
+         QLPattern.printStackDepth = true;
+ 
+-        List<String> expressList = new ArrayList<String>();
++        List<String> expressList = new ArrayList<>();
+ 
+         String demo = "fieldList = formDO.getFieldList();\n" +
+             "submitBtn = formDO.getSubmitBtn();\n" +
+
+File: src/test/java/com/ql/util/express/bugfix/TestStackOverFlowTest.java
+Patch:
+@@ -26,7 +26,7 @@ public void test() throws Exception {
+             QLPattern.printStackDepth = true;
+             QLPattern.optimizeStackDepth = false;
+             ExpressRunner runner = new ExpressRunner();
+-            IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++            IExpressContext<String, Object> context = new DefaultContext<>();
+             Object result = runner.execute(express, context, null, true, false);
+             System.out.println(express + " = " + result);
+ 
+
+File: src/test/java/com/ql/util/express/bugfix/ThrowExceptionTest.java
+Patch:
+@@ -21,7 +21,7 @@ public String testParseLong(String a) throws Exception {
+     public void runExpress(String exp) throws Exception {
+ 
+         ExpressRunner runner = new ExpressRunner();
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Object result = runner.execute(exp, context, null, false, false);
+         System.out.println(result);
+     }
+
+File: src/test/java/com/ql/util/express/cfuture/ArrayMisType.java
+Patch:
+@@ -50,7 +50,7 @@ public void testFunction() throws Exception {
+             new String[] {"part = \"1@2@3\".split(\"@\"); return Integer.valueOf(part[2]);", "3"}
+         };
+ 
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("instance", instance);
+         context.put("strings", strings);
+         context.put("integers", integers);
+
+File: src/test/java/com/ql/util/express/cfuture/DebugQlScript.java
+Patch:
+@@ -27,7 +27,7 @@ public OperateData executeInner(InstructionSetContext parent, ArraySwap list) th
+             new String[] {"a=10;b=20;printContext();a=20;c=30;printContext();", null},
+         };
+ 
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("name", "test");
+         for (String[] test : testList) {
+             Object r = runner.execute(test[0], context, null, true, false);
+
+File: src/test/java/com/ql/util/express/console/ConsoleFrame.java
+Patch:
+@@ -156,7 +156,7 @@ public void jButton1_actionPerformed(ActionEvent e) {
+             contextText = "NewMap(" + contextText + ")";
+             @SuppressWarnings("unchecked")
+             Map<String, Object> tempMap = (Map<String, Object>)runner.execute(contextText, null, null, false, false);
+-            DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++            DefaultContext<String, Object> context = new DefaultContext<>();
+             context.putAll(tempMap);
+             r = runner.execute(script, context, null, false, false);
+             System.out.print("QL>\n" +
+
+File: src/test/java/com/ql/util/express/console/ConsoleFrame2.java
+Patch:
+@@ -170,7 +170,7 @@ public void jButton1_actionPerformed(ActionEvent e) {
+             ExpressRunner runner = new ExpressRunner(false, true);
+             contextText = "NewMap(" + contextText + ")";
+             Map<String, Object> tempMap = (Map<String, Object>)runner.execute(contextText, null, null, false, false);
+-            DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++            DefaultContext<String, Object> context = new DefaultContext<>();
+             context.putAll(tempMap);
+             r = runner.execute(script, context, null, false, true);
+             writer.write("QL>\n" +
+
+File: src/test/java/com/ql/util/express/example/ArgumentTypeMismatchTest.java
+Patch:
+@@ -27,7 +27,7 @@ public void test1() throws Exception {
+         runner.addFunctionOfServiceMethod("abc", singleton, "functionABC",
+             new Class[] {Long.class, Integer.class, String.class}, null);
+         String exp = "abc(a,b,c)";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("a", 1L);
+         context.put("b", 2);
+         context.put("c", "3");
+@@ -48,7 +48,7 @@ public Object executeInner(Object[] list) throws Exception {
+             }
+         });
+         String exp = "abc(a,b,c)";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("a", "1");
+         context.put("b", "2");
+         context.put("c", "3");
+@@ -74,7 +74,7 @@ public Object executeInner(Object[] list) throws Exception {
+             "function = " + ToStringBuilder.reflectionToString(function, ToStringStyle.MULTI_LINE_STYLE));
+ 
+         String exp = "abc(a,b,c)";
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("a", "1");
+         context.put("b", "2");
+         context.put("c", "3");
+
+File: src/test/java/com/ql/util/express/example/BeanTest.java
+Patch:
+@@ -26,7 +26,7 @@ public void test2() throws Exception {
+         String exp = "cust.setName(\"小强\");" +
+             // "cust.name = \"小强\";" +
+             "return cust.getName();";
+-        IExpressContext<String, Object> expressContext = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> expressContext = new DefaultContext<>();
+         expressContext.put("cust", new CustBean(1));
+         ExpressRunner runner = new ExpressRunner();
+         //执行表达式，并将结果赋给r
+@@ -57,7 +57,7 @@ public void testAlias() throws Exception {
+         String exp = "cust.setName(\"小强\");" +
+             "定义别名 custName cust.name;" +
+             "return custName;";
+-        IExpressContext<String, Object> expressContext = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> expressContext = new DefaultContext<>();
+         expressContext.put("cust", new CustBean(1));
+         ExpressRunner runner = new ExpressRunner();
+         //
+@@ -78,7 +78,7 @@ public void testMacro() throws Exception {
+         String exp = "cust.setName(\"小强\");" +
+             "定义宏 custName {cust.name};" +
+             "return custName;";
+-        IExpressContext<String, Object> expressContext = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> expressContext = new DefaultContext<>();
+         expressContext.put("cust", new CustBean(1));
+         ExpressRunner runner = new ExpressRunner();
+         //
+
+File: src/test/java/com/ql/util/express/example/OperatorTest.java
+Patch:
+@@ -76,7 +76,7 @@ public void testAddNByFunction() throws Exception {
+     public void testAddTwiceWithParams() throws Exception {
+         //定义表达式，相当于 i+(j+j)+(n+n)
+         String exp = " i addT j addT n";
+-        IExpressContext<String, Object> expressContext = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> expressContext = new DefaultContext<>();
+         expressContext.put("i", Integer.valueOf(1));
+         expressContext.put("j", Integer.valueOf(22));
+         expressContext.put("n", Integer.valueOf(2));
+
+File: src/test/java/com/ql/util/express/example/TypicalDemo.java
+Patch:
+@@ -53,9 +53,9 @@ public boolean hasOrderGoods(UserInfo user, long goodsId) {
+      * @throws Exception
+      */
+     public String hasPermission(UserInfo userInfo, String expression) throws Exception {
+-        IExpressContext<String, Object> expressContext = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> expressContext = new DefaultContext<>();
+         expressContext.put("userInfo", userInfo);
+-        List<String> errorInfo = new ArrayList<String>();
++        List<String> errorInfo = new ArrayList<>();
+         Boolean result = (Boolean)runner.execute(expression, expressContext, errorInfo, true, false);
+         String resultStr = "";
+         if (result.booleanValue() == true) {
+
+File: src/test/java/com/ql/util/express/test/AClassDefine.java
+Patch:
+@@ -19,7 +19,7 @@ public void testNewVClass() throws Exception {
+             "println a + abc.a;" +
+             "return a + abc.a;";
+         ExpressRunner runner = new ExpressRunner(false, false);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         runner.loadMutilExpress("ClassTest", express);
+ 
+         Object r = runner.executeByExpressName("ClassTest", context,
+@@ -55,7 +55,7 @@ public void testABC() throws Exception {
+                 + " return result ;"
+                 + "";
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         runner.loadMutilExpress("", expressDefine);
+         runner.loadMutilExpress("ClassTest", express);
+         Object r = runner.executeByExpressName("ClassTest", context,
+
+File: src/test/java/com/ql/util/express/test/AClassDefineSingle.java
+Patch:
+@@ -17,7 +17,7 @@ public void testABC() throws Exception {
+                 + " print(example.整数值);"
+                 + "";
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         runner.loadMutilExpress("", expressDefine);
+         runner.loadMutilExpress("ClassTest", express);
+         Object r = runner.executeByExpressName("ClassTest", context,
+
+File: src/test/java/com/ql/util/express/test/ATempTest.java
+Patch:
+@@ -11,7 +11,7 @@ public void test2Java() throws Exception {
+         //String express = "include Test; max(1,2,3)";
+         String express = "when 1==2 then println(100000)";
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         Object r = runner.execute(express, context, null, false, false);
+         System.out.println(r);
+     }
+
+File: src/test/java/com/ql/util/express/test/AddMacroDefineTest.java
+Patch:
+@@ -12,7 +12,7 @@ public void test2Java() throws Exception {
+             "testLong", new String[] {"long"}, null);
+         runner.addMacro("玄难", "abc(100);");
+         String express = "玄难 + \" - Test\";";
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         Object r = runner.execute(express, context, null, false, true);
+         System.out.println(r);
+     }
+
+File: src/test/java/com/ql/util/express/test/BitTest.java
+Patch:
+@@ -21,7 +21,7 @@ public void testBit() throws Exception {
+     public void IntBit() throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+ 
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         int num = -10;
+         context.put("num", num);
+         testQl("num & 11", num & 11, runner, context);
+@@ -35,7 +35,7 @@ public void IntBit() throws Exception {
+     public void LongBit() throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+ 
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         long num = -10L;
+         context.put("num", num);
+         testQl("num & 11", num & 11, runner, context);
+
+File: src/test/java/com/ql/util/express/test/CallWithNullParameterTest.java
+Patch:
+@@ -11,7 +11,7 @@ public class CallWithNullParameterTest {
+     public void testABC() throws Exception {
+         String express = "new com.ql.util.express.test.BeanExample().testLongObject(null);";
+         ExpressRunner runner = new ExpressRunner();
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         Object r = runner.execute(express, context, null, false,
+             true);
+         System.out.println(r);
+
+File: src/test/java/com/ql/util/express/test/DateFormatTest.java
+Patch:
+@@ -18,7 +18,7 @@ public void testDateFormatCompare() throws Exception {
+ 
+         runner.addFunction("DateFormat", new Operator() {
+ 
+-            private Map<String, Date> cache = new HashMap<String, Date>();
++            private Map<String, Date> cache = new HashMap<>();
+ 
+             @Override
+             public Object executeInner(Object[] objects) throws Exception {
+@@ -34,7 +34,7 @@ public Object executeInner(Object[] objects) throws Exception {
+             }
+         });
+ 
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("nowStr", new SimpleDateFormat("yyyy-MM-dd").parse("2018-02-23"));
+ 
+         String sb = "nowStr.before(new Date(2018,2,22))";
+
+File: src/test/java/com/ql/util/express/test/DateTest.java
+Patch:
+@@ -13,7 +13,7 @@ public class DateTest {
+     @Test
+     public void testDateCompare() throws Exception {
+         String express = "a = new Date();b=a;a==b";
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         ExpressRunner runner = new ExpressRunner();
+         Object r = runner.execute(express, context, null, false, false);
+         Assert.assertTrue("testDateCompare", (Boolean)r);
+@@ -22,7 +22,7 @@ public void testDateCompare() throws Exception {
+     @Test
+     public void testDateCompare1() throws Exception {
+         String express = "a = new Date();for(i=0;i<1000;i++){f=f+i;}b=new Date();a<=b";
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         ExpressRunner runner = new ExpressRunner();
+         Object r = runner.execute(express, context, null, false, false);
+         Assert.assertTrue("testDateCompare", (Boolean)r);
+@@ -31,7 +31,7 @@ public void testDateCompare1() throws Exception {
+     @Test
+     public void testDateCompare2() throws Exception {
+         String express = "a = new Date();for(i=0;i<1000;i++){f=f+i;}b=new Date();b>a";
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         ExpressRunner runner = new ExpressRunner();
+         Object r = runner.execute(express, context, null, false, false);
+         Assert.assertTrue("testDateCompare", (Boolean)r);
+
+File: src/test/java/com/ql/util/express/test/DongtaiFieldTest.java
+Patch:
+@@ -24,8 +24,8 @@ public void testField() throws Exception {
+             "费用.用户  = 200;";
+ 
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
+-        Map<String, Object> fee = new HashMap<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
++        Map<String, Object> fee = new HashMap<>();
+         context.put("费用", fee);
+         InstructionSet set = runner.parseInstructionSet(express);
+         InstructionSetRunner.executeOuter(runner, set, null, context, null, true, false, null, true);
+@@ -39,7 +39,7 @@ public void testField() throws Exception {
+     public void testLoadFromFile() throws Exception {
+         ExpressRunner runner = new ExpressRunner(true, true);
+         runner.loadExpress("TestFunctionParamerType");
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         context.put("auctionUtil", new com.ql.util.express.test.BeanExample());
+         context.put("log", log);
+         Object r = runner.executeByExpressName("TestFunctionParamerType", context, null, false, false, null);
+
+File: src/test/java/com/ql/util/express/test/ExportDefine.java
+Patch:
+@@ -22,7 +22,7 @@ public void testABC() throws Exception {
+                 + "};"
+                 + " qh.a = qh.a +\"-qh\";" + " return example.child.a ";
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         context.put("example", new BeanExample());
+         Object r = runner.execute(express, context, null, false, true);
+         System.out.println(r);
+
+File: src/test/java/com/ql/util/express/test/ExpressCacheTest.java
+Patch:
+@@ -19,7 +19,7 @@ public class ExpressCacheTest {
+     @Test
+     public void testScriptCache() throws Exception {
+         runner.addMacro("计算平均成绩", "(语文+数学+英语)/3.0");
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("语文", 88);
+         context.put("数学", 99);
+         context.put("英语", 95);
+@@ -48,7 +48,7 @@ public void testLocalCacheMutualImpact() throws Exception {
+ 
+         runner.addMacro("计算平均成绩", "(语文+数学+英语)/3.0");
+         runner.addMacro("是否优秀", "计算平均成绩>90");
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("语文", 88);
+         context.put("数学", 99);
+         context.put("英语", 95);
+@@ -63,7 +63,7 @@ public void testRemoteCache() {
+         cacheRunner.loadCache("计算平均成绩", "(语文+数学+英语)/3.0");
+         cacheRunner.loadCache("是否优秀", "计算平均成绩>90");
+ 
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("语文", 88);
+         context.put("数学", 99);
+         context.put("英语", 95);
+
+File: src/test/java/com/ql/util/express/test/ExpressRemoteCacheTest.java
+Patch:
+@@ -16,7 +16,7 @@ public void testcache() {
+         cacheRunner.loadCache("加法计算", "a+b");
+         cacheRunner.loadCache("减法计算", "a-b");
+ 
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         context.put("a", 1);
+         context.put("b", 2);
+ 
+
+File: src/test/java/com/ql/util/express/test/ExpressTest.java
+Patch:
+@@ -115,7 +115,7 @@ public void testExpress() throws Exception {
+ 
+         for (int point = 0; point < expressTest.length; point++) {
+             String expressStr = expressTest[point][0];
+-            List<String> errorList = new ArrayList<String>();
++            List<String> errorList = new ArrayList<>();
+             Object result = runner.execute(expressStr, expressContext, null, false, true);
+             if (expressTest[point][1].equalsIgnoreCase("null")
+                 && result != null
+
+File: src/test/java/com/ql/util/express/test/ForFlowFunctionTest.java
+Patch:
+@@ -14,7 +14,7 @@ public void testABC() throws Exception {
+         ExpressRunner runner = new ExpressRunner(false, true);
+         runner.addFunctionOfServiceMethod("打印", System.out, "println",
+             new String[] {"int"}, null);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         Object r = runner.execute(express, context, null, false, true);
+         Assert.assertTrue("for循环后面跟着一个函数的时候错误", r.toString().equals("10"));
+     }
+
+File: src/test/java/com/ql/util/express/test/FunctionDescTest.java
+Patch:
+@@ -10,7 +10,7 @@ public class FunctionDescTest {
+     public void testFunctionDesc() throws Exception {
+         String express = "isVIP(\"qianghui\")";
+         ExpressRunner runner = new ExpressRunner();
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         runner.addFunctionOfClassMethod("isVIP", BeanExample.class.getName(),
+             "isVIP", new String[] {"String"}, new String[] {"用户名称"}, new String[] {"UserName"}, "$1不是VIP用户");
+         OperatorBase op = runner.getFunciton("isVIP");
+
+File: src/test/java/com/ql/util/express/test/GetExpressAttrNamesTest.java
+Patch:
+@@ -25,7 +25,7 @@ public void testABCD() throws Exception {
+         String express = "if(a!=null)return a";
+         ExpressRunner runner = new ExpressRunner(true, true);
+         String[] names = runner.getOutVarNames(express);
+-        runner.execute(express, new DefaultContext<String, Object>(), null, false, false);
++        runner.execute(express, new DefaultContext<>(), null, false, false);
+         for (String s : names) {
+             System.out.println("var : " + s);
+         }
+
+File: src/test/java/com/ql/util/express/test/GetExpressFunctionNamesTest.java
+Patch:
+@@ -40,7 +40,7 @@ public void testFunctionDefine() throws Exception {
+         }
+         Assert.assertTrue("获取外部方法错误", names.length == 0);
+ 
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Object r = runner.execute(express, context, null, false, false);
+         System.out.println("result : " + r);
+ 
+@@ -63,7 +63,7 @@ public Object executeInner(Object[] list) throws Exception {
+         }
+         Assert.assertTrue("获取外部方法错误", names.length == 0);
+ 
+-        context = new DefaultContext<String, Object>();
++        context = new DefaultContext<>();
+         r = runner.execute(express, context, null, false, false);
+         System.out.println("result : " + r);
+ 
+
+File: src/test/java/com/ql/util/express/test/IfTest.java
+Patch:
+@@ -28,7 +28,7 @@ public void testIf() throws Exception {
+             {"if (1==2) return 100; return 10000;", "10000"},
+         };
+         for (int i = 0; i < expresses.length; i++) {
+-            IExpressContext<String, Object> expressContext = new DefaultContext<String, Object>();
++            IExpressContext<String, Object> expressContext = new DefaultContext<>();
+             ExpressRunner runner = new ExpressRunner(false, true);
+             runner.addOperatorWithAlias("加", "+", null);
+             runner.addOperator("love", "+", new LoveOperator("love"));
+
+File: src/test/java/com/ql/util/express/test/ImportTest.java
+Patch:
+@@ -13,7 +13,7 @@ public void testImport() throws Exception {
+             "abc = new BeanExample(\"张三\").unionName(\"李四\") ;" +
+             "return new BigInteger(\"1000\");";
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         Object r = runner.execute(express, context, null, false, true);
+         Assert.assertTrue("import 实现错误", r.toString().equals("1000"));
+         System.out.println(r);
+
+File: src/test/java/com/ql/util/express/test/InTest.java
+Patch:
+@@ -15,10 +15,10 @@ public void testOperaterIn() throws Exception {
+         String express3 = "2 in b";
+ 
+         ExpressRunner runner = new ExpressRunner(true, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         int[] a = {1, 2, 3};
+         context.put("a", a);
+-        List<Integer> b = new ArrayList<Integer>();
++        List<Integer> b = new ArrayList<>();
+         b.add(2);
+         b.add(3);
+ 
+
+File: src/test/java/com/ql/util/express/test/InstanceOfTest.java
+Patch:
+@@ -13,7 +13,7 @@ public class InstanceOfTest {
+     @Test
+     public void test() throws Exception {
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         String express = "s='';return s  instanceof String";
+         Object r = runner.execute(express, context, null, false, true);
+         Assert.assertTrue("InstanceOfTest 出错", r.toString().equals("true"));
+
+File: src/test/java/com/ql/util/express/test/IsAssignableTest.java
+Patch:
+@@ -29,15 +29,15 @@ public void testABC() throws Exception {
+ 
+         String express = "bean.testInt(p)";
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         context.put("bean", new BeanExample());
+         context.put("p", 100);
+ 
+         Object r = runner.execute(express, context, null, false, true);
+         System.out.println(r);
+         Assert.assertTrue("数据类型转换错误：", r.toString().equalsIgnoreCase("toString-int:100"));
+ 
+-        context = new DefaultContext<String, Object>();
++        context = new DefaultContext<>();
+         express = "bean.testLong(p)";
+         context.put("bean", new BeanExample());
+         context.put("p", 100L);
+
+File: src/test/java/com/ql/util/express/test/LoadExpressFromFileTest.java
+Patch:
+@@ -16,14 +16,14 @@ public void testLoadFromFile() throws Exception {
+         for (ExportItem item : exports) {
+             System.out.println(item.getGlobeName());
+         }
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         Log log = new MyLog("玄难测试");
+         Object r = runner.executeByExpressName("main", context, null,
+             false, false, log);
+         System.out.println("运行结果" + r);
+         System.out.println("context:" + context);
+ 
+-        context = new DefaultContext<String, Object>();
++        context = new DefaultContext<>();
+         r = runner.execute("initial;累加;累加;return qh;",
+             context, null, true, false, log);
+ 
+@@ -35,7 +35,7 @@ public void testLoadFromFile() throws Exception {
+     public void testLoadInclude() throws Exception {
+         ExpressRunner runner = new ExpressRunner(false, true);
+         runner.loadExpress("includeRoot");
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         Object r = runner.executeByExpressName("includeRoot", context, null, false, false, null);
+         System.out.println(r);
+         System.out.println(context);
+
+File: src/test/java/com/ql/util/express/test/MinusOperatorTest.java
+Patch:
+@@ -13,15 +13,15 @@ public class MinusOperatorTest {
+     @Test
+     public void operatorReturn() throws Exception {
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         String test1 = "return -50";
+         System.out.println(runner.execute(test1, context, null, true, false));
+     }
+ 
+     @Test
+     public void operatorThreeLogic() throws Exception {
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         String test1 = "2>-1?-1:-2;";
+         System.out.println(runner.execute(test1, context, null, true, false));
+     }
+
+File: src/test/java/com/ql/util/express/test/NewExpressTest.java
+Patch:
+@@ -72,7 +72,7 @@ public void testParse() throws Exception {
+             {"if 1==2 then {return 10}else{return 100}", "100"}
+         };
+         for (int i = 0; i < expresses.length; i++) {
+-            IExpressContext<String, Object> expressContext = new DefaultContext<String, Object>();
++            IExpressContext<String, Object> expressContext = new DefaultContext<>();
+             ExpressRunner runner = new ExpressRunner(false, true);
+             runner.addOperatorWithAlias("加", "+", null);
+             runner.addOperator("love", "+", new LoveOperator("love"));
+
+File: src/test/java/com/ql/util/express/test/ObjectTest.java
+Patch:
+@@ -10,7 +10,7 @@ public class ObjectTest {
+     public void testABC() throws Exception {
+         String express = "object.amount*2+object.volume";
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         ObjectBean tempObject = new ObjectBean(100, 60);
+         context.put("object", tempObject);
+         Object r = runner.execute(express, context, null, false,
+@@ -23,7 +23,7 @@ public void testABC() throws Exception {
+     public void testABC2() throws Exception {
+         String express = "object.getAmount(1)";
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         ObjectBean tempObject = new ObjectBean(100, 60);
+         context.put("object", tempObject);
+         Object r = runner.execute(express, context, null, false,
+
+File: src/test/java/com/ql/util/express/test/OpCallTest.java
+Patch:
+@@ -31,7 +31,7 @@ public void testList() throws Exception {
+ 
+         for (int point = 0; point < expressTest.length; point++) {
+             String expressStr = expressTest[point][0];
+-            List<String> errorList = new ArrayList<String>();
++            List<String> errorList = new ArrayList<>();
+             Object result = runner.execute(expressStr, expressContext, errorList,
+                 false, true);
+             if (result == null
+
+File: src/test/java/com/ql/util/express/test/PreloadExpressTest.java
+Patch:
+@@ -13,7 +13,7 @@ public void preloadExpress() throws Exception {
+         runner.loadMutilExpress(null,
+             "function add(int a, int b){return a+b;} \n" +
+                 "function sub(int a, int b){return a-b;}");
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         context.put("m", 1);
+         context.put("n", 1);
+         Object object = runner.execute("add(m,n)+sub(2,-2)", context, null, true, false);
+
+File: src/test/java/com/ql/util/express/test/StaticMethodTest.java
+Patch:
+@@ -15,7 +15,7 @@ public void testStaticMethod() throws Exception {
+             StaticUtils.class.getName() + ".isVirtualSCItem(1L)"
+         };
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         context.put("StaticUtils", StaticUtils.class);
+         for (String express : expressArray) {
+             Object r = runner.execute(express, context, null, false,
+
+File: src/test/java/com/ql/util/express/test/SubtractTest.java
+Patch:
+@@ -11,7 +11,7 @@ public void testMax() throws Exception {
+         //String express = "return max(max(0.0,1) - 0.95,0);";
+         String express = "-3-(-5*-7-9)-(9-2);";
+         ExpressRunner runner = new ExpressRunner(false, true);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         Object r = runner.execute(express, context, null, false, true);
+         System.out.println(r);
+         Assert.assertTrue("\"-\"号测试", r.toString().equals("-36"));
+
+File: src/test/java/com/ql/util/express/test/TestAddMethodInvoke.java
+Patch:
+@@ -17,7 +17,7 @@ public class TestAddMethodInvoke {
+     @Test
+     public void testStringMethod() throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+         Object result = runner.execute("'helloWorld'.length()", context, null, false, false);
+         System.out.println(result);
+ 
+@@ -49,7 +49,7 @@ public Object executeInner(Object[] list) throws Exception {
+     @Test
+     public void testArrayOrMapJoinMethod() throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+ 
+         runner.addClassMethod("join", java.util.List.class, new Operator() {
+             @Override
+@@ -83,7 +83,7 @@ public Object executeInner(Object[] list) throws Exception {
+     @Test
+     public void testAop() throws Exception {
+         ExpressRunner runner = new ExpressRunner();
+-        IExpressContext<String, Object> context = new DefaultContext<String, Object>();
++        IExpressContext<String, Object> context = new DefaultContext<>();
+ 
+         runner.addClassMethod("size", java.util.List.class, new Operator() {
+             @Override
+
+File: src/test/java/com/ql/util/express/test/TestMap.java
+Patch:
+@@ -15,7 +15,7 @@ public class TestMap {
+     public void testInt2Object() throws Exception {
+         String express = "Map a = new HashMap(); a.put(\"a\",100 - 10);return a.get(\"a\")";
+         ExpressRunner runner = new ExpressRunner();
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         Object r = runner.execute(express, context, null, false, true);
+         Assert.assertTrue("Map读取错误", r.toString().equalsIgnoreCase("90"));
+ 
+@@ -24,7 +24,7 @@ public void testInt2Object() throws Exception {
+     @Test
+     public void testmain() throws Exception {
+         IExpressContext<String, Object> expressContext = new IExpressContext<String, Object>() {
+-            Map<String, Object> map = new HashMap<String, Object>();
++            Map<String, Object> map = new HashMap<>();
+ 
+             public Object put(String name, Object object) {
+                 return map.put(name, object);
+@@ -35,7 +35,7 @@ public Object get(Object key) {
+             }
+         };
+ 
+-        Map<String, Object> map = new HashMap<String, Object>();
++        Map<String, Object> map = new HashMap<>();
+         map.put("key1", 1);
+         expressContext.put("map", map);
+ 
+
+File: src/test/java/com/ql/util/express/test/TestSet.java
+Patch:
+@@ -12,7 +12,7 @@ public class TestSet {
+     @Test
+     public void testSet() throws Exception {
+         ExpressRunner runner = new ExpressRunner(false, false);
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         String express = "abc = NewMap(1:1,2:2); return abc.get(1) + abc.get(2);";
+         Object r = runner.execute(express, context, null, false, false);
+         System.out.println(r);
+
+File: src/test/java/com/ql/util/express/test/TimeOutExceptionTest.java
+Patch:
+@@ -20,7 +20,7 @@ public class TimeOutExceptionTest {
+     public void test() throws Exception {
+ 
+         ExpressRunner runner = new ExpressRunner();
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+ 
+         for (String express : expressList) {
+             try {
+
+File: src/test/java/com/ql/util/express/test/VarAreaTest.java
+Patch:
+@@ -17,7 +17,7 @@ public void testVarArea1() throws Exception {
+                 "}; " +
+                 "qh = qh + 1;";
+         ExpressRunner runner = new ExpressRunner();
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         runner.addOperatorWithAlias("如果", "if", null);
+         runner.addOperatorWithAlias("则", "then", null);
+         runner.addOperatorWithAlias("否则", "else", null);
+@@ -40,7 +40,7 @@ public void testVarArea2() throws Exception {
+                 "}; " +
+                 "qh = qh + 1;";
+         ExpressRunner runner = new ExpressRunner();
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         runner.addOperatorWithAlias("如果", "if", null);
+         runner.addOperatorWithAlias("则", "then", null);
+         runner.addOperatorWithAlias("否则", "else", null);
+
+File: src/test/java/com/ql/util/express/test/rating/RatingTest.java
+Patch:
+@@ -32,7 +32,7 @@ public void testRating() throws Exception {
+         //装载分成规则rating.ql文件
+         runner.loadExpress("rating");
+         //设置上下文
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         context.put("物流订单", logisticsOrder);
+         context.put("交易订单", tcOrder);
+         context.put("仓储订单", goodsOrder);
+
+File: src/test/java/com/ql/util/express/test/rating/RatingWithPropertyTest.java
+Patch:
+@@ -31,7 +31,7 @@ public void testRating() throws Exception {
+         //装载分成规则rating.ql文件
+         runner.loadExpress("ratingWithProperty");
+         //设置上下文
+-        DefaultContext<String, Object> context = new DefaultContext<String, Object>();
++        DefaultContext<String, Object> context = new DefaultContext<>();
+         context.put("物流订单", logisticsOrder);
+         context.put("交易订单", tcOrder);
+         context.put("仓储订单", goodsOrder);
+
+File: src/test/java/com/ql/util/express/test/rating/SubjectMananger.java
+Patch:
+@@ -22,7 +22,7 @@ public Object put(String userName, Object userSubject) {
+     }
+ 
+     public List<SubjectValue> getSubjectValues() {
+-        List<SubjectValue> result = new ArrayList<SubjectValue>();
++        List<SubjectValue> result = new ArrayList<>();
+         for (Object f : this.values()) {
+             UserSubject item = (UserSubject)f;
+             for (Object t : item.entrySet()) {
+
+File: src/test/java/com/ql/util/express/test/spring/SpringDemoTest.java
+Patch:
+@@ -31,7 +31,7 @@ public void testScript() throws Exception {
+                 "System.out.println('用户信息不存在');" +
+                 "}";
+ 
+-        Map<String, Object> context = new HashMap<String, Object>();
++        Map<String, Object> context = new HashMap<>();
+         context.put("nick", "马总");
+         qlExpressUtil.execute(express,
+             context);
+@@ -56,7 +56,7 @@ public void testScript2() throws Exception {
+                 "System.out.println('用户信息不存在');" +
+                 "}";
+ 
+-        Map<String, Object> context = new HashMap<String, Object>();
++        Map<String, Object> context = new HashMap<>();
+         context.put("nick", "马总");
+         qlExpressUtil.execute(express,
+             context);
+
+File: src/main/java/com/ql/util/express/instruction/opdata/OperateDataArrayItem.java
+Patch:
+@@ -28,7 +28,7 @@ public void toResource(StringBuilder builder,int level){
+ 		builder.append(this.index);
+     }
+ 	public Class<?> getType(InstructionSetContext context) throws Exception {
+-		  return this.arrayObject.getObject(context).getClass();
++		  return this.arrayObject.getObject(context).getClass().getComponentType();
+ 	}
+ 	public Object getObjectInner(InstructionSetContext context){
+ 		try {
+
+File: src/main/java/com/ql/util/express/instruction/BlockInstructionFactory.java
+Patch:
+@@ -15,7 +15,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+ 			throws Exception {	
+ 		if (node.isTypeEqualsOrChild("STAT_SEMICOLON")
+ 				&&result.getCurrentPoint() >=0 &&  result.getInstruction(result.getCurrentPoint()) instanceof InstructionClearDataStack == false) {
+-			result.addInstruction(new InstructionClearDataStack());
++			result.addInstruction(new InstructionClearDataStack().setLine(node.getLine()));
+ 		}
+ 		
+ 		int tmpPoint = result.getCurrentPoint()+1;
+@@ -27,8 +27,8 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+ 		}
+ 		if (hasDef == true&& isRoot == false
+ 				&& node.getTreeType().isEqualsOrChild("STAT_BLOCK")){
+-			result.insertInstruction(tmpPoint,new InstructionOpenNewArea());
+-			result.insertInstruction(result.getCurrentPoint() + 1,new InstructionCloseNewArea());
++			result.insertInstruction(tmpPoint,new InstructionOpenNewArea().setLine(node.getLine()));
++			result.insertInstruction(result.getCurrentPoint() + 1,new InstructionCloseNewArea().setLine(node.getLine()));
+ 			returnVal = false;
+ 		}else{
+ 			returnVal = hasDef;
+
+File: src/main/java/com/ql/util/express/instruction/BreakInstructionFactory.java
+Patch:
+@@ -14,7 +14,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+ 		InstructionGoTo breakInstruction = new InstructionGoTo(result.getCurrentPoint()+1);		
+ 		breakInstruction.name = "break";
+ 		forStack.peek().breakList.add(breakInstruction);
+-		result.addInstruction(breakInstruction);
++		result.addInstruction(breakInstruction.setLine(node.getLine()));
+ 		return false;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/CallFunctionInstructionFactory.java
+Patch:
+@@ -28,10 +28,10 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 				functionName);
+ 		int opNum = children.length -1;
+ 		if (op != null) {
+-			result.addInstruction(new InstructionOperator(op,opNum ));
++			result.addInstruction(new InstructionOperator(op,opNum ).setLine(node.getLine()));
+ 		} else {
+ 			result.addInstruction(new InstructionCallSelfDefineFunction(
+-					functionName,opNum));
++					functionName,opNum).setLine(children[0].getLine()));
+ 		}
+ 		return returnVal;
+ 	}
+
+File: src/main/java/com/ql/util/express/instruction/CastInstructionFactory.java
+Patch:
+@@ -27,7 +27,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,St
+ 			boolean tmpHas =    aCompile.createInstructionSetPrivate(result,forStack,children[i],false);
+ 			returnVal = returnVal || tmpHas;
+ 		}	
+-		result.addInstruction(new InstructionOperator(op,children.length));
++		result.addInstruction(new InstructionOperator(op,children.length).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/ConstDataInstructionFactory.java
+Patch:
+@@ -21,7 +21,7 @@ public OperateData genOperateData(ExpressNode node) {
+ 	public boolean createInstruction(ExpressRunner aCompile,
+ 			InstructionSet result, Stack<ForRelBreakContinue> forStack,
+ 			ExpressNode node, boolean isRoot) throws Exception {
+-		result.addInstruction(new InstructionConstData(genOperateData(node)));
++		result.addInstruction(new InstructionConstData(genOperateData(node)).setLine(node.getLine()));
+ 		return false;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/ContinueInstructionFactory.java
+Patch:
+@@ -14,7 +14,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+ 		InstructionGoTo continueInstruction = new InstructionGoTo(result.getCurrentPoint()+1);		
+ 		continueInstruction.name = "continue";
+ 		forStack.peek().continueList.add(continueInstruction);		
+-		result.addInstruction(continueInstruction);
++		result.addInstruction(continueInstruction.setLine(node.getLine()));
+ 		return false;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/DefineInstructionFactory.java
+Patch:
+@@ -48,7 +48,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,St
+ 			finishPoint[i] = result.getCurrentPoint();
+ 		}
+ 		OperatorBase op = aCompile.getOperatorFactory().newInstance(node);
+-		result.addInstruction(new InstructionOperator(op, children.length));
++		result.addInstruction(new InstructionOperator(op, children.length).setLine(node.getLine()));
+ 		returnVal = true;
+ 		return returnVal;
+ 	}
+
+File: src/main/java/com/ql/util/express/instruction/FieldCallInstructionFactory.java
+Patch:
+@@ -29,7 +29,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 		
+ 		
+ 		OperatorBase op = new OperatorField(fieldName);
+-		result.addInstruction(new InstructionOperator(op,1));
++		result.addInstruction(new InstructionOperator(op,1).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ 
+
+File: src/main/java/com/ql/util/express/instruction/IfInstructionFactory.java
+Patch:
+@@ -37,10 +37,10 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+    		boolean r1 = aCompile.createInstructionSetPrivate(result,forStack,children[0],false);//condition	
+ 		finishPoint[0] = result.getCurrentPoint();
+ 		boolean r2 = aCompile.createInstructionSetPrivate(result,forStack,children[1],false);//true		
+-		result.insertInstruction(finishPoint[0]+1,new InstructionGoToWithCondition(false,result.getCurrentPoint() - finishPoint[0] + 2,true));
++		result.insertInstruction(finishPoint[0]+1,new InstructionGoToWithCondition(false,result.getCurrentPoint() - finishPoint[0] + 2,true).setLine(node.getLine()));
+ 		finishPoint[1] = result.getCurrentPoint();
+ 		boolean r3 = aCompile.createInstructionSetPrivate(result,forStack,children[2],false);//false
+-		result.insertInstruction(finishPoint[1]+1,new InstructionGoTo(result.getCurrentPoint() - finishPoint[1] + 1));  		
++		result.insertInstruction(finishPoint[1]+1,new InstructionGoTo(result.getCurrentPoint() - finishPoint[1] + 1).setLine(node.getLine()));  		
+         return r1 || r2 || r3;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/InInstructionFactory.java
+Patch:
+@@ -29,7 +29,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 			returnVal = returnVal || tmpHas;
+ 		}
+ 		OperatorBase op = aCompile.getOperatorFactory().newInstance(node);
+-		result.addInstruction(new InstructionOperator(op, children.length));
++		result.addInstruction(new InstructionOperator(op, children.length).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/KeyValueInstructionFactory.java
+Patch:
+@@ -28,7 +28,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,St
+ 				returnVal = returnVal || tmpHas;
+ 			}
+ 			OperatorBase op = aCompile.getOperatorFactory().newInstance("alias");
+-			result.addInstruction(new InstructionOperator(op, children.length));
++			result.addInstruction(new InstructionOperator(op, children.length).setLine(node.getLine()));
+ 			returnVal = true;
+ 		}else{	
+ 			for(int i =0;i < children.length;i++){
+@@ -38,7 +38,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,St
+ 			}
+ 
+ 			OperatorBase op = aCompile.getOperatorFactory().newInstance(node);
+-			result.addInstruction(new InstructionOperator(op,children.length));
++			result.addInstruction(new InstructionOperator(op,children.length).setLine(node.getLine()));
+ 		}
+ 		return returnVal;
+ 	}
+
+File: src/main/java/com/ql/util/express/instruction/LoadAttrInstructionFactory.java
+Patch:
+@@ -15,9 +15,9 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+ 			throws Exception{
+ 		FunctionInstructionSet functionSet =  result.getMacroDefine(node.getValue());
+ 		if(functionSet != null){//是宏定义
+-			result.insertInstruction(result.getCurrentPoint()+1, new InstructionCallMacro(node.getValue()));
++			result.insertInstruction(result.getCurrentPoint()+1, new InstructionCallMacro(node.getValue()).setLine(node.getLine()).setLine(node.getLine()));
+ 		}else{
+-		  result.addInstruction(new InstructionLoadAttr(node.getValue()));
++		  result.addInstruction(new InstructionLoadAttr(node.getValue()).setLine(node.getLine()));
+ 		  if(node.getChildren().length >0){
+ 			  throw new Exception("表达式设置错误");
+ 		  }
+
+File: src/main/java/com/ql/util/express/instruction/MethodCallInstructionFactory.java
+Patch:
+@@ -30,7 +30,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 			returnVal = returnVal || tmpHas;
+ 		}
+ 		OperatorBase op = new OperatorMethod(methodName);
+-		result.addInstruction(new InstructionOperator(op, children.length - 1));
++		result.addInstruction(new InstructionOperator(op, children.length - 1).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ 
+
+File: src/main/java/com/ql/util/express/instruction/NewInstructionFactory.java
+Patch:
+@@ -34,7 +34,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 			boolean tmpHas = aCompile.createInstructionSetPrivate(result,forStack, children[i], false);
+ 			returnVal = returnVal || tmpHas;
+ 		}
+-		result.addInstruction(new InstructionOperator(op, children.length));
++		result.addInstruction(new InstructionOperator(op, children.length).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/NewVClassInstructionFactory.java
+Patch:
+@@ -19,7 +19,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 			boolean tmpHas = aCompile.createInstructionSetPrivate(result,forStack, children[i], false);
+ 			returnVal = returnVal || tmpHas;
+ 		}
+-		result.addInstruction(new InstructionNewVirClass(virClassName, children.length -1));
++		result.addInstruction(new InstructionNewVirClass(virClassName, children.length -1).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionCallSelfDefineFunction.java
+Patch:
+@@ -59,7 +59,7 @@ public void execute(RunEnvironment environment, List<String> errorList)
+ 
+ 			Object function = environment.getContext().getSymbol(functionName);
+ 			if (function == null || function instanceof InstructionSet == false) {
+-				throw new Exception("在Runner的操作符定义和自定义函数中都没有找到\""
++				throw new Exception(getExceptionPrefix()+"在Runner的操作符定义和自定义函数中都没有找到\""
+ 						+ this.functionName + "\"的定义");
+ 			}
+ 			InstructionSet functionSet = (InstructionSet)function;
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionGoToWithCondition.java
+Patch:
+@@ -37,7 +37,7 @@ public void execute(RunEnvironment environment,List<String> errorList)throws Exc
+ 		}else if(o instanceof Boolean){
+ 			r = ((Boolean)o).booleanValue();
+ 		}else{
+-			throw new Exception("指令错误:" + o + " 不是Boolean");
++			throw new Exception(getExceptionPrefix()+"指令错误:" + o + " 不是Boolean");
+ 		}
+ 		if (r == this.condition) {
+ 			if (environment.isTrace() && log.isDebugEnabled()) {
+
+File: src/main/java/com/ql/util/express/parse/Word.java
+Patch:
+@@ -5,6 +5,7 @@ public class Word {
+    public String word;
+    public int line;
+    public int col;
++   public int index;
+    public Word(String aWord,int aLine,int aCol){
+ 	   this.word = aWord;
+ 	   this.line = aLine;
+
+File: src/test/java/com/ql/util/express/test/ObjectBean.java
+Patch:
+@@ -9,6 +9,9 @@ public ObjectBean(int aAmount,int aVolume){
+ 	public int getAmount() {
+ 		return amount;
+ 	}
++    public int getAmount(int a) {
++        return amount;
++    }
+ 	public void setAmount(int amount) {
+ 		this.amount = amount;
+ 	}
+
+File: src/main/java/com/ql/util/express/instruction/BlockInstructionFactory.java
+Patch:
+@@ -15,7 +15,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+ 			throws Exception {	
+ 		if (node.isTypeEqualsOrChild("STAT_SEMICOLON")
+ 				&&result.getCurrentPoint() >=0 &&  result.getInstruction(result.getCurrentPoint()) instanceof InstructionClearDataStack == false) {
+-			result.addInstruction(new InstructionClearDataStack());
++			result.addInstruction(new InstructionClearDataStack().setLine(node.getLine()));
+ 		}
+ 		
+ 		int tmpPoint = result.getCurrentPoint()+1;
+@@ -27,8 +27,8 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+ 		}
+ 		if (hasDef == true&& isRoot == false
+ 				&& node.getTreeType().isEqualsOrChild("STAT_BLOCK")){
+-			result.insertInstruction(tmpPoint,new InstructionOpenNewArea());
+-			result.insertInstruction(result.getCurrentPoint() + 1,new InstructionCloseNewArea());
++			result.insertInstruction(tmpPoint,new InstructionOpenNewArea().setLine(node.getLine()));
++			result.insertInstruction(result.getCurrentPoint() + 1,new InstructionCloseNewArea().setLine(node.getLine()));
+ 			returnVal = false;
+ 		}else{
+ 			returnVal = hasDef;
+
+File: src/main/java/com/ql/util/express/instruction/BreakInstructionFactory.java
+Patch:
+@@ -14,7 +14,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+ 		InstructionGoTo breakInstruction = new InstructionGoTo(result.getCurrentPoint()+1);		
+ 		breakInstruction.name = "break";
+ 		forStack.peek().breakList.add(breakInstruction);
+-		result.addInstruction(breakInstruction);
++		result.addInstruction(breakInstruction.setLine(node.getLine()));
+ 		return false;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/CallFunctionInstructionFactory.java
+Patch:
+@@ -28,10 +28,10 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 				functionName);
+ 		int opNum = children.length -1;
+ 		if (op != null) {
+-			result.addInstruction(new InstructionOperator(op,opNum ));
++			result.addInstruction(new InstructionOperator(op,opNum ).setLine(node.getLine()));
+ 		} else {
+ 			result.addInstruction(new InstructionCallSelfDefineFunction(
+-					functionName,opNum));
++					functionName,opNum).setLine(children[0].getLine()));
+ 		}
+ 		return returnVal;
+ 	}
+
+File: src/main/java/com/ql/util/express/instruction/CastInstructionFactory.java
+Patch:
+@@ -27,7 +27,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,St
+ 			boolean tmpHas =    aCompile.createInstructionSetPrivate(result,forStack,children[i],false);
+ 			returnVal = returnVal || tmpHas;
+ 		}	
+-		result.addInstruction(new InstructionOperator(op,children.length));
++		result.addInstruction(new InstructionOperator(op,children.length).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/ConstDataInstructionFactory.java
+Patch:
+@@ -21,7 +21,7 @@ public OperateData genOperateData(ExpressNode node) {
+ 	public boolean createInstruction(ExpressRunner aCompile,
+ 			InstructionSet result, Stack<ForRelBreakContinue> forStack,
+ 			ExpressNode node, boolean isRoot) throws Exception {
+-		result.addInstruction(new InstructionConstData(genOperateData(node)));
++		result.addInstruction(new InstructionConstData(genOperateData(node)).setLine(node.getLine()));
+ 		return false;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/ContinueInstructionFactory.java
+Patch:
+@@ -14,7 +14,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+ 		InstructionGoTo continueInstruction = new InstructionGoTo(result.getCurrentPoint()+1);		
+ 		continueInstruction.name = "continue";
+ 		forStack.peek().continueList.add(continueInstruction);		
+-		result.addInstruction(continueInstruction);
++		result.addInstruction(continueInstruction.setLine(node.getLine()));
+ 		return false;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/DefineInstructionFactory.java
+Patch:
+@@ -48,7 +48,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,St
+ 			finishPoint[i] = result.getCurrentPoint();
+ 		}
+ 		OperatorBase op = aCompile.getOperatorFactory().newInstance(node);
+-		result.addInstruction(new InstructionOperator(op, children.length));
++		result.addInstruction(new InstructionOperator(op, children.length).setLine(node.getLine()));
+ 		returnVal = true;
+ 		return returnVal;
+ 	}
+
+File: src/main/java/com/ql/util/express/instruction/FieldCallInstructionFactory.java
+Patch:
+@@ -29,7 +29,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 		
+ 		
+ 		OperatorBase op = new OperatorField(fieldName);
+-		result.addInstruction(new InstructionOperator(op,1));
++		result.addInstruction(new InstructionOperator(op,1).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ 
+
+File: src/main/java/com/ql/util/express/instruction/IfInstructionFactory.java
+Patch:
+@@ -37,10 +37,10 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+    		boolean r1 = aCompile.createInstructionSetPrivate(result,forStack,children[0],false);//condition	
+ 		finishPoint[0] = result.getCurrentPoint();
+ 		boolean r2 = aCompile.createInstructionSetPrivate(result,forStack,children[1],false);//true		
+-		result.insertInstruction(finishPoint[0]+1,new InstructionGoToWithCondition(false,result.getCurrentPoint() - finishPoint[0] + 2,true));
++		result.insertInstruction(finishPoint[0]+1,new InstructionGoToWithCondition(false,result.getCurrentPoint() - finishPoint[0] + 2,true).setLine(node.getLine()));
+ 		finishPoint[1] = result.getCurrentPoint();
+ 		boolean r3 = aCompile.createInstructionSetPrivate(result,forStack,children[2],false);//false
+-		result.insertInstruction(finishPoint[1]+1,new InstructionGoTo(result.getCurrentPoint() - finishPoint[1] + 1));  		
++		result.insertInstruction(finishPoint[1]+1,new InstructionGoTo(result.getCurrentPoint() - finishPoint[1] + 1).setLine(node.getLine()));  		
+         return r1 || r2 || r3;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/InInstructionFactory.java
+Patch:
+@@ -29,7 +29,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 			returnVal = returnVal || tmpHas;
+ 		}
+ 		OperatorBase op = aCompile.getOperatorFactory().newInstance(node);
+-		result.addInstruction(new InstructionOperator(op, children.length));
++		result.addInstruction(new InstructionOperator(op, children.length).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/KeyValueInstructionFactory.java
+Patch:
+@@ -28,7 +28,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,St
+ 				returnVal = returnVal || tmpHas;
+ 			}
+ 			OperatorBase op = aCompile.getOperatorFactory().newInstance("alias");
+-			result.addInstruction(new InstructionOperator(op, children.length));
++			result.addInstruction(new InstructionOperator(op, children.length).setLine(node.getLine()));
+ 			returnVal = true;
+ 		}else{	
+ 			for(int i =0;i < children.length;i++){
+@@ -38,7 +38,7 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,St
+ 			}
+ 
+ 			OperatorBase op = aCompile.getOperatorFactory().newInstance(node);
+-			result.addInstruction(new InstructionOperator(op,children.length));
++			result.addInstruction(new InstructionOperator(op,children.length).setLine(node.getLine()));
+ 		}
+ 		return returnVal;
+ 	}
+
+File: src/main/java/com/ql/util/express/instruction/LoadAttrInstructionFactory.java
+Patch:
+@@ -15,9 +15,9 @@ public boolean createInstruction(ExpressRunner aCompile,InstructionSet result,
+ 			throws Exception{
+ 		FunctionInstructionSet functionSet =  result.getMacroDefine(node.getValue());
+ 		if(functionSet != null){//是宏定义
+-			result.insertInstruction(result.getCurrentPoint()+1, new InstructionCallMacro(node.getValue()));
++			result.insertInstruction(result.getCurrentPoint()+1, new InstructionCallMacro(node.getValue()).setLine(node.getLine()).setLine(node.getLine()));
+ 		}else{
+-		  result.addInstruction(new InstructionLoadAttr(node.getValue()));
++		  result.addInstruction(new InstructionLoadAttr(node.getValue()).setLine(node.getLine()));
+ 		  if(node.getChildren().length >0){
+ 			  throw new Exception("表达式设置错误");
+ 		  }
+
+File: src/main/java/com/ql/util/express/instruction/MethodCallInstructionFactory.java
+Patch:
+@@ -30,7 +30,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 			returnVal = returnVal || tmpHas;
+ 		}
+ 		OperatorBase op = new OperatorMethod(methodName);
+-		result.addInstruction(new InstructionOperator(op, children.length - 1));
++		result.addInstruction(new InstructionOperator(op, children.length - 1).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ 
+
+File: src/main/java/com/ql/util/express/instruction/NewInstructionFactory.java
+Patch:
+@@ -34,7 +34,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 			boolean tmpHas = aCompile.createInstructionSetPrivate(result,forStack, children[i], false);
+ 			returnVal = returnVal || tmpHas;
+ 		}
+-		result.addInstruction(new InstructionOperator(op, children.length));
++		result.addInstruction(new InstructionOperator(op, children.length).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/NewVClassInstructionFactory.java
+Patch:
+@@ -19,7 +19,7 @@ public boolean createInstruction(ExpressRunner aCompile,
+ 			boolean tmpHas = aCompile.createInstructionSetPrivate(result,forStack, children[i], false);
+ 			returnVal = returnVal || tmpHas;
+ 		}
+-		result.addInstruction(new InstructionNewVirClass(virClassName, children.length -1));
++		result.addInstruction(new InstructionNewVirClass(virClassName, children.length -1).setLine(node.getLine()));
+ 		return returnVal;
+ 	}
+ }
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionCallSelfDefineFunction.java
+Patch:
+@@ -59,7 +59,7 @@ public void execute(RunEnvironment environment, List<String> errorList)
+ 
+ 			Object function = environment.getContext().getSymbol(functionName);
+ 			if (function == null || function instanceof InstructionSet == false) {
+-				throw new Exception("在Runner的操作符定义和自定义函数中都没有找到\""
++				throw new Exception(getExceptionPrefix()+"在Runner的操作符定义和自定义函数中都没有找到\""
+ 						+ this.functionName + "\"的定义");
+ 			}
+ 			InstructionSet functionSet = (InstructionSet)function;
+
+File: src/main/java/com/ql/util/express/instruction/detail/InstructionGoToWithCondition.java
+Patch:
+@@ -37,7 +37,7 @@ public void execute(RunEnvironment environment,List<String> errorList)throws Exc
+ 		}else if(o instanceof Boolean){
+ 			r = ((Boolean)o).booleanValue();
+ 		}else{
+-			throw new Exception("指令错误:" + o + " 不是Boolean");
++			throw new Exception(getExceptionPrefix()+"指令错误:" + o + " 不是Boolean");
+ 		}
+ 		if (r == this.condition) {
+ 			if (environment.isTrace() && log.isDebugEnabled()) {
+
+File: src/main/java/com/ql/util/express/parse/Word.java
+Patch:
+@@ -5,6 +5,7 @@ public class Word {
+    public String word;
+    public int line;
+    public int col;
++   public int index;
+    public Word(String aWord,int aLine,int aCol){
+ 	   this.word = aWord;
+ 	   this.line = aLine;
+
+File: src/test/java/com/ql/util/express/test/ObjectBean.java
+Patch:
+@@ -9,6 +9,9 @@ public ObjectBean(int aAmount,int aVolume){
+ 	public int getAmount() {
+ 		return amount;
+ 	}
++    public int getAmount(int a) {
++        return amount;
++    }
+ 	public void setAmount(int amount) {
+ 		this.amount = amount;
+ 	}
+

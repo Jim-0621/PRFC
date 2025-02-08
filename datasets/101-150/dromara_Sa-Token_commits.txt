@@ -1,0 +1,950 @@
+File: sa-token-demo/sa-token-demo-thymeleaf/src/main/java/com/pj/test/TestController.java
+Patch:
+@@ -9,9 +9,9 @@
+ import cn.dev33.satoken.util.SaResult;
+ 
+ /**
+- * Sa-Token-SSO Server端 Controller 
+- * @author click33
++ * 测试 Controller
+  *
++ * @author click33
+  */
+ @RestController
+ public class TestController {
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/stp/StpLogic.java
+Patch:
+@@ -248,6 +248,7 @@ public void setTokenValueToCookie(String tokenValue, int cookieTimeout){
+ 				.setSecure(cfg.getSecure())
+ 				.setHttpOnly(cfg.getHttpOnly())
+ 				.setSameSite(cfg.getSameSite())
++				.setExtraAttrs(cfg.getExtraAttrs())
+ 				;
+ 		SaHolder.getResponse().addCookie(cookie);
+ 	}
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/util/SaFoxUtil.java
+Patch:
+@@ -443,15 +443,15 @@ public static String joinSharpParam(String url, String paramStr) {
+ 			url = "";
+ 		}
+ 		int index = url.lastIndexOf('#');
+-		// ? 不存在
++		// # 不存在
+ 		if(index == -1) {
+ 			return url + '#' + paramStr;
+ 		}
+-		// ? 是最后一位
++		// # 是最后一位
+ 		if(index == url.length() - 1) {
+ 			return url + paramStr;
+ 		}
+-		// ? 是其中一位
++		// # 是其中一位
+ 		if(index < url.length() - 1) {
+ 			String separatorChar = "&";
+ 			// 如果最后一位是 不是&, 且 paramStr 第一位不是 &, 就赠送一个 &
+
+File: sa-token-demo/sa-token-demo-oauth2/sa-token-demo-oauth2-server/src/main/java/com/pj/oauth2/custom/PhoneCodeGrantTypeHandler.java
+Patch:
+@@ -51,7 +51,7 @@
+ //        ra.scopes = scopes;
+ //
+ //        // 5、生成 Access-Token
+-//        AccessTokenModel at = SaOAuth2Manager.getDataGenerate().generateAccessToken(ra, true);
++//        AccessTokenModel at = SaOAuth2Manager.getDataGenerate().generateAccessToken(ra, true, atm -> atm.grantType = "phone_code");
+ //        return at;
+ //    }
+ //}
+\ No newline at end of file
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/data/convert/SaOAuth2DataConverterDefaultImpl.java
+Patch:
+@@ -16,6 +16,7 @@
+ package cn.dev33.satoken.oauth2.data.convert;
+ 
+ import cn.dev33.satoken.oauth2.SaOAuth2Manager;
++import cn.dev33.satoken.oauth2.consts.GrantType;
+ import cn.dev33.satoken.oauth2.consts.SaOAuth2Consts;
+ import cn.dev33.satoken.oauth2.data.model.AccessTokenModel;
+ import cn.dev33.satoken.oauth2.data.model.CodeModel;
+@@ -80,6 +81,7 @@ public AccessTokenModel convertCodeToAccessToken(CodeModel cm) {
+         at.loginId = cm.loginId;
+         at.scopes = cm.scopes;
+         at.tokenType = SaOAuth2Consts.TokenType.bearer;
++        at.grantType = GrantType.authorization_code;
+         SaClientModel clientModel = SaOAuth2Manager.getDataLoader().getClientModelNotNull(cm.clientId);
+         at.expiresTime = System.currentTimeMillis() + (clientModel.getAccessTokenTimeout() * 1000);
+         at.extraData = new LinkedHashMap<>();
+@@ -121,6 +123,7 @@ public AccessTokenModel convertRefreshTokenToAccessToken(RefreshTokenModel rt) {
+         at.loginId = rt.loginId;
+         at.scopes = rt.scopes;
+         at.tokenType = SaOAuth2Consts.TokenType.bearer;
++        at.grantType = GrantType.refresh_token;
+         at.extraData = new LinkedHashMap<>(rt.extraData);
+         SaClientModel clientModel = SaOAuth2Manager.getDataLoader().getClientModelNotNull(rt.clientId);
+         at.expiresTime = System.currentTimeMillis() + (clientModel.getAccessTokenTimeout() * 1000);
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/data/generate/SaOAuth2DataGenerate.java
+Patch:
+@@ -21,6 +21,7 @@
+ import cn.dev33.satoken.oauth2.data.model.request.RequestAuthModel;
+ 
+ import java.util.List;
++import java.util.function.Consumer;
+ 
+ /**
+  * Sa-Token OAuth2 数据构建器，负责相关 Model 数据构建
+@@ -55,9 +56,10 @@ public interface SaOAuth2DataGenerate {
+      * 构建Model：Access-Token (根据RequestAuthModel构建，用于隐藏式 and 密码式)
+      * @param ra 请求参数Model
+      * @param isCreateRt 是否生成对应的Refresh-Token
++     * @param appendWork 对生成的 AccessTokenModel 进行追加操作
+      * @return Access-Token Model
+      */
+-    AccessTokenModel generateAccessToken(RequestAuthModel ra, boolean isCreateRt);
++    AccessTokenModel generateAccessToken(RequestAuthModel ra, boolean isCreateRt, Consumer<AccessTokenModel> appendWork);
+ 
+     /**
+      * 构建Model：Client-Token
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/granttype/handler/PasswordGrantTypeHandler.java
+Patch:
+@@ -60,7 +60,7 @@ public AccessTokenModel getAccessToken(SaRequest req, String clientId, List<Stri
+         ra.scopes = scopes;
+ 
+         // 5、生成 Access-Token
+-        AccessTokenModel at = SaOAuth2Manager.getDataGenerate().generateAccessToken(ra, true);
++        AccessTokenModel at = SaOAuth2Manager.getDataGenerate().generateAccessToken(ra, true, atm -> atm.grantType = GrantType.password);
+         return at;
+     }
+ 
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/processor/SaOAuth2ServerProcessor.java
+Patch:
+@@ -151,7 +151,7 @@ public Object authorize() {
+ 		
+ 		// 		如果是 隐藏式，则：开始重定向授权，下放 token
+ 		if(ResponseType.token.equals(ra.responseType)) {
+-			AccessTokenModel at = dataGenerate.generateAccessToken(ra, false);
++			AccessTokenModel at = dataGenerate.generateAccessToken(ra, false, null);
+ 			String redirectUri = dataGenerate.buildImplicitRedirectUri(ra.redirectUri, at.accessToken, ra.state);
+ 			return res.redirect(redirectUri);
+ 		}
+@@ -269,7 +269,7 @@ public Object doConfirm() {
+ 
+ 		// 		如果是 隐藏式，则：开始重定向授权，下放 token
+ 		if(ResponseType.token.equals(ra.responseType)) {
+-			AccessTokenModel at = dataGenerate.generateAccessToken(ra, false);
++			AccessTokenModel at = dataGenerate.generateAccessToken(ra, false, null);
+ 			String redirectUri = dataGenerate.buildImplicitRedirectUri(ra.redirectUri, at.accessToken, ra.state);
+ 			return SaResult.ok().set(Param.redirect_uri, redirectUri);
+ 		}
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/dao/SaOAuth2Dao.java
+Patch:
+@@ -289,7 +289,7 @@ default void deleteGrantScope(String clientId, Object loginId) {
+ 	 * 删除：state记录
+ 	 * @param state /
+ 	 */
+-	default void deleteGrantScope(String state) {
++	default void deleteState(String state) {
+ 		getSaTokenDao().delete(splicingStateSaveKey(state));
+ 	}
+ 
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/stp/SaLoginModel.java
+Patch:
+@@ -300,6 +300,9 @@ public int getCookieTimeout() {
+ 		if(getTimeoutOrGlobalConfig() == SaTokenDao.NEVER_EXPIRE) {
+ 			return Integer.MAX_VALUE;
+ 		}
++		if (timeout > Integer.MAX_VALUE) {
++			return Integer.MAX_VALUE;
++		}
+ 		return (int)(long)timeout;
+ 	}
+ 
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/data/convert/SaOAuth2DataConverterDefaultImpl.java
+Patch:
+@@ -16,6 +16,7 @@
+ package cn.dev33.satoken.oauth2.data.convert;
+ 
+ import cn.dev33.satoken.oauth2.SaOAuth2Manager;
++import cn.dev33.satoken.oauth2.consts.SaOAuth2Consts;
+ import cn.dev33.satoken.oauth2.data.model.AccessTokenModel;
+ import cn.dev33.satoken.oauth2.data.model.CodeModel;
+ import cn.dev33.satoken.oauth2.data.model.RefreshTokenModel;
+@@ -78,6 +79,7 @@ public AccessTokenModel convertCodeToAccessToken(CodeModel cm) {
+         at.clientId = cm.clientId;
+         at.loginId = cm.loginId;
+         at.scopes = cm.scopes;
++        at.tokenType = SaOAuth2Consts.TokenType.bearer;
+         SaClientModel clientModel = SaOAuth2Manager.getDataLoader().getClientModelNotNull(cm.clientId);
+         at.expiresTime = System.currentTimeMillis() + (clientModel.getAccessTokenTimeout() * 1000);
+         at.extraData = new LinkedHashMap<>();
+@@ -118,6 +120,7 @@ public AccessTokenModel convertRefreshTokenToAccessToken(RefreshTokenModel rt) {
+         at.clientId = rt.clientId;
+         at.loginId = rt.loginId;
+         at.scopes = rt.scopes;
++        at.tokenType = SaOAuth2Consts.TokenType.bearer;
+         at.extraData = new LinkedHashMap<>(rt.extraData);
+         SaClientModel clientModel = SaOAuth2Manager.getDataLoader().getClientModelNotNull(rt.clientId);
+         at.expiresTime = System.currentTimeMillis() + (clientModel.getAccessTokenTimeout() * 1000);
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/data/generate/SaOAuth2DataGenerateDefaultImpl.java
+Patch:
+@@ -166,6 +166,7 @@ public AccessTokenModel generateAccessToken(RequestAuthModel ra, boolean isCreat
+         // 2、生成 新Access-Token
+         String newAtValue = SaOAuth2Strategy.instance.createAccessToken.execute(ra.clientId, ra.loginId, ra.scopes);
+         AccessTokenModel at = new AccessTokenModel(newAtValue, ra.clientId, ra.loginId, ra.scopes);
++        at.tokenType = SaOAuth2Consts.TokenType.bearer;
+ 
+         // 3、根据权限构建额外参数
+         at.extraData = new LinkedHashMap<>();
+@@ -220,6 +221,7 @@ public ClientTokenModel generateClientToken(String clientId, List<String> scopes
+         // 3、生成新 Client-Token
+         String clientTokenValue = SaOAuth2Strategy.instance.createClientToken.execute(clientId, scopes);
+         ClientTokenModel ct = new ClientTokenModel(clientTokenValue, clientId, scopes);
++        ct.tokenType = SaOAuth2Consts.TokenType.bearer;
+         ct.expiresTime = System.currentTimeMillis() + (cm.getClientTokenTimeout() * 1000);
+         ct.extraData = new LinkedHashMap<>();
+         SaOAuth2Strategy.instance.workClientTokenByScope.accept(ct);
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/data/resolver/SaOAuth2DataResolverDefaultImpl.java
+Patch:
+@@ -122,7 +122,7 @@ public RequestAuthModel readRequestAuthModel(SaRequest req, Object loginId) {
+     @Override
+     public Map<String, Object> buildTokenReturnValue(AccessTokenModel at) {
+         Map<String, Object> map = new LinkedHashMap<>();
+-        map.put("token_type", TokenType.bearer);
++        map.put("token_type", at.tokenType);
+         map.put("access_token", at.accessToken);
+         map.put("refresh_token", at.refreshToken);
+         map.put("expires_in", at.getExpiresIn());
+@@ -139,6 +139,7 @@ public Map<String, Object> buildTokenReturnValue(AccessTokenModel at) {
+     @Override
+     public Map<String, Object> buildClientTokenReturnValue(ClientTokenModel ct) {
+         Map<String, Object> map = new LinkedHashMap<>();
++        map.put("token_type", ct.tokenType);
+         map.put("client_token", ct.clientToken);
+         // map.put("access_token", ct.clientToken); // 兼容 OAuth2 协议
+         map.put("expires_in", ct.getExpiresIn());
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/processor/SaOAuth2ServerProcessor.java
+Patch:
+@@ -303,8 +303,7 @@ public Object clientToken() {
+ 		ClientIdAndSecretModel clientIdAndSecret = SaOAuth2Manager.getDataResolver().readClientIdAndSecret(req);
+ 		String clientId = clientIdAndSecret.clientId;
+ 		String clientSecret = clientIdAndSecret.clientSecret;
+-		String scope = req.getParam(Param.scope, "");
+-		List<String> scopes = SaOAuth2Manager.getDataConverter().convertScopeStringToList(scope);
++		List<String> scopes = SaOAuth2Manager.getDataConverter().convertScopeStringToList(req.getParam(Param.scope));
+ 
+ 		//校验 ClientScope
+ 		oauth2Template.checkContract(clientId, scopes);
+
+File: sa-token-demo/sa-token-demo-oauth2/sa-token-demo-oauth2-server/src/main/java/com/pj/oauth2/custom/UserinfoScopeHandler.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.pj.oauth2;
++package com.pj.oauth2.custom;
+ 
+ import cn.dev33.satoken.oauth2.data.model.AccessTokenModel;
+ import cn.dev33.satoken.oauth2.data.model.ClientTokenModel;
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/exception/NotHttpBasicAuthException.java
+Patch:
+@@ -21,7 +21,7 @@
+  * @author click33
+  * @since 1.26.0
+  */
+-public class NotBasicAuthException extends SaTokenException {
++public class NotHttpBasicAuthException extends SaTokenException {
+ 
+ 	/**
+ 	 * 序列化版本号
+@@ -34,7 +34,7 @@ public class NotBasicAuthException extends SaTokenException {
+ 	/**
+ 	 * 一个异常：代表会话未通过 Http Basic 认证 
+ 	 */
+-	public NotBasicAuthException() {
++	public NotHttpBasicAuthException() {
+ 		super(BE_MESSAGE);
+ 	}
+ 
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/fun/strategy/SaGetAnnotationFunction.java
+Patch:
+@@ -29,6 +29,6 @@
+  * @since 1.35.0
+  */
+ @FunctionalInterface
+-public interface SaGetAnnotationFunction extends BiFunction<AnnotatedElement, Class<? extends Annotation> , Annotation> {
++public interface SaGetAnnotationFunction extends BiFunction<AnnotatedElement, Class<? extends Annotation>, Annotation> {
+ 
+ }
+\ No newline at end of file
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/httpauth/basic/SaHttpBasicTemplate.java
+Patch:
+@@ -18,7 +18,7 @@
+ import cn.dev33.satoken.SaManager;
+ import cn.dev33.satoken.context.SaHolder;
+ import cn.dev33.satoken.error.SaErrorCode;
+-import cn.dev33.satoken.exception.NotBasicAuthException;
++import cn.dev33.satoken.exception.NotHttpBasicAuthException;
+ import cn.dev33.satoken.secure.SaBase64Util;
+ import cn.dev33.satoken.util.SaFoxUtil;
+ 
+@@ -41,7 +41,7 @@ public class SaHttpBasicTemplate {
+ 	 */
+ 	public void throwNotBasicAuthException(String realm) {
+ 		SaHolder.getResponse().setStatus(401).setHeader("WWW-Authenticate", "Basic Realm=" + realm);
+-		throw new NotBasicAuthException().setCode(SaErrorCode.CODE_10311);
++		throw new NotHttpBasicAuthException().setCode(SaErrorCode.CODE_10311);
+ 	}
+ 
+ 	/**
+
+File: sa-token-demo/sa-token-demo-case/src/main/java/com/pj/SaTokenCaseApplication.java
+Patch:
+@@ -1,10 +1,9 @@
+ package com.pj;
+ 
++import cn.dev33.satoken.SaManager;
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ 
+-import cn.dev33.satoken.SaManager;
+-
+ /**
+  * Sa-Token 示例 
+  * @author click33
+
+File: sa-token-demo/sa-token-demo-case/src/main/java/com/pj/current/GlobalException.java
+Patch:
+@@ -4,7 +4,7 @@
+ import org.springframework.web.bind.annotation.RestControllerAdvice;
+ 
+ import cn.dev33.satoken.exception.DisableServiceException;
+-import cn.dev33.satoken.exception.NotBasicAuthException;
++import cn.dev33.satoken.exception.NotHttpBasicAuthException;
+ import cn.dev33.satoken.exception.NotLoginException;
+ import cn.dev33.satoken.exception.NotPermissionException;
+ import cn.dev33.satoken.exception.NotRoleException;
+@@ -57,8 +57,8 @@ public SaResult handlerException(DisableServiceException e) {
+ 	}
+ 
+ 	// 拦截：Http Basic 校验失败异常 
+-	@ExceptionHandler(NotBasicAuthException.class)
+-	public SaResult handlerException(NotBasicAuthException e) {
++	@ExceptionHandler(NotHttpBasicAuthException.class)
++	public SaResult handlerException(NotHttpBasicAuthException e) {
+ 		e.printStackTrace(); 
+ 		return SaResult.error(e.getMessage());
+ 	}
+
+File: sa-token-plugin/sa-token-jwt/src/main/java/cn/dev33/satoken/jwt/SaJwtTemplate.java
+Patch:
+@@ -19,6 +19,7 @@
+ import cn.dev33.satoken.jwt.error.SaJwtErrorCode;
+ import cn.dev33.satoken.jwt.exception.SaJwtException;
+ import cn.dev33.satoken.util.SaFoxUtil;
++import cn.hutool.json.JSONException;
+ import cn.hutool.json.JSONObject;
+ import cn.hutool.jwt.JWT;
+ import cn.hutool.jwt.JWTException;
+@@ -181,7 +182,7 @@ public JWT parseToken(String token, String loginType, String keyt, boolean isChe
+     	JWT jwt;
+     	try {
+     		jwt = JWT.of(token);
+-		} catch (JWTException e) {
++		} catch (JWTException | JSONException e) {
+     		throw new SaJwtException("jwt 解析失败：" + token, e).setCode(SaJwtErrorCode.CODE_30201);
+ 		}
+     	JSONObject payloads = jwt.getPayloads();
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/consts/SaOAuth2Consts.java
+Patch:
+@@ -13,10 +13,10 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package cn.dev33.satoken.oauth2.logic;
++package cn.dev33.satoken.oauth2.consts;
+ 
+ /**
+- * Sa-Token-OAuth2 所有常量
++ * Sa-Token OAuth2 所有常量
+  *
+  * @author click33
+  * @since 1.23.0
+
+File: sa-token-starter/sa-token-jboot-plugin/src/main/java/cn/dev33/satoken/jboot/SaAnnotationInterceptor.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package cn.dev33.satoken.jboot;
+ 
+-import cn.dev33.satoken.strategy.SaStrategy;
++import cn.dev33.satoken.strategy.SaAnnotationStrategy;
+ import com.jfinal.aop.Interceptor;
+ import com.jfinal.aop.Invocation;
+ 
+@@ -25,7 +25,7 @@
+ public class SaAnnotationInterceptor implements Interceptor {
+     @Override
+     public void intercept(Invocation invocation) {
+-        SaStrategy.instance.checkMethodAnnotation.accept((invocation.getMethod()));
++        SaAnnotationStrategy.instance.checkMethodAnnotation.accept((invocation.getMethod()));
+         invocation.invoke();
+     }
+ }
+
+File: sa-token-starter/sa-token-jfinal-plugin/src/main/java/cn/dev33/satoken/jfinal/SaAnnotationInterceptor.java
+Patch:
+@@ -15,7 +15,7 @@
+  */
+ package cn.dev33.satoken.jfinal;
+ 
+-import cn.dev33.satoken.strategy.SaStrategy;
++import cn.dev33.satoken.strategy.SaAnnotationStrategy;
+ import com.jfinal.aop.Interceptor;
+ import com.jfinal.aop.Invocation;
+ 
+@@ -25,7 +25,7 @@
+ public class SaAnnotationInterceptor implements Interceptor {
+     @Override
+     public void intercept(Invocation invocation) {
+-        SaStrategy.instance.checkMethodAnnotation.accept((invocation.getMethod()));
++        SaAnnotationStrategy.instance.checkMethodAnnotation.accept((invocation.getMethod()));
+         invocation.invoke();
+     }
+ }
+
+File: sa-token-starter/sa-token-solon-plugin/src/main/java/cn/dev33/satoken/solon/oauth2/SaOAuth2AutoConfigure.java
+Patch:
+@@ -17,8 +17,8 @@
+ 
+ import cn.dev33.satoken.oauth2.SaOAuth2Manager;
+ import cn.dev33.satoken.oauth2.config.SaOAuth2Config;
+-import cn.dev33.satoken.oauth2.logic.SaOAuth2Template;
+-import cn.dev33.satoken.oauth2.logic.SaOAuth2Util;
++import cn.dev33.satoken.oauth2.template.SaOAuth2Template;
++import cn.dev33.satoken.oauth2.template.SaOAuth2Util;
+ import org.noear.solon.annotation.Bean;
+ import org.noear.solon.annotation.Condition;
+ import org.noear.solon.annotation.Configuration;
+
+File: sa-token-starter/sa-token-spring-boot-autoconfig/src/main/java/cn/dev33/satoken/spring/oauth2/SaOAuth2BeanRegister.java
+Patch:
+@@ -31,7 +31,7 @@
+ public class SaOAuth2BeanRegister {
+ 
+ 	/**
+-	 * 获取 OAuth2 配置对象
++	 * 获取 OAuth2 配置 Bean
+ 	 *
+ 	 * @return 配置对象 
+ 	 */
+@@ -40,5 +40,5 @@ public class SaOAuth2BeanRegister {
+ 	public SaOAuth2Config getSaOAuth2Config() {
+ 		return new SaOAuth2Config();
+ 	}
+-	
++
+ }
+
+File: sa-token-test/sa-token-springboot-test/src/test/java/cn/dev33/satoken/integrate/configure/HandlerException.java
+Patch:
+@@ -19,7 +19,7 @@
+ import org.springframework.web.bind.annotation.RestControllerAdvice;
+ 
+ import cn.dev33.satoken.exception.DisableServiceException;
+-import cn.dev33.satoken.exception.NotBasicAuthException;
++import cn.dev33.satoken.exception.NotHttpBasicAuthException;
+ import cn.dev33.satoken.exception.NotLoginException;
+ import cn.dev33.satoken.exception.NotPermissionException;
+ import cn.dev33.satoken.exception.NotRoleException;
+@@ -66,8 +66,8 @@ public SaResult handlerSameTokenInvalidException(SameTokenInvalidException e) {
+ 	}
+ 
+ 	// Http Basic 校验失败，code=903
+-	@ExceptionHandler(NotBasicAuthException.class)
+-	public SaResult handlerNotBasicAuthException(NotBasicAuthException e) {
++	@ExceptionHandler(NotHttpBasicAuthException.class)
++	public SaResult handlerNotBasicAuthException(NotHttpBasicAuthException e) {
+ 		return SaResult.error().setCode(903);
+ 	}
+ 
+
+File: sa-token-test/sa-token-springboot-test/src/test/java/cn/dev33/satoken/integrate/configure/inject/MySaOAuth2Template.java
+Patch:
+@@ -17,7 +17,7 @@
+ 
+ import org.springframework.stereotype.Component;
+ 
+-import cn.dev33.satoken.oauth2.logic.SaOAuth2Template;
++import cn.dev33.satoken.oauth2.template.SaOAuth2Template;
+ 
+ /**
+  * 自定义 Sa-OAuth2 模板方法 
+
+File: sa-token-demo/sa-token-demo-test/src/main/java/com/pj/current/NotFoundHandle.java
+Patch:
+@@ -23,5 +23,5 @@ public Object error(HttpServletRequest request, HttpServletResponse response) th
+ 		response.setStatus(200);
+         return SaResult.get(404, "not found", null);
+     }
+-	
++
+ }
+
+File: sa-token-demo/sa-token-demo-webflux-springboot3/src/main/java/com/pj/SaTokenWebfluxSpringboot3Application.java
+Patch:
+@@ -1,10 +1,9 @@
+ package com.pj;
+ 
++import cn.dev33.satoken.SaManager;
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ 
+-import cn.dev33.satoken.SaManager;
+-
+ /**
+  * Sa-Token整合webflux 示例 (springboot3)
+  * 
+
+File: sa-token-starter/sa-token-jakarta-servlet/src/main/java/cn/dev33/satoken/servlet/model/SaRequestForServlet.java
+Patch:
+@@ -16,6 +16,7 @@
+ package cn.dev33.satoken.servlet.model;
+ 
+ import cn.dev33.satoken.SaManager;
++import cn.dev33.satoken.application.ApplicationInfo;
+ import cn.dev33.satoken.context.model.SaRequest;
+ import cn.dev33.satoken.exception.SaTokenException;
+ import cn.dev33.satoken.servlet.error.SaServletErrorCode;
+@@ -124,7 +125,7 @@ public String getCookieValue(String name) {
+ 	 */
+ 	@Override
+ 	public String getRequestPath() {
+-		return request.getServletPath();
++		return ApplicationInfo.cutPathPrefix(request.getRequestURI());
+ 	}
+ 
+ 	/**
+
+File: sa-token-starter/sa-token-reactor-spring-boot-starter/src/main/java/cn/dev33/satoken/reactor/filter/SaReactorFilter.java
+Patch:
+@@ -153,8 +153,8 @@ public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+ 			// 2. 写入输出流
+ 			// 		请注意此处默认 Content-Type 为 text/plain，如果需要返回 JSON 信息，需要在 return 前自行设置 Content-Type 为 application/json
+ 			// 		例如：SaHolder.getResponse().setHeader("Content-Type", "application/json;charset=UTF-8");
+-			if(exchange.getResponse().getHeaders().getFirst("Content-Type") == null) {
+-				exchange.getResponse().getHeaders().set("Content-Type", "text/plain; charset=utf-8");
++			if(exchange.getResponse().getHeaders().getFirst(SaTokenConsts.CONTENT_TYPE_KEY) == null) {
++				exchange.getResponse().getHeaders().set(SaTokenConsts.CONTENT_TYPE_KEY, SaTokenConsts.CONTENT_TYPE_TEXT_PLAIN);
+ 			}
+ 			return exchange.getResponse().writeWith(Mono.just(exchange.getResponse().bufferFactory().wrap(result.getBytes())));
+ 			
+
+File: sa-token-starter/sa-token-reactor-spring-boot-starter/src/main/java/cn/dev33/satoken/reactor/model/SaRequestForReactor.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ 
+ import cn.dev33.satoken.SaManager;
++import cn.dev33.satoken.application.ApplicationInfo;
+ import cn.dev33.satoken.context.model.SaRequest;
+ import cn.dev33.satoken.reactor.context.SaReactorHolder;
+ import cn.dev33.satoken.reactor.context.SaReactorSyncHolder;
+@@ -112,7 +113,7 @@ public String getCookieValue(String name) {
+ 	 */
+ 	@Override
+ 	public String getRequestPath() {
+-		return request.getURI().getPath();
++		return ApplicationInfo.cutPathPrefix(request.getPath().toString());
+ 	}
+ 
+ 	/**
+
+File: sa-token-plugin/sa-token-oauth2/src/main/java/cn/dev33/satoken/oauth2/logic/SaOAuth2Template.java
+Patch:
+@@ -961,7 +961,7 @@ public String splicingClientTokenSaveKey(String clientToken) {
+ 		return SaManager.getConfig().getTokenName() + ":oauth2:client-token:" + clientToken;
+ 	}
+ 	/**
+-	 * 拼接key：Past-Token 索引
++	 * 拼接key：Client-Token 索引
+ 	 * @param clientId clientId
+ 	 * @return key
+ 	 */
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/util/SaFoxUtil.java
+Patch:
+@@ -252,7 +252,7 @@ public static boolean vagueMatch(String patt, String str) {
+ 			return patt.equals(str);
+ 		}
+ 		// 正则匹配
+-		return Pattern.matches(patt.replaceAll("\\*", ".*"), str);
++		return Pattern.matches(patt.replace(".*", "\\..*"), str);
+ 	}
+ 
+ 	/**
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/util/SaFoxUtil.java
+Patch:
+@@ -252,7 +252,7 @@ public static boolean vagueMatch(String patt, String str) {
+ 			return patt.equals(str);
+ 		}
+ 		// 正则匹配
+-		return Pattern.matches(patt.replaceAll("\\*", ".*"), str);
++		return Pattern.matches(patt.replace(".*", "\\..*"), str);
+ 	}
+ 
+ 	/**
+
+File: sa-token-demo/sa-token-demo-test/src/main/java/com/pj/SaTokenApplication.java
+Patch:
+@@ -1,10 +1,9 @@
+ package com.pj;
+ 
++import cn.dev33.satoken.SaManager;
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ 
+-import cn.dev33.satoken.SaManager;
+-
+ /**
+  * Sa-Token 测试  
+  * @author kong
+
+File: sa-token-plugin/sa-token-sso/src/main/java/cn/dev33/satoken/sso/SaSsoProcessor.java
+Patch:
+@@ -443,9 +443,9 @@ else if(SaFoxUtil.isNotEmpty(currUri)) {
+ 			// 发起请求 
+ 			String checkUrl = ssoTemplate.buildCheckTicketUrl(ticket, ssoLogoutCall);
+ 			SaResult result = ssoTemplate.request(checkUrl);
+-			
++
+ 			// 校验 
+-			if(result.getCode() == SaResult.CODE_SUCCESS) {
++			if(result.getCode() != null && result.getCode() == SaResult.CODE_SUCCESS) {
+ 				return result.getData();
+ 			} else {
+ 				// 将 sso-server 回应的消息作为异常抛出 
+
+File: sa-token-plugin/sa-token-quick-login/src/main/java/cn/dev33/satoken/quick/web/SaQuickController.java
+Patch:
+@@ -22,7 +22,7 @@ public class SaQuickController {
+ 
+ 	/**
+ 	 * 进入登录页面
+-	 * @param request see note
++	 * @param model see note
+ 	 * @return see note
+ 	 */
+ 	@GetMapping("/saLogin")
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/exception/SaTokenException.java
+Patch:
+@@ -98,7 +98,7 @@ public SaTokenException setCode(int code) {
+ 	 */
+ 	public static void throwBy(boolean flag, String message, int code) {
+ 		if(flag) {
+-			throw new SaTokenException(message);
++			throw new SaTokenException(message).setCode(code);
+ 		}
+ 	}
+ 
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/annotation/SaIgnore.java
+Patch:
+@@ -8,7 +8,7 @@
+ /**
+  * 忽略认证：表示被修饰的方法或类无需进行注解认证和路由拦截认证 
+  * 
+- * <h2> 请注意：此注解的忽略效果只针对 SaInterceptor拦截器 和 APO注解鉴权 生效，对自定义拦截器与过滤器不生效 </h2>
++ * <h2> 请注意：此注解的忽略效果只针对 SaInterceptor拦截器 和 AOP注解鉴权 生效，对自定义拦截器与过滤器不生效 </h2>
+  * 
+  * @author kong
+  * @since: 2022-8-21
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/util/SaTokenConsts.java
+Patch:
+@@ -30,7 +30,7 @@ private SaTokenConsts() {
+ 	/**
+ 	 * Sa-Token 开发文档地址 
+ 	 */
+-	public static final String DEV_DOC_URL = "http://sa-token.dev33.cn";
++	public static final String DEV_DOC_URL = "https://sa-token.cc";
+ 	
+ 	// =================== 常量key标记 ===================  
+ 	
+
+File: sa-token-demo/sa-token-demo-quick-login/src/main/java/com/pj/test/TestController.java
+Patch:
+@@ -21,7 +21,7 @@ public String index() {
+ 				+ "<h1 style='text-align: center;'>资源页 （登录后才可进入本页面） </h1>"
+ 				+ "<hr/>"
+ 				+ "<p style='text-align: center;'> Sa-Token " + SaTokenConsts.VERSION_NO + " </p>";
+-		return str;
++		return str; 
+ 	}
+ 	
+ }
+
+File: sa-token-plugin/sa-token-dao-redis-fastjson/src/main/java/cn/dev33/satoken/dao/SaTokenDaoRedisFastjson.java
+Patch:
+@@ -18,7 +18,7 @@
+ import cn.dev33.satoken.util.SaFoxUtil;
+ 
+ /**
+- * Sa-Token持久层接口 [Redis版 (使用JSON字符串进行序列化)]
++ * Sa-Token 持久层实现 [Redis存储、fastjson序列化]
+  * 
+  * @author sikadai
+  *
+
+File: sa-token-plugin/sa-token-dao-redis-fastjson2/src/main/java/cn/dev33/satoken/dao/SaTokenDaoRedisFastjson2.java
+Patch:
+@@ -18,7 +18,7 @@
+ import cn.dev33.satoken.util.SaFoxUtil;
+ 
+ /**
+- * Sa-Token持久层接口 [Redis版 (使用JSON字符串进行序列化)]
++ * Sa-Token 持久层实现 [Redis存储、fastjson2序列化]
+  * 
+  * @author sikadai
+  *
+
+File: sa-token-starter/sa-token-solon-plugin/src/main/java/cn/dev33/satoken/solon/XPluginImp.java
+Patch:
+@@ -3,7 +3,6 @@
+ import org.noear.solon.Solon;
+ import org.noear.solon.core.AopContext;
+ import org.noear.solon.core.Plugin;
+-import org.noear.solon.core.event.EventBus;
+ 
+ import cn.dev33.satoken.SaManager;
+ import cn.dev33.satoken.annotation.SaCheckBasic;
+@@ -34,6 +33,7 @@
+  * @author noear
+  * @since 1.4
+  */
++@SuppressWarnings("deprecation")
+ public class XPluginImp implements Plugin {
+     
+ 	@Override
+
+File: sa-token-test/sa-token-springboot-test/src/test/java/cn/dev33/satoken/core/context/model/SaCookieTest.java
+Patch:
+@@ -16,7 +16,7 @@ public class SaCookieTest {
+     @Test
+     public void test() {
+     	SaCookie cookie = new SaCookie("satoken", "xxxx-xxxx-xxxx-xxxx")
+-    			.setDomain("https://sa-token.dev33.cn/")
++    			.setDomain("https://sa-token.cc/")
+     			.setMaxAge(-1)
+     			.setPath("/")
+     			.setSameSite("Lax")
+@@ -25,13 +25,13 @@ public void test() {
+ 
+     	Assertions.assertEquals(cookie.getName(), "satoken");
+     	Assertions.assertEquals(cookie.getValue(), "xxxx-xxxx-xxxx-xxxx");
+-    	Assertions.assertEquals(cookie.getDomain(), "https://sa-token.dev33.cn/");
++    	Assertions.assertEquals(cookie.getDomain(), "https://sa-token.cc/");
+     	Assertions.assertEquals(cookie.getMaxAge(), -1);
+     	Assertions.assertEquals(cookie.getPath(), "/");
+     	Assertions.assertEquals(cookie.getSameSite(), "Lax");
+     	Assertions.assertEquals(cookie.getHttpOnly(), true);
+     	Assertions.assertEquals(cookie.getSecure(), true);
+-    	Assertions.assertEquals(cookie.toHeaderValue(), "satoken=xxxx-xxxx-xxxx-xxxx; Domain=https://sa-token.dev33.cn/; Path=/; Secure; HttpOnly; sameSite=Lax");
++    	Assertions.assertEquals(cookie.toHeaderValue(), "satoken=xxxx-xxxx-xxxx-xxxx; Domain=https://sa-token.cc/; Path=/; Secure; HttpOnly; sameSite=Lax");
+     	
+     	Assertions.assertNotNull(cookie.toString());
+     }
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/config/SaTokenConfig.java
+Patch:
+@@ -480,7 +480,7 @@ public String toString() {
+ 
+ 	
+ 	/**
+-	 * <h1> 本函数设计已过时，未来版本可能移除此函数，请及时更换为 getIsReadHead() ，使用方式保持不变 </h1>
++	 * <h1> 本函数设计已过时，未来版本可能移除此函数，请及时更换为 getIsReadHeader() ，使用方式保持不变 </h1>
+ 	 * @return 是否尝试从header里读取token
+ 	 */
+ 	@Deprecated
+@@ -489,7 +489,7 @@ public Boolean getIsReadHead() {
+ 	}
+ 
+ 	/**
+-	 * <h1> 本函数设计已过时，未来版本可能移除此函数，请及时更换为 setIsReadHead() ，使用方式保持不变 </h1>
++	 * <h1> 本函数设计已过时，未来版本可能移除此函数，请及时更换为 setIsReadHeader() ，使用方式保持不变 </h1>
+ 	 * @param isReadHead 是否尝试从header里读取token
+ 	 * @return 对象自身
+ 	 */
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/config/SaTokenConfig.java
+Patch:
+@@ -480,7 +480,7 @@ public String toString() {
+ 
+ 	
+ 	/**
+-	 * <h1> 本函数设计已过时，未来版本可能移除此函数，请及时更换为 getIsReadHead() ，使用方式保持不变 </h1>
++	 * <h1> 本函数设计已过时，未来版本可能移除此函数，请及时更换为 getIsReadHeader() ，使用方式保持不变 </h1>
+ 	 * @return 是否尝试从header里读取token
+ 	 */
+ 	@Deprecated
+@@ -489,7 +489,7 @@ public Boolean getIsReadHead() {
+ 	}
+ 
+ 	/**
+-	 * <h1> 本函数设计已过时，未来版本可能移除此函数，请及时更换为 setIsReadHead() ，使用方式保持不变 </h1>
++	 * <h1> 本函数设计已过时，未来版本可能移除此函数，请及时更换为 setIsReadHeader() ，使用方式保持不变 </h1>
+ 	 * @param isReadHead 是否尝试从header里读取token
+ 	 * @return 对象自身
+ 	 */
+
+File: sa-token-core/src/main/java/cn/dev33/satoken/dao/SaTokenDaoDefaultImpl.java
+Patch:
+@@ -73,7 +73,7 @@ public long getTimeout(String key) {
+ 
+ 	@Override
+ 	public void updateTimeout(String key, long timeout) {
+-		expireMap.put(key, System.currentTimeMillis() + timeout * 1000);
++		expireMap.put(key, (timeout == SaTokenDao.NEVER_EXPIRE) ? (SaTokenDao.NEVER_EXPIRE) : (System.currentTimeMillis() + timeout * 1000));
+ 	}
+ 
+ 	
+@@ -115,7 +115,7 @@ public long getObjectTimeout(String key) {
+ 
+ 	@Override
+ 	public void updateObjectTimeout(String key, long timeout) {
+-		expireMap.put(key, System.currentTimeMillis() + timeout * 1000);
++		expireMap.put(key, (timeout == SaTokenDao.NEVER_EXPIRE) ? (SaTokenDao.NEVER_EXPIRE) : (System.currentTimeMillis() + timeout * 1000));
+ 	}
+ 	
+ 	
+
+File: sa-token-plugin/sa-token-context-dubbo/src/main/java/cn/dev33/satoken/context/dubbo/filter/SaTokenDubboConsumerFilter.java
+Patch:
+@@ -22,7 +22,7 @@
+  * @author kong
+  *
+  */
+-@Activate(group = {CommonConstants.CONSUMER}, order = -10000)
++@Activate(group = {CommonConstants.CONSUMER}, order = -30000)
+ public class SaTokenDubboConsumerFilter implements Filter {
+ 
+ 	@Override
+
+File: sa-token-plugin/sa-token-context-dubbo/src/main/java/cn/dev33/satoken/context/dubbo/filter/SaTokenDubboProviderFilter.java
+Patch:
+@@ -18,7 +18,7 @@
+  * @author kong
+  *
+  */
+-@Activate(group = {CommonConstants.PROVIDER}, order = -10000)
++@Activate(group = {CommonConstants.PROVIDER}, order = -30000)
+ public class SaTokenDubboProviderFilter implements Filter {
+ 
+ 	@Override
+
+File: sa-token-plugin/sa-token-context-dubbo/src/main/java/cn/dev33/satoken/context/dubbo/filter/SaTokenDubboConsumerFilter.java
+Patch:
+@@ -22,7 +22,7 @@
+  * @author kong
+  *
+  */
+-@Activate(group = {CommonConstants.CONSUMER}, order = -10000)
++@Activate(group = {CommonConstants.CONSUMER}, order = -30000)
+ public class SaTokenDubboConsumerFilter implements Filter {
+ 
+ 	@Override
+
+File: sa-token-plugin/sa-token-context-dubbo/src/main/java/cn/dev33/satoken/context/dubbo/filter/SaTokenDubboProviderFilter.java
+Patch:
+@@ -18,7 +18,7 @@
+  * @author kong
+  *
+  */
+-@Activate(group = {CommonConstants.PROVIDER}, order = -10000)
++@Activate(group = {CommonConstants.PROVIDER}, order = -30000)
+ public class SaTokenDubboProviderFilter implements Filter {
+ 
+ 	@Override
+
+File: sa-token-plugin/sa-token-jwt/src/main/java/cn/dev33/satoken/jwt/StpLogicJwtForStyle.java
+Patch:
+@@ -50,7 +50,7 @@ public String createTokenValue(Object loginId, String device, long timeout, Map<
+ 	 */
+ 	@Override
+ 	public Object getExtra(String key) {
+-		return SaJwtUtil.getPayloads(getTokenValue(), jwtSecretKey()).get(key);
++		return SaJwtUtil.getPayloadsNotCheck(getTokenValue(), jwtSecretKey()).get(key);
+ 	}
+ 
+ }
+
+File: sa-token-plugin/sa-token-context-dubbo/src/main/java/cn/dev33/satoken/context/dubbo/filter/SaTokenDubboConsumerFilter.java
+Patch:
+@@ -1,5 +1,6 @@
+ package cn.dev33.satoken.context.dubbo.filter;
+ 
++import cn.dev33.satoken.exception.SaTokenException;
+ import org.apache.dubbo.common.constants.CommonConstants;
+ import org.apache.dubbo.common.extension.Activate;
+ import org.apache.dubbo.rpc.Filter;
+@@ -36,6 +37,8 @@ public Result invoke(Invoker<?> invoker, Invocation invocation) throws RpcExcept
+ 		String tokenValueNotCut = null;
+ 		try {
+ 			tokenValueNotCut = StpUtil.getTokenValueNotCut();
++		} catch (SaTokenException exception){
++
+ 		} finally {
+ 			RpcContext.getContext().setAttachment(SaTokenConsts.JUST_CREATED, tokenValueNotCut);
+ 		}
+
+File: sa-token-starter/sa-token-spring-boot-starter/src/main/java/cn/dev33/satoken/filter/SaServletFilter.java
+Patch:
+@@ -167,7 +167,9 @@ public void doFilter(ServletRequest request, ServletResponse response, FilterCha
+ 			String resultString = String.valueOf(result);
+ 			
+ 			// 2. 写入输出流 
+-			response.setContentType("text/plain; charset=utf-8"); 
++			if(response.getContentType() == null) {
++				response.setContentType("text/plain; charset=utf-8"); 
++			}
+ 			response.getWriter().print(resultString);
+ 			return;
+ 		}
+
+File: sa-token-demo-springboot/src/main/java/com/pj/test/GlobalException.java
+Patch:
+@@ -5,17 +5,17 @@
+ import javax.servlet.http.HttpServletRequest;
+ import javax.servlet.http.HttpServletResponse;
+ 
+-import org.springframework.web.bind.annotation.ControllerAdvice;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.ModelAttribute;
++import org.springframework.web.bind.annotation.RestControllerAdvice;
+ 
+ import cn.dev33.satoken.exception.NotLoginException;
+ import cn.dev33.satoken.exception.NotPermissionException;
+ 
+ /**
+  * 全局异常处理 
+  */
+-@ControllerAdvice // 可指定包前缀，比如：(basePackages = "com.pj.admin")
++@RestControllerAdvice // 可指定包前缀，比如：(basePackages = "com.pj.admin")
+ public class GlobalException {
+ 
+ 	// 在每个控制器之前触发的操作
+

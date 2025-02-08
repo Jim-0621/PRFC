@@ -1,0 +1,2428 @@
+File: jetcache-core/src/main/java/com/alicp/jetcache/external/MockRemoteCacheBuilder.java
+Patch:
+@@ -12,8 +12,8 @@
+  */
+ public class MockRemoteCacheBuilder<T extends ExternalCacheBuilder<T>> extends ExternalCacheBuilder<T> {
+ 
+-    private static boolean subscribeStart;
+-    private static CacheMessage lastPublishMessage;
++    private static volatile boolean subscribeStart;
++    private static volatile CacheMessage lastPublishMessage;
+ 
+     public static class MockRemoteCacheBuilderImpl extends MockRemoteCacheBuilder<MockRemoteCacheBuilderImpl> {
+     }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/JetCacheExecutor.java
+Patch:
+@@ -45,8 +45,8 @@ public static ScheduledExecutorService defaultExecutor() {
+                     t.setDaemon(true);
+                     return t;
+                 };
+-                defaultExecutor = new ScheduledThreadPoolExecutor(
+-                        1, tf, new ThreadPoolExecutor.DiscardPolicy());
++                int coreSize = Math.min(4, Runtime.getRuntime().availableProcessors());
++                defaultExecutor = new ScheduledThreadPoolExecutor(coreSize, tf);
+             }
+         }finally {
+             reentrantLock.unlock();
+
+File: jetcache-support/jetcache-redis-lettuce/src/main/java/com/alicp/jetcache/redis/lettuce/LettuceBroadcastManager.java
+Patch:
+@@ -85,7 +85,7 @@ public void startSubscribe() {
+             this.pubSubAdapter = new RedisPubSubAdapter<byte[], byte[]>() {
+                 @Override
+                 public void message(byte[] channel, byte[] message) {
+-                    processNotification(message, config.getValueDecoder());
++                    JetCacheExecutor.defaultExecutor().execute(() -> processNotification(message, config.getValueDecoder()));
+                 }
+             };
+             config.getPubSubConnection().addListener(this.pubSubAdapter);
+
+File: jetcache-test/src/main/java/com/alicp/jetcache/test/anno/TestUtil.java
+Patch:
+@@ -80,7 +80,7 @@ public static void waitUtil(Object expectValue, Supplier<? extends Object> actua
+         int waitCount = 0;
+         while (deadline - System.nanoTime() > 0) {
+             try {
+-                Thread.sleep(5);
++                Thread.sleep(1);
+             } catch (InterruptedException e) {
+                 throw new RuntimeException(e);
+             }
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/redis/lettuce/RedisLettuceCacheTest.java
+Patch:
+@@ -140,7 +140,7 @@ public void testWithMultiLevelCache() throws Exception {
+ 
+         LoadingCacheTest.loadingCacheTest(MultiLevelCacheBuilder.createMultiLevelCacheBuilder()
+                 .expireAfterWrite(5000, TimeUnit.MILLISECONDS)
+-                .addCache(l1Cache, l2Cache), 50);
++                .addCache(l1Cache, l2Cache), 20);
+ 
+         LettuceConnectionManager.defaultManager().removeAndClose(client);
+     }
+@@ -165,7 +165,7 @@ private void test(AbstractRedisClient client, StatefulConnection connection) thr
+                 .keyConvertor(FastjsonKeyConvertor.INSTANCE)
+                 .valueEncoder(JavaValueEncoder.INSTANCE)
+                 .valueDecoder(JavaValueDecoder.INSTANCE)
+-                .keyPrefix(new Random().nextInt() + ""), 50);
++                .keyPrefix(new Random().nextInt() + ""), 20);
+ 
+         cache = RedisLettuceCacheBuilder.createRedisLettuceCacheBuilder()
+                 .redisClient(client)
+
+File: jetcache-test/src/main/java/com/alicp/jetcache/test/AbstractCacheTest.java
+Patch:
+@@ -490,7 +490,6 @@ protected void lockTest() throws Exception {
+             try (AutoReleaseLock lock = cache.tryLock("LockKeyAndRunKey", 1, TimeUnit.SECONDS)) {
+                 Assert.assertNotNull(lock);
+             }
+-            ;
+         }
+     }
+ 
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/redis/lettuce/RedisLettuceCacheTest.java
+Patch:
+@@ -22,7 +22,6 @@
+ import io.lettuce.core.masterslave.MasterSlave;
+ import io.lettuce.core.masterslave.StatefulRedisMasterSlaveConnection;
+ import org.junit.Assert;
+-import org.junit.Ignore;
+ import org.junit.Test;
+ 
+ import java.util.Arrays;
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/JetCacheAutoConfiguration.java
+Patch:
+@@ -73,7 +73,6 @@ public static BeanDependencyManager beanDependencyManager() {
+     @Bean(name = GLOBAL_CACHE_CONFIG_NAME)
+     public GlobalCacheConfig globalCacheConfig(AutoConfigureBeans autoConfigureBeans, JetCacheProperties props) {
+         GlobalCacheConfig _globalCacheConfig = new GlobalCacheConfig();
+-        _globalCacheConfig = new GlobalCacheConfig();
+         _globalCacheConfig.setHiddenPackages(props.getHiddenPackages());
+         _globalCacheConfig.setStatIntervalMinutes(props.getStatIntervalMinutes());
+         _globalCacheConfig.setAreaInCacheName(props.isAreaInCacheName());
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/JavaValueEncoder.java
+Patch:
+@@ -53,9 +53,10 @@ public byte[] apply(Object value) {
+             StringBuilder sb = new StringBuilder("Java Encode error. ");
+             sb.append("msg=").append(e.getMessage());
+             throw new CacheEncodeException(sb.toString(), e);
+-        }finally {
+-            if(bos != null)
++        } finally {
++            if (bos != null) {
+                 bosPool.returnObject(bos);
++            }
+         }
+     }
+ }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/Kryo5ValueEncoder.java
+Patch:
+@@ -68,9 +68,10 @@ public byte[] apply(Object value) {
+             StringBuilder sb = new StringBuilder("Kryo Encode error. ");
+             sb.append("msg=").append(e.getMessage());
+             throw new CacheEncodeException(sb.toString(), e);
+-        }finally {
+-            if(kryoCache != null)
++        } finally {
++            if (kryoCache != null) {
+                 kryoCacheObjectPool.returnObject(kryoCache);
++            }
+         }
+     }
+ 
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/KryoValueEncoder.java
+Patch:
+@@ -72,8 +72,9 @@ public byte[] apply(Object value) {
+             sb.append("msg=").append(e.getMessage());
+             throw new CacheEncodeException(sb.toString(), e);
+         } finally {
+-            if(kryoCache != null)
++            if (kryoCache != null) {
+                 kryoCacheObjectPool.returnObject(kryoCache);
++            }
+         }
+     }
+ 
+
+File: samples/spring-boot-sample/spring-boot-sample-codes/src/main/java/jetcache/samples/sync/CacheReader.java
+Patch:
+@@ -19,7 +19,7 @@
+ @SpringBootApplication
+ public class CacheReader {
+     public static void main(String[] args) throws Exception {
+-        ConfigurableApplicationContext context = SpringApplication.run(CacheUpdater.class);
++        ConfigurableApplicationContext context = SpringApplication.run(CacheReader.class);
+         CacheManager cm = context.getBean(CacheManager.class);
+         QuickConfig qc = QuickConfig.newBuilder("spring-boot-sync-test")
+                 .cacheType(CacheType.BOTH)
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/redis/springdata/RedisSpringDataCacheTest.java
+Patch:
+@@ -26,7 +26,7 @@
+ public class RedisSpringDataCacheTest extends AbstractExternalCacheTest {
+ 
+     @Test
+-    @Ignore("need jedis 3.x")
++    // @Ignore("boot2.x need jedis 3.x")
+     public void jedisTest() throws Exception {
+         JedisConnectionFactory connectionFactory = new JedisConnectionFactory();
+         connectionFactory.afterPropertiesSet();
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/JetCacheAutoConfiguration.java
+Patch:
+@@ -60,6 +60,7 @@ public CacheManager cacheManager(@Autowired SpringConfigProvider springConfigPro
+     }
+ 
+     @Bean
++    @ConditionalOnMissingBean
+     public AutoConfigureBeans autoConfigureBeans() {
+         return new AutoConfigureBeans();
+     }
+
+File: jetcache-anno-api/src/main/java/com/alicp/jetcache/anno/KeyConvertor.java
+Patch:
+@@ -5,6 +5,9 @@
+ /**
+  * Created on 2016/12/12.
+  *
++ * A custom key convertor implements Function<Object, Object> is enough.
++ * If a key convertor implements this interface, it can process byte[] and String, see AbstractExternalCache.
++ *
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  */
+ public interface KeyConvertor extends Function<Object, Object> {
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/support/SyncLocalTest.java
+Patch:
+@@ -106,7 +106,7 @@ public void testSpringData() throws Exception {
+                 .keyPrefix(keyPrefix)
+                 .broadcastChannel(keyPrefix);
+         RedisSpringDataCacheBuilder b2 = RedisSpringDataCacheBuilder.createBuilder()
+-                .connectionFactory(f1)
++                .connectionFactory(f2)
+                 .keyPrefix(keyPrefix)
+                 .broadcastChannel(keyPrefix);
+         test(b1.buildCache(), b2.buildCache(),
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/SimpleCacheManager.java
+Patch:
+@@ -136,6 +136,7 @@ private Cache create(QuickConfig config) {
+             cache = new LoadingCache(cache);
+         }
+         cache.config().setRefreshPolicy(config.getRefreshPolicy());
++        cache.config().setLoader(config.getLoader());
+ 
+ 
+         boolean protect = config.getPenetrationProtect() != null ? config.getPenetrationProtect()
+
+File: jetcache-support/jetcache-redisson/src/main/java/com/alicp/jetcache/redisson/RedissonCache.java
+Patch:
+@@ -113,7 +113,7 @@ protected MultiGetResult<K, V> do_GET_ALL(final Set<? extends K> keys) {
+     protected CacheResult do_PUT(final K key, final V value, final long expireAfterWrite, final TimeUnit timeUnit) {
+         try {
+             final CacheValueHolder<V> holder = new CacheValueHolder<>(value, timeUnit.toMillis(expireAfterWrite));
+-            this.client.getBucket(getCacheKey(key)).set(holder);
++            this.client.getBucket(getCacheKey(key)).set(holder, expireAfterWrite, timeUnit);
+             return CacheGetResult.SUCCESS_WITHOUT_MSG;
+         } catch (Throwable e) {
+             logError("PUT", key, e);
+@@ -129,7 +129,7 @@ protected CacheResult do_PUT_ALL(final Map<? extends K, ? extends V> map, final
+                 final RBatch batch = this.client.createBatch();
+                 map.forEach((k, v) -> {
+                     final CacheValueHolder<V> holder = new CacheValueHolder<>(v, expire);
+-                    batch.getBucket(getCacheKey(k)).setAsync(holder);
++                    batch.getBucket(getCacheKey(k)).setAsync(holder, expireAfterWrite, timeUnit);
+                 });
+                 batch.execute();
+             }
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/ConfigProvider.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.alicp.jetcache.CacheBuilder;
+ import com.alicp.jetcache.CacheManager;
++import com.alicp.jetcache.SimpleCacheManager;
+ import com.alicp.jetcache.embedded.EmbeddedCacheBuilder;
+ import com.alicp.jetcache.external.ExternalCacheBuilder;
+ import com.alicp.jetcache.support.AbstractLifecycle;
+@@ -39,7 +40,7 @@ public class ConfigProvider extends AbstractLifecycle {
+     private CacheContext cacheContext;
+ 
+     public ConfigProvider() {
+-        cacheManager = CacheManager.defaultManager();
++        cacheManager = new SimpleCacheManager();
+         encoderParser = new DefaultEncoderParser();
+         keyConvertorParser = new DefaultKeyConvertorParser();
+     }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/CacheManager.java
+Patch:
+@@ -42,7 +42,4 @@ default void putBroadcastManager(BroadcastManager broadcastManager){
+         putBroadcastManager(CacheConsts.DEFAULT_AREA, broadcastManager);
+     }
+ 
+-    static CacheManager defaultManager() {
+-        return SimpleCacheManager.defaultManager;
+-    }
+ }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/SimpleCacheManager.java
+Patch:
+@@ -32,8 +32,6 @@ public class SimpleCacheManager implements CacheManager, AutoCloseable {
+ 
+     private final ConcurrentHashMap<String, BroadcastManager> broadcastManagers = new ConcurrentHashMap();
+ 
+-    static final SimpleCacheManager defaultManager = new SimpleCacheManager();
+-
+     private CacheBuilderTemplate cacheBuilderTemplate;
+ 
+     public SimpleCacheManager() {
+
+File: samples/simple-samples/src/main/java/LocalCacheSyncExample.java
+Patch:
+@@ -1,6 +1,7 @@
+ import com.alicp.jetcache.Cache;
+ import com.alicp.jetcache.CacheManager;
+ import com.alicp.jetcache.MultiLevelCacheBuilder;
++import com.alicp.jetcache.SimpleCacheManager;
+ import com.alicp.jetcache.embedded.CaffeineCacheBuilder;
+ import com.alicp.jetcache.redis.RedisCacheBuilder;
+ import com.alicp.jetcache.support.BroadcastManager;
+@@ -38,7 +39,7 @@ private static Cache<Object, Object> createMultiLevelCache() {
+                 .buildCache();
+ 
+         // each cache area has only one BroadcastManager instance
+-        CacheManager cacheManager = CacheManager.defaultManager();
++        CacheManager cacheManager = new SimpleCacheManager();
+         BroadcastManager broadcastManager = RedisCacheBuilder.createRedisCacheBuilder()
+                 .jedisPool(pool)
+                 .broadcastChannel("projectA")
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/DecoderMap.java
+Patch:
+@@ -49,6 +49,7 @@ public void initDefaultDecoder() {
+             register(SerialPolicy.IDENTITY_NUMBER_JAVA, defaultJavaValueDecoder());
+             register(SerialPolicy.IDENTITY_NUMBER_KRYO4, KryoValueDecoder.INSTANCE);
+             register(SerialPolicy.IDENTITY_NUMBER_KRYO5, Kryo5ValueDecoder.INSTANCE);
++            // register(SerialPolicy.IDENTITY_NUMBER_FASTJSON2, Fastjson2ValueDecoder.INSTANCE);
+             inited = true;
+         }
+     }
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/DefaultKeyConvertorParser.java
+Patch:
+@@ -5,6 +5,7 @@
+ 
+ import com.alicp.jetcache.CacheConfigException;
+ import com.alicp.jetcache.anno.KeyConvertor;
++import com.alicp.jetcache.support.Fastjson2KeyConvertor;
+ import com.alicp.jetcache.support.FastjsonKeyConvertor;
+ import com.alicp.jetcache.support.JacksonKeyConvertor;
+ 
+@@ -21,6 +22,8 @@ public Function<Object, Object> parseKeyConvertor(String convertor) {
+         }
+         if (KeyConvertor.FASTJSON.equalsIgnoreCase(convertor)) {
+             return FastjsonKeyConvertor.INSTANCE;
++        } else if (KeyConvertor.FASTJSON2.equalsIgnoreCase(convertor)) {
++            return Fastjson2KeyConvertor.INSTANCE;
+         } else if (KeyConvertor.JACKSON.equalsIgnoreCase(convertor)) {
+             return JacksonKeyConvertor.INSTANCE;
+         } else if (KeyConvertor.NONE.equalsIgnoreCase(convertor)) {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/FastjsonKeyConvertor.java
+Patch:
+@@ -3,7 +3,7 @@
+  */
+ package com.alicp.jetcache.support;
+ 
+-import com.alibaba.fastjson2.JSON;
++import com.alibaba.fastjson.JSON;
+ 
+ import java.util.function.Function;
+ 
+
+File: jetcache-support/jetcache-redis-lettuce/src/main/java/com/alicp/jetcache/redis/lettuce/RedisLettuceCacheBuilder.java
+Patch:
+@@ -39,9 +39,6 @@ public boolean supportBroadcast() {
+ 
+     @Override
+     public BroadcastManager createBroadcastManager(CacheManager cacheManager) {
+-        if (getConfig().getPubSubConnection() == null) {
+-            return null;
+-        }
+         RedisLettuceCacheConfig c = (RedisLettuceCacheConfig) getConfig().clone();
+         return new LettuceBroadcastManager(cacheManager, c);
+     }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/external/ExternalCacheConfig.java
+Patch:
+@@ -17,7 +17,7 @@ public class ExternalCacheConfig<K, V> extends CacheConfig<K, V> {
+     private Supplier<String> keyPrefixSupplier;
+     private Function<Object, byte[]> valueEncoder = JavaValueEncoder.INSTANCE;
+     private Function<byte[], Object> valueDecoder = DecoderMap.defaultJavaValueDecoder();
+-    private String broadcastChannel = "JetCacheChannel";
++    private String broadcastChannel;
+ 
+     public String getKeyPrefix() {
+         return keyPrefixSupplier == null ? null : keyPrefixSupplier.get();
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/RedisLettuceAutoConfiguration.java
+Patch:
+@@ -63,7 +63,7 @@ protected CacheBuilder initCache(ConfigTree ct, String cacheAreaWithPrefix) {
+             String readFromStr = ct.getProperty("readFrom");
+             String mode = ct.getProperty("mode");
+             long asyncResultTimeoutInMillis = ct.getProperty("asyncResultTimeoutInMillis", CacheConsts.ASYNC_RESULT_TIMEOUT.toMillis());
+-            boolean enablePubSub = ct.getProperty("enablePubSub", true);
++            boolean enablePubSub = parseBroadcastChannel(ct) != null;
+             ReadFrom readFrom = null;
+             if (readFromStr != null) {
+                 readFrom = ReadFrom.valueOf(readFromStr.trim());
+
+File: jetcache-test/src/main/java/com/alicp/jetcache/test/anno/TestUtil.java
+Patch:
+@@ -37,12 +37,14 @@ public static GlobalCacheConfig createGloableConfig() {
+         remoteBuilder.setKeyConvertor(FastjsonKeyConvertor.INSTANCE);
+         remoteBuilder.setValueEncoder(KryoValueEncoder.INSTANCE);
+         remoteBuilder.setValueDecoder(KryoValueDecoder.INSTANCE);
++        remoteBuilder.setBroadcastChannel("mockBroadcastChannel");
+         remoteBuilders.put(CacheConsts.DEFAULT_AREA, remoteBuilder);
+ 
+         remoteBuilder = new MockRemoteCacheBuilder();
+         remoteBuilder.setKeyConvertor(FastjsonKeyConvertor.INSTANCE);
+         remoteBuilder.setValueEncoder(KryoValueEncoder.INSTANCE);
+         remoteBuilder.setValueDecoder(KryoValueDecoder.INSTANCE);
++        remoteBuilder.setBroadcastChannel("mockBroadcastChannel_A1");
+         remoteBuilders.put("A1", remoteBuilder);
+ 
+         GlobalCacheConfig globalCacheConfig = new GlobalCacheConfig();
+@@ -69,7 +71,7 @@ public static void waitUtil(Supplier<Boolean> condition) {
+     }
+ 
+     public static void waitUtil(Object expectValue, Supplier<? extends Object> actual) {
+-        waitUtil(expectValue, actual, 1000);
++        waitUtil(expectValue, actual, 5000);
+     }
+ 
+     public static void waitUtil(Object expectValue, Supplier<? extends Object> actual, long timeoutMillis) {
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/redis/RedisBroadcastManagerTest.java
+Patch:
+@@ -18,6 +18,7 @@ public void test() throws Exception {
+         BroadcastManager manager = RedisCacheBuilder.createRedisCacheBuilder()
+                 .jedis(new UnifiedJedis(new HostAndPort("127.0.0.1", 6379)))
+                 .keyPrefix(RedisBroadcastManagerTest.class.getName())
++                .broadcastChannel(RedisBroadcastManagerTest.class.getName())
+                 .createBroadcastManager(new SimpleCacheManager());
+         testBroadcastManager(manager);
+     }
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/redis/lettuce/LettuceBroadcastManagerTest.java
+Patch:
+@@ -34,6 +34,7 @@ private void doTest(AbstractRedisClient client, StatefulRedisPubSubConnection pu
+                 .valueEncoder(JavaValueEncoder.INSTANCE)
+                 .valueDecoder(JavaValueDecoder.INSTANCE)
+                 .keyPrefix(new Random().nextInt() + "")
++                .broadcastChannel(LettuceBroadcastManagerTest.class.getSimpleName())
+                 .pubSubConnection(pubSubConnection)
+                 .createBroadcastManager(new SimpleCacheManager());
+         testBroadcastManager(bm);
+
+File: samples/simple-samples/src/main/java/LocalCacheSyncExample.java
+Patch:
+@@ -41,6 +41,7 @@ private static Cache<Object, Object> createMultiLevelCache() {
+         CacheManager cacheManager = CacheManager.defaultManager();
+         BroadcastManager broadcastManager = RedisCacheBuilder.createRedisCacheBuilder()
+                 .jedisPool(pool)
++                .broadcastChannel("projectA")
+                 .createBroadcastManager(cacheManager);
+         broadcastManager.startSubscribe();
+         cacheManager.putBroadcastManager(broadcastManager);
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/method/ExpressionUtil.java
+Patch:
+@@ -62,7 +62,7 @@ public static Object evalKey(CacheInvokeContext context, CacheAnnoConfig cac) {
+                 if (CacheConsts.isUndefined(keyScript)) {
+                     cac.setKeyEvaluator(o -> {
+                         CacheInvokeContext c = (CacheInvokeContext) o;
+-                        return c.getArgs() == null ? "_$JETCACHE_NULL_KEY$_" : c.getArgs();
++                        return c.getArgs() == null || c.getArgs().length == 0 ? "_$JETCACHE_NULL_KEY$_" : c.getArgs();
+                     });
+                 } else {
+                     ExpressionEvaluator e = new ExpressionEvaluator(keyScript, cac.getDefineMethod());
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/BroadcastManager.java
+Patch:
+@@ -16,4 +16,7 @@ public interface BroadcastManager extends AutoCloseable {
+ 
+     void startSubscribe(Consumer<CacheMessage> consumer);
+ 
++    @Override
++    default void close() throws Exception {
++    }
+ }
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/DefaultCacheMonitorManager.java
+Patch:
+@@ -81,6 +81,8 @@ protected void addNotifyMonitor(String area, String cacheName, Cache cache, bool
+                 return null;
+             }
+             ExternalCacheBuilder builderCopy = (ExternalCacheBuilder) cacheBuilder.clone();
++            MultiLevelCache mc = (MultiLevelCache) CacheUtil.getAbstractCache(cache);
++            builderCopy.setKeyConvertor(mc.caches()[mc.caches().length - 1].config().getKeyConvertor());
+             BroadcastManager result = builderCopy.createBroadcastManager(builderCopy.getBroadcastChannel());
+             result.startSubscribe(new CacheMessageConsumer(sourceId, configProvider.getCacheManager()));
+             return result;
+
+File: samples/simple-samples/src/main/java/CacheMonitorExample.java
+Patch:
+@@ -1,7 +1,7 @@
+ import com.alicp.jetcache.Cache;
+ import com.alicp.jetcache.embedded.CaffeineCacheBuilder;
+ import com.alicp.jetcache.support.DefaultCacheMonitor;
+-import com.alicp.jetcache.support.DefaultCacheMonitorManager;
++import com.alicp.jetcache.support.DefaultMetricsManager;
+ import com.alicp.jetcache.support.FastjsonKeyConvertor;
+ 
+ import java.util.concurrent.TimeUnit;
+@@ -22,7 +22,7 @@ public static void main(String[] args) throws Exception {
+                 .buildCache();
+ 
+         boolean verboseLog = false;
+-        DefaultCacheMonitorManager statLogger = new DefaultCacheMonitorManager(1, TimeUnit.SECONDS, verboseLog);
++        DefaultMetricsManager statLogger = new DefaultMetricsManager(1, TimeUnit.SECONDS, verboseLog);
+ 
+         statLogger.add(orderCacheMonitor);
+         statLogger.start();
+
+File: samples/simple-samples/src/main/java/CacheMonitorWithMultiLevelCacheExample.java
+Patch:
+@@ -2,7 +2,7 @@
+ import com.alicp.jetcache.MultiLevelCacheBuilder;
+ import com.alicp.jetcache.embedded.CaffeineCacheBuilder;
+ import com.alicp.jetcache.support.DefaultCacheMonitor;
+-import com.alicp.jetcache.support.DefaultCacheMonitorManager;
++import com.alicp.jetcache.support.DefaultMetricsManager;
+ import com.alicp.jetcache.support.FastjsonKeyConvertor;
+ 
+ import java.util.concurrent.TimeUnit;
+@@ -36,7 +36,7 @@ public static void main(String[] args) throws Exception {
+                 .buildCache();
+ 
+         boolean verboseLog = true;
+-        DefaultCacheMonitorManager statLogger = new DefaultCacheMonitorManager(1, TimeUnit.SECONDS, verboseLog);
++        DefaultMetricsManager statLogger = new DefaultMetricsManager(1, TimeUnit.SECONDS, verboseLog);
+         statLogger.add(l1CacheMonitor, l2CacheMonitor, orderCacheMonitor);
+         statLogger.start();
+ 
+
+File: samples/springsample/src/main/java/jetcache/samples/spring/JetCacheConfig.java
+Patch:
+@@ -22,7 +22,7 @@
+ import org.springframework.context.annotation.Configuration;
+ import redis.clients.jedis.Jedis;
+ import redis.clients.jedis.JedisPool;
+-import redis.clients.util.Pool;
++import redis.clients.jedis.util.Pool;
+ 
+ @Configuration
+ @EnableMethodCache(basePackages = "jetcache.samples.spring")
+@@ -44,7 +44,7 @@ public SpringConfigProvider springConfigProvider() {
+     }
+ 
+     @Bean
+-    public GlobalCacheConfig config(SpringConfigProvider configProvider, Pool<Jedis> pool){
++    public GlobalCacheConfig config(Pool<Jedis> pool){
+         Map localBuilders = new HashMap();
+         EmbeddedCacheBuilder localBuilder = LinkedHashMapCacheBuilder
+                 .createLinkedHashMapCacheBuilder()
+@@ -60,7 +60,6 @@ public GlobalCacheConfig config(SpringConfigProvider configProvider, Pool<Jedis>
+         remoteBuilders.put(CacheConsts.DEFAULT_AREA, remoteCacheBuilder);
+ 
+         GlobalCacheConfig globalCacheConfig = new GlobalCacheConfig();
+-        globalCacheConfig.setConfigProvider(configProvider);
+         globalCacheConfig.setLocalCacheBuilders(localBuilders);
+         globalCacheConfig.setRemoteCacheBuilders(remoteBuilders);
+         globalCacheConfig.setStatIntervalMinutes(1);
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/JetCacheAutoConfiguration.java
+Patch:
+@@ -51,9 +51,7 @@ public static BeanDependencyManager beanDependencyManager(){
+     }
+ 
+     @Bean(name = GLOBAL_CACHE_CONFIG_NAME)
+-    public GlobalCacheConfig globalCacheConfig(SpringConfigProvider configProvider,
+-                                                            AutoConfigureBeans autoConfigureBeans,
+-                                                            JetCacheProperties props) {
++    public GlobalCacheConfig globalCacheConfig(AutoConfigureBeans autoConfigureBeans, JetCacheProperties props) {
+         if (_globalCacheConfig != null) {
+             return _globalCacheConfig;
+         }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/external/ExternalCacheBuilder.java
+Patch:
+@@ -43,6 +43,8 @@ public T valueDecoder(Function<byte[], Object> valueDecoder){
+     public void setKeyPrefix(String keyPrefix){
+         if (keyPrefix != null) {
+             getConfig().setKeyPrefixSupplier(() -> keyPrefix);
++        } else {
++            getConfig().setKeyPrefixSupplier(null);
+         }
+     }
+ 
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/external/ExternalCacheBuilder.java
+Patch:
+@@ -41,7 +41,9 @@ public T valueDecoder(Function<byte[], Object> valueDecoder){
+     }
+ 
+     public void setKeyPrefix(String keyPrefix){
+-        getConfig().setKeyPrefixSupplier(() -> keyPrefix);
++        if (keyPrefix != null) {
++            getConfig().setKeyPrefixSupplier(() -> keyPrefix);
++        }
+     }
+ 
+     public void setKeyPrefixSupplier(Supplier<String> keyPrefixSupplier){
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/MultiGetResult.java
+Patch:
+@@ -11,7 +11,7 @@
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  */
+ public class MultiGetResult<K, V> extends CacheResult {
+-    private Map<K, CacheGetResult<V>> values;
++    private volatile Map<K, CacheGetResult<V>> values;
+ 
+     public MultiGetResult(CompletionStage<ResultData> future) {
+         super(future);
+@@ -32,14 +32,14 @@ public Map<K, CacheGetResult<V>> getValues() {
+ 
+     @Override
+     protected void fetchResultSuccess(ResultData resultData) {
+-        super.fetchResultSuccess(resultData);
+         values = (Map<K, CacheGetResult<V>>) resultData.getOriginData();
++        super.fetchResultSuccess(resultData);
+     }
+ 
+     @Override
+     protected void fetchResultFail(Throwable e) {
+-        super.fetchResultFail(e);
+         values = null;
++        super.fetchResultFail(e);
+     }
+ 
+     public Map<K, V> unwrapValues() {
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/autoconfigure/RedisLettuceStarterTest.java
+Patch:
+@@ -93,7 +93,6 @@ public void test() throws Exception {
+             Assert.assertNotNull(c1.unwrap(RedisClient.class));
+             RedisLettuceCacheConfig cc1 = (RedisLettuceCacheConfig) c1.config();
+             Assert.assertEquals(20000, cc1.getExpireAfterWriteInMillis());
+-            Assert.assertSame(FastjsonKeyConvertor.INSTANCE, cc1.getKeyConvertor());
+ 
+             a1SlaveCache.put("K1", "V1");
+             Thread.sleep(200);
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/autoconfigure/RedisStarterTest.java
+Patch:
+@@ -68,7 +68,6 @@ public void test() {
+             Assert.assertEquals(200, cc1.getLimit());
+             Assert.assertEquals(10000, cc1.getExpireAfterWriteInMillis());
+             Assert.assertFalse(cc1.isExpireAfterAccess());
+-            Assert.assertSame(FastjsonKeyConvertor.INSTANCE, cc1.getKeyConvertor());
+ 
+             RedisCacheConfig c = (RedisCacheConfig) c2.config();
+             Assert.assertFalse(c.isReadFromSlave());
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/CacheContext.java
+Patch:
+@@ -159,8 +159,9 @@ protected Cache buildRemote(CachedAnnoConfig cachedAnnoConfig, String area, Stri
+             cacheBuilder.expireAfterWrite(cachedAnnoConfig.getExpire(), cachedAnnoConfig.getTimeUnit());
+         }
+ 
+-        if (cacheBuilder.getConfig().getKeyPrefix() != null) {
+-            cacheBuilder.setKeyPrefix(cacheBuilder.getConfig().getKeyPrefix() + cacheName);
++        if (cacheBuilder.getConfig().getKeyPrefixSupplier() != null) {
++            Supplier<String> supplier = cacheBuilder.getConfig().getKeyPrefixSupplier();
++            cacheBuilder.setKeyPrefixSupplier(() -> supplier.get() + cacheName);
+         } else {
+             cacheBuilder.setKeyPrefix(cacheName);
+         }
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/AbstractCacheAutoInit.java
+Patch:
+@@ -72,7 +72,7 @@ private void process(String prefix, Map cacheBuilders, boolean local) {
+ 
+     protected void parseGeneralConfig(CacheBuilder builder, ConfigTree ct) {
+         AbstractCacheBuilder acb = (AbstractCacheBuilder) builder;
+-        acb.keyConvertor(configProvider.parseKeyConvertor(ct.getProperty("keyConvertor")));
++        acb.keyConvertor(new FunctionWrapper<>(() -> configProvider.parseKeyConvertor(ct.getProperty("keyConvertor"))));
+ 
+         String expireAfterWriteInMillis = ct.getProperty("expireAfterWriteInMillis");
+         if (expireAfterWriteInMillis == null) {
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/MultiLevelCacheTest.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import com.alicp.jetcache.embedded.CaffeineCacheBuilder;
+ import com.alicp.jetcache.support.DefaultCacheMonitor;
+-import com.alicp.jetcache.support.DefaultCacheMonitorManager;
++import com.alicp.jetcache.support.DefaultMetricsManager;
+ import com.alicp.jetcache.support.DefaultCacheMonitorTest;
+ import com.alicp.jetcache.support.FastjsonKeyConvertor;
+ import com.alicp.jetcache.test.AbstractCacheTest;
+@@ -130,7 +130,7 @@ private void doMonitoredTest(int expireMillis, boolean verboseLog, Runnable test
+         l2Cache.config().getMonitors().add(m2);
+         cache = new MultiLevelCache<>(l1Cache, l2Cache);
+         cache.config().getMonitors().add(mc);
+-        DefaultCacheMonitorManager logger = new DefaultCacheMonitorManager(1, TimeUnit.SECONDS, verboseLog);
++        DefaultMetricsManager logger = new DefaultMetricsManager(1, TimeUnit.SECONDS, verboseLog);
+         logger.add(m1, m1_again, m2, mc);
+         logger.start();
+ 
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/support/DefaultCacheMonitorTest.java
+Patch:
+@@ -140,7 +140,7 @@ public void testWithManager() throws Exception {
+ 
+         c1.config().getMonitors().add(m1);
+         c2.config().getMonitors().add(m2);
+-        DefaultCacheMonitorManager manager = new DefaultCacheMonitorManager(10, TimeUnit.SECONDS, true);
++        DefaultMetricsManager manager = new DefaultMetricsManager(10, TimeUnit.SECONDS, true);
+         manager.start();
+         manager.add(m1, m2);
+ 
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/DefaultCacheMonitorInstaller.java
+Patch:
+@@ -5,6 +5,7 @@
+ 
+ import com.alicp.jetcache.Cache;
+ import com.alicp.jetcache.CacheMonitor;
++import com.alicp.jetcache.CacheUtil;
+ import com.alicp.jetcache.MultiLevelCache;
+ import com.alicp.jetcache.event.CachePutAllEvent;
+ import com.alicp.jetcache.event.CachePutEvent;
+@@ -72,6 +73,7 @@ protected void addCacheUpdateMonitor(String area, String cacheName, Cache cache)
+ 
+     protected void addMetricsMonitor(String area, String cacheName, Cache cache) {
+         if (defaultCacheMonitorManager != null) {
++            cache = CacheUtil.getAbstractCache(cache);
+             if (cache instanceof MultiLevelCache) {
+                 MultiLevelCache mc = (MultiLevelCache) cache;
+                 if (mc.caches().length == 2) {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/CacheUtil.java
+Patch:
+@@ -14,7 +14,7 @@
+  *
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  */
+-class CacheUtil {
++public class CacheUtil {
+ 
+     public static <K, V> CacheLoader<K, V> createProxyLoader(Cache<K, V> cache,
+                                                              CacheLoader<K, V> loader,
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/SimpleCacheManager.java
+Patch:
+@@ -36,6 +36,7 @@ public void rebuild() {
+             });
+         });
+         caches.clear();
++        cacheCreator = null;
+     }
+ 
+     private ConcurrentHashMap<String, Cache> getCachesByArea(String area) {
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/external/ExternalKeyUtilTest.java
+Patch:
+@@ -11,7 +11,7 @@
+  *
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  */
+-public class ExternaKeyUtilTest {
++public class ExternalKeyUtilTest {
+ 
+     private static class C implements Serializable {
+         private static final long serialVersionUID = 3412272275328699372L;
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/DefaultCacheNameGenerator.java
+Patch:
+@@ -61,6 +61,7 @@ public String generateCacheName(Field field) {
+         return sb.toString();
+     }
+ 
++    @SuppressWarnings("PMD.AvoidPatternCompileInMethodRule")
+     protected String removeHiddenPackage(String[] hiddenPackages, String packageOrFullClassName) {
+         if (hiddenPackages != null && packageOrFullClassName != null) {
+             for (String p : hiddenPackages) {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/JetCacheExecutor.java
+Patch:
+@@ -14,6 +14,7 @@ public class JetCacheExecutor {
+ 
+     private static int threadCount;
+ 
++    @SuppressWarnings("PMD.ThreadPoolCreationRule")
+     public static ScheduledExecutorService defaultExecutor() {
+         if (defaultExecutor != null) {
+             return defaultExecutor;
+@@ -30,6 +31,7 @@ public static ScheduledExecutorService defaultExecutor() {
+         return defaultExecutor;
+     }
+ 
++    @SuppressWarnings("PMD.ThreadPoolCreationRule")
+     public static ScheduledExecutorService heavyIOExecutor() {
+         if (heavyIOExecutor != null) {
+             return heavyIOExecutor;
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/method/SpringCacheContext.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.alicp.jetcache.anno.support.CacheContext;
+ import com.alicp.jetcache.anno.support.GlobalCacheConfig;
++import com.alicp.jetcache.anno.support.SimpleCacheManager;
+ import org.springframework.context.ApplicationContext;
+ 
+ /**
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/aop/CachePointcut.java
+Patch:
+@@ -117,6 +117,9 @@ private boolean matchesImpl(Method method, Class targetClass) {
+         if (!matchesThis(method.getDeclaringClass())) {
+             return false;
+         }
++        if (exclude(targetClass.getName())) {
++            return false;
++        }
+         String key = getKey(method, targetClass);
+         CacheInvokeConfig cac = cacheConfigMap.getByMethodInfo(key);
+         if (cac == CacheInvokeConfig.getNoCacheInvokeConfigInstance()) {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/Cache.java
+Patch:
+@@ -451,7 +451,7 @@ default CacheResult PUT_ALL(Map<? extends K, ? extends V> map) {
+      * @param expireAfterWrite the TTL(time to live) of the KV association
+      * @param timeUnit the time unit of expireAfterWrite
+      * @return SUCCESS if the specified key is not already associated with a value,
+-     * or EXISTS if the specified key is not already associated with a value,
++     * or EXISTS if the specified key is already associated with a value,
+      * or FAIL if error occurs.
+      */
+     CacheResult PUT_IF_ABSENT(K key, V value, long expireAfterWrite, TimeUnit timeUnit);
+
+File: jetcache-anno-api/src/main/java/com/alicp/jetcache/anno/Cached.java
+Patch:
+@@ -113,7 +113,7 @@
+     /**
+      * Expression script used for conditioning the method cache updating,
+      * the cache updating action is vetoed when the evaluation result is false.
+-     * Evaluation occurs after real method invocation so we can refer <i>#result</i> in script.
++     * Evaluation occurs after real method invocation so we can refer <i>result</i> in script.
+      */
+     String postCondition() default CacheConsts.UNDEFINED_STRING;
+ 
+
+File: jetcache-support/jetcache-redis-lettuce/src/main/java/com/alicp/jetcache/redis/lettuce/RedisLettuceCache.java
+Patch:
+@@ -127,7 +127,7 @@ protected CacheResult do_PUT_ALL(Map<? extends K, ? extends V> map, long expireA
+             for (Map.Entry<? extends K, ? extends V> en : map.entrySet()) {
+                 CacheValueHolder<V> holder = new CacheValueHolder(en.getValue(), timeUnit.toMillis(expireAfterWrite));
+                 RedisFuture<String> resp = stringAsyncCommands.psetex(buildKey(en.getKey()), timeUnit.toMillis(expireAfterWrite), valueEncoder.apply(holder));
+-                future.thenCombine(resp, (failCount, respStr) -> "OK".equals(respStr) ? failCount : failCount + 1);
++                future = future.thenCombine(resp, (failCount, respStr) -> "OK".equals(respStr) ? failCount : failCount + 1);
+             }
+             CacheResult result = new CacheResult(future.handle((failCount, ex) -> {
+                 if (ex != null) {
+
+File: jetcache-support/jetcache-redis-lettuce4/src/main/java/com/alicp/jetcache/redis/lettuce4/RedisLettuceCache.java
+Patch:
+@@ -121,7 +121,7 @@ protected CacheResult do_PUT_ALL(Map<? extends K, ? extends V> map, long expireA
+             for (Map.Entry<? extends K, ? extends V> en : map.entrySet()) {
+                 CacheValueHolder<V> holder = new CacheValueHolder(en.getValue(), timeUnit.toMillis(expireAfterWrite));
+                 RedisFuture<String> resp = stringAsyncCommands.psetex(buildKey(en.getKey()), timeUnit.toMillis(expireAfterWrite), valueEncoder.apply(holder));
+-                future.thenCombine(resp, (failCount, respStr) -> "OK".equals(respStr) ? failCount : failCount + 1);
++                future = future.thenCombine(resp, (failCount, respStr) -> "OK".equals(respStr) ? failCount : failCount + 1);
+             }
+             return new CacheResult(future.handle((failCount, ex) -> {
+                 if (ex != null) {
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/CacheContext.java
+Patch:
+@@ -161,6 +161,7 @@ protected Cache buildCache(CachedAnnoConfig cachedAnnoConfig, String area, Strin
+                     .expireAfterWrite(remote.config().getExpireAfterWriteInMillis(), TimeUnit.MILLISECONDS)
+                     .addCache(local, remote)
+                     .useExpireOfSubCache(useExpireOfSubCache)
++                    .cacheNullValue(cachedAnnoConfig.isCacheNullValue())
+                     .buildCache();
+         }
+         cache.config().setRefreshPolicy(cachedAnnoConfig.getRefreshPolicy());
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/CacheResult.java
+Patch:
+@@ -14,6 +14,8 @@ public class CacheResult {
+ 
+     public static final String MSG_ILLEGAL_ARGUMENT = "illegal argument";
+ 
++    private static Duration DEFAULT_TIMEOUT = CacheConsts.ASYNC_RESULT_TIMEOUT;
++
+     public static final CacheResult SUCCESS_WITHOUT_MSG = new CacheResult(CacheResultCode.SUCCESS, null);
+     public static final CacheResult PART_SUCCESS_WITHOUT_MSG = new CacheResult(CacheResultCode.PART_SUCCESS, null);
+     public static final CacheResult FAIL_WITHOUT_MSG = new CacheResult(CacheResultCode.FAIL, null);
+@@ -24,7 +26,6 @@ public class CacheResult {
+     private String message;
+     private CompletionStage<ResultData> future;
+ 
+-    private static Duration DEFAULT_TIMEOUT = CacheConsts.ASYNC_RESULT_TIMEOUT;
+     private Duration timeout = DEFAULT_TIMEOUT;
+ 
+     public CacheResult(CompletionStage<ResultData> future) {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/CacheResult.java
+Patch:
+@@ -1,5 +1,7 @@
+ package com.alicp.jetcache;
+ 
++import com.alicp.jetcache.anno.CacheConsts;
++
+ import java.time.Duration;
+ import java.util.concurrent.*;
+ 
+@@ -22,7 +24,7 @@ public class CacheResult {
+     private String message;
+     private CompletionStage<ResultData> future;
+ 
+-    private static Duration DEFAULT_TIMEOUT = Duration.ofMillis(500);
++    private static Duration DEFAULT_TIMEOUT = CacheConsts.ASYNC_RESULT_TIMEOUT;
+     private Duration timeout = DEFAULT_TIMEOUT;
+ 
+     public CacheResult(CompletionStage<ResultData> future) {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/external/ExternalCacheConfig.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.alicp.jetcache.external;
+ 
+ import com.alicp.jetcache.CacheConfig;
++import com.alicp.jetcache.support.DecoderMap;
+ import com.alicp.jetcache.support.JavaValueEncoder;
+-import com.alicp.jetcache.support.SpringJavaValueDecoder;
+ 
+ import java.util.function.Function;
+ 
+@@ -14,7 +14,7 @@
+ public class ExternalCacheConfig<K, V> extends CacheConfig<K, V> {
+     private String keyPrefix;
+     private Function<Object, byte[]> valueEncoder = JavaValueEncoder.INSTANCE;
+-    private Function<byte[], Object> valueDecoder = SpringJavaValueDecoder.defaultJavaValueDecoder();
++    private Function<byte[], Object> valueDecoder = DecoderMap.defaultJavaValueDecoder();
+ 
+     public String getKeyPrefix() {
+         return keyPrefix;
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/external/ExternalCacheConfig.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.alicp.jetcache.external;
+ 
+ import com.alicp.jetcache.CacheConfig;
+-import com.alicp.jetcache.support.JavaValueDecoder;
+ import com.alicp.jetcache.support.JavaValueEncoder;
++import com.alicp.jetcache.support.SpringJavaValueDecoder;
+ 
+ import java.util.function.Function;
+ 
+@@ -14,7 +14,7 @@
+ public class ExternalCacheConfig<K, V> extends CacheConfig<K, V> {
+     private String keyPrefix;
+     private Function<Object, byte[]> valueEncoder = JavaValueEncoder.INSTANCE;
+-    private Function<byte[], Object> valueDecoder = JavaValueDecoder.INSTANCE;
++    private Function<byte[], Object> valueDecoder = SpringJavaValueDecoder.defaultJavaValueDecoder();
+ 
+     public String getKeyPrefix() {
+         return keyPrefix;
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/DecoderMap.java
+Patch:
+@@ -31,7 +31,7 @@ public static synchronized void register(int identityNumber, AbstractValueDecode
+ 
+     static void registerBuildInDecoder() {
+         if (!inited) {
+-            register(JavaValueEncoder.IDENTITY_NUMBER, JavaValueDecoder.INSTANCE);
++            register(JavaValueEncoder.IDENTITY_NUMBER, SpringJavaValueDecoder.defaultJavaValueDecoder());
+             register(KryoValueEncoder.IDENTITY_NUMBER, KryoValueDecoder.INSTANCE);
+             inited = true;
+         }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/CacheValueHolder.java
+Patch:
+@@ -4,7 +4,7 @@
+ 
+ /**
+  * Created on 16/9/13.
+- *
++ * This class is not thread safe.
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  */
+ public final class CacheValueHolder<V> implements Serializable {
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/redis/lettuce/RedisLettuceCacheTest.java
+Patch:
+@@ -103,7 +103,7 @@ public void testCluster2() throws Exception {
+         RedisURI node2 = RedisURI.create("127.0.0.1", 7001);
+         RedisURI node3 = RedisURI.create("127.0.0.1", 7002);
+         RedisClusterClient client = RedisClusterClient.create(Arrays.asList(node1, node2, node3));
+-        StatefulRedisClusterConnection con = client.connect();
++        StatefulRedisClusterConnection con = client.connect(new JetCacheCodec());
+         con.setReadFrom(ReadFrom.SLAVE_PREFERRED);
+         cache = RedisLettuceCacheBuilder.createRedisLettuceCacheBuilder()
+                 .redisClient(client)
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/autoconfigure/RedisLettuceStarterTest.java
+Patch:
+@@ -77,7 +77,7 @@ public void tests() throws Exception {
+             Assert.assertTrue(new LettuceFactory(acb, key, RedisClusterReactiveCommands.class).getObject() instanceof RedisClusterReactiveCommands);
+ 
+             key = "remote.A2_slave";
+-            Assert.assertTrue(new LettuceFactory(acb, key, RedisClusterClient.class).getObject() instanceof RedisClient);
++            Assert.assertTrue(new LettuceFactory(acb, key, RedisClusterClient.class).getObject() instanceof RedisClusterClient);
+         }
+     }
+ 
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/KryoValueDecoder.java
+Patch:
+@@ -28,6 +28,7 @@ public Object doApply(byte[] buffer) {
+         }
+         Input input = new Input(in);
+         Kryo kryo = (Kryo) KryoValueEncoder.kryoThreadLocal.get()[0];
++        kryo.setClassLoader(Thread.currentThread().getContextClassLoader());
+         return kryo.readClassAndObject(input);
+     }
+ }
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/anno/filed/CreateCacheTest.java
+Patch:
+@@ -154,7 +154,7 @@ public void test() throws Exception {
+                 Assert.assertEquals(50, remoteConfig.getExpireAfterWriteInMillis());
+                 Assert.assertEquals(10, localConfig.getLimit());
+                 Assert.assertEquals(JavaValueEncoder.class, remoteConfig.getValueEncoder().getClass());
+-                Assert.assertEquals(JavaValueDecoder.class, remoteConfig.getValueDecoder().getClass());
++                Assert.assertTrue(remoteConfig.getValueDecoder() instanceof JavaValueDecoder);
+                 Assert.assertNull(localConfig.getKeyConvertor());
+                 Assert.assertNull(remoteConfig.getKeyConvertor());
+ 
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/KryoValueEncoder.java
+Patch:
+@@ -47,10 +47,10 @@ public byte[] apply(Object value) {
+                 kryoAndOutput[1] = new WeakReference<>(output);
+             }
+ 
+-            if (useIdentityNumber) {
+-                output.writeInt(IDENTITY_NUMBER);
+-            }
+             try {
++                if (useIdentityNumber) {
++                    output.writeInt(IDENTITY_NUMBER);
++                }
+                 kryo.writeClassAndObject(output, value);
+                 return output.toBytes();
+             } finally {
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/method/CacheConfigUtil.java
+Patch:
+@@ -34,6 +34,7 @@ private static CachedAnnoConfig parseCached(Method m) {
+         cc.setLocalLimit(anno.localLimit());
+         cc.setCacheNullValue(anno.cacheNullValue());
+         cc.setCondition(anno.condition());
++        cc.setUnless(anno.unless());
+         cc.setSerialPolicy(anno.serialPolicy());
+         cc.setKeyConvertor(anno.keyConvertor());
+         cc.setKey(anno.key());
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/RefreshCache.java
+Patch:
+@@ -149,7 +149,7 @@ private void load() throws Throwable {
+             if (l != null) {
+                 l = CacheUtil.createProxyLoader(cache, l, eventConsumer);
+                 V v = l.load(key);
+-                if (v != null || config.isCacheNullValue()) {
++                if (needUpdate(v, l)) {
+                     cache.PUT(key, v);
+                 }
+             }
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/testsupport/Count.java
+Patch:
+@@ -17,5 +17,5 @@ public interface Count {
+ 
+     int count(DynamicQuery q, int p);
+ 
+-    void update(String key, int newCount);
++    int update(String key, int newCount);
+ }
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/testsupport/CountClass.java
+Patch:
+@@ -45,7 +45,8 @@ public Integer countNull() {
+     }
+ 
+     @Override
+-    public void update(String key, int newCount) {
++    public int update(String key, int newCount) {
+         count = newCount;
++        return newCount;
+     }
+ }
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/CaffeineAutoConfiguration.java
+Patch:
+@@ -25,7 +25,7 @@ protected CacheBuilder initCache(ConfigTree ct, String cacheAreaWithPrefix) {
+         return builder;
+     }
+ 
+-    public static class CaffeineCondition extends JetCacheConditon {
++    public static class CaffeineCondition extends JetCacheCondition {
+         public CaffeineCondition() {
+             super("caffeine");
+         }
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/JetCacheCondition.java
+Patch:
+@@ -15,11 +15,11 @@
+  *
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  */
+-public abstract class JetCacheConditon extends SpringBootCondition {
++public abstract class JetCacheCondition extends SpringBootCondition {
+ 
+     private String[] cacheTypes;
+ 
+-    protected JetCacheConditon(String... cacheTypes) {
++    protected JetCacheCondition(String... cacheTypes) {
+         Objects.requireNonNull(cacheTypes, "cacheTypes can't be null");
+         Assert.isTrue(cacheTypes.length > 0, "cacheTypes length is 0");
+         this.cacheTypes = cacheTypes;
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/LinkedHashMapAutoConfiguration.java
+Patch:
+@@ -24,7 +24,7 @@ protected CacheBuilder initCache(ConfigTree ct, String cacheAreaWithPrefix) {
+         return builder;
+     }
+ 
+-    public static class LinkedHashMapCondition extends JetCacheConditon {
++    public static class LinkedHashMapCondition extends JetCacheCondition {
+         public LinkedHashMapCondition() {
+             super("linkedhashmap");
+         }
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/RedisAutoConfiguration.java
+Patch:
+@@ -40,7 +40,7 @@ public RedisAutoInit redisAutoInit() {
+         return new RedisAutoInit();
+     }
+ 
+-    public static class RedisCondition extends JetCacheConditon {
++    public static class RedisCondition extends JetCacheCondition {
+         public RedisCondition() {
+             super("redis");
+         }
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/RedisLettuce4AutoConfiguration.java
+Patch:
+@@ -28,7 +28,7 @@
+ public class RedisLettuce4AutoConfiguration {
+     public static final String AUTO_INIT_BEAN_NAME = "redisLettuce4AutoInit";
+ 
+-    public static class RedisLettuceCondition extends JetCacheConditon {
++    public static class RedisLettuceCondition extends JetCacheCondition {
+         public RedisLettuceCondition() {
+             super("redis.lettuce4");
+         }
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/RedisLettuceAutoConfiguration.java
+Patch:
+@@ -28,7 +28,7 @@
+ public class RedisLettuceAutoConfiguration {
+     public static final String AUTO_INIT_BEAN_NAME = "redisLettuceAutoInit";
+ 
+-    public static class RedisLettuceCondition extends JetCacheConditon {
++    public static class RedisLettuceCondition extends JetCacheCondition {
+         public RedisLettuceCondition() {
+             super("redis.lettuce");
+         }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/AbstractCache.java
+Patch:
+@@ -190,6 +190,9 @@ private static Object buildLoaderLockKey(Cache c, Object key) {
+         } else if (c instanceof MultiLevelCache) {
+             c = ((MultiLevelCache) c).caches()[0];
+             return buildLoaderLockKey(c, key);
++        } else if(c instanceof ProxyCache) {
++            c = ((ProxyCache) c).getTargetCache();
++            return buildLoaderLockKey(c, key);
+         } else {
+             throw new CacheException("impossible");
+         }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/LoadingCache.java
+Patch:
+@@ -89,8 +89,9 @@ public Map<K, V> getAll(Set<? extends K> keys) throws CacheInvokeException {
+                 loaderFunction = CacheUtil.createProxyLoader(cache, loaderFunction, eventConsumer);
+                 for(K key : keysNeedLoad) {
+                     Consumer<V> cacheUpdater = (v) -> PUT(key, v);
+-                    AbstractCache.synchronizedLoad(abstractCache, key, loaderFunction,
++                    V v = AbstractCache.synchronizedLoad(abstractCache, key, loaderFunction,
+                             cacheUpdater, abstractCache.initOrGetLoaderMap());
++                    kvMap.put(key, v);
+                 }
+             }
+             return kvMap;
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/support/FastjsonEncoderTest.java
+Patch:
+@@ -1,14 +1,14 @@
+ package com.alicp.jetcache.support;
+ 
+-import org.junit.Ignore;
+-import org.junit.Test;
++import org.junit.jupiter.api.Disabled;
++import org.junit.jupiter.api.Test;
+ 
+ /**
+  * Created on 2016/10/8.
+  *
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  */
+-@Ignore
++@Disabled
+ public class FastjsonEncoderTest extends AbstractEncoderTest {
+     @Test
+     public void test() {
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/method/CacheHandler.java
+Patch:
+@@ -146,17 +146,16 @@ private static Object invokeWithCached(CacheInvokeContext context)
+             return loadAndCount(context, cache, key);
+         }
+ 
+-        CacheLoader loader = (k) -> loadAndCount(context, cache, key);
+         try {
+             Object result = cache.computeIfAbsent(key, (k) -> {
+                 try {
+-                    return loader.load(k);
++                    return invokeOrigin(context);
+                 } catch (Throwable e) {
+                     throw new CacheInvokeException(e.getMessage(), e);
+                 }
+             });
+             if (cache instanceof CacheHandlerRefreshCache) {
+-                ((CacheHandlerRefreshCache) cache).addOrUpdateRefreshTask(key, loader);
++                ((CacheHandlerRefreshCache) cache).addOrUpdateRefreshTask(key, (unusedKey) -> invokeOrigin(context));
+             }
+             return result;
+         } catch (CacheInvokeException e) {
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/CacheContext.java
+Patch:
+@@ -155,6 +155,7 @@ protected Cache buildCache(CachedAnnoConfig cachedAnnoConfig, String area, Strin
+                     .addCache(local, remote)
+                     .buildCache();
+         }
++        cache.config().setRefreshPolicy(cachedAnnoConfig.getRefreshPolicy());
+         cache = new CacheHandler.CacheHandlerRefreshCache(cache);
+ 
+         if (defaultCacheMonitorManager != null) {
+@@ -188,7 +189,6 @@ protected Cache buildRemote(CachedAnnoConfig cachedAnnoConfig, String area, Stri
+             cacheBuilder.setValueDecoder(configProvider.parseValueDecoder(cachedAnnoConfig.getSerialPolicy()));
+         }
+         cacheBuilder.setCacheNullValue(cachedAnnoConfig.isCacheNullValue());
+-        cacheBuilder.setRefreshPolicy(cachedAnnoConfig.getRefreshPolicy());
+         return cacheBuilder.buildCache();
+     }
+ 
+@@ -209,7 +209,6 @@ protected Cache buildLocal(CachedAnnoConfig cachedAnnoConfig, String area) {
+             cacheBuilder.setKeyConvertor(configProvider.parseKeyConvertor(cachedAnnoConfig.getKeyConvertor()));
+         }
+         cacheBuilder.setCacheNullValue(cachedAnnoConfig.isCacheNullValue());
+-        cacheBuilder.setRefreshPolicy(cachedAnnoConfig.getRefreshPolicy());
+         return cacheBuilder.buildCache();
+     }
+ 
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/anno/method/ProxyUtilTest.java
+Patch:
+@@ -372,7 +372,7 @@ public interface I9 {
+         @CacheRefresh(refresh = 100, timeUnit = TimeUnit.MILLISECONDS)
+         int count();
+ 
+-        @Cached(key="#a")
++        @Cached(key="#a", cacheType = CacheType.BOTH)
+         @CacheRefresh(refresh = 100, timeUnit = TimeUnit.MILLISECONDS)
+         int count(int a, int b);
+     }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/MultiGetResult.java
+Patch:
+@@ -33,7 +33,7 @@ public Map<K, CacheGetResult<V>> getValues() {
+     @Override
+     protected void fetchResultSuccess(ResultData resultData) {
+         super.fetchResultSuccess(resultData);
+-        values = (Map<K, CacheGetResult<V>>) resultData.getData();
++        values = (Map<K, CacheGetResult<V>>) resultData.getOriginData();
+     }
+ 
+     @Override
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/RefreshCache.java
+Patch:
+@@ -148,7 +148,9 @@ private void load() throws Throwable {
+             CacheLoader<K, V> loader = config.getLoader();
+             loader = CacheUtil.createProxyLoader(cache, loader, eventConsumer);
+             V v = loader.load(key);
+-            cache.PUT(key, v);
++            if (v != null || config.isCacheNullValue()) {
++                cache.PUT(key, v);
++            }
+         }
+ 
+         private void externalLoad(final Cache concreteCache, final long currentTime)
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/embedded/AbstractEmbeddedCache.java
+Patch:
+@@ -69,7 +69,7 @@ protected CacheGetResult<V> parseHolderResult(CacheValueHolder<V> holder) {
+                     return CacheGetResult.EXPIRED_WITHOUT_MSG;
+                 }
+             }
+-            return new CacheGetResult(CacheResultCode.SUCCESS, null, holder.getValue());
++            return new CacheGetResult(CacheResultCode.SUCCESS, null, holder);
+         }
+     }
+ 
+
+File: jetcache-support/jetcache-redis-lettuce/src/main/java/com/alicp/jetcache/redis/lettuce/RedisLettuceCache.java
+Patch:
+@@ -162,7 +162,7 @@ protected CacheGetResult<V> do_GET(K key) {
+                         if (System.currentTimeMillis() >= holder.getExpireTime()) {
+                             return new ResultData(CacheResultCode.EXPIRED, null, null);
+                         } else {
+-                            return new ResultData(CacheResultCode.SUCCESS, null, holder.getValue());
++                            return new ResultData(CacheResultCode.SUCCESS, null, holder);
+                         }
+                     } else {
+                         return new ResultData(CacheResultCode.NOT_EXISTS, null, null);
+@@ -202,7 +202,7 @@ protected MultiGetResult<K, V> do_GET_ALL(Set<? extends K> keys) {
+                             if (System.currentTimeMillis() >= holder.getExpireTime()) {
+                                 resultMap.put(key, CacheGetResult.EXPIRED_WITHOUT_MSG);
+                             } else {
+-                                CacheGetResult<V> r = new CacheGetResult<V>(CacheResultCode.SUCCESS, null, holder.getValue());
++                                CacheGetResult<V> r = new CacheGetResult<V>(CacheResultCode.SUCCESS, null, holder);
+                                 resultMap.put(key, r);
+                             }
+                         } else {
+
+File: jetcache-support/jetcache-redis-lettuce4/src/main/java/com/alicp/jetcache/redis/lettuce4/RedisLettuceCache.java
+Patch:
+@@ -161,7 +161,7 @@ protected CacheGetResult<V> do_GET(K key) {
+                         if (System.currentTimeMillis() >= holder.getExpireTime()) {
+                             return new ResultData(CacheResultCode.EXPIRED, null, null);
+                         } else {
+-                            return new ResultData(CacheResultCode.SUCCESS, null, holder.getValue());
++                            return new ResultData(CacheResultCode.SUCCESS, null, holder);
+                         }
+                     } else {
+                         return new ResultData(CacheResultCode.NOT_EXISTS, null, null);
+@@ -201,7 +201,7 @@ protected MultiGetResult<K, V> do_GET_ALL(Set<? extends K> keys) {
+                             if (System.currentTimeMillis() >= holder.getExpireTime()) {
+                                 resultMap.put(key, CacheGetResult.EXPIRED_WITHOUT_MSG);
+                             } else {
+-                                CacheGetResult<V> r = new CacheGetResult<V>(CacheResultCode.SUCCESS, null, holder.getValue());
++                                CacheGetResult<V> r = new CacheGetResult<V>(CacheResultCode.SUCCESS, null, holder);
+                                 resultMap.put(key, r);
+                             }
+                         } else {
+
+File: jetcache-support/jetcache-redis/src/main/java/com/alicp/jetcache/redis/RedisCache.java
+Patch:
+@@ -74,7 +74,7 @@ protected CacheGetResult<V> do_GET(K key) {
+                 if (System.currentTimeMillis() >= holder.getExpireTime()) {
+                     return CacheGetResult.EXPIRED_WITHOUT_MSG;
+                 }
+-                return new CacheGetResult(CacheResultCode.SUCCESS, null, holder.getValue());
++                return new CacheGetResult(CacheResultCode.SUCCESS, null, holder);
+             } else {
+                 return CacheGetResult.NOT_EXISTS_WITHOUT_MSG;
+             }
+@@ -104,7 +104,7 @@ protected MultiGetResult<K, V> do_GET_ALL(Set<? extends K> keys) {
+                         if (System.currentTimeMillis() >= holder.getExpireTime()) {
+                             resultMap.put(key, CacheGetResult.EXPIRED_WITHOUT_MSG);
+                         } else {
+-                            CacheGetResult<V> r = new CacheGetResult<V>(CacheResultCode.SUCCESS, null, holder.getValue());
++                            CacheGetResult<V> r = new CacheGetResult<V>(CacheResultCode.SUCCESS, null, holder);
+                             resultMap.put(key, r);
+                         }
+                     } else {
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/aop/CachePointcut.java
+Patch:
+@@ -128,7 +128,8 @@ private boolean matchesImpl(Method method, Class targetClass) {
+             Class<?>[] paramTypes = method.getParameterTypes();
+             parseByTargetClass(cac, targetClass, name, paramTypes);
+ 
+-            if (!cac.isEnableCacheContext() && cac.getCachedAnnoConfig() == null) {
++            if (!cac.isEnableCacheContext() && cac.getCachedAnnoConfig() == null &&
++                    cac.getInvalidateAnnoConfig() == null && cac.getUpdateAnnoConfig() == null) {
+                 cacheConfigMap.putByMethodInfo(key, CacheInvokeConfig.getNoCacheInvokeConfigInstance());
+                 return false;
+             } else {
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/method/ExpressionUtil.java
+Patch:
+@@ -83,11 +83,11 @@ public static Object evalKey(CacheInvokeContext context, CacheAnnoConfig cac) {
+     public static Object evalValue(CacheInvokeContext context, CacheUpdateAnnoConfig cac) {
+         String valueScript = cac.getValue();
+         try {
+-            if (cac.getKeyEvaluator() == null) {
++            if (cac.getValueEvaluator() == null) {
+                 ExpressionEvaluator e = new ExpressionEvaluator(valueScript);
+-                cac.setKeyEvaluator((o) -> e.apply(o));
++                cac.setValueEvaluator((o) -> e.apply(o));
+             }
+-            return cac.getKeyEvaluator().apply(context);
++            return cac.getValueEvaluator().apply(context);
+         } catch (Exception e) {
+             logger.error("error occurs when eval value \"" + valueScript + "\" in " + context.getMethod() + "." + e.getClass() + ":" + e.getMessage());
+             return null;
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/testsupport/Count.java
+Patch:
+@@ -16,4 +16,6 @@ public interface Count {
+     int count(String s, int p);
+ 
+     int count(DynamicQuery q, int p);
++
++    void update(String key, int newCount);
+ }
+
+File: jetcache-anno-api/src/main/java/com/alicp/jetcache/anno/Cached.java
+Patch:
+@@ -33,7 +33,7 @@
+     /**
+      * Specify whether the method caching is enabled.
+      * If set to false, you can enable it in thread context using
+-     * CacheContext.enableCache(Supplier<T> callback)
++     * {@code CacheContext.enableCache(Supplier<T> callback)}
+      * @return if the method cache is enabled
+      */
+     boolean enabled() default CacheConsts.DEFAULT_ENABLED;
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/embedded/AbstractEmbeddedCache.java
+Patch:
+@@ -51,10 +51,10 @@ protected CacheGetResult<V> do_GET(K key) {
+         }
+         Object newKey = buildKey(key);
+         CacheValueHolder<V> holder = (CacheValueHolder<V>) innerMap.getValue(newKey);
+-        return getImpl(holder);
++        return parseHolderResult(holder);
+     }
+ 
+-    private CacheGetResult<V> getImpl(CacheValueHolder<V> holder) {
++    protected CacheGetResult<V> parseHolderResult(CacheValueHolder<V> holder) {
+         long now = System.currentTimeMillis();
+         if (holder == null) {
+             return CacheGetResult.NOT_EXISTS_WITHOUT_MSG;
+@@ -91,7 +91,7 @@ protected MultiGetResult<K, V> do_GET_ALL(Set<? extends K> keys) {
+             K key = keyList.get(i);
+             Object newKey = newKeyList.get(i);
+             CacheValueHolder<V> holder = innerResultMap.get(newKey);
+-            resultMap.put(key, getImpl(holder));
++            resultMap.put(key, parseHolderResult(holder));
+         }
+         MultiGetResult<K, V> result = new MultiGetResult<>(CacheResultCode.SUCCESS, null, resultMap);
+         return result;
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/ConfigTree.java
+Patch:
+@@ -13,7 +13,7 @@
+  *
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  */
+-class ConfigTree {
++public class ConfigTree {
+     private ConfigurableEnvironment environment;
+     private String prefix;
+ 
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/RedisLettuceAutoConfiguration.java
+Patch:
+@@ -35,7 +35,7 @@ public RedisLettuceCondition() {
+     }
+ 
+     @Bean(name = {AUTO_INIT_BEAN_NAME})
+-    public RedisLettuceAutoInit redisLutteceAutoInit() {
++    public RedisLettuceAutoInit redisLettuceAutoInit() {
+         return new RedisLettuceAutoInit();
+     }
+ 
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/autoconfigure/ConfigTreeTest.java
+Patch:
+@@ -12,10 +12,10 @@ public class ConfigTreeTest {
+     @Before
+     public void setup() {
+         MockEnvironment environment = new MockEnvironment();
+-        environment.withProperty("jetcache.remote.default.type", "redis.luttece")
++        environment.withProperty("jetcache.remote.default.type", "redis.lettuce")
+                 .withProperty("jetcache.remote.default.keyConvertor", "fastjson")
+                 .withProperty("jetcache.remote.default.uri", "redis://127.0.0.1:6379/")
+-                .withProperty("jetcache.remote.A1.type", "redis.luttece")
++                .withProperty("jetcache.remote.A1.type", "redis.lettuce")
+                 .withProperty("jetcache.remote.A1.keyConvertor", "fastjson")
+                 .withProperty("jetcache.remote.A1.uri[0]", "redis://127.0.0.1:7000")
+                 .withProperty("jetcache.remote.A1.uri[1]", "redis://127.0.0.1:7001")
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/RedisLettuce4AutoConfiguration.java
+Patch:
+@@ -3,8 +3,8 @@
+ import com.alicp.jetcache.CacheBuilder;
+ import com.alicp.jetcache.CacheConfigException;
+ import com.alicp.jetcache.external.ExternalCacheBuilder;
+-import com.alicp.jetcache.redis.luttece.LettuceConnectionManager;
+-import com.alicp.jetcache.redis.luttece.RedisLettuceCacheBuilder;
++import com.alicp.jetcache.redis.lettuce4.LettuceConnectionManager;
++import com.alicp.jetcache.redis.lettuce4.RedisLettuceCacheBuilder;
+ import com.lambdaworks.redis.AbstractRedisClient;
+ import com.lambdaworks.redis.RedisClient;
+ import com.lambdaworks.redis.RedisURI;
+
+File: jetcache-support/jetcache-redis-lettuce4/src/main/java/com/alicp/jetcache/redis/lettuce4/JetCacheCodec.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.alicp.jetcache.redis.luttece;
++package com.alicp.jetcache.redis.lettuce4;
+ 
+ import com.lambdaworks.redis.codec.RedisCodec;
+ 
+
+File: jetcache-support/jetcache-redis-lettuce4/src/main/java/com/alicp/jetcache/redis/lettuce4/LettuceConnectionManager.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.alicp.jetcache.redis.luttece;
++package com.alicp.jetcache.redis.lettuce4;
+ 
+ import com.alicp.jetcache.CacheConfigException;
+ import com.lambdaworks.redis.AbstractRedisClient;
+
+File: jetcache-support/jetcache-redis-lettuce4/src/main/java/com/alicp/jetcache/redis/lettuce4/RedisLettuceCache.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.alicp.jetcache.redis.luttece;
++package com.alicp.jetcache.redis.lettuce4;
+ 
+ import com.alicp.jetcache.*;
+ import com.alicp.jetcache.external.AbstractExternalCache;
+
+File: jetcache-support/jetcache-redis-lettuce4/src/main/java/com/alicp/jetcache/redis/lettuce4/RedisLettuceCacheBuilder.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.alicp.jetcache.redis.luttece;
++package com.alicp.jetcache.redis.lettuce4;
+ 
+ import com.alicp.jetcache.external.ExternalCacheBuilder;
+ import com.lambdaworks.redis.AbstractRedisClient;
+
+File: jetcache-support/jetcache-redis-lettuce4/src/main/java/com/alicp/jetcache/redis/lettuce4/RedisLettuceCacheConfig.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.alicp.jetcache.redis.luttece;
++package com.alicp.jetcache.redis.lettuce4;
+ 
+ import com.alicp.jetcache.external.ExternalCacheConfig;
+ import com.lambdaworks.redis.AbstractRedisClient;
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/autoconfigure/RedisLettuce4StarterTest.java
+Patch:
+@@ -4,7 +4,7 @@
+ import com.alicp.jetcache.anno.CreateCache;
+ import com.alicp.jetcache.anno.config.EnableCreateCacheAnnotation;
+ import com.alicp.jetcache.anno.config.EnableMethodCache;
+-import com.alicp.jetcache.redis.luttece.RedisLettuceCacheConfig;
++import com.alicp.jetcache.redis.lettuce4.RedisLettuceCacheConfig;
+ import com.alicp.jetcache.redis.lettuce4.RedisLettuceCacheTest;
+ import com.alicp.jetcache.support.FastjsonKeyConvertor;
+ import com.alicp.jetcache.test.beans.MyFactoryBean;
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/redis/lettuce4/JetCacheCodecTest.java
+Patch:
+@@ -1,6 +1,5 @@
+ package com.alicp.jetcache.redis.lettuce4;
+ 
+-import com.alicp.jetcache.redis.luttece.JetCacheCodec;
+ import org.junit.Assert;
+ import org.junit.Test;
+ 
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/redis/lettuce4/LettuceConnectionManagerTest.java
+Patch:
+@@ -1,6 +1,5 @@
+ package com.alicp.jetcache.redis.lettuce4;
+ 
+-import com.alicp.jetcache.redis.luttece.LettuceConnectionManager;
+ import com.lambdaworks.redis.RedisClient;
+ import com.lambdaworks.redis.RedisURI;
+ import com.lambdaworks.redis.cluster.RedisClusterClient;
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/redis/lettuce4/RedisLettuceCacheTest.java
+Patch:
+@@ -4,8 +4,6 @@
+ import com.alicp.jetcache.LoadingCacheTest;
+ import com.alicp.jetcache.MultiLevelCacheBuilder;
+ import com.alicp.jetcache.embedded.CaffeineCacheBuilder;
+-import com.alicp.jetcache.redis.luttece.LettuceConnectionManager;
+-import com.alicp.jetcache.redis.luttece.RedisLettuceCacheBuilder;
+ import com.alicp.jetcache.support.*;
+ import com.alicp.jetcache.test.external.AbstractExternalCacheTest;
+ import com.lambdaworks.redis.AbstractRedisClient;
+
+File: jetcache-support/jetcache-redis-lettuce4/src/main/java/com/alicp/jetcache/redis/luttece/RedisLettuceCacheConfig.java
+Patch:
+@@ -8,7 +8,7 @@
+  *
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  */
+-public class RedisLutteceCacheConfig<K, V> extends ExternalCacheConfig<K, V> {
++public class RedisLettuceCacheConfig<K, V> extends ExternalCacheConfig<K, V> {
+ 
+     private AbstractRedisClient redisClient;
+ 
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/EmbeddedCacheAutoInit.java
+Patch:
+@@ -11,8 +11,8 @@
+  */
+ public abstract class EmbeddedCacheAutoInit extends AbstractCacheAutoInit {
+ 
+-    public EmbeddedCacheAutoInit(String typeName) {
+-        super(typeName);
++    public EmbeddedCacheAutoInit(String... cacheTypes) {
++        super(cacheTypes);
+     }
+ 
+     @Override
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/ExternalCacheAutoInit.java
+Patch:
+@@ -10,8 +10,8 @@
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  */
+ public abstract class ExternalCacheAutoInit extends AbstractCacheAutoInit {
+-    public ExternalCacheAutoInit(String cacheType) {
+-        super(cacheType);
++    public ExternalCacheAutoInit(String... cacheTypes) {
++        super(cacheTypes);
+     }
+ 
+     @Override
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/field/CreateCacheAnnotationBeanPostProcessor.java
+Patch:
+@@ -29,6 +29,7 @@
+  * @author <a href="mailto:areyouok@gmail.com">huangli</a>
+  * @see org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor
+  */
++@Component // necessary when spring boot version <= 1.2.X
+ public class CreateCacheAnnotationBeanPostProcessor extends AutowiredAnnotationBeanPostProcessor {
+ 
+     private static Logger logger = LoggerFactory.getLogger(CreateCacheAnnotationBeanPostProcessor.class);
+
+File: jetcache-test/src/main/java/com/alicp/jetcache/test/anno/TestUtil.java
+Patch:
+@@ -22,7 +22,7 @@ public class TestUtil {
+     public static GlobalCacheConfig createGloableConfig(ConfigProvider configProvider) {
+         Map localBuilders = new HashMap();
+         EmbeddedCacheBuilder localBuilder = LinkedHashMapCacheBuilder.createLinkedHashMapCacheBuilder();
+-//        localBuilder.setKeyConvertor(FastjsonKeyConvertor.INSTANCE);
++        localBuilder.setKeyConvertor(FastjsonKeyConvertor.INSTANCE);
+         localBuilders.put(CacheConsts.DEFAULT_AREA, localBuilder);
+         localBuilders.put("A1", localBuilder);
+ 
+@@ -35,7 +35,7 @@ public static GlobalCacheConfig createGloableConfig(ConfigProvider configProvide
+         remoteBuilders.put(CacheConsts.DEFAULT_AREA, remoteBuilder);
+ 
+         remoteBuilder = new MockRemoteCacheBuilder();
+-//        remoteBuilder.setKeyConvertor(FastjsonKeyConvertor.INSTANCE);
++        remoteBuilder.setKeyConvertor(FastjsonKeyConvertor.INSTANCE);
+         remoteBuilder.setValueEncoder(KryoValueEncoder.INSTANCE);
+         remoteBuilder.setValueDecoder(KryoValueDecoder.INSTANCE);
+         remoteBuilders.put("A1", remoteBuilder);
+
+File: jetcache-test/src/main/java/com/alicp/jetcache/test/spring/SpringTest.java
+Patch:
+@@ -64,7 +64,7 @@ private void testTestBean(TestBean bean) throws Exception {
+         int x2 = bean.countLocalWithDynamicQuery(q2);
+         int x3 = bean.countLocalWithDynamicQuery(q3);
+         Assert.assertNotEquals(x1, x2);
+-        Assert.assertNotEquals(x1, x3);
++        Assert.assertEquals(x1, x3);
+ 
+         x1 = bean.countRemoteWithDynamicQuery(q1);
+         x2 = bean.countRemoteWithDynamicQuery(q2);
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/anno/method/CacheHandlerTest.java
+Patch:
+@@ -37,6 +37,8 @@ public class CacheHandlerTest {
+     @Before
+     public void setup() {
+         globalCacheConfig = new GlobalCacheConfig();
++        globalCacheConfig.setLocalCacheBuilders(new HashMap<>());
++        globalCacheConfig.setRemoteCacheBuilders(new HashMap<>());
+         globalCacheConfig.init();
+         cache = LinkedHashMapCacheBuilder.createLinkedHashMapCacheBuilder()
+                 .keyConvertor(FastjsonKeyConvertor.INSTANCE)
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/autoconfigure/RedisLutteceStarterTest.java
+Patch:
+@@ -6,6 +6,7 @@
+ import com.alicp.jetcache.anno.config.EnableMethodCache;
+ import com.alicp.jetcache.redis.luttece.RedisLutteceCacheConfig;
+ import com.alicp.jetcache.redis.luttece.RedisLutteceCacheTest;
++import com.alicp.jetcache.support.FastjsonKeyConvertor;
+ import com.alicp.jetcache.test.beans.MyFactoryBean;
+ import com.alicp.jetcache.test.spring.SpringTest;
+ import com.lambdaworks.redis.RedisClient;
+@@ -86,7 +87,7 @@ public void test() {
+             Assert.assertNotNull(c1.unwrap(RedisClient.class));
+             RedisLutteceCacheConfig cc1 = (RedisLutteceCacheConfig) c1.config();
+             Assert.assertEquals(20000, cc1.getExpireAfterWriteInMillis());
+-            Assert.assertNull(cc1.getKeyConvertor());
++            Assert.assertSame(FastjsonKeyConvertor.INSTANCE, cc1.getKeyConvertor());
+         }
+     }
+ 
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/autoconfigure/RedisStarterTest.java
+Patch:
+@@ -6,6 +6,7 @@
+ import com.alicp.jetcache.anno.config.EnableCreateCacheAnnotation;
+ import com.alicp.jetcache.anno.config.EnableMethodCache;
+ import com.alicp.jetcache.embedded.EmbeddedCacheConfig;
++import com.alicp.jetcache.support.FastjsonKeyConvertor;
+ import com.alicp.jetcache.test.beans.MyFactoryBean;
+ import com.alicp.jetcache.test.spring.SpringTest;
+ import org.junit.Assert;
+@@ -62,7 +63,7 @@ public void test() {
+             Assert.assertEquals(200, cc1.getLimit());
+             Assert.assertEquals(10000, cc1.getExpireAfterWriteInMillis());
+             Assert.assertFalse(cc1.isExpireAfterAccess());
+-            Assert.assertNull(cc1.getKeyConvertor());
++            Assert.assertSame(FastjsonKeyConvertor.INSTANCE, cc1.getKeyConvertor());
+         }
+     }
+ 
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/JetCacheAutoConfiguration.java
+Patch:
+@@ -44,7 +44,7 @@ public AutoConfigureBeans autoConfigureBeans() {
+     }
+ 
+     @Bean
+-    public BeanDependencyManager beanDependencyManager(){
++    public static BeanDependencyManager beanDependencyManager(){
+         return new BeanDependencyManager();
+     }
+ 
+
+File: jetcache-test/src/main/java/com/alicp/jetcache/test/AbstractCacheTest.java
+Patch:
+@@ -273,7 +273,7 @@ protected void lockTest() throws Exception {
+                     () -> {
+                         runCount[1]++;
+                         try {
+-                            Thread.sleep(50);
++                            Thread.sleep(200);
+                         } catch (InterruptedException e) {
+                         }
+                     });
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/JetCacheAutoConfiguration.java
+Patch:
+@@ -48,7 +48,7 @@ public BeanDependencyManager beanDependencyManager(){
+         return new BeanDependencyManager();
+     }
+ 
+-    @Bean(GLOBAL_CACHE_CONFIG_NAME)
++    @Bean(name = GLOBAL_CACHE_CONFIG_NAME)
+     public GlobalCacheConfig globalCacheConfig(SpringConfigProvider configProvider,
+                                                             AutoConfigureBeans autoConfigureBeans,
+                                                             JetCacheProperties props) {
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/anno/config/combined/CombinedTest.java
+Patch:
+@@ -19,8 +19,8 @@
+ public class CombinedTest extends SpringTest {
+     @Test
+     public void test() throws Exception {
+-        context = new ClassPathXmlApplicationContext("combined/combined.xml", "combined/combined-aop1.xml", "combined/combined-aop2.xml");
+-        testImpl();
++//        context = new ClassPathXmlApplicationContext("combined/combined.xml", "combined/combined-aop1.xml", "combined/combined-aop2.xml");
++//        testImpl();
+         context = new ClassPathXmlApplicationContext("combined/combined.xml", "combined/combined-aop1.xml", "combined/combined-aop3.xml");
+         testImpl();
+     }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/Cache.java
+Patch:
+@@ -172,7 +172,7 @@ default void close() {
+      * <p>{@link MultiLevelCache} will use the last level cache to support this operation.</p>
+      * examples:
+      * <pre>
+-     * cache.tryLock("MyKey",100, TimeUnit.SECONDS),() -> {
++     * cache.tryLock("MyKey",100, TimeUnit.SECONDS),() -&gt; {
+      *     //do something
+      * });
+      * </pre>
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/CacheContext.java
+Patch:
+@@ -118,7 +118,7 @@ protected Cache buildCache(CacheAnnoConfig cacheAnnoConfig, String area, String
+             }
+ 
+             cache = MultiLevelCacheBuilder.createMultiLevelCacheBuilder()
+-                    .expireAfterWrite(cacheAnnoConfig.getExpire(), cacheAnnoConfig.getTimeUnit())
++                    .expireAfterWrite(local.config().getExpireAfterWriteInMillis(), TimeUnit.MILLISECONDS)
+                     .addCache(local, remote)
+                     .buildCache();
+         }
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/MultiLevelCacheTest.java
+Patch:
+@@ -50,7 +50,7 @@ public void test() throws Exception {
+         concurrentTest(200, LIMIT ,3000);
+ 
+         initL1L2(200);
+-        LoadingCacheTest.loadingCacheTest(MultiLevelCacheBuilder.createMultiLevelCacheBuilder().addCache(l1Cache, l2Cache));
++        LoadingCacheTest.loadingCacheTest(MultiLevelCacheBuilder.createMultiLevelCacheBuilder().addCache(l1Cache, l2Cache), 0);
+ 
+         initL1L2(200);
+         RefreshCacheTest.refreshCacheTest(MultiLevelCacheBuilder.createMultiLevelCacheBuilder().addCache(l1Cache, l2Cache));
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/embedded/AbstractEmbeddedCacheTest.java
+Patch:
+@@ -70,7 +70,7 @@ public void test(int expireMillis, boolean testLru) throws Exception {
+         cache = EmbeddedCacheBuilder.createEmbeddedCacheBuilder().buildFunc(getBuildFunc()).buildCache();
+         DefaultCacheMonitorTest.testMonitor(cache);
+ 
+-        LoadingCacheTest.loadingCacheTest(EmbeddedCacheBuilder.createEmbeddedCacheBuilder().buildFunc(getBuildFunc()));
++        LoadingCacheTest.loadingCacheTest(EmbeddedCacheBuilder.createEmbeddedCacheBuilder().buildFunc(getBuildFunc()), 0);
+ 
+         RefreshCacheTest.refreshCacheTest(EmbeddedCacheBuilder.createEmbeddedCacheBuilder().buildFunc(getBuildFunc()));
+ 
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/redis/RedisCacheTest.java
+Patch:
+@@ -70,7 +70,7 @@ private void testWithPool(Pool<Jedis> pool) throws Exception {
+                 .valueDecoder(JavaValueDecoder.INSTANCE)
+                 .jedisPool(pool)
+                 .keyPrefix(new Random().nextInt() + "")
+-                .expireAfterWrite(200, TimeUnit.MILLISECONDS));
++                .expireAfterWrite(200, TimeUnit.MILLISECONDS), 0);
+         RefreshCacheTest.refreshCacheTest(RedisCacheBuilder.createRedisCacheBuilder()
+                 .keyConvertor(FastjsonKeyConvertor.INSTANCE)
+                 .valueEncoder(JavaValueEncoder.INSTANCE)
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/Cache.java
+Patch:
+@@ -105,7 +105,7 @@ default boolean tryLockAndRun(K key, long expire, TimeUnit timeUnit, Runnable ac
+     MultiGetResult<K, V> GET_ALL(Set<? extends K> keys);
+ 
+     default V computeIfAbsent(K key, Function<K, V> loader) {
+-        return computeIfAbsent(key, loader, config().isCacheNullValueByDefault());
++        return computeIfAbsent(key, loader, config().isCacheNullValue());
+     }
+ 
+     default V computeIfAbsent(K key, Function<K, V> loader, boolean cacheNullWhenLoaderReturnNull) {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/LoadingCache.java
+Patch:
+@@ -50,7 +50,7 @@ public V get(K key) {
+                     throw new CacheInvokeException(e);
+                 }
+                 V castedValue = (V) loadedValue;
+-                if (loadedValue != null || config.isCacheNullValueByDefault()) {
++                if (loadedValue != null || config.isCacheNullValue()) {
+                     put(key, castedValue);
+                 }
+                 return castedValue;
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/MultiLevelCache.java
+Patch:
+@@ -26,7 +26,7 @@ public MultiLevelCache(Cache... caches) {
+         config.setCaches(Arrays.asList(caches));
+         config.setExpireAfterAccessInMillis(lastConfig.getExpireAfterAccessInMillis());
+         config.setExpireAfterWriteInMillis(lastConfig.getExpireAfterWriteInMillis());
+-        config.setCacheNullValueByDefault(lastConfig.isCacheNullValueByDefault());
++        config.setCacheNullValue(lastConfig.isCacheNullValue());
+     }
+ 
+     @SuppressWarnings("unchecked")
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/method/CacheHandler.java
+Patch:
+@@ -159,7 +159,7 @@ private static Object loadAndCount(CacheInvokeContext context, Cache cache, Obje
+             t = System.currentTimeMillis() - t;
+             if(cache instanceof MonitoredCache) {
+                 CacheLoadEvent event = new CacheLoadEvent(cache, t, key, v, success);
+-                ((MonitoredCache)cache).notity(event);
++                ((MonitoredCache)cache).notify(event);
+             }
+         }
+         return v;
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/AbstractCacheBuilder.java
+Patch:
+@@ -23,7 +23,7 @@ public static CacheBuilderImpl createCacheBuilder() {
+     protected AbstractCacheBuilder() {
+     }
+ 
+-    protected CacheConfig getConfig() {
++    public CacheConfig getConfig() {
+         if (config == null) {
+             config = new CacheConfig();
+         }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/embedded/EmbeddedCacheBuilder.java
+Patch:
+@@ -20,7 +20,7 @@ public static EmbeddedCacheBuilderImpl createEmbeddedCacheBuilder(){
+     }
+ 
+     @Override
+-    protected EmbeddedCacheConfig getConfig() {
++    public EmbeddedCacheConfig getConfig() {
+         if (config == null) {
+             config = new EmbeddedCacheConfig();
+         }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/external/ExternalCacheBuilder.java
+Patch:
+@@ -12,7 +12,7 @@
+ public abstract class ExternalCacheBuilder<T extends ExternalCacheBuilder<T>> extends AbstractCacheBuilder<T> {
+ 
+     @Override
+-    protected ExternalCacheConfig getConfig() {
++    public ExternalCacheConfig getConfig() {
+         if (config == null) {
+             config = new ExternalCacheConfig();
+         }
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/ExternalCacheAutoInit.java
+Patch:
+@@ -19,7 +19,7 @@ public ExternalCacheAutoInit(String cacheType) {
+     protected void parseGeneralConfig(CacheBuilder builder, RelaxedPropertyResolver resolver) {
+         super.parseGeneralConfig(builder, resolver);
+         ExternalCacheBuilder ecb = (ExternalCacheBuilder) builder;
+-//        ecb.setKeyPrefix(resolver.getProperty("keyPrefix"));
++        ecb.setKeyPrefix(resolver.getProperty("keyPrefix"));
+         ecb.setValueEncoder(configProvider.parseValueEncoder(resolver.getProperty("valueEncoder", CacheConsts.DEFAULT_SERIAL_POLICY)));
+         ecb.setValueDecoder(configProvider.parseValueDecoder(resolver.getProperty("valueDecoder", CacheConsts.DEFAULT_SERIAL_POLICY)));
+     }
+
+File: jetcache-support/jetcache-redis-luttece/src/main/java/com/alicp/jetcache/redis/luttece/RedisLutteceCacheBuilder.java
+Patch:
+@@ -21,7 +21,7 @@ public RedisLutteceCacheBuilder() {
+     }
+ 
+     @Override
+-    protected RedisLutteceCacheConfig getConfig() {
++    public RedisLutteceCacheConfig getConfig() {
+         if (config == null) {
+             config = new RedisLutteceCacheConfig();
+         }
+
+File: jetcache-support/jetcache-redis/src/main/java/com/alicp/jetcache/redis/RedisCacheBuilder.java
+Patch:
+@@ -23,7 +23,7 @@ public RedisCacheBuilder() {
+     }
+ 
+     @Override
+-    protected RedisCacheConfig getConfig() {
++    public RedisCacheConfig getConfig() {
+         if (config == null) {
+             config = new RedisCacheConfig();
+         }
+
+File: jetcache-support/jetcache-redis-luttece/src/main/java/com/alicp/jetcache/redis/luttece/JetCacheCodec.java
+Patch:
+@@ -35,9 +35,7 @@ public Object decodeValue(ByteBuffer bytes) {
+ 
+     private Object convert(ByteBuffer bytes){
+         byte[] bs = new byte[bytes.remaining()];
+-        int pos =  bytes.position();
+-        System.arraycopy(bytes.array(), pos, bs, 0, bs.length);
+-        bytes.position(pos + bs.length);
++        bytes.get(bs);
+         return bs;
+     }
+ 
+
+File: jetcache-support/jetcache-redis-luttece/src/main/java/com/alicp/jetcache/redis/luttece/RedisLutteceCacheBuilder.java
+Patch:
+@@ -12,12 +12,12 @@ public class RedisLutteceCacheBuilder<T extends ExternalCacheBuilder<T>> extends
+     public static class RedisLutteceCacheBuilderImpl extends RedisLutteceCacheBuilder<RedisLutteceCacheBuilderImpl> {
+     }
+ 
+-    public static RedisLutteceCacheBuilderImpl createRedisCacheLutteceBuilder() {
++    public static RedisLutteceCacheBuilderImpl createRedisLutteceCacheBuilder() {
+         return new RedisLutteceCacheBuilderImpl();
+     }
+ 
+     public RedisLutteceCacheBuilder() {
+-//        buildFunc(config -> new RedisCache((RedisCacheLutteceConfig) config));
++        buildFunc(config -> new RedisLutteceCache((RedisLutteceCacheConfig) config));
+     }
+ 
+     @Override
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/anno/inittestbeans/AfterPropertiesSetBean1.java
+Patch:
+@@ -9,7 +9,7 @@
+  * @author <a href="mailto:yeli.hl@taobao.com">huangli</a>
+  */
+ @Component
+-public class AfterPropertiesSetTestBean extends InitTestBean implements InitializingBean {
++public class AfterPropertiesSetBean1 extends MethodCacheInitTestBean implements InitializingBean {
+     @Override
+     public void afterPropertiesSet() throws Exception {
+         super.doTest();
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/anno/inittestbeans/PostConstructorBean1.java
+Patch:
+@@ -1,7 +1,5 @@
+ package com.alicp.jetcache.anno.inittestbeans;
+ 
+-import com.alicp.jetcache.test.beans.TestBean;
+-import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+ 
+ import javax.annotation.PostConstruct;
+@@ -12,7 +10,7 @@
+  * @author <a href="mailto:yeli.hl@taobao.com">huangli</a>
+  */
+ @Component
+-public class PostConstructorTestBean extends InitTestBean {
++public class PostConstructorBean1 extends MethodCacheInitTestBean {
+ 
+     @PostConstruct
+     public void doTest() {
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/autoconfigure/StarterTest.java
+Patch:
+@@ -31,8 +31,8 @@
+  */
+ @Configuration
+ @EnableAutoConfiguration
+-@ComponentScan("com.alicp.jetcache.test.beans")
+-@EnableMethodCache(basePackages = "com.alicp.jetcache.test.beans")
++@ComponentScan(basePackages = {"com.alicp.jetcache.test.beans", "com.alicp.jetcache.anno.inittestbeans"})
++@EnableMethodCache(basePackages = {"com.alicp.jetcache.test.beans", "com.alicp.jetcache.anno.inittestbeans"})
+ @EnableCreateCacheAnnotation
+ public class StarterTest extends SpringTest {
+ 
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/config/CacheAnnotationParser.java
+Patch:
+@@ -43,7 +43,6 @@ private synchronized void doParse(Element element, ParserContext parserContext)
+             RootBeanDefinition interceptorDef = new RootBeanDefinition(JetCacheInterceptor.class);
+             interceptorDef.setSource(eleSource);
+             interceptorDef.setRole(BeanDefinition.ROLE_INFRASTRUCTURE);
+-            interceptorDef.getPropertyValues().addPropertyValue(new PropertyValue("globalCacheConfig", new RuntimeBeanReference("globalCacheConfig")));
+             interceptorDef.getPropertyValues().addPropertyValue(new PropertyValue("cacheConfigMap", new RuntimeBeanReference(configMapName)));
+             String interceptorName = parserContext.getReaderContext().registerWithGeneratedName(interceptorDef);
+ 
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/anno/aop/JetCacheInterceptorTest.java
+Patch:
+@@ -38,7 +38,7 @@ public void setup() {
+         pc.setCacheConfigMap(map);
+         interceptor = new JetCacheInterceptor();
+         interceptor.setCacheConfigMap(map);
+-        interceptor.setGlobalCacheConfig(globalCacheConfig);
++        interceptor.globalCacheConfig = globalCacheConfig;
+     }
+ 
+     @After
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/AbstractCacheBuilder.java
+Patch:
+@@ -60,7 +60,7 @@ public Object clone() {
+         AbstractCacheBuilder copy = null;
+         try {
+             copy = (AbstractCacheBuilder) super.clone();
+-            copy.config = config.clone();
++            copy.config = getConfig().clone();
+             return copy;
+         } catch (CloneNotSupportedException e) {
+             throw new CacheException(e);
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/ExternalCacheAutoConfiguration.java
+Patch:
+@@ -19,9 +19,9 @@ public ExternalCacheAutoConfiguration(String typeName) {
+     protected void parseGeneralConfig(CacheBuilder builder, RelaxedPropertyResolver resolver) {
+         super.parseGeneralConfig(builder, resolver);
+         ExternalCacheBuilder ecb = (ExternalCacheBuilder) builder;
+-        ecb.keyConvertor(configProvider.parseKeyConvertor(resolver.getProperty("keyConvertor", "fastjson")));
++        ecb.keyConvertor(configProvider.parseKeyConvertor(resolver.getProperty("keyConvertor")));
+ //        ecb.setKeyPrefix(resolver.getProperty("keyPrefix"));
+         ecb.setValueEncoder(configProvider.parseValueEncoder(resolver.getProperty("valueEncoder", CacheConsts.DEFAULT_SERIAL_POLICY)));
+-        ecb.setValueEncoder(configProvider.parseValueDecoder(resolver.getProperty("valueDecoder", CacheConsts.DEFAULT_SERIAL_POLICY)));
++        ecb.setValueDecoder(configProvider.parseValueDecoder(resolver.getProperty("valueDecoder", CacheConsts.DEFAULT_SERIAL_POLICY)));
+     }
+ }
+
+File: jetcache-test/src/main/java/com/alicp/jetcache/test/anno/TestUtil.java
+Patch:
+@@ -22,7 +22,7 @@ public class TestUtil {
+     public static GlobalCacheConfig createGloableConfig(ConfigProvider configProvider) {
+         Map localFactories = new HashMap();
+         EmbeddedCacheBuilder localFactory = new LinkedHashMapCacheBuilder();
+-        localFactory.setKeyConvertor(FastjsonKeyConvertor.INSTANCE);
++//        localFactory.setKeyConvertor(FastjsonKeyConvertor.INSTANCE);
+         localFactories.put(CacheConsts.DEFAULT_AREA, localFactory);
+         localFactories.put("A1", localFactory);
+ 
+@@ -35,7 +35,7 @@ public static GlobalCacheConfig createGloableConfig(ConfigProvider configProvide
+         remoteFactories.put(CacheConsts.DEFAULT_AREA, remoteBuilder);
+ 
+         remoteBuilder = new MockRemoteCacheBuilder();
+-        remoteBuilder.setKeyConvertor(FastjsonKeyConvertor.INSTANCE);
++//        remoteBuilder.setKeyConvertor(FastjsonKeyConvertor.INSTANCE);
+         remoteBuilder.setValueEncoder(KryoValueEncoder.INSTANCE);
+         remoteBuilder.setValueDecoder(KryoValueDecoder.INSTANCE);
+         remoteFactories.put("A1", remoteBuilder);
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/field/LazyInitCache.java
+Patch:
+@@ -65,7 +65,7 @@ private void init() {
+         cac.setKeyConvertor(ann.keyConvertor());
+ 
+         String cacheName = cac.getName();
+-        if (CacheConsts.DEFAULT_NAME.equalsIgnoreCase(cacheName)) {
++        if (CacheConsts.UNDEFINED_STRING.equalsIgnoreCase(cacheName)) {
+             StringBuilder sb = new StringBuilder();
+             sb.append(field.getDeclaringClass().getName());
+             sb.append(".").append(field.getName());
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/method/ExpressionUtil.java
+Patch:
+@@ -30,7 +30,7 @@ private static boolean eval(String text, CacheInvokeContext context, EL el) {
+ 
+     public static boolean evalCondition(CacheInvokeContext context) {
+         String condition = context.cacheInvokeConfig.getCacheAnnoConfig().getCondition();
+-        if (CacheConsts.DEFAULT_CONDITION.equals(condition)) {
++        if (CacheConsts.UNDEFINED_STRING.equals(condition)) {
+             return true;
+         }
+         try {
+@@ -43,7 +43,7 @@ public static boolean evalCondition(CacheInvokeContext context) {
+ 
+     public static boolean evalUnless(CacheInvokeContext context) {
+         String unless = context.cacheInvokeConfig.getCacheAnnoConfig().getUnless();
+-        if (CacheConsts.DEFAULT_UNLESS.equals(unless)) {
++        if (CacheConsts.UNDEFINED_STRING.equals(unless)) {
+             return false;
+         }
+         try {
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/support/GlobalCacheConfig.java
+Patch:
+@@ -19,7 +19,7 @@ public class GlobalCacheConfig {
+     private Map<String, CacheBuilder> remoteCacheBuilders;
+ 
+     private ConfigProvider configProvider = new SpringConfigProvider();
+-    protected int statIntervalMinutes = 60;
++    protected int statIntervalMinutes;
+ 
+     private CacheContext cacheContext;
+ 
+
+File: jetcache-starter/jetcache-autoconfigure/src/main/java/com/alicp/jetcache/autoconfigure/ExternalCacheAutoConfiguration.java
+Patch:
+@@ -20,7 +20,7 @@ protected void parseGeneralConfig(CacheBuilder builder, RelaxedPropertyResolver
+         super.parseGeneralConfig(builder, resolver);
+         ExternalCacheBuilder ecb = (ExternalCacheBuilder) builder;
+         ecb.keyConvertor(configProvider.parseKeyConvertor(resolver.getProperty("keyConvertor", "fastjson")));
+-        ecb.setKeyPrefix(resolver.getProperty("keyPrefix"));
++//        ecb.setKeyPrefix(resolver.getProperty("keyPrefix"));
+         ecb.setValueEncoder(configProvider.parseValueEncoder(resolver.getProperty("valueEncoder", CacheConsts.DEFAULT_SERIAL_POLICY)));
+         ecb.setValueEncoder(configProvider.parseValueDecoder(resolver.getProperty("valueDecoder", CacheConsts.DEFAULT_SERIAL_POLICY)));
+     }
+
+File: jetcache-anno/src/main/java/com/alicp/jetcache/anno/method/CacheConfigUtil.java
+Patch:
+@@ -20,6 +20,7 @@ private static CacheAnnoConfig parseCacheConfig(Method m) {
+         }
+         CacheAnnoConfig cc = new CacheAnnoConfig();
+         cc.setArea(anno.area());
++        cc.setName(anno.name());
+         cc.setCacheType(anno.cacheType());
+         cc.setEnabled(anno.enabled());
+         cc.setExpire(anno.expire());
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/anno/support/CacheContextTest.java
+Patch:
+@@ -9,7 +9,7 @@
+ /**
+  * @author <a href="mailto:yeli.hl@taobao.com">huangli</a>
+  */
+-public class CacheContextSupportTest {
++public class CacheContextTest {
+     @Test
+     public void test() {
+         CacheContext.enable();
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/DefaultCacheMonitorStatLogger.java
+Patch:
+@@ -21,7 +21,7 @@ public class DefaultCacheMonitorStatLogger implements Consumer<CacheStat> {
+     private int logDelaySeconds;
+ 
+     public DefaultCacheMonitorStatLogger() {
+-        this(1);
++        this(5);
+     }
+ 
+     public DefaultCacheMonitorStatLogger(int logDelaySeconds) {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/CacheStat.java
+Patch:
+@@ -45,7 +45,7 @@ public class CacheStat implements Serializable, Cloneable {
+     protected long loadFailCount;
+     protected long loadTimeSum;
+     protected long minLoadTime = Long.MAX_VALUE;
+-    protected long maxLoadTime = Long.MIN_VALUE;
++    protected long maxLoadTime = 0;
+ 
+     @Override
+     public CacheStat clone() {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/DefaultCacheMonitorStatLogger.java
+Patch:
+@@ -73,7 +73,7 @@ protected StringBuilder statText(LinkedList<CacheStat> statsCopy) {
+             sb.append(s.getGetExpireCount()).append('|');
+             sb.append(s.getGetFailCount()).append('|');
+             sb.append(s.avgLoadTime()).append('|');
+-            sb.append(s.getMaxGetTime()).append('\n');
++            sb.append(s.getMaxLoadTime()).append('\n');
+         }
+         sb.append("----------------------------------------------------------");
+         return sb;
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/DefaultCacheMonitorStatLogger.java
+Patch:
+@@ -17,7 +17,7 @@
+ public class DefaultCacheMonitorStatLogger implements Consumer<CacheStat> {
+     private static final Logger logger = LoggerFactory.getLogger(DefaultCacheMonitorStatLogger.class);
+ 
+-    private LinkedList<CacheStat> stats;
++    private LinkedList<CacheStat> stats = new LinkedList<>();
+ 
+     @Override
+     public synchronized void accept(CacheStat cacheStatCopy) {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/MultiLevelCache.java
+Patch:
+@@ -15,9 +15,9 @@ public class MultiLevelCache<K, V> extends WrapValueCache<K, V> {
+     @SuppressWarnings("unchecked")
+     public MultiLevelCache(Cache... caches) {
+         this.caches = caches;
++        isWrap = new boolean[caches.length];
+         for (int i = 0; i < caches.length; i++) {
+             Cache c = caches[i];
+-            boolean wrap = false;
+             while (c instanceof DelegateCache) {
+                 c = ((DelegateCache) c).getTargetCache();
+             }
+
+File: jetcache-anno/src/test/java/com/alicp/jetcache/anno/impl/ExpressionUtilTest.java
+Patch:
+@@ -41,7 +41,7 @@ public void testCondition() {
+     public void testUnless() {
+         cacheAnnoConfig.setUnless("mvel{result==null}");
+         context.cacheInvokeConfig.init();
+-        Assert.assertFalse(ExpressionUtil.evalUnless(context));
++        Assert.assertTrue(ExpressionUtil.evalUnless(context));
+     }
+ 
+ }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/CacheManager.java
+Patch:
+@@ -9,7 +9,7 @@
+  */
+ public class CacheManager {
+ 
+-    private ConcurrentHashMap<String, Cache> caches;
++    private ConcurrentHashMap<String, Cache> caches = new ConcurrentHashMap();
+ 
+     private static CacheManager instance = new CacheManager();
+ 
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/FastjsonKeyConvertor.java
+Patch:
+@@ -15,6 +15,9 @@ public class FastjsonKeyConvertor implements Function<Object, Object> {
+     public static final FastjsonKeyConvertor INSTANCE = new FastjsonKeyConvertor();
+ 
+     public Object apply(Object originalKey) {
++        if (originalKey instanceof String) {
++            return originalKey;
++        }
+         return JSON.toJSONString(originalKey);
+     }
+ 
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/support/AbstractEncoderTest.java
+Patch:
+@@ -16,12 +16,13 @@ public class AbstractEncoderTest {
+     protected Function<byte[], Object> decoder;
+ 
+ 
+-    public void doTest() {
++    protected void baseTest() {
+         Assert.assertEquals("123", decoder.apply(encoder.apply("123")));
+         Assert.assertEquals(new Integer(123), decoder.apply(encoder.apply(123)));
+         Date date = new Date();
+         Assert.assertEquals(date, decoder.apply(encoder.apply(date)));
+         Assert.assertArrayEquals(new byte[]{1, 2, 3, -1}, (byte[]) decoder.apply(encoder.apply(new byte[]{1, 2, 3, -1})));
++        Assert.assertNull(decoder.apply(encoder.apply(null)));
+ 
+         TestObject q = new TestObject();
+         q.setId(100);
+
+File: jetcache-test/src/test/java/com/alicp/jetcache/support/FastjsonEncoderTest.java
+Patch:
+@@ -14,7 +14,7 @@ public class FastjsonEncoderTest extends AbstractEncoderTest {
+     public void test() {
+         encoder = FastjsonValueEncoder.INSTANCE;
+         decoder = FastjsonValueDecoder.INSTANCE;
+-        super.doTest();
++        super.baseTest();
+     }
+ 
+ }
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/anno/impl/CacheImplSupport.java
+Patch:
+@@ -15,7 +15,7 @@
+ public class CacheImplSupport {
+ 
+     public static KeyGenerator getDefaultKeyGenerator() {
+-        return new FastjsonKeyGenerator();
++        return FastjsonKeyGenerator.INSTANCE;
+     }
+ 
+     public static <T> T getProxy(T target, CacheAnnoConfig cacheAnnoConfig, GlobalCacheConfig globalCacheConfig) {
+
+File: jetcache-core/src/main/java/com/alicp/jetcache/support/FastjsonKeyGenerator.java
+Patch:
+@@ -11,6 +11,7 @@
+  */
+ public class FastjsonKeyGenerator implements KeyGenerator {
+ 
++    public static FastjsonKeyGenerator INSTANCE = new FastjsonKeyGenerator();
+ 
+     public String generateKey(Object... originalKey) {
+         return JSON.toJSONString(originalKey);
+
+File: jetcache-core/src/test/java/com/alicp/jetcache/support/FastjsonKeyGeneratorTest.java
+Patch:
+@@ -25,7 +25,7 @@ public void setMate(C mate) {
+ 
+     @Test
+     public void test() {
+-        FastjsonKeyGenerator g = new FastjsonKeyGenerator();
++        FastjsonKeyGenerator g = FastjsonKeyGenerator.INSTANCE;
+         String k1, k2, k3;
+ 
+         k1 = g.generateKey(new Object[]{10, 20, 10});
+
+File: jetcache-core/src/main/java/com/taobao/geek/jetcache/local/AbstractLocalCache.java
+Patch:
+@@ -15,7 +15,7 @@
+  * @author <a href="mailto:yeli.hl@taobao.com">huangli</a>
+  */
+ public abstract class AbstractLocalCache implements Cache {
+-    protected boolean useSoftRef = true;
++    protected boolean useSoftRef = false;
+     private CopyOnWriteHashMap<String, AreaCache> areaMap = new CopyOnWriteHashMap<String, AreaCache>();
+ 
+     protected abstract AreaCache createAreaCache(int localLimit);
+
+File: jetcache-core/src/test/java/com/taobao/geek/jetcache/local/Benchmark.java
+Patch:
+@@ -38,7 +38,8 @@ public static void main(String[] args) throws Exception {
+         cc.setArea("");
+ 
+         //Cache cache = new ConcurrentLinkedHashMapCache(false);
+-        Cache cache = new LinkedHashMapCache(false);
++//        Cache cache = new LinkedHashMapCache(false);
++        Cache cache = new LirsCache(false);
+ 
+         CountDownLatch doneSignal = new CountDownLatch(THREAD_COUNT);
+ 
+
+File: jetcache-core/src/main/java/com/taobao/geek/jetcache/impl/CachedHandler.java
+Patch:
+@@ -116,9 +116,10 @@ private static Object getFromCache(Invoker invoker, Object src, Method method, O
+             cacheProviderFactory.getCacheMonitor().onGet(cc, subArea, key, r.localResult, r.remoteResult);
+         }
+ 
++        boolean hit = r.localResult == CacheResultCode.SUCCESS || r.remoteResult == CacheResultCode.SUCCESS;
+         r.localResult = null;
+         r.remoteResult = null;
+-        if (r.value != null) {
++        if (hit) {
+             if (r.needUpdateLocal) {
+                 r.localResult = cacheProvider.getLocalCache().put(cc, subArea, key, r.value);
+             }
+@@ -135,7 +136,7 @@ private static Object getFromCache(Invoker invoker, Object src, Method method, O
+                 r.remoteResult = cacheProvider.getRemoteCache().put(cc, subArea, key, r.value);
+             }
+         }
+-        if (cacheProviderFactory.getCacheMonitor() != null) {
++        if (cacheProviderFactory.getCacheMonitor() != null && (r.localResult != null || r.remoteResult != null)) {
+             cacheProviderFactory.getCacheMonitor().onPut(cc, subArea, key, r.value, r.localResult, r.remoteResult);
+         }
+         return r.value;
+
+File: cache-core/src/main/java/com/taobao/geek/cache/CacheConsts.java
+Patch:
+@@ -8,7 +8,6 @@
+  */
+ public interface CacheConsts {
+     String DEFAULT_AREA = "";
+-    String DEFAULT_KEY_PREFIX = "";
+     boolean DEFAULT_ENABLED = true;
+     int DEFAULT_EXPIRE = 600;
+     /**
+
+File: cache-core/src/main/java/com/taobao/geek/cache/Cached.java
+Patch:
+@@ -13,7 +13,6 @@
+ @Target(ElementType.METHOD)
+ public @interface Cached {
+     public abstract String area() default CacheConsts.DEFAULT_AREA;
+-    public abstract String keyPrefix() default CacheConsts.DEFAULT_KEY_PREFIX;
+     public abstract boolean enabled() default CacheConsts.DEFAULT_ENABLED;
+     public abstract int expire() default CacheConsts.DEFAULT_EXPIRE;
+     public abstract CacheType cacheType() default CacheType.REMOTE;
+

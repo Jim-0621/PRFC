@@ -1,0 +1,513 @@
+File: android/src/main/java/com/oney/WebRTCModule/PeerConnectionObserver.java
+Patch:
+@@ -254,8 +254,8 @@ public void receiverGetStats(String receiverId, Promise promise) {
+     }
+ 
+     public void senderGetStats(String senderId, Promise promise) {
+-        RtpReceiver targetSender = null;
+-        for (RtpReceiver r : peerConnection.getReceivers()) {
++        RtpSender targetSender = null;
++        for (RtpSender r : peerConnection.getSenders()) {
+             if (r.id().equals(senderId)) {
+                 targetSender = r;
+                 break;
+
+File: android/src/main/java/com/oney/WebRTCModule/SerializeUtils.java
+Patch:
+@@ -280,7 +280,7 @@ public static RtpTransceiver.RtpTransceiverInit parseTransceiverOptions(Readable
+             return null;
+         }
+ 
+-        RtpTransceiver.RtpTransceiverDirection direction = RtpTransceiver.RtpTransceiverDirection.INACTIVE;
++        RtpTransceiver.RtpTransceiverDirection direction = RtpTransceiver.RtpTransceiverDirection.SEND_RECV;
+         List<String> streamIds = new ArrayList<>();
+         List<RtpParameters.Encoding> sendEncodings = new ArrayList<>();
+ 
+
+File: android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+Patch:
+@@ -321,7 +321,6 @@ void createStream(MediaStreamTrack[] tracks, BiConsumer<String, ArrayList<Writab
+             trackInfo.putBoolean("enabled", track.enabled());
+             trackInfo.putString("id", trackId);
+             trackInfo.putString("kind", track.kind());
+-            trackInfo.putString("label", trackId);
+             trackInfo.putString("readyState", track.state().toString().toLowerCase());
+             trackInfo.putBoolean("remote", false);
+ 
+
+File: android/src/main/java/com/oney/WebRTCModule/CameraCaptureController.java
+Patch:
+@@ -146,9 +146,9 @@ private VideoCapturer createVideoCapturer(String deviceId, String facingMode) {
+                 this.isFrontFacing = cameraEnumerator.isFrontFacing(name);
+                 return videoCapturer;
+             } else {
++                // fallback to facingMode
+                 Log.d(TAG, message + " failed");
+                 failedDevices.add(name);
+-                break; // fallback to facingMode
+             }
+         }
+ 
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -860,7 +860,6 @@ private ReadableArray getTransceiversInfo(PeerConnection peerConnection) {
+             String directionSerialized = SerializeUtils.serializeDirection(direction);
+             WritableMap transceiverUpdate = Arguments.createMap();
+             transceiverUpdate.putString("transceiverId", transceiver.getSender().id());
+-            transceiverUpdate.putInt("peerConnectionId", id);
+             transceiverUpdate.putString("mid", transceiver.getMid());
+             transceiverUpdate.putString("currentDirection", directionSerialized);
+             transceiverUpdate.putMap("senderRtpParameters",
+
+File: android/src/main/java/com/oney/WebRTCModule/PeerConnectionObserver.java
+Patch:
+@@ -569,10 +569,9 @@ public void onTrack(final RtpTransceiver transceiver) {
+     @Override
+     public void onRemoveTrack(RtpReceiver receiver){
+         ThreadUtils.runOnExecutor(() -> {
+-            MediaStreamTrack track = receiver.track();
+             WritableMap params = Arguments.createMap();
+             params.putInt("pcId", this.id);
+-            params.putString("trackId", track.id());
++            params.putString("receiverId", receiver.id());
+ 
+             webRTCModule.sendEvent("peerConnectionOnRemoveTrack", params);
+         });
+
+File: android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+Patch:
+@@ -331,7 +331,7 @@ private void createStream(MediaStreamTrack[] tracks, BiConsumer<String, ArrayLis
+             trackInfo.putString("id", trackId);
+             trackInfo.putString("kind", track.kind());
+             trackInfo.putString("label", trackId);
+-            trackInfo.putString("readyState", track.state().toString());
++            trackInfo.putString("readyState", track.state().toString().toLowerCase());
+             trackInfo.putBoolean("remote", false);
+ 
+             if (track instanceof VideoTrack) {
+
+File: android/src/main/java/com/oney/WebRTCModule/SerializeUtils.java
+Patch:
+@@ -176,7 +176,7 @@ public static ReadableMap serializeRtpParameters(RtpParameters params) {
+         // Serializing sdpFmptLine. 
+         if (!codec.parameters.isEmpty()) {
+             final String sdpFmptLineParams = codec.parameters.keySet().stream()
+-                .map(key -> key + "=" + map.get(key))
++                .map(key -> key + "=" + codec.parameters.get(key))
+                 .collect(Collectors.joining(";"));
+             codecMap.putString("sdpFmtpLine", sdpFmptLineParams);
+         }
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -106,6 +106,7 @@ private void initAsync(Options options) {
+ 
+         PeerConnectionFactory.initialize(
+             PeerConnectionFactory.InitializationOptions.builder(reactContext)
++                .setNativeLibraryLoader(new LibraryLoader())
+                 .setInjectableLogger(injectableLogger, loggingSeverity)
+                 .createInitializationOptions());
+ 
+
+File: android/src/main/java/com/oney/WebRTCModule/StringUtils.java
+Patch:
+@@ -35,9 +35,9 @@ public static String statsToJSON(RTCStatsReport report) {
+ 
+             RTCStats stats = statsMap.get(key);
+             builder
+-                .append("\"timestamp\":\"")
+-                .append(stats.getTimestampUs())
+-                .append("\",\"type\":\"")
++                .append("\"timestamp\":")
++                .append(stats.getTimestampUs() / 1000.0)
++                .append(",\"type\":\"")
+                 .append(stats.getType())
+                 .append("\",\"id\":\"")
+                 .append(stats.getId())
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -188,7 +188,7 @@ private List<PeerConnection.IceServer> createIceServers(ReadableArray iceServers
+ 
+     private PeerConnection.RTCConfiguration parseRTCConfiguration(ReadableMap map) {
+         ReadableArray iceServersArray = null;
+-        if (map != null) {
++        if (map != null && map.hasKey("iceServers")) {
+             iceServersArray = map.getArray("iceServers");
+         }
+         List<PeerConnection.IceServer> iceServers = createIceServers(iceServersArray);
+@@ -198,8 +198,7 @@ private PeerConnection.RTCConfiguration parseRTCConfiguration(ReadableMap map) {
+         }
+ 
+         // iceTransportPolicy (public api)
+-        if (map.hasKey("iceTransportPolicy")
+-                && map.getType("iceTransportPolicy") == ReadableType.String) {
++        if (map.hasKey("iceTransportPolicy") && map.getType("iceTransportPolicy") == ReadableType.String) {
+             final String v = map.getString("iceTransportPolicy");
+             if (v != null) {
+                 switch (v) {
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -509,7 +509,7 @@ public void mediaStreamAddTrack(String streamId, String trackId) {
+ 
+     private void mediaStreamAddTrackAsync(String streamId, String trackId) {
+         MediaStream stream = localStreams.get(streamId);
+-        MediaStreamTrack track = getLocalTrack(trackId);
++        MediaStreamTrack track = getTrack(trackId);
+ 
+         if (stream == null || track == null) {
+             Log.d(TAG, "mediaStreamAddTrack() stream || track is null");
+@@ -532,7 +532,7 @@ public void mediaStreamRemoveTrack(String streamId, String trackId) {
+ 
+     private void mediaStreamRemoveTrackAsync(String streamId, String trackId) {
+         MediaStream stream = localStreams.get(streamId);
+-        MediaStreamTrack track = getLocalTrack(trackId);
++        MediaStreamTrack track = getTrack(trackId);
+ 
+         if (stream == null || track == null) {
+             Log.d(TAG, "mediaStreamRemoveTrack() stream || track is null");
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCView.java
+Patch:
+@@ -503,7 +503,7 @@ void setStreamURL(String streamURL) {
+             // videoTrack before assigning to this.streamURL is vital;
+             // otherwise, removeRendererFromVideoTrack will fail to remove the
+             // old videoTrack from the associated videoRenderer, two
+-            // VideoTracks (the old and the new) may start rendereding and, most
++            // VideoTracks (the old and the new) may start rendering and, most
+             // importantly the videoRender may eventually crash when the old
+             // videoTrack is disposed.
+             VideoTrack videoTrack = getVideoTrackForStreamURL(streamURL);
+
+File: android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+Patch:
+@@ -111,9 +111,9 @@ ReadableArray enumerateDevices() {
+         for(int i = 0; i < devices.length; ++i) {
+             WritableMap params = Arguments.createMap();
+             if (cameraEnumerator.isFrontFacing(devices[i])) {
+-               params.putString("facing", "front");
++                params.putString("facing", "front");
+             } else {
+-                params.putString("facing", "back");
++                params.putString("facing", "environment");
+             }
+             params.putString("deviceId", "" + i);
+             params.putString("groupId", "");
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -14,6 +14,7 @@
+ import com.facebook.react.bridge.ReadableMapKeySetIterator;
+ import com.facebook.react.bridge.ReadableType;
+ import com.facebook.react.bridge.WritableMap;
++import com.facebook.react.module.annotations.ReactModule;
+ import com.facebook.react.modules.core.DeviceEventManagerModule;
+ 
+ import java.util.ArrayList;
+@@ -23,6 +24,7 @@
+ 
+ import org.webrtc.*;
+ 
++@ReactModule(name = "WebRTCModule")
+ public class WebRTCModule extends ReactContextBaseJavaModule {
+     static final String TAG = WebRTCModule.class.getCanonicalName();
+ 
+
+File: android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+Patch:
+@@ -270,7 +270,7 @@ private void getUserMedia(
+             tracks_.pushMap(track_);
+         }
+ 
+-        String streamId = mediaStream.label();
++        String streamId = mediaStream.getId();
+ 
+         Log.d(TAG, "MediaStream id: " + streamId);
+         webRTCModule.localStreams.put(streamId, mediaStream);
+
+File: android/src/main/java/com/oney/WebRTCModule/PeerConnectionObserver.java
+Patch:
+@@ -343,7 +343,7 @@ private String getReactTagForStream(MediaStream mediaStream) {
+     @Override
+     public void onAddStream(MediaStream mediaStream) {
+         String streamReactTag = null;
+-        String streamId = mediaStream.label();
++        String streamId = mediaStream.getId();
+         // The native WebRTC implementation has a special concept of a default
+         // MediaStream instance with the label default that the implementation
+         // reuses.
+@@ -412,7 +412,7 @@ public void onRemoveStream(MediaStream mediaStream) {
+         if (streamReactTag == null) {
+             Log.w(TAG,
+                 "onRemoveStream - no remote stream for id: "
+-                    + mediaStream.label());
++                    + mediaStream.getId());
+             return;
+         }
+ 
+
+File: android/src/main/java/com/oney/WebRTCModule/PeerConnectionObserver.java
+Patch:
+@@ -51,7 +51,7 @@ class PeerConnectionObserver implements PeerConnection.Observer {
+      * buffer in an attempt to improve performance.
+      */
+     private SoftReference<StringBuilder> statsToJSONStringBuilder
+-        = new SoftReference(null);
++        = new SoftReference<>(null);
+ 
+     PeerConnectionObserver(WebRTCModule webRTCModule, int id) {
+         this.webRTCModule = webRTCModule;
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -528,7 +528,7 @@ public void mediaStreamRelease(final String id) {
+             // out of sync with MediaStream's lists which raises the risk of
+             // entering infinite loops.
+             List<MediaStreamTrack> tracks
+-                = new ArrayList(
++                = new ArrayList<>(
+                     stream.audioTracks.size() + stream.videoTracks.size());
+ 
+             tracks.addAll(stream.audioTracks);
+
+File: android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+Patch:
+@@ -39,7 +39,7 @@ class GetUserMediaImpl {
+     private static final String TAG = WebRTCModule.TAG;
+ 
+     /**
+-     * The {@link CamearEventsHandler} used with
++     * The {@link CameraEventsHandler} used with
+      * {@link CameraEnumerator#createCapturer}. Cached because the
+      * implementation does not do anything but logging unspecific to the camera
+      * device's name anyway.
+@@ -87,7 +87,7 @@ private void addDefaultAudioConstraints(MediaConstraints audioConstraints) {
+ 
+     /**
+      * Converts the value of a specific {@code MediaStreamConstraints} key to
+-     * the respective {@link Manifest#permission} value.
++     * the respective {@link Manifest.permission} value.
+      *
+      * @param constraints the {@code MediaStreamConstraints} within which the
+      * specified {@code key} may be associated with the value to convert
+@@ -127,7 +127,7 @@ private void constraint2permission(
+      * @param facingMode the facing of the requested video source such as
+      * {@code user} and {@code environment}. If {@code null}, "user" is
+      * presumed.
+-     * @return a {@code VideoCapturer} satisfying th {@code facingMode} or
++     * @return a {@code VideoCapturer} satisfying the {@code facingMode} or
+      * {@code sourceId} constraint
+      */
+     private VideoCapturer createVideoCapturer(
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCView.java
+Patch:
+@@ -19,6 +19,7 @@
+ import org.webrtc.RendererCommon;
+ import org.webrtc.RendererCommon.RendererEvents;
+ import org.webrtc.RendererCommon.ScalingType;
++import org.webrtc.SurfaceViewRenderer;
+ import org.webrtc.VideoRenderer;
+ import org.webrtc.VideoTrack;
+ 
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -681,7 +681,7 @@ public void peerConnectionRemoveStream(final String streamId, final int id){
+             return;
+         }
+         PeerConnectionObserver pco = mPeerConnectionObservers.get(id);
+-        if (pco == null) {
++        if (pco == null || !pco.removeStream(mediaStream)) {
+             Log.e(TAG, "peerConnectionRemoveStream() failed");
+         }
+     }
+
+File: android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+Patch:
+@@ -39,7 +39,7 @@ class GetUserMediaImpl {
+     private static final String TAG = WebRTCModule.TAG;
+ 
+     /**
+-     * The {@link CamearEventsHandler} used with
++     * The {@link CameraEventsHandler} used with
+      * {@link CameraEnumerator#createCapturer}. Cached because the
+      * implementation does not do anything but logging unspecific to the camera
+      * device's name anyway.
+@@ -87,7 +87,7 @@ private void addDefaultAudioConstraints(MediaConstraints audioConstraints) {
+ 
+     /**
+      * Converts the value of a specific {@code MediaStreamConstraints} key to
+-     * the respective {@link Manifest#permission} value.
++     * the respective {@link Manifest.permission} value.
+      *
+      * @param constraints the {@code MediaStreamConstraints} within which the
+      * specified {@code key} may be associated with the value to convert
+@@ -127,7 +127,7 @@ private void constraint2permission(
+      * @param facingMode the facing of the requested video source such as
+      * {@code user} and {@code environment}. If {@code null}, "user" is
+      * presumed.
+-     * @return a {@code VideoCapturer} satisfying th {@code facingMode} or
++     * @return a {@code VideoCapturer} satisfying the {@code facingMode} or
+      * {@code sourceId} constraint
+      */
+     private VideoCapturer createVideoCapturer(
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCView.java
+Patch:
+@@ -19,6 +19,7 @@
+ import org.webrtc.RendererCommon;
+ import org.webrtc.RendererCommon.RendererEvents;
+ import org.webrtc.RendererCommon.ScalingType;
++import org.webrtc.SurfaceViewRenderer;
+ import org.webrtc.VideoRenderer;
+ import org.webrtc.VideoTrack;
+ 
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -681,7 +681,7 @@ public void peerConnectionRemoveStream(final String streamId, final int id){
+             return;
+         }
+         PeerConnectionObserver pco = mPeerConnectionObservers.get(id);
+-        if (pco == null) {
++        if (pco == null || !pco.removeStream(mediaStream)) {
+             Log.e(TAG, "peerConnectionRemoveStream() failed");
+         }
+     }
+
+File: android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+Patch:
+@@ -322,7 +322,7 @@ private void getUserMedia(
+             } else {
+                 mediaStream.addTrack((VideoTrack) track);
+             }
+-            webRTCModule.mMediaStreamTracks.put(id, track);
++            webRTCModule.localMediaStreamTracks.put(id, track);
+ 
+             WritableMap track_ = Arguments.createMap();
+             String kind = track.kind();
+@@ -339,7 +339,7 @@ private void getUserMedia(
+         String streamId = mediaStream.label();
+ 
+         Log.d(TAG, "MediaStream id: " + streamId);
+-        webRTCModule.mMediaStreams.put(streamId, mediaStream);
++        webRTCModule.localMediaStreams.put(streamId, mediaStream);
+ 
+         successCallback.invoke(streamId, tracks_);
+     }
+
+File: android/src/main/java/com/oney/WebRTCModule/RTCVideoViewManager.java
+Patch:
+@@ -63,7 +63,7 @@ public void setStreamURL(WebRTCView view, String streamURL) {
+       mediaStream = null;
+     } else {
+       WebRTCModule module = mContext.getNativeModule(WebRTCModule.class);
+-      mediaStream = module.mMediaStreams.get(streamURL);
++      mediaStream = module.getStreamForReactTag(streamURL);
+     }
+     view.setStream(mediaStream);
+   }
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCView.java
+Patch:
+@@ -450,9 +450,7 @@ private void requestSurfaceViewRendererLayout() {
+         // The above is not enough though when the video frame's dimensions or
+         // rotation change. The following will suffice.
+         if (!invokeIsInLayout()) {
+-            onLayout(
+-                    /* changed */ false,
+-                    getLeft(), getTop(), getRight(), getBottom());
++            layout(getLeft(), getTop(), getRight(), getBottom());
+         }
+     }
+ 
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -1170,11 +1170,11 @@ public void mediaStreamRelease(final String id) {
+         MediaStream mediaStream = mMediaStreams.get(id);
+         if (mediaStream != null) {
+             for (VideoTrack track : mediaStream.videoTracks) {
+-                mMediaStreamTracks.remove(track);
++                mMediaStreamTracks.remove(track.id());
+                 removeVideoCapturer(track.id());
+             }
+             for (AudioTrack track : mediaStream.audioTracks) {
+-                mMediaStreamTracks.remove(track);
++                mMediaStreamTracks.remove(track.id());
+             }
+ 
+             mMediaStreams.remove(id);
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -556,7 +556,8 @@ public void getUserMedia(ReadableMap constraints,
+                 //   1. Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
+                 //   2. all camera support level should greater than LEGACY
+                 //   see: https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics.html#INFO_SUPPORTED_HARDWARE_LEVEL
+-                if (Camera2Enumerator.isSupported(context)) {
++                // TODO Enable camera2 enumerator
++                if (false && Camera2Enumerator.isSupported(context)) {
+                     Log.d(TAG, "Creating video capturer using Camera2 API.");
+                     videoCapturer = createVideoCapturer(
+                         new Camera2Enumerator(context), isFacing, sourceId);
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -129,6 +129,7 @@ private List<PeerConnection.IceServer> createIceServers(ReadableArray iceServers
+                         } else {
+                             iceServers.add(new PeerConnection.IceServer(iceServerMap.getString("urls")));
+                         }
++                        break;
+                     case Array:
+                         ReadableArray urls = iceServerMap.getArray("urls");
+                         for (int j = 0; j < urls.size(); j++) {
+@@ -139,7 +140,7 @@ private List<PeerConnection.IceServer> createIceServers(ReadableArray iceServers
+                                 iceServers.add(new PeerConnection.IceServer(url));
+                             }
+                         }
+-
++                        break;
+                 }
+             }
+         }
+@@ -298,6 +299,7 @@ public void onCameraError(String s) {
+                             }
+                         }
+                     }
++                    break;
+             }
+             // videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair("maxHeight", Integer.toString(100)));
+             // videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair("maxWidth", Integer.toString(100)));
+
+File: android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+Patch:
+@@ -129,6 +129,7 @@ private List<PeerConnection.IceServer> createIceServers(ReadableArray iceServers
+                         } else {
+                             iceServers.add(new PeerConnection.IceServer(iceServerMap.getString("urls")));
+                         }
++                        break;
+                     case Array:
+                         ReadableArray urls = iceServerMap.getArray("urls");
+                         for (int j = 0; j < urls.size(); j++) {
+@@ -139,7 +140,7 @@ private List<PeerConnection.IceServer> createIceServers(ReadableArray iceServers
+                                 iceServers.add(new PeerConnection.IceServer(url));
+                             }
+                         }
+-
++                        break;
+                 }
+             }
+         }
+@@ -298,6 +299,7 @@ public void onCameraError(String s) {
+                             }
+                         }
+                     }
++                    break;
+             }
+             // videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair("maxHeight", Integer.toString(100)));
+             // videoConstraints.mandatory.add(new MediaConstraints.KeyValuePair("maxWidth", Integer.toString(100)));
+

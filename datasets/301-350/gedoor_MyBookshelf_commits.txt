@@ -1,0 +1,3125 @@
+File: app/src/main/java/com/kunfei/bookshelf/view/activity/SourceEditActivity.java
+Patch:
+@@ -107,7 +107,7 @@ public class SourceEditActivity extends MBaseActivity<SourceEditContract.Present
+     private PopupWindow mSoftKeyboardTool;
+     private boolean mIsSoftKeyBoardShowing = false;
+     private boolean showFind;
+-    private String[] keyHelp = {"@", "&", "|", "%", "/", ":", "[", "]", "{", "}", "<", ">", "\\", "$", "#", "!", ".",
++    private String[] keyHelp = {"@", "&", "|", "%", "/", ":", "[", "]", "(", ")", "{", "}", "<", ">", "\\", "$", "#", "!", ".",
+             "href", "src", "textNodes", "xpath", "json", "css", "id", "class", "tag"};
+ 
+     public static void startThis(Object object, BookSourceBean sourceBean) {
+
+File: app/src/main/java/com/kunfei/bookshelf/model/analyzeRule/AnalyzeByJSoup.java
+Patch:
+@@ -406,12 +406,13 @@ private List<String> getResultLast(Elements elements, String lastRule) {
+                     textS.add(TextUtils.join("\n", cText));
+                     break;
+                 case "html":
+-                    elements.select("script").remove();
++                    elements.select("script, style").remove();
+                     String html = elements.html();
+                     textS.add(html);
+                     break;
+                 case "all":
+-                    textS.add(elements.html());
++                    textS.add(elements.outerHtml());
++                    break;
+                 default:
+                     for (Element element : elements) {
+                         String url = element.attr(lastRule);
+
+File: app/src/main/java/com/kunfei/bookshelf/utils/StringUtils.java
+Patch:
+@@ -355,8 +355,9 @@ public static String removeUTFCharacters(String data) {
+ 
+     public static String formatHtml(String html) {
+         if (TextUtils.isEmpty(html)) return "";
+-        return html.replaceAll("(?i)<(br[\\s/]*|/*p.*?|/*div.*?)>", "\n")// 替换特定标签为换行符
+-                .replaceAll("<[script>]*.*?>|&nbsp;", "")// 删除script标签对和空格转义符
++        return html.replaceAll("(?i)<(br[\\s/]*|/?p[^>]*|/?div[^>]*)>", "\n")// 替换特定标签为换行符
++                //.replaceAll("<(script[^>]*>)?[^>]*>|&nbsp;", "")// 删除script标签对和空格转义符
++                .replaceAll("</?[a-zA-Z][^>]*>", "")// 删除标签对
+                 .replaceAll("\\s*\\n+\\s*", "\n　　")// 移除空行,并增加段前缩进2个汉字
+                 .replaceAll("^[\\n\\s]+", "　　")//移除开头空行,并增加段前缩进2个汉字
+                 .replaceAll("[\\n\\s]+$", "");//移除尾部空行
+
+File: app/src/main/java/com/kunfei/bookshelf/utils/DocumentUtil.java
+Patch:
+@@ -178,7 +178,7 @@ public static boolean writeBytes(Context context, byte[] data, DocumentFile file
+ 
+     public static boolean writeBytes(Context context, byte[] data, Uri fileUri) {
+         try {
+-            OutputStream out = context.getContentResolver().openOutputStream(fileUri);
++            OutputStream out = context.getContentResolver().openOutputStream(fileUri, "wt"); //Write file need open with truncate mode, the mode truncate file upon opening (to zero bytes)
+             out.write(data);
+             out.close();
+             return true;
+
+File: app/src/main/java/com/kunfei/bookshelf/view/popupwindow/MoreSettingPop.java
+Patch:
+@@ -267,8 +267,10 @@ private void initData() {
+     private void upView() {
+         if (readBookControl.getHideStatusBar()) {
+             sbShowTimeBattery.setEnabled(true);
++            sbToLh.setEnabled(true);
+         } else {
+             sbShowTimeBattery.setEnabled(false);
++            sbToLh.setEnabled(false);
+         }
+         if (readBookControl.getCanKeyTurn()) {
+             swReadAloudKey.setEnabled(true);
+
+File: app/src/main/java/com/kunfei/bookshelf/view/activity/ReadBookActivity.java
+Patch:
+@@ -196,7 +196,7 @@ protected void onCreate(Bundle savedInstanceState) {
+     protected void onCreateActivity() {
+         setOrientation(readBookControl.getScreenDirection());
+         setContentView(R.layout.activity_book_read);
+-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && readBookControl.getToLh()) {
+             if (getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT) {
+                 WindowManager.LayoutParams lp = getWindow().getAttributes();
+                 lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+
+File: app/src/main/java/com/kunfei/bookshelf/view/fragment/FileCategoryFragment.java
+Patch:
+@@ -211,6 +211,9 @@ public boolean accept(File pathname) {
+             if (pathname.getName().startsWith(".")) {
+                 return false;
+             }
++            if (pathname.list() == null) {
++                return false;
++            }
+             //文件夹内部数量为0
+             if (pathname.isDirectory() && pathname.list().length == 0) {
+                 return false;
+
+File: app/src/main/java/com/kunfei/bookshelf/view/activity/MainActivity.java
+Patch:
+@@ -70,9 +70,6 @@
+ import static com.kunfei.bookshelf.utils.NetworkUtils.isNetWorkAvailable;
+ 
+ public class MainActivity extends BaseTabActivity<MainContract.Presenter> implements MainContract.View, BookListFragment.CallbackValue {
+-    private static final int BACKUP_RESULT = 11;
+-    private static final int RESTORE_RESULT = 12;
+-    private static final int FILE_SELECT_RESULT = 13;
+     private final int requestSource = 14;
+     private String[] mTitles;
+ 
+
+File: app/src/main/java/com/kunfei/bookshelf/model/analyzeRule/AnalyzeByRegex.java
+Patch:
+@@ -41,7 +41,7 @@ public static void getInfoOfRegex(String res, String[] regs, int index,
+             ruleMap.put("BookName", bookSourceBean.getRuleBookName());
+             ruleMap.put("BookAuthor", bookSourceBean.getRuleBookAuthor());
+             ruleMap.put("BookKind", bookSourceBean.getRuleBookKind());
+-            ruleMap.put("BookLastChapter", bookSourceBean.getRuleBookLastChapter());
++            ruleMap.put("LastChapter", bookSourceBean.getRuleBookLastChapter());
+             ruleMap.put("Introduce", bookSourceBean.getRuleIntroduce());
+             ruleMap.put("CoverUrl", bookSourceBean.getRuleCoverUrl());
+             ruleMap.put("ChapterUrl", bookSourceBean.getRuleChapterUrl());
+
+File: app/src/main/java/com/kunfei/bookshelf/model/analyzeRule/AnalyzeByRegex.java
+Patch:
+@@ -41,7 +41,7 @@ public static void getInfoOfRegex(String res, String[] regs, int index,
+             ruleMap.put("BookName", bookSourceBean.getRuleBookName());
+             ruleMap.put("BookAuthor", bookSourceBean.getRuleBookAuthor());
+             ruleMap.put("BookKind", bookSourceBean.getRuleBookKind());
+-            ruleMap.put("BookLastChapter", bookSourceBean.getRuleBookLastChapter());
++            ruleMap.put("LastChapter", bookSourceBean.getRuleBookLastChapter());
+             ruleMap.put("Introduce", bookSourceBean.getRuleIntroduce());
+             ruleMap.put("CoverUrl", bookSourceBean.getRuleCoverUrl());
+             ruleMap.put("ChapterUrl", bookSourceBean.getRuleChapterUrl());
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/BookList.java
+Patch:
+@@ -329,7 +329,7 @@ private void getBooksOfRegex(String res, String[] regs,
+             for (String key : ruleMap.keySet()) {
+                 String val = ruleMap.get(key);
+                 ruleName.add(key);
+-                hasVarParams.add(val.contains("@put") || val.contains("@get"));
++                hasVarParams.add(!TextUtils.isEmpty(val) && (val.contains("@put") || val.contains("@get")));
+                 List<String> ruleParam = new ArrayList<>();
+                 List<Integer> ruleType = new ArrayList<>();
+                 AnalyzeByRegex.splitRegexRule(val, ruleParam, ruleType);
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/BookList.java
+Patch:
+@@ -329,7 +329,7 @@ private void getBooksOfRegex(String res, String[] regs,
+             for (String key : ruleMap.keySet()) {
+                 String val = ruleMap.get(key);
+                 ruleName.add(key);
+-                hasVarParams.add(val.contains("@put") || val.contains("@get"));
++                hasVarParams.add(!TextUtils.isEmpty(val) && (val.contains("@put") || val.contains("@get")));
+                 List<String> ruleParam = new ArrayList<>();
+                 List<Integer> ruleType = new ArrayList<>();
+                 AnalyzeByRegex.splitRegexRule(val, ruleParam, ruleType);
+
+File: app/src/main/java/com/kunfei/bookshelf/model/analyzeRule/AnalyzeRule.java
+Patch:
+@@ -193,7 +193,7 @@ public List<String> getStringList(List<SourceRule> ruleList, boolean isUrl) thro
+             List<String> urlList = new ArrayList<>();
+             for (Object url : (List) result) {
+                 String absoluteURL = NetworkUtils.getAbsoluteURL(baseUrl, String.valueOf(url));
+-                if (!urlList.contains(absoluteURL)) {
++                if (!urlList.contains(absoluteURL) && !isEmpty(absoluteURL)) {
+                     urlList.add(absoluteURL);
+                 }
+             }
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/BookList.java
+Patch:
+@@ -90,7 +90,6 @@ Observable<List<SearchBookBean>> analyzeSearchBook(final Response<String> respon
+                         allInOne = true;
+                         ruleList = ruleList.substring(1);
+                     }
+-                    Debug.printLog(tag, "┌解析搜索列表");
+                     //获取列表
+                     Debug.printLog(tag, "┌解析搜索列表");
+                     collections = analyzer.getElements(ruleList);
+
+File: app/src/main/java/com/kunfei/bookshelf/view/activity/ReadBookActivity.java
+Patch:
+@@ -482,7 +482,7 @@ protected void bindView() {
+      * 初始化播放界面
+      */
+     private void initMediaPlayer() {
+-        mediaPlayerPop.setIvChapterClickListener(v -> ChapterListActivity.startThis(ReadBookActivity.this, mPresenter.getBookShelf()));
++        mediaPlayerPop.setIvChapterClickListener(v -> ChapterListActivity.startThis(ReadBookActivity.this, mPresenter.getBookShelf(), mPresenter.getChapterList()));
+         mediaPlayerPop.setIvTimerClickListener(v -> ReadAloudService.setTimer(getContext(), 10));
+         mediaPlayerPop.setIvCoverBgClickListener(v -> {
+             flMenu.setVisibility(View.VISIBLE);
+@@ -557,7 +557,7 @@ public void openReplaceRule() {
+             public void openChapterList() {
+                 ReadBookActivity.this.popMenuOut();
+                 if (!mPresenter.getChapterList().isEmpty()) {
+-                    mHandler.postDelayed(() -> ChapterListActivity.startThis(ReadBookActivity.this, mPresenter.getBookShelf()), menuTopOut.getDuration());
++                    mHandler.postDelayed(() -> ChapterListActivity.startThis(ReadBookActivity.this, mPresenter.getBookShelf(), mPresenter.getChapterList()), menuTopOut.getDuration());
+                 }
+             }
+ 
+
+File: app/src/main/java/com/kunfei/bookshelf/view/fragment/ChapterListFragment.java
+Patch:
+@@ -21,7 +21,6 @@
+ import com.kunfei.bookshelf.bean.BookShelfBean;
+ import com.kunfei.bookshelf.bean.OpenChapterBean;
+ import com.kunfei.bookshelf.constant.RxBusTag;
+-import com.kunfei.bookshelf.help.BookshelfHelp;
+ import com.kunfei.bookshelf.view.activity.ChapterListActivity;
+ import com.kunfei.bookshelf.view.adapter.ChapterListAdapter;
+ import com.kunfei.bookshelf.widget.recycler.scroller.FastScrollRecyclerView;
+@@ -84,7 +83,7 @@ protected void initData() {
+         super.initData();
+         if (getFatherActivity() != null) {
+             bookShelf = getFatherActivity().getBookShelf();
+-            chapterBeanList = BookshelfHelp.getChapterList(bookShelf.getNoteUrl());
++            chapterBeanList = getFatherActivity().getChapterBeanList();
+         }
+         isChapterReverse = preferences.getBoolean("isChapterReverse", false);
+     }
+
+File: app/src/main/java/com/kunfei/bookshelf/model/task/CheckSourceTask.java
+Patch:
+@@ -74,7 +74,7 @@ public void onComplete() {
+     private void checkFind() {
+         if (!TextUtils.isEmpty(sourceBean.getRuleFindUrl())) {
+             Observable.create((ObservableOnSubscribe<String>) emitter -> {
+-                String kindA[];
++                String[] kindA;
+                 if (!TextUtils.isEmpty(sourceBean.getRuleFindUrl())) {
+                     if (sourceBean.getRuleFindUrl().startsWith("<js>")) {
+                         String jsStr = sourceBean.getRuleFindUrl().substring(4, sourceBean.getRuleFindUrl().lastIndexOf("<"));
+
+File: app/src/main/java/com/kunfei/bookshelf/view/activity/ReadBookActivity.java
+Patch:
+@@ -767,9 +767,8 @@ public void onChapterChange(int pos) {
+                     public void onCategoryFinish(List<BookChapterBean> chapters) {
+                         mPresenter.setChapterList(chapters);
+                         mPresenter.getBookShelf().setChapterListSize(chapters.size());
+-                        mPresenter.saveBook();
+-                        mPresenter.getBookShelf().setDurChapterName(mPresenter.getChapterList().get(mPresenter.getBookShelf().getDurChapter()).getDurChapterName());
+-                        mPresenter.getBookShelf().setLastChapterName(mPresenter.getChapterList().get(mPresenter.getChapterList().size() - 1).getDurChapterName());
++                        mPresenter.getBookShelf().setDurChapterName(chapters.get(mPresenter.getBookShelf().getDurChapter()).getDurChapterName());
++                        mPresenter.getBookShelf().setLastChapterName(chapters.get(mPresenter.getChapterList().size() - 1).getDurChapterName());
+                         mPresenter.saveProgress();
+                     }
+ 
+
+File: app/src/main/java/com/kunfei/bookshelf/widget/page/PageLoaderNet.java
+Patch:
+@@ -60,7 +60,7 @@ public void onSubscribe(Disposable d) {
+                         public void onNext(BookShelfBean bookShelfBean) {
+                             isChapterListPrepare = true;
+                             // 目录加载完成
+-                            if (!callback.getChapterList().isEmpty()) {
++                            if (!bookShelfBean.getChapterList().isEmpty()) {
+                                 BookshelfHelp.delChapterList(bookShelfBean.getNoteUrl());
+                                 callback.onCategoryFinish(bookShelfBean.getChapterList());
+                             }
+@@ -86,6 +86,7 @@ public void changeSourceFinish(BookShelfBean book) {
+             super.changeSourceFinish(null);
+         } else {
+             this.book = book;
++            callback.onCategoryFinish(book.getChapterList());
+             refreshChapterList();
+         }
+     }
+
+File: app/src/main/java/com/kunfei/bookshelf/presenter/ReadBookPresenter.java
+Patch:
+@@ -47,7 +47,6 @@
+ import io.reactivex.Observable;
+ import io.reactivex.ObservableOnSubscribe;
+ import io.reactivex.android.schedulers.AndroidSchedulers;
+-import io.reactivex.disposables.CompositeDisposable;
+ import io.reactivex.schedulers.Schedulers;
+ 
+ public class ReadBookPresenter extends BasePresenterImpl<ReadBookContract.View> implements ReadBookContract.Presenter {
+@@ -57,7 +56,6 @@ public class ReadBookPresenter extends BasePresenterImpl<ReadBookContract.View>
+     private BookShelfBean bookShelf;
+     private BookSourceBean bookSourceBean;
+     private ChangeSourceHelp changeSourceHelp;
+-    private CompositeDisposable compositeDisposable = new CompositeDisposable();
+     private List<BookChapterBean> chapterBeanList = new ArrayList<>();
+ 
+     @Override
+@@ -418,7 +416,6 @@ public void detachView() {
+             changeSourceHelp.stopSearch();
+         }
+         RxBus.get().unregister(this);
+-        compositeDisposable.dispose();
+     }
+ 
+     /////////////////////RxBus////////////////////////
+
+File: app/src/main/java/com/kunfei/bookshelf/bean/BookInfoBean.java
+Patch:
+@@ -50,12 +50,11 @@ public class BookInfoBean implements Cloneable {
+     @Transient
+     private String chapterListHtml;
+     @Transient
+-    private List<BookChapterBean> chapterList = new ArrayList<>();    //章节列表
++    private List<BookChapterBean> chapterList;    //章节列表
+     @Transient
+-    private List<BookmarkBean> bookmarkList = new ArrayList<>();    //书签列表
++    private List<BookmarkBean> bookmarkList;    //书签列表
+ 
+     public BookInfoBean() {
+-
+     }
+ 
+     @Generated(hash = 906814482)
+
+File: app/src/main/java/com/kunfei/bookshelf/model/WebBookModel.java
+Patch:
+@@ -95,8 +95,8 @@ private Observable<BookShelfBean> upChapterList(BookShelfBean bookShelfBean, Lis
+                 bookShelfBean.setChapterListSize(chapterList.size());
+                 bookShelfBean.setDurChapter(Math.min(bookShelfBean.getDurChapter(), bookShelfBean.getChapterListSize() - 1));
+                 bookShelfBean.getBookInfoBean().setChapterList(chapterList);
+-                bookShelfBean.upDurChapterName();
+-                bookShelfBean.upLastChapterName();
++                bookShelfBean.setDurChapterName(chapterList.get(bookShelfBean.getDurChapter()).getDurChapterName());
++                bookShelfBean.setLastChapterName(chapterList.get(chapterList.size() - 1).getDurChapterName());
+             }
+             e.onNext(bookShelfBean);
+             e.onComplete();
+
+File: app/src/main/java/com/kunfei/bookshelf/model/task/DownloadTaskImpl.java
+Patch:
+@@ -177,7 +177,7 @@ private Observable<DownloadChapterBean> getDownloadingChapter() {
+             List<DownloadChapterBean> temp = new ArrayList<>(downloadChapters);
+             for (DownloadChapterBean data : temp) {
+                 boolean cached = BookshelfHelp.isChapterCached(
+-                        BookshelfHelp.getCachePathName(data), data.getDurChapterIndex(),
++                        BookshelfHelp.getCachePathName(data.getBookName(), data.getTag()), data.getDurChapterIndex(),
+                         BookshelfHelp.getCacheFileName(data.getDurChapterIndex(), data.getDurChapterName()));
+                 if (cached) {
+                     removeFromDownloadList(data);
+@@ -198,7 +198,7 @@ private synchronized void downloading(DownloadChapterBean chapter, Scheduler sch
+         BookInfoBean infoBean = DbHelper.getDaoSession().getBookInfoBeanDao().load(chapter.getNoteUrl());
+         Observable.create((ObservableOnSubscribe<DownloadChapterBean>) e -> {
+             if (!BookshelfHelp.isChapterCached(
+-                    BookshelfHelp.getCachePathName(chapter), chapter.getDurChapterIndex(),
++                    BookshelfHelp.getCachePathName(chapter.getBookName(), chapter.getTag()), chapter.getDurChapterIndex(),
+                     BookshelfHelp.getCacheFileName(chapter.getDurChapterIndex(), chapter.getDurChapterName())
+             )) {
+                 e.onNext(chapter);
+
+File: app/src/main/java/com/kunfei/bookshelf/view/activity/ChapterListActivity.java
+Patch:
+@@ -46,7 +46,6 @@ public class ChapterListActivity extends BaseTabActivity {
+     private BookShelfBean bookShelf;
+ 
+     public static void startThis(MBaseActivity activity, BookShelfBean bookShelf) {
+-        if (bookShelf.getChapterList().size() == 0) return;
+         Intent intent = new Intent(activity, ChapterListActivity.class);
+         String key = String.valueOf(System.currentTimeMillis());
+         intent.putExtra("data_key", key);
+
+File: app/src/main/java/com/kunfei/bookshelf/widget/page/ChapterProvider.java
+Patch:
+@@ -55,7 +55,7 @@ TxtChapter dealLoadPageList(BookChapterBean chapter, boolean isPrepare) {
+     private TxtChapter loadPageList(BookChapterBean chapter, @NonNull String content) {
+         //生成的页面
+         TxtChapter txtChapter = new TxtChapter(chapter.getDurChapterIndex());
+-        if (pageLoader.bookShelfBean.isAudio()) {
++        if (pageLoader.book.isAudio()) {
+             txtChapter.setStatus(TxtChapter.Status.FINISH);
+             txtChapter.setMsg(content);
+             TxtPage page = new TxtPage(txtChapter.getTxtPageList().size());
+@@ -68,15 +68,15 @@ private TxtChapter loadPageList(BookChapterBean chapter, @NonNull String content
+             txtChapter.addPage(page);
+             return txtChapter;
+         }
+-        content = contentHelper.replaceContent(pageLoader.bookShelfBean.getBookInfoBean().getName(), pageLoader.bookShelfBean.getTag(), content);
++        content = contentHelper.replaceContent(pageLoader.book.getBookInfoBean().getName(), pageLoader.book.getTag(), content);
+         String[] allLine = content.split("\n");
+         List<String> lines = new ArrayList<>();
+         int rHeight = pageLoader.mVisibleHeight - pageLoader.contentMarginHeight * 2;
+         int titleLinesCount = 0;
+         boolean showTitle = pageLoader.readBookControl.getShowTitle(); // 是否展示标题
+         String paragraph = null;
+         if (showTitle) {
+-            paragraph = contentHelper.replaceContent(pageLoader.bookShelfBean.getBookInfoBean().getName(), pageLoader.bookShelfBean.getTag(), chapter.getDurChapterName());
++            paragraph = contentHelper.replaceContent(pageLoader.book.getBookInfoBean().getName(), pageLoader.book.getTag(), chapter.getDurChapterName());
+             paragraph = paragraph.trim() + "\n";
+         }
+         int i = 1;
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/BookList.java
+Patch:
+@@ -365,7 +365,7 @@ private List<SearchBookBean> getItemsOfRegex(String res, String[] regs, int inde
+     }
+     // 使用正则表达式去除字符串前后的空字符串
+     private String regTrim(String str){
+-        return str.replaceAll("^[\\n\\s]*|[\\n\\s]*$","");
++        return str.replaceAll("^[\\n\\s]*|[\\n\\s\\\\]*$","");
+     }
+     // 存取字符串中的put&get参数
+     private String checkKeys(String str){
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/BookList.java
+Patch:
+@@ -365,7 +365,7 @@ private List<SearchBookBean> getItemsOfRegex(String res, String[] regs, int inde
+     }
+     // 使用正则表达式去除字符串前后的空字符串
+     private String regTrim(String str){
+-        return str.replaceAll("^[\\n\\s]*|[\\n\\s]*$","");
++        return str.replaceAll("^[\\n\\s]*|[\\n\\s\\\\]*$","");
+     }
+     // 存取字符串中的put&get参数
+     private String checkKeys(String str){
+
+File: app/src/main/java/com/kunfei/bookshelf/web/controller/BookshelfController.java
+Patch:
+@@ -51,7 +51,7 @@ public ReturnData getBookContent(Map<String, List<String>> parameters) {
+         }
+         String content = BookshelfHelp.getChapterCache(bookShelfBean, chapter);
+         if (!TextUtils.isEmpty(content)) {
+-            return returnData.setData(chapter);
++            return returnData.setData(content);
+         }
+         try {
+             BookContentBean bookContentBean = WebBookModel.getInstance().getBookContent(bookShelfBean.getBookInfoBean(), chapter).blockingFirst();
+
+File: app/src/main/java/com/kunfei/bookshelf/service/WebService.java
+Patch:
+@@ -91,7 +91,7 @@ private void upServer() {
+         if (inetAddress != null) {
+             try {
+                 httpServer.start();
+-                webSocketServer.start(30000);
++                webSocketServer.start(1000*30); // 通信超时设置
+                 isRunning = true;
+                 updateNotification(getString(R.string.http_ip, inetAddress.getHostAddress(), port));
+             } catch (IOException e) {
+
+File: app/src/main/java/com/kunfei/bookshelf/view/adapter/SearchBookAdapter.java
+Patch:
+@@ -125,8 +125,7 @@ public synchronized void upData(DataAction action, List<SearchBookBean> newDataS
+                 if (!searchBooks.isEmpty()) {
+                     try {
+                         Glide.with(activityRef.get()).onDestroy();
+-                    } catch (Exception e) {
+-                        e.printStackTrace();
++                    } catch (Exception ignored) {
+                     }
+                     searchBooks.clear();
+                     notifyDataSetChanged();
+
+File: app/src/main/java/com/kunfei/bookshelf/web/controller/SourceDebugWebSocket.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.kunfei.bookshelf.web.controller;
+ 
+ import android.os.AsyncTask;
+-import android.webkit.CookieSyncManager;
+ 
+ import com.google.gson.Gson;
+ import com.hwangjr.rxbus.RxBus;
+@@ -62,6 +61,7 @@ public void printError(String msg) {
+                 AsyncTask.execute(() -> {
+                     try {
+                         send(msg);
++                        close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false);
+                     } catch (IOException ignored) {
+                     }
+                     Debug.SOURCE_DEBUG_TAG = null;
+@@ -73,6 +73,7 @@ public void finish() {
+                 AsyncTask.execute(() -> {
+                     try {
+                         send("finish");
++                        close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false);
+                     } catch (IOException ignored) {
+                     }
+                     Debug.SOURCE_DEBUG_TAG = null;
+
+File: app/src/main/java/com/kunfei/bookshelf/view/activity/SearchBookActivity.java
+Patch:
+@@ -406,8 +406,8 @@ public void insertSearchHistorySuccess(SearchHistoryBean searchHistoryBean) {
+     }
+ 
+     @Override
+-    public void querySearchHistorySuccess(List<SearchHistoryBean> datas) {
+-        addNewHistories(datas);
++    public void querySearchHistorySuccess(List<SearchHistoryBean> data) {
++        addNewHistories(data);
+         if (flSearchHistory.getChildCount() > 0) {
+             tvSearchHistoryClean.setVisibility(View.VISIBLE);
+         } else {
+@@ -417,7 +417,7 @@ public void querySearchHistorySuccess(List<SearchHistoryBean> datas) {
+ 
+     @Override
+     public void refreshSearchBook() {
+-        searchBookAdapter.upData(SearchBookAdapter.DataAction.CLEAR, null, null);
++        searchBookAdapter.upData(SearchBookAdapter.DataAction.CLEAR, null);
+     }
+ 
+     @Override
+
+File: app/src/main/java/com/kunfei/bookshelf/view/activity/SearchBookActivity.java
+Patch:
+@@ -444,7 +444,7 @@ public void searchBookError(Throwable throwable) {
+ 
+     @Override
+     public void loadMoreSearchBook(final List<SearchBookBean> books) {
+-        searchBookAdapter.upData(SearchBookAdapter.DataAction.ADD, books, mSearchAutoComplete.getText().toString().trim());
++        searchBookAdapter.addAll(books, mSearchAutoComplete.getText().toString().trim());
+     }
+ 
+     @Override
+
+File: app/src/main/java/com/kunfei/bookshelf/web/controller/SourceDebugWebSocket.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.kunfei.bookshelf.web.controller;
+ 
+ import android.os.AsyncTask;
+-import android.webkit.CookieSyncManager;
+ 
+ import com.google.gson.Gson;
+ import com.hwangjr.rxbus.RxBus;
+@@ -62,6 +61,7 @@ public void printError(String msg) {
+                 AsyncTask.execute(() -> {
+                     try {
+                         send(msg);
++                        close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false);
+                     } catch (IOException ignored) {
+                     }
+                     Debug.SOURCE_DEBUG_TAG = null;
+@@ -73,6 +73,7 @@ public void finish() {
+                 AsyncTask.execute(() -> {
+                     try {
+                         send("finish");
++                        close(NanoWSD.WebSocketFrame.CloseCode.NormalClosure, "调试结束", false);
+                     } catch (IOException ignored) {
+                     }
+                     Debug.SOURCE_DEBUG_TAG = null;
+
+File: app/src/main/java/com/kunfei/bookshelf/web/controller/SourceDebugWebSocket.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.hwangjr.rxbus.annotation.Subscribe;
+ import com.hwangjr.rxbus.annotation.Tag;
+ import com.kunfei.bookshelf.constant.RxBusTag;
++import com.kunfei.bookshelf.model.content.Debug;
+ 
+ import java.io.IOException;
+ 
+@@ -46,7 +47,7 @@ public void printDebugLog(String msg) {
+         try {
+             send(msg);
+         } catch (IOException e) {
+-
++            Debug.SOURCE_DEBUG_TAG = null;
+         }
+     }
+ 
+
+File: app/src/main/java/com/kunfei/bookshelf/web/utils/ReturnData.java
+Patch:
+@@ -37,7 +37,7 @@ public String getErrorMsg() {
+     }
+ 
+     public ReturnData setErrorMsg(String errorMsg) {
+-        isSuccess = false;
++        this.isSuccess = false;
+         this.errorMsg = errorMsg;
+         return this;
+     }
+@@ -47,7 +47,8 @@ public Object getData() {
+     }
+ 
+     public ReturnData setData(Object data) {
+-        isSuccess = true;
++        this.isSuccess = true;
++        this.errorMsg = "";
+         this.data = data;
+         return this;
+     }
+
+File: app/src/main/java/com/kunfei/bookshelf/web/utils/ReturnData.java
+Patch:
+@@ -12,6 +12,8 @@ public class ReturnData {
+     private Object data;
+ 
+     public ReturnData() {
++        this.isSuccess = false;
++        this.errorMsg = "未知错误,请联系开发者!";
+     }
+ 
+     public boolean isSuccess() {
+
+File: app/src/main/java/com/kunfei/bookshelf/help/BookshelfHelp.java
+Patch:
+@@ -362,6 +362,7 @@ public static BookShelfBean getBookFromSearchBook(SearchBookBean searchBookBean)
+         bookInfo.setIntroduce(searchBookBean.getIntroduce());
+         bookInfo.setChapterUrl(searchBookBean.getChapterUrl());
+         bookShelfBean.setBookInfoBean(bookInfo);
++        bookShelfBean.setVariable(searchBookBean.getVariable());
+         return bookShelfBean;
+     }
+ 
+
+File: app/src/main/java/com/kunfei/bookshelf/help/BookshelfHelp.java
+Patch:
+@@ -363,6 +363,7 @@ public static BookShelfBean getBookFromSearchBook(SearchBookBean searchBookBean)
+         bookInfo.setIntroduce(searchBookBean.getIntroduce());
+         bookInfo.setChapterUrl(searchBookBean.getChapterUrl());
+         bookShelfBean.setBookInfoBean(bookInfo);
++        bookShelfBean.setVariable(searchBookBean.getVariable());
+         return bookShelfBean;
+     }
+ 
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/BookContent.java
+Patch:
+@@ -31,7 +31,7 @@ class BookContent {
+         this.tag = tag;
+         this.bookSourceBean = bookSourceBean;
+         ruleBookContent = bookSourceBean.getRuleBookContent();
+-        if (ruleBookContent.startsWith("$")) {
++        if (ruleBookContent.startsWith("$") && !ruleBookContent.startsWith("$.")) {
+             ruleBookContent = ruleBookContent.substring(1);
+         }
+     }
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/DefaultModel.java
+Patch:
+@@ -175,7 +175,7 @@ public Observable<BookContentBean> getBookContent(final BaseChapterBean chapterB
+         BookContent bookContent = new BookContent(tag, bookSourceBean);
+         try {
+             AnalyzeUrl analyzeUrl = new AnalyzeUrl(chapterBean.getDurChapterUrl(), null, null, headerMap);
+-            if (bookSourceBean.getRuleBookContent().startsWith("$")) {
++            if (bookSourceBean.getRuleBookContent().startsWith("$") && !bookSourceBean.getRuleBookContent().startsWith("$.")) {
+                 return getAjaxHtml(analyzeUrl, tag)
+                         .flatMap(response -> bookContent.analyzeBookContent(response, chapterBean, headerMap));
+             } else {
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/BookChapter.java
+Patch:
+@@ -16,8 +16,6 @@
+ import java.util.List;
+ import java.util.Map;
+ 
+-import javax.script.ScriptException;
+-
+ import io.reactivex.Observable;
+ import retrofit2.Response;
+ 
+@@ -99,7 +97,7 @@ Observable<List<ChapterListBean>> analyzeChapterList(final String s, final BookS
+         });
+     }
+ 
+-    private WebChapterBean<List<ChapterListBean>> analyzeChapterList(String s, String chapterUrl, String ruleChapterList) throws ScriptException {
++    private WebChapterBean<List<ChapterListBean>> analyzeChapterList(String s, String chapterUrl, String ruleChapterList) throws Exception {
+         List<ChapterListBean> chapterBeans = new ArrayList<>();
+         List<String> nextUrlList = new ArrayList<>();
+ 
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/BookContent.java
+Patch:
+@@ -19,8 +19,6 @@
+ import java.util.List;
+ import java.util.Map;
+ 
+-import javax.script.ScriptException;
+-
+ import io.reactivex.Observable;
+ import retrofit2.Response;
+ 
+@@ -98,7 +96,7 @@ Observable<BookContentBean> analyzeBookContent(final String s, final BaseChapter
+         });
+     }
+ 
+-    private WebContentBean analyzeBookContent(final String s, final String chapterUrl) throws ScriptException {
++    private WebContentBean analyzeBookContent(final String s, final String chapterUrl) throws Exception {
+         WebContentBean webContentBean = new WebContentBean();
+ 
+         AnalyzeRule analyzer = new AnalyzeRule(null);
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/BookChapter.java
+Patch:
+@@ -16,6 +16,8 @@
+ import java.util.List;
+ import java.util.Map;
+ 
++import javax.script.ScriptException;
++
+ import io.reactivex.Observable;
+ import retrofit2.Response;
+ 
+@@ -97,7 +99,7 @@ Observable<List<ChapterListBean>> analyzeChapterList(final String s, final BookS
+         });
+     }
+ 
+-    private WebChapterBean<List<ChapterListBean>> analyzeChapterList(String s, String chapterUrl, String ruleChapterList) {
++    private WebChapterBean<List<ChapterListBean>> analyzeChapterList(String s, String chapterUrl, String ruleChapterList) throws ScriptException {
+         List<ChapterListBean> chapterBeans = new ArrayList<>();
+         List<String> nextUrlList = new ArrayList<>();
+ 
+
+File: app/src/main/java/com/kunfei/bookshelf/model/content/BookContent.java
+Patch:
+@@ -19,6 +19,8 @@
+ import java.util.List;
+ import java.util.Map;
+ 
++import javax.script.ScriptException;
++
+ import io.reactivex.Observable;
+ import retrofit2.Response;
+ 
+@@ -96,7 +98,7 @@ Observable<BookContentBean> analyzeBookContent(final String s, final BaseChapter
+         });
+     }
+ 
+-    private WebContentBean analyzeBookContent(final String s, final String chapterUrl) {
++    private WebContentBean analyzeBookContent(final String s, final String chapterUrl) throws ScriptException {
+         WebContentBean webContentBean = new WebContentBean();
+ 
+         AnalyzeRule analyzer = new AnalyzeRule(null);
+
+File: app/src/main/java/com/kunfei/bookshelf/model/analyzeRule/AnalyzeByXPath.java
+Patch:
+@@ -15,7 +15,7 @@
+ public class AnalyzeByXPath {
+     private JXDocument jxDocument;
+ 
+-    public void parse(Document doc) {
++    public void parse(String doc) {
+         jxDocument = JXDocument.create(doc);
+     }
+ 
+
+File: app/src/main/java/com/kunfei/bookshelf/model/analyzeRule/AnalyzeRule.java
+Patch:
+@@ -11,6 +11,7 @@
+ import com.kunfei.bookshelf.utils.StringUtils;
+ 
+ import org.jsoup.Jsoup;
++import org.jsoup.nodes.Document;
+ import org.jsoup.nodes.Element;
+ 
+ import java.util.ArrayList;
+@@ -81,7 +82,7 @@ public void setContent(Object object, boolean isJSON) {
+     private AnalyzeByXPath getAnalyzeByXPath() {
+         if (analyzeByXPath == null || objectChangedXP) {
+             analyzeByXPath = new AnalyzeByXPath();
+-            analyzeByXPath.parse(((Element) _object).children());
++            analyzeByXPath.parse(_object.toString());
+             objectChangedXP = false;
+         }
+         return analyzeByXPath;
+
+File: app/src/main/java/com/kunfei/bookshelf/model/analyzeRule/AnalyzeByXPath.java
+Patch:
+@@ -15,7 +15,7 @@
+ public class AnalyzeByXPath {
+     private JXDocument jxDocument;
+ 
+-    public void parse(Document doc) {
++    public void parse(String doc) {
+         jxDocument = JXDocument.create(doc);
+     }
+ 
+
+File: app/src/main/java/com/kunfei/bookshelf/model/analyzeRule/AnalyzeRule.java
+Patch:
+@@ -11,6 +11,7 @@
+ import com.kunfei.bookshelf.utils.StringUtils;
+ 
+ import org.jsoup.Jsoup;
++import org.jsoup.nodes.Document;
+ import org.jsoup.nodes.Element;
+ 
+ import java.util.ArrayList;
+@@ -81,7 +82,7 @@ public void setContent(Object object, boolean isJSON) {
+     private AnalyzeByXPath getAnalyzeByXPath() {
+         if (analyzeByXPath == null || objectChangedXP) {
+             analyzeByXPath = new AnalyzeByXPath();
+-            analyzeByXPath.parse(((Element) _object).children());
++            analyzeByXPath.parse(_object.toString());
+             objectChangedXP = false;
+         }
+         return analyzeByXPath;
+
+File: app/src/main/java/com/kunfei/bookshelf/model/analyzeRule/AnalyzeRule.java
+Patch:
+@@ -238,9 +238,9 @@ class SourceRule {
+                 ruleStr = ruleStr.replace(find, value);
+             }
+             String str[] = ruleStr.split("@js:");
+-            if (StringUtils.startWithIgnoreCase(str[0], "@XPath:")) {
++            if (StringUtils.startWithIgnoreCase(str[0], "//")) {//XPath特征很明显,无需配置单独的识别标头
+                 mode = Mode.XPath;
+-                rule = str[0].substring(7);
++                rule = str[0];
+             } else if (StringUtils.startWithIgnoreCase(str[0], "@JSon:")) {
+                 mode = Mode.JSon;
+                 rule = str[0].substring(6);
+
+File: app/src/main/java/com/kunfei/bookshelf/model/analyzeRule/AnalyzeRule.java
+Patch:
+@@ -238,9 +238,9 @@ class SourceRule {
+                 ruleStr = ruleStr.replace(find, value);
+             }
+             String str[] = ruleStr.split("@js:");
+-            if (StringUtils.startWithIgnoreCase(str[0], "@XPath:")) {
++            if (StringUtils.startWithIgnoreCase(str[0], "//")) {//XPath特征很明显,无需配置单独的识别标头
+                 mode = Mode.XPath;
+-                rule = str[0].substring(7);
++                rule = str[0];
+             } else if (StringUtils.startWithIgnoreCase(str[0], "@JSon:")) {
+                 mode = Mode.JSon;
+                 rule = str[0].substring(6);
+
+File: app/src/main/java/com/kunfei/bookshelf/view/activity/ReadBookActivity.java
+Patch:
+@@ -106,7 +106,7 @@ public class ReadBookActivity extends MBaseActivity<ReadBookContract.Presenter>
+     private Animation menuBottomOut;
+     private ActionBar actionBar;
+     private PageLoader mPageLoader;
+-    private Handler mHandler;
++    private Handler mHandler  = new Handler();
+     private Runnable autoPageRunnable;
+     private Runnable keepScreenRunnable;
+     private Runnable upHpbNextPage;
+@@ -141,7 +141,6 @@ protected void onCreate(Bundle savedInstanceState) {
+         readBookControl.initTextDrawableIndex();
+         super.onCreate(savedInstanceState);
+         screenTimeOut = getResources().getIntArray(R.array.screen_time_out_value)[readBookControl.getScreenTimeOut()];
+-        mHandler = new Handler();
+         keepScreenRunnable = this::unKeepScreenOn;
+         autoPageRunnable = this::nextPage;
+         upHpbNextPage = this::upHpbNextPage;
+
+File: app/src/main/java/com/kunfei/bookshelf/view/activity/ReadBookActivity.java
+Patch:
+@@ -106,7 +106,7 @@ public class ReadBookActivity extends MBaseActivity<ReadBookContract.Presenter>
+     private Animation menuBottomOut;
+     private ActionBar actionBar;
+     private PageLoader mPageLoader;
+-    private Handler mHandler;
++    private Handler mHandler  = new Handler();
+     private Runnable autoPageRunnable;
+     private Runnable keepScreenRunnable;
+     private Runnable upHpbNextPage;
+@@ -141,7 +141,6 @@ protected void onCreate(Bundle savedInstanceState) {
+         readBookControl.initTextDrawableIndex();
+         super.onCreate(savedInstanceState);
+         screenTimeOut = getResources().getIntArray(R.array.screen_time_out_value)[readBookControl.getScreenTimeOut()];
+-        mHandler = new Handler();
+         keepScreenRunnable = this::unKeepScreenOn;
+         autoPageRunnable = this::nextPage;
+         upHpbNextPage = this::upHpbNextPage;
+
+File: app/src/main/java/com/monke/monkeybook/presenter/BookDetailPresenter.java
+Patch:
+@@ -65,7 +65,7 @@ public void initBookFormSearch(SearchBookBean searchBookBean) {
+             return;
+         }
+         searchBook = searchBookBean;
+-        inBookShelf = searchBookBean.getIsAdd();
++        inBookShelf = searchBookBean.getIsCurrentSource();
+         bookShelf = BookshelfHelp.getBookFromSearchBook(searchBookBean);
+     }
+ 
+@@ -128,7 +128,7 @@ public void addToBookShelf() {
+         if (bookShelf != null) {
+             Observable.create((ObservableOnSubscribe<Boolean>) e -> {
+                 BookshelfHelp.saveBookToShelf(bookShelf);
+-                searchBook.setIsAdd(true);
++                searchBook.setIsCurrentSource(true);
+                 inBookShelf = true;
+                 e.onNext(true);
+                 e.onComplete();
+@@ -160,7 +160,7 @@ public void removeFromBookShelf() {
+         if (bookShelf != null) {
+             Observable.create((ObservableOnSubscribe<Boolean>) e -> {
+                 BookshelfHelp.removeFromBookShelf(bookShelf);
+-                searchBook.setIsAdd(false);
++                searchBook.setIsCurrentSource(false);
+                 inBookShelf = false;
+                 e.onNext(true);
+                 e.onComplete();
+
+File: app/src/main/java/com/monke/monkeybook/presenter/ChoiceBookPresenter.java
+Patch:
+@@ -93,7 +93,7 @@ public void onNext(List<SearchBookBean> value) {
+                             for (SearchBookBean temp : value) {
+                                 for (BookShelfBean bookShelfBean : bookShelfs) {
+                                     if (temp.getNoteUrl().equals(bookShelfBean.getNoteUrl())) {
+-                                        temp.setIsAdd(true);
++                                        temp.setIsCurrentSource(true);
+                                         break;
+                                     }
+                                 }
+@@ -196,7 +196,7 @@ public void hadAddBook(BookShelfBean bookShelfBean) {
+         List<SearchBookBean> datas = mView.getSearchBookAdapter().getSearchBooks();
+         for (int i = 0; i < datas.size(); i++) {
+             if (datas.get(i).getNoteUrl().equals(bookShelfBean.getNoteUrl())) {
+-                datas.get(i).setIsAdd(true);
++                datas.get(i).setIsCurrentSource(true);
+                 mView.updateSearchItem(i);
+                 break;
+             }
+@@ -221,7 +221,7 @@ public void hadRemoveBook(BookShelfBean bookShelfBean) {
+         List<SearchBookBean> datas = mView.getSearchBookAdapter().getSearchBooks();
+         for (int i = 0; i < datas.size(); i++) {
+             if (datas.get(i).getNoteUrl().equals(bookShelfBean.getNoteUrl())) {
+-                datas.get(i).setIsAdd(false);
++                datas.get(i).setIsCurrentSource(false);
+                 mView.updateSearchItem(i);
+                 break;
+             }
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/ChoiceBookActivity.java
+Patch:
+@@ -205,7 +205,7 @@ public void updateSearchItem(int index) {
+                 int startIndex = ((LinearLayoutManager) Objects.requireNonNull(rfRvSearchBooks.getRecyclerView().getLayoutManager())).findFirstVisibleItemPosition();
+                 TextView tvAddShelf = rfRvSearchBooks.getRecyclerView().getChildAt(index - startIndex).findViewById(R.id.tv_add_shelf);
+                 if (tvAddShelf != null) {
+-                    if (searchBookAdapter.getSearchBooks().get(index).getIsAdd()) {
++                    if (searchBookAdapter.getSearchBooks().get(index).getIsCurrentSource()) {
+                         tvAddShelf.setText("已添加");
+                         tvAddShelf.setEnabled(false);
+                     } else {
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/ChangeSourceAdapter.java
+Patch:
+@@ -48,7 +48,7 @@ public void addAllSourceAdapter(List<SearchBookBean> value) {
+ 
+     public void reSetSourceAdapter() {
+         searchBookBeans.clear();
+-        notifyDataSetChanged();
++            notifyDataSetChanged();
+     }
+ 
+     public void setOnItemClickListener(BaseListAdapter.OnItemClickListener listener) {
+@@ -78,7 +78,7 @@ public void onBindIViewHolder(RecyclerView.ViewHolder holder, int position) {
+         } else {
+             myViewHolder.tvLastChapter.setText(searchBookBeans.get(position).getLastChapter());
+         }
+-        if (searchBookBeans.get(position).getIsAdd()) {
++        if (searchBookBeans.get(position).getIsCurrentSource()) {
+             myViewHolder.ivChecked.setVisibility(View.VISIBLE);
+         } else {
+             myViewHolder.ivChecked.setVisibility(View.INVISIBLE);
+
+File: app/src/main/java/com/monke/monkeybook/view/popupwindow/CheckAddShelfPop.java
+Patch:
+@@ -21,7 +21,7 @@ public CheckAddShelfPop(Context context, @NonNull String bookName, @NonNull OnIt
+         mContext = context;
+         this.bookName = bookName;
+         this.itemClick = itemClick;
+-        view = LayoutInflater.from(mContext).inflate(R.layout.moprogress_dialog_two, null);
++        view = LayoutInflater.from(mContext).inflate(R.layout.mo_dialog_two, null);
+         this.setContentView(view);
+ 
+         initView();
+
+File: basemvplib/src/main/java/com/monke/basemvplib/EncodeConverter.java
+Patch:
+@@ -7,6 +7,7 @@
+ import org.jsoup.nodes.Element;
+ import org.jsoup.select.Elements;
+ 
++import java.io.ByteArrayInputStream;
+ import java.lang.annotation.Annotation;
+ import java.lang.reflect.Type;
+ import java.nio.charset.Charset;
+@@ -86,7 +87,7 @@ public Converter<ResponseBody, String> responseBodyConverter(Type type, Annotati
+                 }
+             }
+             //根据内容判断
+-            charsetStr = CharsetDetector.detectCharset(value.byteStream());
++            charsetStr = CharsetDetector.detectCharset(new ByteArrayInputStream(responseBytes));
+             return new String(responseBytes, Charset.forName(charsetStr));
+         };
+     }
+
+File: app/src/main/java/com/monke/monkeybook/bean/BookContentBean.java
+Patch:
+@@ -7,7 +7,7 @@
+ /**
+  * 书本缓存内容
+  */
+-public class BookContentBean implements Parcelable{
++public class BookContentBean implements Parcelable {
+     private String noteUrl; //对应BookInfoBean noteUrl;
+ 
+     private String durChapterUrl;
+@@ -18,7 +18,7 @@ public class BookContentBean implements Parcelable{
+ 
+     private String tag;   //来源  某个网站/本地
+ 
+-    public BookContentBean(){
++    public BookContentBean() {
+ 
+     }
+ 
+
+File: app/src/main/java/com/monke/monkeybook/model/content/DefaultModel.java
+Patch:
+@@ -7,8 +7,6 @@
+ import com.monke.monkeybook.bean.BookSourceBean;
+ import com.monke.monkeybook.bean.ChapterListBean;
+ import com.monke.monkeybook.bean.SearchBookBean;
+-import com.monke.monkeybook.dao.BookSourceBeanDao;
+-import com.monke.monkeybook.dao.DbHelper;
+ import com.monke.monkeybook.model.BookSourceManager;
+ import com.monke.monkeybook.model.analyzeRule.AnalyzeHeaders;
+ import com.monke.monkeybook.model.analyzeRule.AnalyzeSearchUrl;
+
+File: app/src/main/java/com/monke/monkeybook/widget/page/PageLoaderNet.java
+Patch:
+@@ -33,7 +33,7 @@
+  */
+ 
+ public class PageLoaderNet extends PageLoader {
+-    private static final String TAG = "NetPageLoader";
++    private static final String TAG = "PageLoaderNet";
+     private List<String> downloadingChapterList = new ArrayList<>();
+     private ExecutorService executorService;
+     private Scheduler scheduler;
+
+File: app/src/main/java/com/monke/monkeybook/widget/page/PageLoaderText.java
+Patch:
+@@ -34,7 +34,7 @@
+  * 加载本地书籍
+  */
+ public class PageLoaderText extends PageLoader {
+-    private static final String TAG = "LocalPageLoader";
++    private static final String TAG = "PageLoaderText";
+     //默认从文件中获取数据的长度
+     private final static int BUFFER_SIZE = 512 * 1024;
+     //没有标题的时候，每个章节的最大长度
+
+File: app/src/main/java/com/monke/monkeybook/widget/animation/SimulationPageAnim.java
+Patch:
+@@ -436,10 +436,11 @@ public void changePageEnd() {
+             case NEXT:
+                 if (blurCurBitmap != null) {
+                     blurPreBitmap = blurCurBitmap;
++                    blurCurBitmap = stackBlur(mCurBitmap);
+                 } else {
++                    AsyncTask.execute(() -> blurCurBitmap = stackBlur(mCurBitmap));
+                     AsyncTask.execute(() -> blurPreBitmap = stackBlur(mPreBitmap));
+                 }
+-                blurCurBitmap = stackBlur(mCurBitmap);
+                 break;
+             case PRE:
+                 if (blurPreBitmap != null) {
+
+File: app/src/main/java/com/monke/monkeybook/MApplication.java
+Patch:
+@@ -28,6 +28,7 @@ public class MApplication extends Application {
+     private static String versionName;
+     private static int versionCode;
+     private SharedPreferences configPreferences;
++    public static int VOLUME = -1;
+ 
+     public static MApplication getInstance() {
+         return instance;
+
+File: app/src/main/java/com/monke/monkeybook/base/BaseTabActivity.java
+Patch:
+@@ -45,7 +45,7 @@ protected void bindView() {
+     /*****************rewrite method***************************/
+ 
+ 
+-    private void setUpTabLayout(){
++    private void setUpTabLayout() {
+         mFragmentList = createTabFragments();
+         mTitleList = createTabTitles();
+ 
+@@ -60,8 +60,8 @@ private void setUpTabLayout(){
+     /**
+      * 检查输入的参数是否正确。即Fragment和title是成对的。
+      */
+-    private void checkParamsIsRight(){
+-        if (mFragmentList == null || mTitleList == null){
++    private void checkParamsIsRight() {
++        if (mFragmentList == null || mTitleList == null) {
+             throw new IllegalArgumentException("fragmentList or titleList doesn't have null");
+         }
+ 
+
+File: app/src/main/java/com/monke/monkeybook/help/RxBusTag.java
+Patch:
+@@ -29,4 +29,5 @@ public class RxBusTag {
+     public final static String UPDATE_APK_STATE = "updateApkState";
+     public final static String DOWNLOAD_ALL = "downloadAll";
+     public final static String UPDATE_BOOK_SOURCE = "updateBookSource";
++    public final static String RESET_VOLUME = "resetVolume";
+ }
+
+File: app/src/main/java/com/monke/monkeybook/presenter/BookSourcePresenterImpl.java
+Patch:
+@@ -77,9 +77,7 @@ public void delData(BookSourceBean bookSourceBean) {
+                     @Override
+                     public void onNext(Boolean aBoolean) {
+                         mView.getSnackBar(delBookSource.getBookSourceName() + "已删除", Snackbar.LENGTH_LONG)
+-                                .setAction("恢复", view -> {
+-                                    restoreBookSource(delBookSource);
+-                                })
++                                .setAction("恢复", view -> restoreBookSource(delBookSource))
+                                 .show();
+                     }
+ 
+
+File: app/src/main/java/com/monke/monkeybook/presenter/ReplaceRulePresenterImpl.java
+Patch:
+@@ -67,9 +67,7 @@ public void delData(ReplaceRuleBean replaceRuleBean) {
+                     public void onNext(List<ReplaceRuleBean> replaceRuleBeans) {
+                         mView.refresh();
+                         mView.getSnackBar(replaceRuleBean.getReplaceSummary() + "已删除", Snackbar.LENGTH_LONG)
+-                                .setAction("恢复", view -> {
+-                                    restoreData(replaceRuleBean);
+-                                })
++                                .setAction("恢复", view -> restoreData(replaceRuleBean))
+                                 .show();
+                     }
+ 
+
+File: app/src/main/java/com/monke/monkeybook/presenter/contract/MainContract.java
+Patch:
+@@ -47,6 +47,8 @@ interface Presenter extends IPresenter {
+         void addBookUrl(String bookUrl);
+ 
+         void clearBookshelf();
++
++        void resetVolume();
+     }
+ 
+ }
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/WelcomeToReadActivity.java
+Patch:
+@@ -6,7 +6,6 @@
+ import android.content.Intent;
+ import android.widget.ImageView;
+ 
+-import com.monke.basemvplib.AppActivityManager;
+ import com.monke.basemvplib.impl.IPresenter;
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.base.MBaseActivity;
+
+File: app/src/main/java/com/monke/monkeybook/widget/FilletImageView.java
+Patch:
+@@ -3,9 +3,7 @@
+ import android.content.Context;
+ import android.graphics.Canvas;
+ import android.graphics.Path;
+-import android.os.Build;
+ import android.util.AttributeSet;
+-import android.view.View;
+ 
+ 
+ public class FilletImageView extends android.support.v7.widget.AppCompatImageView {
+
+File: app/src/main/java/com/monke/monkeybook/widget/page/NetPageLoader.java
+Patch:
+@@ -135,9 +135,7 @@ public void onError(Throwable e) {
+                         }
+ 
+                         @Override
+-                        public void onComplete() {
+-
+-                        }
++                        public void onComplete() {}
+                     });
+         }
+     }
+@@ -241,6 +239,7 @@ public void closeBook() {
+     TxtChapter dealLoadPageList(int chapterPos) {
+         TxtChapter txtChapter = super.dealLoadPageList(chapterPos);
+         if (!isNetWorkAvailable() && !hasChapterData(mCollBook.getChapterList(chapterPos)) && txtChapter.getStatus() == Enum.PageStatus.LOADING) {
++            txtChapter.setStatus(Enum.PageStatus.ERROR);
+             txtChapter.setMsg("网络连接不可用");
+         }
+         return txtChapter;
+
+File: app/src/main/java/com/monke/monkeybook/widget/page/PageLoader.java
+Patch:
+@@ -415,7 +415,7 @@ public boolean updateBattery(int level) {
+         if (!mPageView.isRunning() && readBookControl.getHideStatusBar() && readBookControl.getShowTimeBattery()) {
+             if (mPageMode == Enum.PageMode.SCROLL) {
+                 mPageView.drawBackground(0);
+-            } else {
++            } else if (mCurChapter != null) {
+                 upPage();
+             }
+             mPageView.invalidate();
+
+File: app/src/main/java/com/monke/monkeybook/help/ChapterContentHelp.java
+Patch:
+@@ -38,7 +38,7 @@ public static String replaceContent(BookShelfBean mBook, String content) {
+                 for (ReplaceRuleBean replaceRule : ReplaceRuleManage.getEnabled()) {
+                     if (TextUtils.isEmpty(replaceRule.getUseTo()) || isUseTo(mBook, replaceRule.getUseTo())) {
+                         try {
+-                            line = line.replaceAll(replaceRule.getRegex(), replaceRule.getReplacement());
++                            line = line.replaceAll(replaceRule.getFixedRegex(), replaceRule.getReplacement());
+                         } catch (Exception e1) {
+                             e1.printStackTrace();
+                         }
+@@ -55,7 +55,7 @@ public static String replaceContent(BookShelfBean mBook, String content) {
+             content = contentBuilder.toString();
+             for (ReplaceRuleBean replaceRule : ReplaceRuleManage.getEnabled()) {
+                 if (TextUtils.isEmpty(replaceRule.getUseTo()) || isUseTo(mBook, replaceRule.getUseTo())) {
+-                    if (!TextUtils.isEmpty(replaceRule.getRegex()) && replaceRule.getRegex().contains("\\n")) {
++                    if (replaceRule.getIsRegex() && !TextUtils.isEmpty(replaceRule.getRegex()) && replaceRule.getRegex().contains("\\n")) {
+                         try {
+                             content = content.replaceAll(replaceRule.getRegex(), replaceRule.getReplacement());
+                         } catch (Exception e1) {
+
+File: app/src/main/java/com/monke/monkeybook/help/DataBackup.java
+Patch:
+@@ -45,7 +45,7 @@ public static DataBackup getInstance() {
+     public void autoSave() {
+         long currentTime = System.currentTimeMillis();
+         if (EasyPermissions.hasPermissions(MApplication.getInstance(), MApplication.PerList)) {
+-            long lastBackupTime = (long) SharedPreferencesUtil.getData(MApplication.getInstance(), "backupTime", 0L);
++            long lastBackupTime = (long) SharedPreferencesUtil.getData("backupTime", 0L);
+             if (currentTime - lastBackupTime > 24 * 3600 * 1000) {
+                 DocumentHelper.createDirIfNotExist(FileUtil.getSdCardPath(), "YueDu");
+                 String dirPath = FileUtil.getSdCardPath() + "/YueDu";
+
+File: app/src/main/java/com/monke/monkeybook/help/DataRestore.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import com.google.gson.Gson;
+ import com.google.gson.reflect.TypeToken;
++import com.monke.monkeybook.MApplication;
+ import com.monke.monkeybook.bean.BookShelfBean;
+ import com.monke.monkeybook.bean.BookSourceBean;
+ import com.monke.monkeybook.bean.ReplaceRuleBean;
+@@ -58,6 +59,7 @@ private void restoreConfig(String dirPath) {
+             String key = entry.getKey();
+             SharedPreferencesUtil.saveData(key, v);
+         }
++        SharedPreferencesUtil.saveData("versionCode", MApplication.getVersionCode());
+     }
+ 
+     private void restoreBookShelf(String file) throws Exception {
+
+File: app/src/main/java/com/monke/monkeybook/presenter/BookDetailPresenterImpl.java
+Patch:
+@@ -239,7 +239,7 @@ public void onNext(BookShelfBean value) {
+                         bookShelf = value;
+                         mView.updateView();
+                         String tag = bookShelf.getTag();
+-                        if (tag != My716.TAG) {
++                        if (!tag.equals(My716.TAG)) {
+                             try {
+                                 long currentTime = System.currentTimeMillis();
+                                 String bookName = bookShelf.getBookInfoBean().getName();
+
+File: app/src/main/java/com/monke/monkeybook/widget/FilletImageView.java
+Patch:
+@@ -21,9 +21,6 @@ public FilletImageView(Context context, AttributeSet attrs) {
+ 
+     public FilletImageView(Context context, AttributeSet attrs, int defStyleAttr) {
+         super(context, attrs, defStyleAttr);
+-        if (Build.VERSION.SDK_INT < 18) {
+-            setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+-        }
+     }
+ 
+     @Override
+
+File: app/src/main/java/com/monke/monkeybook/widget/page/Enum.java
+Patch:
+@@ -2,10 +2,11 @@
+ 
+ public class Enum {
+     /**
++     * Created by newbiechen on 2018/2/5.
+      * 作用：翻页动画的模式
+      */
+     public enum PageMode {
+-        COVER, SIMULATION, NONE, SCROLL, SLIDE
++        COVER, SIMULATION, SLIDE, SCROLL, NONE
+     }
+ 
+     public enum PageStatus {
+
+File: app/src/main/java/com/monke/monkeybook/bean/BookInfoBean.java
+Patch:
+@@ -3,6 +3,7 @@
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
++import android.text.TextUtils;
+ 
+ import com.monke.monkeybook.R;
+ 
+@@ -182,7 +183,7 @@ public void setIntroduce(String introduce) {
+     }
+ 
+     public String getOrigin() {
+-        return origin == null && tag.equals(BookShelfBean.LOCAL_TAG) ? getString(R.string.local) : origin;
++        return TextUtils.isEmpty(origin) && tag.equals(BookShelfBean.LOCAL_TAG) ? getString(R.string.local) : origin;
+     }
+ 
+     public void setOrigin(String origin) {
+
+File: app/src/main/java/com/monke/monkeybook/model/ImportBookModelImpl.java
+Patch:
+@@ -31,7 +31,6 @@ public Observable<LocBookShelfBean> importBook(final File file) {
+             boolean isNew = false;
+ 
+             BookShelfBean bookShelfBean = BookshelfHelp.getBook(file.getAbsolutePath());
+-            BookInfoBean bookInfoBean = bookShelfBean.getBookInfoBean();
+             if (bookShelfBean == null) {
+                 isNew = true;
+                 bookShelfBean = new BookShelfBean();
+@@ -43,6 +42,7 @@ public Observable<LocBookShelfBean> importBook(final File file) {
+                 bookShelfBean.setNoteUrl(file.getAbsolutePath());
+                 bookShelfBean.setAllowUpdate(false);
+ 
++                BookInfoBean bookInfoBean = bookShelfBean.getBookInfoBean();
+                 String fileName = file.getName().replace(".txt", "").replace(".TXT", "");
+                 int authorIndex = fileName.indexOf("作者");
+                 if (authorIndex != -1) {
+
+File: app/src/main/java/com/monke/monkeybook/MApplication.java
+Patch:
+@@ -23,10 +23,10 @@ public class MApplication extends Application {
+     public final static String channelIdReadAloud = "channel_read_aloud";
+     public final static String[] PerList = {Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE};
+     public final static int RESULT__PERMS = 263;
++    public static String downloadPath;
+     private static MApplication instance;
+     private static String versionName;
+     private static int versionCode;
+-    public static String downloadPath;
+     private SharedPreferences configPreferences;
+ 
+     public static MApplication getInstance() {
+@@ -66,7 +66,7 @@ public void onCreate() {
+ 
+     public void setDownloadPath(String downloadPath) {
+         MApplication.downloadPath = downloadPath;
+-        Constant.BOOK_CACHE_PATH = MApplication.downloadPath + File.separator + "book_cache"+ File.separator ;
++        Constant.BOOK_CACHE_PATH = MApplication.downloadPath + File.separator + "book_cache" + File.separator;
+         SharedPreferences.Editor editor = configPreferences.edit();
+         editor.putString(getString(R.string.pk_download_path), FileHelp.getCachePath());
+         editor.apply();
+
+File: app/src/main/java/com/monke/monkeybook/base/MBaseFragment.java
+Patch:
+@@ -20,7 +20,7 @@
+ import java.util.Objects;
+ 
+ public abstract class MBaseFragment<T extends IPresenter> extends BaseFragment<T> implements IView {
+-    public final static String start_share_ele= "start_with_share_ele";
++    public final static String start_share_ele = "start_with_share_ele";
+     public SharedPreferences preferences;
+     protected T mPresenter;
+ 
+@@ -44,7 +44,7 @@ protected void startActivityByAnim(Intent intent, int animIn, int animExit) {
+ 
+     protected void startActivityByAnim(Intent intent, @NonNull View view, @NonNull String transitionName, int animIn, int animExit) {
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+-            intent.putExtra(start_share_ele,true);
++            intent.putExtra(start_share_ele, true);
+             ActivityOptions options = ActivityOptions.makeSceneTransitionAnimation(getActivity(), view, transitionName);
+             startActivity(intent, options.toBundle());
+         } else {
+
+File: app/src/main/java/com/monke/monkeybook/bean/LocBookShelfBean.java
+Patch:
+@@ -5,7 +5,7 @@ public class LocBookShelfBean {
+     private Boolean isNew;
+     private BookShelfBean bookShelfBean;
+ 
+-    public LocBookShelfBean(Boolean isNew,BookShelfBean bookShelfBean){
++    public LocBookShelfBean(Boolean isNew, BookShelfBean bookShelfBean) {
+         this.isNew = isNew;
+         this.bookShelfBean = bookShelfBean;
+     }
+
+File: app/src/main/java/com/monke/monkeybook/help/DataRestore.java
+Patch:
+@@ -58,7 +58,7 @@ private void restoreConfig(String dirPath) {
+             String key = entry.getKey();
+             SharedPreferencesUtil.saveData(key, v);
+         }
+-   }
++    }
+ 
+     private void restoreBookShelf(String file) throws Exception {
+         String json = DocumentHelper.readString("myBookShelf.json", file);
+
+File: app/src/main/java/com/monke/monkeybook/help/media/LoaderCreator.java
+Patch:
+@@ -13,7 +13,7 @@ public class LoaderCreator {
+ 
+     public static CursorLoader create(Context context, int id, Bundle bundle) {
+         LocalFileLoader loader = null;
+-        switch (id){
++        switch (id) {
+             case ALL_BOOK_FILE:
+                 loader = new LocalFileLoader(context);
+                 break;
+
+File: app/src/main/java/com/monke/monkeybook/model/analyzeRule/AnalyzeSearchUrl.java
+Patch:
+@@ -57,9 +57,9 @@ private String setPage(String urlStr) {
+         if (matcher.find()) {
+             String[] pages = matcher.group(0).split(",");
+             if (searchPage <= pages.length) {
+-                urlStr = urlStr.replaceAll("\\{.*?\\}", pages[searchPage-1].trim());
++                urlStr = urlStr.replaceAll("\\{.*?\\}", pages[searchPage - 1].trim());
+             } else {
+-                urlStr = urlStr.replaceAll("\\{.*?\\}", pages[pages.length-1].trim());
++                urlStr = urlStr.replaceAll("\\{.*?\\}", pages[pages.length - 1].trim());
+             }
+         }
+         return urlStr;
+
+File: app/src/main/java/com/monke/monkeybook/model/content/BookChapter.java
+Patch:
+@@ -104,7 +104,7 @@ private class WebChapterBean<T> {
+ 
+         private String nextUrl;
+ 
+-        private WebChapterBean(T data,String nextUrl){
++        private WebChapterBean(T data, String nextUrl) {
+             this.data = data;
+             this.nextUrl = nextUrl;
+         }
+
+File: app/src/main/java/com/monke/monkeybook/model/impl/IHttpGetApi.java
+Patch:
+@@ -18,7 +18,7 @@
+ public interface IHttpGetApi {
+     @GET
+     Observable<Response<String>> getWebContent(@Url String url,
+-                                     @HeaderMap Map<String, String> headers);
++                                               @HeaderMap Map<String, String> headers);
+ 
+     @GET
+     Observable<Response<String>> searchBook(@Url String url,
+@@ -27,5 +27,5 @@ Observable<Response<String>> searchBook(@Url String url,
+ 
+     @GET
+     Call<String> getWebContentCall(@Url String url,
+-                                         @HeaderMap Map<String, String> headers);
++                                   @HeaderMap Map<String, String> headers);
+ }
+
+File: app/src/main/java/com/monke/monkeybook/presenter/ImportBookPresenterImpl.java
+Patch:
+@@ -21,7 +21,7 @@
+ public class ImportBookPresenterImpl extends BasePresenterImpl<ImportBookContract.View> implements ImportBookContract.Presenter {
+ 
+     @Override
+-    public void importBooks(List<File> books){
++    public void importBooks(List<File> books) {
+         Observable.fromIterable(books)
+                 .flatMap(file -> ImportBookModelImpl.getInstance().importBook(file))
+                 .subscribeOn(Schedulers.io())
+@@ -30,8 +30,8 @@ public void importBooks(List<File> books){
+                 .subscribe(new SimpleObserver<LocBookShelfBean>() {
+                     @Override
+                     public void onNext(LocBookShelfBean value) {
+-                        if(value.getNew()){
+-                            RxBus.get().post(RxBusTag.HAD_ADD_BOOK,value.getBookShelfBean());
++                        if (value.getNew()) {
++                            RxBus.get().post(RxBusTag.HAD_ADD_BOOK, value.getBookShelfBean());
+                         }
+                     }
+ 
+
+File: app/src/main/java/com/monke/monkeybook/presenter/MainPresenterImpl.java
+Patch:
+@@ -182,12 +182,12 @@ public void detachView() {
+         RxBus.get().unregister(this);
+     }
+ 
+-    @Subscribe(thread = EventThread.MAIN_THREAD,tags = {@Tag(RxBusTag.IMMERSION_CHANGE)})
++    @Subscribe(thread = EventThread.MAIN_THREAD, tags = {@Tag(RxBusTag.IMMERSION_CHANGE)})
+     public void initImmersionBar(Boolean immersion) {
+         mView.initImmersionBar();
+     }
+ 
+-    @Subscribe(thread = EventThread.MAIN_THREAD,tags = {@Tag(RxBusTag.UPDATE_PX)})
++    @Subscribe(thread = EventThread.MAIN_THREAD, tags = {@Tag(RxBusTag.UPDATE_PX)})
+     public void updatePx(Boolean px) {
+         mView.recreate();
+     }
+
+File: app/src/main/java/com/monke/monkeybook/presenter/SearchBookPresenterImpl.java
+Patch:
+@@ -298,7 +298,7 @@ public void onError(Throwable e) {
+     }
+ 
+     private void saveSearchBookToDb(String bookName) {
+-        Observable.create((ObservableOnSubscribe<Boolean>) e->{
++        Observable.create((ObservableOnSubscribe<Boolean>) e -> {
+             for (SearchBookBean searchBookBean : mView.getSearchBookAdapter().getSearchBooks()) {
+                 if (Objects.equals(searchBookBean.getName(), bookName)) {
+                     DbHelper.getInstance().getmDaoSession().getSearchBookBeanDao().insertOrReplace(searchBookBean);
+
+File: app/src/main/java/com/monke/monkeybook/presenter/contract/BookListContract.java
+Patch:
+@@ -14,6 +14,7 @@ interface View extends IView {
+ 
+         /**
+          * 刷新书架书籍小说信息 更新UI
++         *
+          * @param bookShelfBeanList 书架
+          */
+         void refreshBookShelf(List<BookShelfBean> bookShelfBeanList);
+@@ -22,6 +23,7 @@ interface View extends IView {
+ 
+         /**
+          * 刷新错误
++         *
+          * @param error 错误
+          */
+         void refreshError(String error);
+
+File: app/src/main/java/com/monke/monkeybook/presenter/contract/MainContract.java
+Patch:
+@@ -16,6 +16,7 @@ interface View extends IView {
+ 
+         /**
+          * 刷新错误
++         *
+          * @param error 错误
+          */
+         void refreshError(String error);
+
+File: app/src/main/java/com/monke/monkeybook/presenter/contract/ReplaceRuleContract.java
+Patch:
+@@ -28,8 +28,6 @@ interface View extends IView {
+ 
+         Snackbar getSnackBar(String msg, int length);
+ 
+-        void showSnackBar(String msg, int length);
+-
+         void toast(String msg);
+     }
+ 
+
+File: app/src/main/java/com/monke/monkeybook/presenter/contract/SearchBookContract.java
+Patch:
+@@ -31,7 +31,7 @@ interface Presenter extends IPresenter {
+ 
+         void setUseMy716(boolean useMy716);
+ 
+-        void toSearchBooks(String key,Boolean fromError);
++        void toSearchBooks(String key, Boolean fromError);
+ 
+         void addBookToShelf(final SearchBookBean searchBookBean);
+ 
+
+File: app/src/main/java/com/monke/monkeybook/utils/IOUtils.java
+Patch:
+@@ -9,7 +9,7 @@
+ 
+ public class IOUtils {
+ 
+-    public static void close(Closeable closeable){
++    public static void close(Closeable closeable) {
+         if (closeable == null) return;
+         try {
+             closeable.close();
+
+File: app/src/main/java/com/monke/monkeybook/utils/MarkdownUtils.java
+Patch:
+@@ -18,7 +18,7 @@ public static CharSequence simpleMarkdownConverter(String text) {
+         String emPtn = "\\*([^*]+)\\*";
+         boolean isInList = false;
+         StringBuilder builder = new StringBuilder();
+-        for (String line: text.split("\\n")) {
++        for (String line : text.split("\\n")) {
+             Matcher listMtc = listPtn.matcher(line);
+             Matcher headMtc = headPtn.matcher(line);
+             boolean isList = listMtc.find();
+
+File: app/src/main/java/com/monke/monkeybook/utils/ReadAssets.java
+Patch:
+@@ -7,7 +7,7 @@
+ 
+ public class ReadAssets {
+ 
+-    public static String getText(Context context, String fileName){
++    public static String getText(Context context, String fileName) {
+         try {
+             //Return an AssetManager instance for your application's package
+             InputStream is = context.getAssets().open(fileName);
+
+File: app/src/main/java/com/monke/monkeybook/utils/RxUtils.java
+Patch:
+@@ -14,17 +14,17 @@
+ 
+ public class RxUtils {
+ 
+-    public static <T> SingleSource<T> toSimpleSingle(Single<T> upstream){
++    public static <T> SingleSource<T> toSimpleSingle(Single<T> upstream) {
+         return upstream.subscribeOn(Schedulers.io())
+                 .observeOn(AndroidSchedulers.mainThread());
+     }
+ 
+-    public static <T> ObservableSource<T> toSimpleSingle(Observable<T> upstream){
++    public static <T> ObservableSource<T> toSimpleSingle(Observable<T> upstream) {
+         return upstream.subscribeOn(Schedulers.io())
+                 .observeOn(AndroidSchedulers.mainThread());
+     }
+ 
+-    public static <T,R> TwoTuple<T,R> twoTuple(T first,R second){
++    public static <T, R> TwoTuple<T, R> twoTuple(T first, R second) {
+         return new TwoTuple<T, R>(first, second);
+     }
+ 
+
+File: app/src/main/java/com/monke/monkeybook/utils/barUtil/BarParams.java
+Patch:
+@@ -21,8 +21,6 @@ public class BarParams implements Cloneable {
+     public int navigationBarColor = Color.BLACK;  //导航栏颜色
+     @FloatRange(from = 0f, to = 1f)
+     public float statusBarAlpha = 0.0f;           //状态栏透明度
+-    @FloatRange(from = 0f, to = 1f)
+-    float navigationBarAlpha = 0.0f;       //导航栏透明度
+     public boolean fullScreen = false;            //有导航栏的情况，全屏显示
+     public boolean fullScreenTemp = fullScreen;
+     public BarHide barHide = BarHide.FLAG_SHOW_BAR;  //隐藏Bar
+@@ -66,8 +64,9 @@ public class BarParams implements Cloneable {
+     public KeyboardPatch keyboardPatch;        //软键盘监听类
+     public OnKeyboardListener onKeyboardListener;   //软键盘监听类
+     public ContentObserver navigationStatusObserver;  //emui3.1监听器
+-
+     public boolean navigationBarDivider = true;     //显示导航栏Divider
++    @FloatRange(from = 0f, to = 1f)
++    float navigationBarAlpha = 0.0f;       //导航栏透明度
+ 
+     @Override
+     protected BarParams clone() {
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/ImportBookActivity.java
+Patch:
+@@ -161,7 +161,7 @@ public void onPageScrollStateChanged(int state) {
+     }
+ 
+     @Override
+-    protected void firstRequest () {
++    protected void firstRequest() {
+         super.firstRequest();
+         mCurFragment = mLocalFragment;
+     }
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/FindKindAdapter.java
+Patch:
+@@ -39,7 +39,7 @@ public FindKindAdapter(Context context, List<RecyclerViewData> datas) {
+      */
+     @Override
+     public View getGroupView(ViewGroup parent) {
+-        return mInflater.inflate(R.layout.item_find_group,parent,false);
++        return mInflater.inflate(R.layout.item_find_group, parent, false);
+     }
+ 
+     /**
+@@ -49,7 +49,7 @@ public View getGroupView(ViewGroup parent) {
+      */
+     @Override
+     public View getChildView(ViewGroup parent) {
+-        return mInflater.inflate(R.layout.item_find_kind,parent,false);
++        return mInflater.inflate(R.layout.item_find_kind, parent, false);
+     }
+ 
+     /**
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/base/BaseViewHolder.java
+Patch:
+@@ -7,7 +7,7 @@
+  * Created by newbiechen on 17-5-17.
+  */
+ 
+-public class BaseViewHolder<T> extends RecyclerView.ViewHolder{
++public class BaseViewHolder<T> extends RecyclerView.ViewHolder {
+     public IViewHolder<T> holder;
+ 
+     public BaseViewHolder(View itemView, IViewHolder<T> holder) {
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/base/IViewHolder.java
+Patch:
+@@ -9,7 +9,10 @@
+ 
+ public interface IViewHolder<T> {
+     View createItemView(ViewGroup parent);
++
+     void initView();
++
+     void onBind(T data, int pos);
++
+     void onClick();
+ }
+
+File: app/src/main/java/com/monke/monkeybook/view/fragment/FindBookFragment.java
+Patch:
+@@ -81,7 +81,7 @@ public synchronized void updateUI(List<RecyclerViewData> group) {
+     private boolean autoExpandGroup() {
+         if (isAdded()) {
+             return preferences.getBoolean(getString(R.string.pk_find_expand_group), false);
+-        }else {
++        } else {
+             return false;
+         }
+     }
+
+File: app/src/main/java/com/monke/monkeybook/widget/animation/HorizonPageAnim.java
+Patch:
+@@ -12,10 +12,9 @@
+  */
+ 
+ public abstract class HorizonPageAnim extends PageAnimation {
+-    private static final String TAG = "HorizonPageAnim";
+     //动画速度
+     protected static final int animationSpeed = 300;
+-
++    private static final String TAG = "HorizonPageAnim";
+     protected Bitmap mCurBitmap;
+     protected Bitmap mNextBitmap;
+     //是否取消翻页
+@@ -33,7 +32,7 @@ public abstract class HorizonPageAnim extends PageAnimation {
+     private boolean noNext = false;
+ 
+     public HorizonPageAnim(int w, int h, View view, OnPageChangeListener listener) {
+-        super(w, h, view,listener);
++        super(w, h, view, listener);
+         //创建图片
+         mCurBitmap = Bitmap.createBitmap(mViewWidth, mViewHeight, Bitmap.Config.RGB_565);
+         mNextBitmap = Bitmap.createBitmap(mViewWidth, mViewHeight, Bitmap.Config.RGB_565);
+
+File: app/src/main/java/com/monke/monkeybook/widget/font/FontAdapter.java
+Patch:
+@@ -68,7 +68,7 @@ public void upData(File[] files) {
+                 try {
+                     Typeface.createFromFile(file);
+                     fileList.add(file);
+-                } catch (Exception e){
++                } catch (Exception e) {
+                     e.printStackTrace();
+                 }
+             }
+
+File: app/src/main/java/com/monke/monkeybook/widget/page/NetPageLoader.java
+Patch:
+@@ -117,7 +117,7 @@ boolean parsePrevChapter() {
+     boolean parseCurChapter() {
+         boolean isRight = super.parseCurChapter();
+         if (mPageChangeListener != null) {
+-            for (int i=mCurChapterPos; i < mCurChapterPos + 5; i++) {
++            for (int i = mCurChapterPos; i < mCurChapterPos + 5; i++) {
+                 if (i < mCollBook.getChapterListSize() && shouldRequestChapter(i)) {
+                     mPageChangeListener.requestChapters(i);
+                 }
+@@ -131,7 +131,7 @@ boolean parseCurChapter() {
+     boolean parseNextChapter() {
+         boolean isRight = super.parseNextChapter();
+         if (mPageChangeListener != null) {
+-            for (int i=mCurChapterPos + 1; i < mCurChapterPos + 6; i++) {
++            for (int i = mCurChapterPos + 1; i < mCurChapterPos + 6; i++) {
+                 if (i < mCollBook.getChapterListSize() && shouldRequestChapter(i)) {
+                     mPageChangeListener.requestChapters(i);
+                 }
+@@ -143,7 +143,7 @@ boolean parseNextChapter() {
+     @Override
+     void dealLoadPageList(int chapterPos) {
+         super.dealLoadPageList(chapterPos);
+-        if(!isNetWorkAvailable() && !hasChapterData(mCollBook.getChapterList(chapterPos)) && getPageStatus() == STATUS_LOADING) {
++        if (!isNetWorkAvailable() && !hasChapterData(mCollBook.getChapterList(chapterPos)) && getPageStatus() == STATUS_LOADING) {
+             chapterError("网络连接不可用");
+         }
+     }
+
+File: app/src/main/java/com/monke/monkeybook/widget/page/TxtChapter.java
+Patch:
+@@ -4,7 +4,7 @@
+  * Created by newbiechen on 17-7-1.
+  */
+ 
+-public class TxtChapter{
++public class TxtChapter {
+ 
+     //章节所属的小说(网络)
+     String bookId;
+
+File: app/src/main/java/com/monke/monkeybook/widget/refreshview/OnRefreshWithProgressListener.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.monke.monkeybook.widget.refreshview;
+ 
+-public interface OnRefreshWithProgressListener extends BaseRefreshListener{
++public interface OnRefreshWithProgressListener extends BaseRefreshListener {
+ 
+     public int getMaxProgress();
+ }
+
+File: app/src/main/java/com/monke/monkeybook/widget/refreshview/expandablerecyclerview/holder/BaseExpandAbleViewHolder.java
+Patch:
+@@ -4,6 +4,7 @@
+ import android.support.v7.widget.RecyclerView;
+ import android.view.View;
+ import android.view.ViewGroup;
++
+ /**
+  * author：Drawthink
+  * describe：BaseViewHolder
+@@ -23,7 +24,7 @@ public BaseExpandAbleViewHolder(Context ctx, View itemView, int viewType) {
+         super(itemView);
+         switch (viewType) {
+             case VIEW_TYPE_PARENT:
+-                groupView = (ViewGroup)itemView.findViewById(getGroupViewResId());
++                groupView = (ViewGroup) itemView.findViewById(getGroupViewResId());
+                 break;
+             case VIEW_TYPE_CHILD:
+                 childView = (ViewGroup) itemView.findViewById(getChildViewResId());
+@@ -38,7 +39,7 @@ public BaseExpandAbleViewHolder(Context ctx, View itemView, int viewType) {
+ 
+     /**
+      * return GroupView root layout id
+-     * */
++     */
+     public abstract int getGroupViewResId();
+ 
+ 
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/BookSourceAdapter.java
+Patch:
+@@ -126,6 +126,7 @@ public void onBindViewHolder(@NonNull MyViewHolder holder, int position) {
+         holder.delView.setOnClickListener(view -> {
+             activity.delBookSource(dataList.get(position));
+             dataList.remove(position);
++            activity.upSearchView(dataList.size());
+             notifyDataSetChanged();
+         });
+         holder.topView.setOnClickListener(view -> {
+
+File: app/src/main/java/com/monke/monkeybook/view/popupwindow/ReadInterfacePop.java
+Patch:
+@@ -195,7 +195,7 @@ private void bindEvent() {
+         civBgCustom.setOnClickListener(view -> {
+             Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+             intent.addCategory(Intent.CATEGORY_OPENABLE);
+-            intent.setType("image*//**//*");
++            intent.setType("image/*");
+             activity.startActivityForResult(intent, activity.ResultSelectBg);
+         });
+         civTextColor.setOnClickListener(view -> {
+@@ -225,7 +225,7 @@ private void chooseReadBookFont(){
+         if (EasyPermissions.hasPermissions(activity, perms)) {
+             Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+             intent.addCategory(Intent.CATEGORY_OPENABLE);
+-            intent.setType("fonts*//**//*");
++            intent.setType("*/*");
+             activity.startActivityForResult(intent, activity.ResultSelectFont);
+         }else{
+             EasyPermissions.requestPermissions(activity, "选择字体",
+
+File: app/src/main/java/com/monke/monkeybook/model/ReplaceRuleManage.java
+Patch:
+@@ -68,7 +68,6 @@ private static void refreshDataS() {
+             for (ChapterListBean chapterListBean : bookShelfBean.getChapterList()) {
+                 bookContentBean = chapterListBean.getBookContentBean();
+                 if (bookContentBean != null) {
+-                    bookContentBean.setLineSize(0);
+                     bookContentBean.setLineContent(null);
+                 }
+             }
+
+File: app/src/main/java/com/monke/monkeybook/presenter/ReadBookPresenterImpl.java
+Patch:
+@@ -106,6 +106,7 @@ public void loadContent(final BookContentView bookContentView, final long bookTa
+             if (null != bookShelf.getChapterList(chapterIndex).getBookContentBean()
+                     && null != bookShelf.getChapterList(chapterIndex).getBookContentBean().getDurChapterContent()) {
+                 if (bookShelf.getChapterList(chapterIndex).getBookContentBean().getLineSize() == mView.getPaint().getTextSize()
++                        && bookShelf.getChapterList(chapterIndex).getBookContentBean().getLineContent() != null
+                         && bookShelf.getChapterList(chapterIndex).getBookContentBean().getLineContent().size() > 0) {
+                     //已有数据
+                     int tempCount = (int) Math.ceil(bookShelf.getChapterList(chapterIndex)
+
+File: app/src/main/java/com/monke/monkeybook/model/impl/IHttpGetApi.java
+Patch:
+@@ -21,8 +21,8 @@ public interface IHttpGetApi {
+     Observable<String> getWebContent(@Url String url,
+                                      @HeaderMap Map<String, String> headers);
+ 
+-    @GET("{path}")
+-    Observable<Response<String>> searchBook(@Path("path") String path,
++    @GET
++    Observable<Response<String>> searchBook(@Url String url,
+                                             @QueryMap(encoded = true) Map<String, String> queryMap,
+                                             @HeaderMap Map<String, String> headers);
+ 
+
+File: app/src/main/java/com/monke/monkeybook/model/impl/IHttpPostApi.java
+Patch:
+@@ -9,6 +9,7 @@
+ import retrofit2.http.HeaderMap;
+ import retrofit2.http.POST;
+ import retrofit2.http.Path;
++import retrofit2.http.Url;
+ 
+ /**
+  * Created by GKF on 2018/1/29.
+@@ -18,6 +19,6 @@
+ public interface IHttpPostApi {
+ 
+     @FormUrlEncoded
+-    @POST("{path}")
+-    Observable<Response<String>> searchBook(@Path("path") String path, @FieldMap(encoded = true) Map<String, String> fieldMap, @HeaderMap Map<String, String> headers);
++    @POST
++    Observable<Response<String>> searchBook(@Url String url, @FieldMap(encoded = true) Map<String, String> fieldMap, @HeaderMap Map<String, String> headers);
+ }
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/SourceEditActivity.java
+Patch:
+@@ -251,6 +251,7 @@ private BookSourceBean getBookSource() {
+         bookSourceBeanN.setRuleSearchName(trim(tieRuleSearchName.getText().toString()));
+         bookSourceBeanN.setRuleSearchNoteUrl(trim(tieRuleSearchNoteUrl.getText().toString()));
+         bookSourceBeanN.setRuleSearchUrl(trim(tieRuleSearchUrl.getText().toString()));
++        bookSourceBeanN.setHttpUserAgent(trim(tieHttpUserAgent.getText().toString()));
+         bookSourceBeanN.setEnable(enable);
+         bookSourceBeanN.setSerialNumber(serialNumber);
+         return bookSourceBeanN;
+
+File: app/src/main/java/com/monke/monkeybook/help/BookShelf.java
+Patch:
+@@ -38,7 +38,7 @@ public static void removeFromBookShelf(BookShelfBean bookShelfBean) {
+     }
+ 
+     public static void saveBookToShelf(BookShelfBean bookShelfBean) {
+-        if (bookShelfBean.getBookInfoBean().getChapterUrl() != null) {
++        if (bookShelfBean.getErrorMsg() == null) {
+             DbHelper.getInstance().getmDaoSession().getChapterListBeanDao().insertOrReplaceInTx(bookShelfBean.getChapterList());
+             DbHelper.getInstance().getmDaoSession().getBookInfoBeanDao().insertOrReplace(bookShelfBean.getBookInfoBean());
+             DbHelper.getInstance().getmDaoSession().getBookShelfBeanDao().insertOrReplace(bookShelfBean);
+
+File: app/src/main/java/com/monke/monkeybook/model/content/DefaultModelImpl.java
+Patch:
+@@ -210,8 +210,7 @@ private Observable<BookShelfBean> analyzeBookInfo(String s, final BookShelfBean
+     public Observable<BookShelfBean> getChapterList(final BookShelfBean bookShelfBean) {
+         if (!initBookSourceBean()) {
+             return Observable.create(emitter -> {
+-                bookShelfBean.getBookInfoBean().setChapterUrl(null);
+-                bookShelfBean.getBookInfoBean().setChapterList(null);
++                bookShelfBean.setErrorMsg(String.format("%s没有找到书源配置", bookShelfBean.getBookInfoBean().getName()));
+                 emitter.onNext(bookShelfBean);
+                 emitter.onComplete();
+             });
+
+File: app/src/main/java/com/monke/monkeybook/model/content/DefaultModelImpl.java
+Patch:
+@@ -119,7 +119,9 @@ private Observable<List<SearchBookBean>> analyzeSearchBook(final String s, final
+                         item.setName(analyzeRule.getResult(bookSourceBean.getRuleSearchName()));
+                         item.setNoteUrl(analyzeRule.getResult(bookSourceBean.getRuleSearchNoteUrl()));
+                         item.setCoverUrl(analyzeRule.getResult(bookSourceBean.getRuleSearchCoverUrl()));
+-                        books.add(item);
++                        if (!isEmpty(item.getNoteUrl())) {
++                            books.add(item);
++                        }
+                     }
+                     e.onNext(books);
+                 } else {
+
+File: app/src/main/java/com/monke/monkeybook/presenter/MainPresenterImpl.java
+Patch:
+@@ -242,6 +242,7 @@ private void refreshBookShelf(final List<BookShelfBean> bookShelfBeans, final in
+         if (index < bookShelfBeans.size()) {
+             BookShelfBean bookShelfBean = bookShelfBeans.get(index);
+             if (bookShelfBean.getTag().equals(BookShelfBean.LOCAL_TAG)) {
++                mView.refreshRecyclerViewItemAdd();
+                 refreshBookShelf(bookShelfBeans, index + 1);
+             } else {
+                 int chapterSize = bookShelfBeans.get(index).getChapterListSize();
+@@ -259,6 +260,7 @@ public void onNext(BookShelfBean value) {
+ 
+                             @Override
+                             public void onError(Throwable e) {
++                                mView.refreshRecyclerViewItemAdd();
+                                 refreshBookShelf(bookShelfBeans, index + 1);
+                                 Toast.makeText(mView.getContext(), e.getMessage(), Toast.LENGTH_SHORT).show();
+                             }
+@@ -292,6 +294,7 @@ public void onNext(BookShelfBean value) {
+ 
+                     @Override
+                     public void onError(Throwable e) {
++                        mView.refreshRecyclerViewItemAdd();
+                         e.printStackTrace();
+                         Toast.makeText(mView.getContext(),
+                                 String.format("%s 保存更新失败", bookShelfBean.getBookInfoBean().getName()),
+
+File: app/src/main/java/com/monke/monkeybook/base/MBaseActivity.java
+Patch:
+@@ -7,8 +7,8 @@
+ import android.preference.PreferenceManager;
+ import android.view.Menu;
+ 
+-import com.monke.basemvplib.impl.IPresenter;
+ import com.monke.basemvplib.BaseActivity;
++import com.monke.basemvplib.impl.IPresenter;
+ import com.monke.monkeybook.R;
+ 
+ import java.lang.reflect.Method;
+
+File: app/src/main/java/com/monke/monkeybook/bean/BookContentBean.java
+Patch:
+@@ -3,10 +3,11 @@
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
++
+ import org.greenrobot.greendao.annotation.Entity;
++import org.greenrobot.greendao.annotation.Generated;
+ import org.greenrobot.greendao.annotation.Id;
+ import org.greenrobot.greendao.annotation.Transient;
+-import org.greenrobot.greendao.annotation.Generated;
+ 
+ import java.util.ArrayList;
+ import java.util.List;
+
+File: app/src/main/java/com/monke/monkeybook/bean/BookInfoBean.java
+Patch:
+@@ -3,10 +3,12 @@
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
++
+ import org.greenrobot.greendao.annotation.Entity;
++import org.greenrobot.greendao.annotation.Generated;
+ import org.greenrobot.greendao.annotation.Id;
+ import org.greenrobot.greendao.annotation.Transient;
+-import org.greenrobot.greendao.annotation.Generated;
++
+ import java.util.ArrayList;
+ import java.util.Iterator;
+ import java.util.List;
+
+File: app/src/main/java/com/monke/monkeybook/bean/BookShelfBean.java
+Patch:
+@@ -3,10 +3,12 @@
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
++
+ import com.monke.monkeybook.widget.contentswitchview.BookContentView;
++
+ import org.greenrobot.greendao.annotation.Entity;
+-import org.greenrobot.greendao.annotation.Id;
+ import org.greenrobot.greendao.annotation.Generated;
++import org.greenrobot.greendao.annotation.Id;
+ import org.greenrobot.greendao.annotation.Transient;
+ 
+ import java.util.List;
+
+File: app/src/main/java/com/monke/monkeybook/bean/BookSourceBean.java
+Patch:
+@@ -4,8 +4,8 @@
+ import android.os.Parcelable;
+ 
+ import org.greenrobot.greendao.annotation.Entity;
+-import org.greenrobot.greendao.annotation.Id;
+ import org.greenrobot.greendao.annotation.Generated;
++import org.greenrobot.greendao.annotation.Id;
+ 
+ import java.util.Objects;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/bean/ChapterListBean.java
+Patch:
+@@ -3,10 +3,11 @@
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
++
+ import org.greenrobot.greendao.annotation.Entity;
++import org.greenrobot.greendao.annotation.Generated;
+ import org.greenrobot.greendao.annotation.Id;
+ import org.greenrobot.greendao.annotation.Transient;
+-import org.greenrobot.greendao.annotation.Generated;
+ 
+ /**
+  * 章节列表
+
+File: app/src/main/java/com/monke/monkeybook/bean/DownloadChapterBean.java
+Patch:
+@@ -3,10 +3,11 @@
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
++
+ import org.greenrobot.greendao.annotation.Entity;
++import org.greenrobot.greendao.annotation.Generated;
+ import org.greenrobot.greendao.annotation.Id;
+ import org.greenrobot.greendao.annotation.Transient;
+-import org.greenrobot.greendao.annotation.Generated;
+ 
+ @Entity
+ public class DownloadChapterBean implements Parcelable {
+
+File: app/src/main/java/com/monke/monkeybook/bean/DownloadChapterListBean.java
+Patch:
+@@ -3,6 +3,7 @@
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
++
+ import java.util.ArrayList;
+ import java.util.List;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/bean/SearchBookBean.java
+Patch:
+@@ -5,8 +5,8 @@
+ import android.os.Parcelable;
+ 
+ import org.greenrobot.greendao.annotation.Entity;
+-import org.greenrobot.greendao.annotation.Id;
+ import org.greenrobot.greendao.annotation.Generated;
++import org.greenrobot.greendao.annotation.Id;
+ import org.greenrobot.greendao.annotation.Transient;
+ 
+ @Entity
+
+File: app/src/main/java/com/monke/monkeybook/bean/SearchHistoryBean.java
+Patch:
+@@ -2,9 +2,8 @@
+ package com.monke.monkeybook.bean;
+ 
+ import org.greenrobot.greendao.annotation.Entity;
+-import org.greenrobot.greendao.annotation.Id;
+-import org.greenrobot.greendao.annotation.Unique;
+ import org.greenrobot.greendao.annotation.Generated;
++import org.greenrobot.greendao.annotation.Id;
+ 
+ @Entity
+ public class SearchHistoryBean {
+
+File: app/src/main/java/com/monke/monkeybook/help/DataBackup.java
+Patch:
+@@ -13,7 +13,6 @@
+ import com.monke.monkeybook.bean.BookSourceBean;
+ import com.monke.monkeybook.bean.SearchHistoryBean;
+ import com.monke.monkeybook.dao.BookShelfBeanDao;
+-import com.monke.monkeybook.dao.BookSourceBeanDao;
+ import com.monke.monkeybook.dao.DbHelper;
+ import com.monke.monkeybook.model.BookSourceManage;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/help/Logger.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.monke.monkeybook.help;
+ 
+ import android.util.Log;
++
+ import com.monke.monkeybook.MApplication;
+ 
+ /**
+
+File: app/src/main/java/com/monke/monkeybook/help/RxBusTag.java
+Patch:
+@@ -1,5 +1,5 @@
+ //Copyright (c) 2017. 章钦豪. All rights reserved.
+-package com.monke.monkeybook.common;
++package com.monke.monkeybook.help;
+ 
+ public class RxBusTag {
+ 
+
+File: app/src/main/java/com/monke/monkeybook/model/ErrorAnalyContentManager.java
+Patch:
+@@ -3,10 +3,12 @@
+ 
+ import com.monke.monkeybook.MApplication;
+ import com.monke.monkeybook.base.observer.SimpleObserver;
++
+ import java.io.ByteArrayOutputStream;
+ import java.io.File;
+ import java.io.FileInputStream;
+ import java.io.FileOutputStream;
++
+ import io.reactivex.Observable;
+ import io.reactivex.ObservableOnSubscribe;
+ import io.reactivex.android.schedulers.AndroidSchedulers;
+
+File: app/src/main/java/com/monke/monkeybook/model/SearchBook.java
+Patch:
+@@ -8,7 +8,6 @@
+ import java.util.ArrayList;
+ import java.util.List;
+ 
+-import io.reactivex.Observable;
+ import io.reactivex.android.schedulers.AndroidSchedulers;
+ import io.reactivex.schedulers.Schedulers;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/model/content/AnalyzeRule.java
+Patch:
+@@ -13,7 +13,6 @@
+ import java.net.URISyntaxException;
+ import java.net.URL;
+ import java.util.ArrayList;
+-import java.util.Collections;
+ import java.util.List;
+ 
+ import static android.text.TextUtils.isEmpty;
+
+File: app/src/main/java/com/monke/monkeybook/model/content/AnalyzeSearchUrl.java
+Patch:
+@@ -1,6 +1,5 @@
+ package com.monke.monkeybook.model.content;
+ 
+-import java.net.MalformedURLException;
+ import java.net.URL;
+ import java.net.URLEncoder;
+ import java.util.HashMap;
+
+File: app/src/main/java/com/monke/monkeybook/model/impl/IGxwztvBookModel.java
+Patch:
+@@ -4,7 +4,9 @@
+ import com.monke.monkeybook.bean.LibraryBean;
+ import com.monke.monkeybook.bean.SearchBookBean;
+ import com.monke.monkeybook.cache.ACache;
++
+ import java.util.List;
++
+ import io.reactivex.Observable;
+ 
+ public interface IGxwztvBookModel extends IStationBookModel {
+
+File: app/src/main/java/com/monke/monkeybook/model/impl/IImportBookModel.java
+Patch:
+@@ -2,7 +2,9 @@
+ package com.monke.monkeybook.model.impl;
+ 
+ import com.monke.monkeybook.bean.LocBookShelfBean;
++
+ import java.io.File;
++
+ import io.reactivex.Observable;
+ 
+ public interface IImportBookModel {
+
+File: app/src/main/java/com/monke/monkeybook/model/impl/IStationBookModel.java
+Patch:
+@@ -4,8 +4,9 @@
+ import com.monke.monkeybook.bean.BookContentBean;
+ import com.monke.monkeybook.bean.BookShelfBean;
+ import com.monke.monkeybook.bean.SearchBookBean;
+-import com.monke.monkeybook.listener.OnGetChapterListListener;
++
+ import java.util.List;
++
+ import io.reactivex.Observable;
+ 
+ public interface IStationBookModel {
+@@ -23,7 +24,7 @@ public interface IStationBookModel {
+     /**
+      * 网络解析图书目录
+      */
+-    void getChapterList(final BookShelfBean bookShelfBean, OnGetChapterListListener getChapterListListener);
++    Observable<BookShelfBean> getChapterList(final BookShelfBean bookShelfBean);
+ 
+     /**
+      * 章节缓存
+
+File: app/src/main/java/com/monke/monkeybook/model/impl/IWebBookModel.java
+Patch:
+@@ -4,8 +4,9 @@
+ import com.monke.monkeybook.bean.BookContentBean;
+ import com.monke.monkeybook.bean.BookShelfBean;
+ import com.monke.monkeybook.bean.SearchBookBean;
+-import com.monke.monkeybook.listener.OnGetChapterListListener;
++
+ import java.util.List;
++
+ import io.reactivex.Observable;
+ 
+ public interface IWebBookModel {
+@@ -17,7 +18,7 @@ public interface IWebBookModel {
+     /**
+      * 网络解析图书目录
+      */
+-    void getChapterList(final BookShelfBean bookShelfBean,OnGetChapterListListener getChapterListListener);
++    Observable<BookShelfBean> getChapterList(final BookShelfBean bookShelfBean);
+ 
+     /**
+      * 章节缓存
+
+File: app/src/main/java/com/monke/monkeybook/presenter/LibraryPresenterImpl.java
+Patch:
+@@ -11,7 +11,9 @@
+ import com.monke.monkeybook.model.content.GxwztvBookModelImpl;
+ import com.monke.monkeybook.presenter.impl.ILibraryPresenter;
+ import com.monke.monkeybook.view.impl.ILibraryView;
++
+ import java.util.LinkedHashMap;
++
+ import io.reactivex.Observable;
+ import io.reactivex.ObservableOnSubscribe;
+ import io.reactivex.android.schedulers.AndroidSchedulers;
+
+File: app/src/main/java/com/monke/monkeybook/presenter/impl/ILibraryPresenter.java
+Patch:
+@@ -2,6 +2,7 @@
+ package com.monke.monkeybook.presenter.impl;
+ 
+ import com.monke.basemvplib.impl.IPresenter;
++
+ import java.util.LinkedHashMap;
+ 
+ public interface ILibraryPresenter extends IPresenter{
+
+File: app/src/main/java/com/monke/monkeybook/presenter/impl/ISourceEditPresenter.java
+Patch:
+@@ -13,6 +13,8 @@
+ 
+ public interface ISourceEditPresenter extends IPresenter {
+ 
++    void saveSource(BookSourceBean bookSource, BookSourceBean bookSourceOld);
++
+     void copySource(BookSourceBean bookSourceBean);
+ 
+     void pasteSource();
+
+File: app/src/main/java/com/monke/monkeybook/service/DownloadService.java
+Patch:
+@@ -23,7 +23,7 @@
+ import com.monke.monkeybook.bean.BookShelfBean;
+ import com.monke.monkeybook.bean.ChapterListBean;
+ import com.monke.monkeybook.bean.DownloadChapterBean;
+-import com.monke.monkeybook.common.RxBusTag;
++import com.monke.monkeybook.help.RxBusTag;
+ import com.monke.monkeybook.dao.BookContentBeanDao;
+ import com.monke.monkeybook.dao.BookShelfBeanDao;
+ import com.monke.monkeybook.dao.DbHelper;
+
+File: app/src/main/java/com/monke/monkeybook/utils/BlurTransformation.java
+Patch:
+@@ -9,6 +9,7 @@
+ import android.renderscript.Element;
+ import android.renderscript.RenderScript;
+ import android.renderscript.ScriptIntrinsicBlur;
++
+ import com.bumptech.glide.Glide;
+ import com.bumptech.glide.load.engine.bitmap_recycle.BitmapPool;
+ import com.bumptech.glide.load.resource.bitmap.BitmapTransformation;
+
+File: app/src/main/java/com/monke/monkeybook/utils/DensityUtil.java
+Patch:
+@@ -8,6 +8,7 @@
+ import android.util.TypedValue;
+ import android.view.Display;
+ import android.view.WindowManager;
++
+ import java.lang.reflect.Method;
+ 
+ public class DensityUtil {
+
+File: app/src/main/java/com/monke/monkeybook/utils/NetworkUtil.java
+Patch:
+@@ -4,8 +4,10 @@
+ import android.content.Context;
+ import android.net.ConnectivityManager;
+ import android.net.NetworkInfo;
++
+ import com.monke.monkeybook.MApplication;
+ import com.monke.monkeybook.R;
++
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/BookDetailActivity.java
+Patch:
+@@ -12,14 +12,15 @@
+ import android.widget.FrameLayout;
+ import android.widget.ImageView;
+ import android.widget.TextView;
++
+ import com.bumptech.glide.Glide;
+ import com.bumptech.glide.load.engine.DiskCacheStrategy;
+ import com.monke.monkeybook.BitIntentDataManager;
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.base.MBaseActivity;
+-import com.monke.monkeybook.presenter.impl.IBookDetailPresenter;
+ import com.monke.monkeybook.presenter.BookDetailPresenterImpl;
+ import com.monke.monkeybook.presenter.ReadBookPresenterImpl;
++import com.monke.monkeybook.presenter.impl.IBookDetailPresenter;
+ import com.monke.monkeybook.utils.BlurTransformation;
+ import com.monke.monkeybook.view.impl.IBookDetailView;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/BookSourceActivity.java
+Patch:
+@@ -17,16 +17,17 @@
+ import com.monke.monkeybook.base.MBaseActivity;
+ import com.monke.monkeybook.bean.BookSourceBean;
+ import com.monke.monkeybook.model.BookSourceManage;
+-import com.monke.monkeybook.presenter.impl.IBookSourcePresenter;
+ import com.monke.monkeybook.presenter.BookSourcePresenterImpl;
+-import com.monke.monkeybook.view.impl.IBookSourceView;
++import com.monke.monkeybook.presenter.impl.IBookSourcePresenter;
+ import com.monke.monkeybook.view.adapter.BookSourceAdapter;
++import com.monke.monkeybook.view.impl.IBookSourceView;
+ 
+ import java.util.Collections;
+ import java.util.List;
+ 
+ import butterknife.BindView;
+ import butterknife.ButterKnife;
++import io.reactivex.Observable;
+ 
+ /**
+  * Created by GKF on 2017/12/16.
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/DonateActivity.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import android.content.Intent;
+ import android.net.Uri;
+-import android.os.Bundle;
+ import android.support.v7.app.ActionBar;
+ import android.support.v7.widget.CardView;
+ import android.support.v7.widget.Toolbar;
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/LibraryActivity.java
+Patch:
+@@ -18,9 +18,9 @@
+ import com.monke.monkeybook.base.MBaseActivity;
+ import com.monke.monkeybook.bean.LibraryBean;
+ import com.monke.monkeybook.bean.SearchBookBean;
+-import com.monke.monkeybook.presenter.impl.ILibraryPresenter;
+ import com.monke.monkeybook.presenter.BookDetailPresenterImpl;
+ import com.monke.monkeybook.presenter.LibraryPresenterImpl;
++import com.monke.monkeybook.presenter.impl.ILibraryPresenter;
+ import com.monke.monkeybook.utils.DensityUtil;
+ import com.monke.monkeybook.view.impl.ILibraryView;
+ import com.monke.monkeybook.widget.libraryview.LibraryKindBookListView;
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/MainActivity.java
+Patch:
+@@ -29,13 +29,13 @@
+ import com.monke.monkeybook.bean.BookShelfBean;
+ import com.monke.monkeybook.dao.DbHelper;
+ import com.monke.monkeybook.model.BookSourceManage;
+-import com.monke.monkeybook.presenter.impl.IMainPresenter;
+ import com.monke.monkeybook.presenter.BookDetailPresenterImpl;
+-import com.monke.monkeybook.presenter.ReadBookPresenterImpl;
+ import com.monke.monkeybook.presenter.MainPresenterImpl;
+-import com.monke.monkeybook.view.impl.IMainView;
++import com.monke.monkeybook.presenter.ReadBookPresenterImpl;
++import com.monke.monkeybook.presenter.impl.IMainPresenter;
+ import com.monke.monkeybook.view.adapter.BookShelfGridAdapter;
+ import com.monke.monkeybook.view.adapter.BookShelfListAdapter;
++import com.monke.monkeybook.view.impl.IMainView;
+ import com.monke.monkeybook.view.popupwindow.DownloadListPop;
+ import com.monke.monkeybook.widget.modialog.MoProgressHUD;
+ import com.monke.monkeybook.widget.refreshview.OnRefreshWithProgressListener;
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/BookShelfGridAdapter.java
+Patch:
+@@ -13,6 +13,7 @@
+ import android.widget.ImageView;
+ import android.widget.LinearLayout;
+ import android.widget.TextView;
++
+ import com.bumptech.glide.Glide;
+ import com.bumptech.glide.load.engine.DiskCacheStrategy;
+ import com.monke.monkeybook.R;
+@@ -23,6 +24,7 @@
+ 
+ import java.util.ArrayList;
+ import java.util.List;
++
+ import me.grantland.widget.AutofitTextView;
+ 
+ public class BookShelfGridAdapter extends RefreshRecyclerViewAdapter {
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/ChapterListAdapter.java
+Patch:
+@@ -9,6 +9,7 @@
+ import android.view.ViewGroup;
+ import android.widget.FrameLayout;
+ import android.widget.TextView;
++
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.bean.BookShelfBean;
+ import com.monke.monkeybook.widget.ChapterListView;
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/ChoiceBookAdapter.java
+Patch:
+@@ -8,11 +8,13 @@
+ import android.widget.FrameLayout;
+ import android.widget.ImageView;
+ import android.widget.TextView;
++
+ import com.bumptech.glide.Glide;
+ import com.bumptech.glide.load.engine.DiskCacheStrategy;
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.bean.SearchBookBean;
+ import com.monke.monkeybook.widget.refreshview.RefreshRecyclerViewAdapter;
++
+ import java.text.DecimalFormat;
+ import java.util.ArrayList;
+ import java.util.List;
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/ImportBookAdapter.java
+Patch:
+@@ -9,8 +9,10 @@
+ import android.view.ViewGroup;
+ import android.widget.LinearLayout;
+ import android.widget.TextView;
++
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.widget.checkbox.SmoothCheckBox;
++
+ import java.io.File;
+ import java.text.DecimalFormat;
+ import java.util.ArrayList;
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/SearchBookAdapter.java
+Patch:
+@@ -8,11 +8,13 @@
+ import android.widget.FrameLayout;
+ import android.widget.ImageView;
+ import android.widget.TextView;
++
+ import com.bumptech.glide.Glide;
+ import com.bumptech.glide.load.engine.DiskCacheStrategy;
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.bean.SearchBookBean;
+ import com.monke.monkeybook.widget.refreshview.RefreshRecyclerViewAdapter;
++
+ import java.text.DecimalFormat;
+ import java.util.ArrayList;
+ import java.util.List;
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/SearchHistoryAdapter.java
+Patch:
+@@ -4,10 +4,12 @@
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.widget.TextView;
++
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.bean.SearchHistoryBean;
+ import com.monke.monkeybook.widget.flowlayout.FlowLayout;
+ import com.monke.monkeybook.widget.flowlayout.TagAdapter;
++
+ import java.util.ArrayList;
+ 
+ public class SearchHistoryAdapter extends TagAdapter<SearchHistoryBean> {
+
+File: app/src/main/java/com/monke/monkeybook/view/fragment/SettingsFragment.java
+Patch:
+@@ -7,7 +7,6 @@
+ import android.preference.Preference;
+ import android.preference.PreferenceFragment;
+ import android.preference.PreferenceManager;
+-import android.preference.SwitchPreference;
+ 
+ import com.monke.monkeybook.R;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/view/impl/IBookSourceView.java
+Patch:
+@@ -1,9 +1,9 @@
+ package com.monke.monkeybook.view.impl;
+ 
+ import android.view.View;
+-import android.widget.LinearLayout;
+ 
+ import com.monke.basemvplib.impl.IView;
++import com.monke.monkeybook.bean.BookSourceBean;
+ 
+ /**
+  * Created by GKF on 2017/12/18.
+
+File: app/src/main/java/com/monke/monkeybook/view/impl/IChoiceBookView.java
+Patch:
+@@ -4,6 +4,7 @@
+ import com.monke.basemvplib.impl.IView;
+ import com.monke.monkeybook.bean.SearchBookBean;
+ import com.monke.monkeybook.view.adapter.ChoiceBookAdapter;
++
+ import java.util.List;
+ 
+ public interface IChoiceBookView extends IView{
+@@ -20,7 +21,7 @@ public interface IChoiceBookView extends IView{
+ 
+     void addBookShelfSuccess(List<SearchBookBean> searchBooks);
+ 
+-    void addBookShelfFailed(int code);
++    void addBookShelfFailed(String massage);
+ 
+     ChoiceBookAdapter getSearchBookAdapter();
+ 
+
+File: app/src/main/java/com/monke/monkeybook/view/impl/IImportBookView.java
+Patch:
+@@ -2,6 +2,7 @@
+ package com.monke.monkeybook.view.impl;
+ 
+ import com.monke.basemvplib.impl.IView;
++
+ import java.io.File;
+ 
+ public interface IImportBookView extends IView{
+
+File: app/src/main/java/com/monke/monkeybook/view/impl/ISourceEditView.java
+Patch:
+@@ -13,4 +13,6 @@ public interface ISourceEditView extends IView {
+     void setText(BookSourceBean bookSourceBean);
+ 
+     String getBookSourceStr();
++
++    void saveSuccess();
+ }
+
+File: app/src/main/java/com/monke/monkeybook/view/popupwindow/CheckAddShelfPop.java
+Patch:
+@@ -8,6 +8,7 @@
+ import android.view.ViewGroup;
+ import android.widget.PopupWindow;
+ import android.widget.TextView;
++
+ import com.monke.monkeybook.R;
+ 
+ public class CheckAddShelfPop extends PopupWindow{
+
+File: app/src/main/java/com/monke/monkeybook/view/popupwindow/DownloadListPop.java
+Patch:
+@@ -20,7 +20,7 @@
+ import com.monke.monkeybook.base.observer.SimpleObserver;
+ import com.monke.monkeybook.bean.BookShelfBean;
+ import com.monke.monkeybook.bean.DownloadChapterBean;
+-import com.monke.monkeybook.common.RxBusTag;
++import com.monke.monkeybook.help.RxBusTag;
+ import com.monke.monkeybook.dao.BookShelfBeanDao;
+ import com.monke.monkeybook.dao.DbHelper;
+ import com.monke.monkeybook.dao.DownloadChapterBeanDao;
+
+File: app/src/main/java/com/monke/monkeybook/view/popupwindow/ReadBookMenuMorePop.java
+Patch:
+@@ -8,6 +8,7 @@
+ import android.view.ViewGroup;
+ import android.widget.LinearLayout;
+ import android.widget.PopupWindow;
++
+ import com.monke.monkeybook.R;
+ 
+ public class ReadBookMenuMorePop extends PopupWindow{
+
+File: app/src/main/java/com/monke/monkeybook/widget/checkbox/SmoothCheckBox.java
+Patch:
+@@ -16,6 +16,7 @@
+ import android.view.View;
+ import android.view.animation.LinearInterpolator;
+ import android.widget.Checkable;
++
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.utils.DensityUtil;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/widget/flowlayout/FlowLayout.java
+Patch:
+@@ -5,7 +5,9 @@
+ import android.util.AttributeSet;
+ import android.view.View;
+ import android.view.ViewGroup;
++
+ import com.monke.monkeybook.R;
++
+ import java.util.ArrayList;
+ import java.util.List;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/widget/libraryview/LibraryKindBookAdapter.java
+Patch:
+@@ -6,12 +6,15 @@
+ import android.view.ViewGroup;
+ import android.widget.ImageButton;
+ import android.widget.ImageView;
++
+ import com.bumptech.glide.Glide;
+ import com.bumptech.glide.load.engine.DiskCacheStrategy;
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.bean.SearchBookBean;
++
+ import java.util.ArrayList;
+ import java.util.List;
++
+ import me.grantland.widget.AutofitTextView;
+ 
+ public class LibraryKindBookAdapter extends RecyclerView.Adapter<LibraryKindBookAdapter.Viewholder>{
+
+File: app/src/main/java/com/monke/monkeybook/widget/libraryview/LibraryKindBookView.java
+Patch:
+@@ -7,9 +7,9 @@
+ import android.support.v7.widget.RecyclerView;
+ import android.util.AttributeSet;
+ import android.view.LayoutInflater;
+-import android.view.View;
+ import android.widget.LinearLayout;
+ import android.widget.TextView;
++
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.bean.LibraryKindBookListBean;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/widget/libraryview/LibraryNewBooksAdapter.java
+Patch:
+@@ -3,10 +3,12 @@
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.widget.TextView;
++
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.bean.LibraryNewBookBean;
+ import com.monke.monkeybook.widget.flowlayout.FlowLayout;
+ import com.monke.monkeybook.widget.flowlayout.TagAdapter;
++
+ import java.util.ArrayList;
+ 
+ public class LibraryNewBooksAdapter extends TagAdapter<LibraryNewBookBean> {
+
+File: app/src/main/java/com/monke/monkeybook/widget/libraryview/LibraryNewBooksView.java
+Patch:
+@@ -6,9 +6,11 @@
+ import android.util.AttributeSet;
+ import android.view.LayoutInflater;
+ import android.widget.LinearLayout;
++
+ import com.monke.monkeybook.R;
+ import com.monke.monkeybook.bean.LibraryNewBookBean;
+ import com.monke.monkeybook.widget.flowlayout.TagFlowLayout;
++
+ import java.util.List;
+ 
+ public class LibraryNewBooksView extends LinearLayout {
+
+File: app/src/main/java/com/monke/monkeybook/widget/modialog/ChangeSourceView.java
+Patch:
+@@ -2,11 +2,8 @@
+ 
+ import android.content.Context;
+ import android.support.v7.widget.LinearLayoutManager;
+-import android.support.v7.widget.RecyclerView;
+ import android.view.LayoutInflater;
+ import android.view.View;
+-import android.view.animation.Animation;
+-import android.view.animation.RotateAnimation;
+ import android.widget.ImageView;
+ import android.widget.TextView;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/model/content/AnalyzeSearchUrl.java
+Patch:
+@@ -19,7 +19,7 @@ public class AnalyzeSearchUrl {
+     private Map<String, String> queryMap;
+     private String searchKey;
+     private int searchPage;
+-    private String charCode;
++    private String charCode = "utf-8";
+ 
+     public AnalyzeSearchUrl(final String ruleUrl, final String key, final int page) throws Exception {
+         searchKey = key;
+
+File: app/src/main/java/com/monke/monkeybook/model/impl/IHttpGetApi.java
+Patch:
+@@ -28,6 +28,6 @@ public interface IHttpGetApi {
+             "Keep-Alive:300",
+             "Connection:Keep-Alive",
+             "Cache-Control:no-cache"})
+-    Observable<String> searchBook(@Url String url, @QueryMap Map<String, String> queryMap);
++    Observable<String> searchBook(@Url String url, @QueryMap(encoded = true) Map<String, String> queryMap);
+ 
+ }
+
+File: app/src/main/java/com/monke/monkeybook/presenter/MainPresenterImpl.java
+Patch:
+@@ -158,7 +158,7 @@ public void addBookUrl(String bookUrl) {
+         Observable.create((ObservableOnSubscribe<BookShelfBean>) e -> {
+             URL url = new URL(bookUrl);
+             List<BookInfoBean> temp = DbHelper.getInstance().getmDaoSession().getBookInfoBeanDao().queryBuilder()
+-                    .where(BookInfoBeanDao.Properties.NoteUrl.eq(bookUrl.toString())).limit(1).build().list();
++                    .where(BookInfoBeanDao.Properties.NoteUrl.eq(bookUrl)).limit(1).build().list();
+             if (temp != null && temp.size() > 0) {
+                 e.onNext(null);
+             } else {
+@@ -265,7 +265,7 @@ public void success(BookShelfBean bookShelfBean) {
+                 @Override
+                 public void error() {
+                     Toast.makeText(mView.getContext(),
+-                            String.format("%s 更新失败\n%s", value.get(index).getBookInfoBean().getName()),
++                            String.format("%s 更新失败", value.get(index).getBookInfoBean().getName()),
+                             Toast.LENGTH_SHORT).show();
+                     refreshBookShelf(value, index + 1);
+                 }
+@@ -301,7 +301,7 @@ public void onNext(BookShelfBean value) {
+                     public void onError(Throwable e) {
+                         e.printStackTrace();
+                         Toast.makeText(mView.getContext(),
+-                                String.format("%s 保存更新失败\n%s", bookShelfBean.getBookInfoBean().getName(), e.getMessage()),
++                                String.format("%s 保存更新失败", bookShelfBean.getBookInfoBean().getName()),
+                                 Toast.LENGTH_SHORT).show();
+                     }
+                 });
+
+File: app/src/main/java/com/monke/monkeybook/model/content/DefaultModelImpl.java
+Patch:
+@@ -239,8 +239,9 @@ private WebChapterBean<List<ChapterListBean>> analyzeChapterList(String s, Strin
+             temp.setDurChapterName(analyzeRule.getResult(bookSourceBean.getRuleChapterName()));
+             temp.setNoteUrl(novelUrl);
+             temp.setTag(TAG);
+-
+-            chapterBeans.add(temp);
++            if (!isEmpty(temp.getDurChapterUrl())) {
++                chapterBeans.add(temp);
++            }
+         }
+         return new WebChapterBean<>(chapterBeans, false);
+     }
+
+File: app/src/main/java/com/monke/monkeybook/presenter/MainPresenterImpl.java
+Patch:
+@@ -294,7 +294,7 @@ public void onNext(BookShelfBean value) {
+                     @Override
+                     public void onError(Throwable e) {
+                         e.printStackTrace();
+-                        mView.refreshError(NetworkUtil.getErrorTip(NetworkUtil.ERROR_CODE_NONET));
++                        Toast.makeText(mView.getContext(), String.format("%s %s", dataS.get(index).getBookInfoBean().getName(), "保存更新失败"), Toast.LENGTH_SHORT).show();
+                     }
+                 });
+     }
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/SourceEditActivity.java
+Patch:
+@@ -341,6 +341,7 @@ private void shareBookSource() {
+             bitmap.compress(Bitmap.CompressFormat.PNG, 100, fOut);
+             fOut.flush();
+             fOut.close();
++            file.setReadable(true, false);
+             Uri contentUri = FileProvider.getUriForFile(this, getString(R.string.file_provider), file);
+             final Intent intent = new Intent(android.content.Intent.ACTION_SEND);
+             intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+File: app/src/main/java/com/monke/monkeybook/presenter/MainPresenterImpl.java
+Patch:
+@@ -256,11 +256,13 @@ private void refreshBookShelf(final List<BookShelfBean> value, final int index)
+                 public void success(BookShelfBean bookShelfBean) {
+                     boolean hasUpdate = chapterSize < value.get(index).getChapterListSize();
+                     saveBookToShelf(value, index, hasUpdate);
++                    refreshBookShelf(value, index + 1);
+                 }
+ 
+                 @Override
+                 public void error() {
+-                    mView.refreshError(NetworkUtil.getErrorTip(NetworkUtil.ERROR_CODE_NONET));
++                    Toast.makeText(mView.getContext(), String.format("%s %s", value.get(index).getBookInfoBean().getName(), "更新失败"), Toast.LENGTH_SHORT).show();
++                    refreshBookShelf(value, index + 1);
+                 }
+             });
+         } else {
+@@ -287,7 +289,6 @@ private void saveBookToShelf(final List<BookShelfBean> dataS, final int index, f
+                     @Override
+                     public void onNext(BookShelfBean value) {
+                         mView.refreshRecyclerViewItemAdd();
+-                        refreshBookShelf(dataS, index + 1);
+                     }
+ 
+                     @Override
+
+File: app/src/main/java/com/monke/monkeybook/presenter/MainPresenterImpl.java
+Patch:
+@@ -249,7 +249,7 @@ private void startRefreshBook(List<BookShelfBean> value) {
+ 
+     //更新
+     private void refreshBookShelf(final List<BookShelfBean> value, final int index) {
+-        if (index <= value.size() - 1) {
++        if (index < value.size()) {
+             int chapterSize = value.get(index).getChapterListSize();
+             WebBookModelImpl.getInstance().getChapterList(value.get(index), new OnGetChapterListListener() {
+                 @Override
+
+File: app/src/main/java/com/monke/monkeybook/presenter/impl/IReadBookPresenter.java
+Patch:
+@@ -33,6 +33,8 @@ public interface IReadBookPresenter extends IPresenter {
+ 
+     void addToShelf(final ReadBookPresenterImpl.OnAddListener addListner);
+ 
++    void removeFromShelf();
++
+     Boolean getAdd();
+ 
+     void initData(Activity activity);
+
+File: app/src/main/java/com/monke/monkeybook/view/popupwindow/CheckAddShelfPop.java
+Patch:
+@@ -40,14 +40,14 @@ public CheckAddShelfPop(Context context,@NonNull String bookName,@NonNull OnItem
+     }
+ 
+     private void initView() {
+-        tvBookName = (TextView) view.findViewById(R.id.tv_book_name);
++        tvBookName = view.findViewById(R.id.tv_book_name);
+         tvBookName.setText(String.format(mContext.getString(R.string.check_add_bookshelf),bookName));
+-        tvExit = (TextView) view.findViewById(R.id.tv_exit);
++        tvExit = view.findViewById(R.id.tv_exit);
+         tvExit.setOnClickListener(v -> {
+             dismiss();
+             itemClick.clickExit();
+         });
+-        tvAddShelf = (TextView) view.findViewById(R.id.tv_addshelf);
++        tvAddShelf = view.findViewById(R.id.tv_addshelf);
+         tvAddShelf.setOnClickListener(v -> itemClick.clickAddShelf());
+     }
+ }
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/BookSourceActivity.java
+Patch:
+@@ -63,9 +63,10 @@ public int getMovementFlags(RecyclerView recyclerView, RecyclerView.ViewHolder v
+         public boolean onMove(RecyclerView recyclerView, RecyclerView.ViewHolder viewHolder, RecyclerView.ViewHolder target) {
+             //直接按照文档来操作啊，这文档写得太给力了,简直完美！
+             bookSourceAdapter.notifyItemMoved(viewHolder.getAdapterPosition(), target.getAdapterPosition());
++            bookSourceAdapter.notifyItemChanged(viewHolder.getAdapterPosition());
++            bookSourceAdapter.notifyItemChanged(target.getAdapterPosition());
+             //注意这里有个坑的，itemView 都移动了，对应的数据也要移动
+             Collections.swap(bookSourceAdapter.getBookSourceBeanList(), viewHolder.getAdapterPosition(), target.getAdapterPosition());
+-            mPresenter.saveDate(bookSourceAdapter.getBookSourceBeanList());
+             return true;
+         }
+ 
+
+File: app/src/main/java/com/monke/monkeybook/model/content/DefaultModelImpl.java
+Patch:
+@@ -220,19 +220,19 @@ public void onError(Throwable e) {
+     private Observable<WebChapterBean<BookShelfBean>> analyzeChapterList(final String s, final BookShelfBean bookShelfBean) {
+         return Observable.create(e -> {
+             bookShelfBean.setTag(TAG);
+-            WebChapterBean<List<ChapterListBean>> temp = analyzeChapterList(s, bookShelfBean.getNoteUrl());
++            WebChapterBean<List<ChapterListBean>> temp = analyzeChapterList(s, bookShelfBean.getNoteUrl(), bookShelfBean.getBookInfoBean().getChapterUrl());
+             bookShelfBean.getBookInfoBean().setChapterList(temp.getData());
+             e.onNext(new WebChapterBean<>(bookShelfBean, temp.getNext()));
+             e.onComplete();
+         });
+     }
+ 
+-    private WebChapterBean<List<ChapterListBean>> analyzeChapterList(String s, String novelUrl) {
++    private WebChapterBean<List<ChapterListBean>> analyzeChapterList(String s, String novelUrl, String chapterUrl) {
+         Document doc = Jsoup.parse(s);
+         Elements chapterList = AnalyzeRule.getElements(doc, bookSourceBean.getRuleChapterList());
+         List<ChapterListBean> chapterBeans = new ArrayList<>();
+         for (int i = 0; i < chapterList.size(); i++) {
+-            AnalyzeRule analyzeRule = new AnalyzeRule(chapterList.get(i), novelUrl);
++            AnalyzeRule analyzeRule = new AnalyzeRule(chapterList.get(i), chapterUrl);
+             ChapterListBean temp = new ChapterListBean();
+             temp.setDurChapterIndex(i);
+             temp.setDurChapterUrl(analyzeRule.getResult(bookSourceBean.getRuleContentUrl()));   //id
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/BookSourceActivity.java
+Patch:
+@@ -1,7 +1,6 @@
+ package com.monke.monkeybook.view.activity;
+ 
+ import android.content.Intent;
+-import android.net.Uri;
+ import android.support.v7.app.ActionBar;
+ import android.support.v7.widget.LinearLayoutManager;
+ import android.support.v7.widget.RecyclerView;
+@@ -20,7 +19,7 @@
+ import com.monke.monkeybook.model.BookSourceManage;
+ import com.monke.monkeybook.presenter.impl.IBookSourcePresenter;
+ import com.monke.monkeybook.presenter.BookSourcePresenterImpl;
+-import com.monke.monkeybook.view.impl.IBookSourceManageView;
++import com.monke.monkeybook.view.impl.IBookSourceView;
+ import com.monke.monkeybook.view.adapter.BookSourceAdapter;
+ 
+ import java.util.Collections;
+@@ -34,7 +33,7 @@
+  * 书源管理
+  */
+ 
+-public class BookSourceActivity extends MBaseActivity<IBookSourcePresenter> implements IBookSourceManageView {
++public class BookSourceActivity extends MBaseActivity<IBookSourcePresenter> implements IBookSourceView {
+     public static final int EDIT_SOURCE = 101;
+     public static final int IMPORT_SOURCE = 102;
+ 
+
+File: app/src/main/java/com/monke/monkeybook/view/impl/IBookSourceView.java
+Patch:
+@@ -10,7 +10,7 @@
+  * 书源管理
+  */
+ 
+-public interface IBookSourceManageView extends IView {
++public interface IBookSourceView extends IView {
+ 
+     void refreshBookSource();
+ 
+
+File: app/src/main/java/com/monke/monkeybook/view/adapter/BookSourceAdapter.java
+Patch:
+@@ -58,9 +58,8 @@ public MyViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+     public void onBindViewHolder(MyViewHolder holder, int position) {
+         holder.bookSource.setText(bookSourceBeanList.get(position).getBookSourceName());
+         holder.bookSource.setChecked(bookSourceBeanList.get(position).getEnable());
+-        holder.bookSource.setOnCheckedChangeListener((compoundButton, b) -> {
+-            bookSourceBeanList.get(position).setEnable(b);
+-            activity.saveDate(bookSourceBeanList);
++        holder.bookSource.setOnClickListener((View view) -> {
++            bookSourceBeanList.get(position).setEnable(holder.bookSource.isChecked());
+         });
+         holder.editSource.setOnClickListener(view -> {
+             Intent intent = new Intent(activity, SourceEditActivity.class);
+
+File: app/src/main/java/com/monke/monkeybook/help/DataBackup.java
+Patch:
+@@ -15,6 +15,7 @@
+ import com.monke.monkeybook.dao.BookShelfBeanDao;
+ import com.monke.monkeybook.dao.BookSourceBeanDao;
+ import com.monke.monkeybook.dao.DbHelper;
++import com.monke.monkeybook.model.BookSourceManage;
+ 
+ import java.io.File;
+ import java.util.List;
+@@ -82,8 +83,7 @@ private void backupBookShelf(File file) {
+     }
+ 
+     private void backupBookSource(File file) {
+-        List<BookSourceBean> bookSourceList = DbHelper.getInstance().getmDaoSession().getBookSourceBeanDao().queryBuilder()
+-                .orderDesc(BookSourceBeanDao.Properties.SerialNumber).list();
++        List<BookSourceBean> bookSourceList = BookSourceManage.getAllBookSource();
+         if (bookSourceList != null && bookSourceList.size() > 0) {
+             Gson gson = new GsonBuilder().disableHtmlEscaping().create();
+             String str = gson.toJson(bookSourceList);
+
+File: app/src/main/java/com/monke/monkeybook/help/DataRestore.java
+Patch:
+@@ -8,6 +8,7 @@
+ import com.monke.monkeybook.bean.BookSourceBean;
+ import com.monke.monkeybook.bean.SearchHistoryBean;
+ import com.monke.monkeybook.dao.DbHelper;
++import com.monke.monkeybook.model.BookSourceManage;
+ 
+ import java.io.File;
+ import java.util.List;
+@@ -50,9 +51,7 @@ private void restoreBookSource(File file) throws Exception{
+         if (json != null) {
+             List<BookSourceBean> bookSourceBeans = new Gson().fromJson(json, new TypeToken<List<BookSourceBean>>() {
+             }.getType());
+-            for (BookSourceBean bookSource : bookSourceBeans) {
+-                DbHelper.getInstance().getmDaoSession().getBookSourceBeanDao().insertOrReplace(bookSource);
+-            }
++            BookSourceManage.addBookSource(bookSourceBeans);
+         }
+     }
+ 
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/SourceEditActivity.java
+Patch:
+@@ -71,7 +71,6 @@
+  */
+ 
+ public class SourceEditActivity extends MBaseActivity<ISourceEditPresenter> implements ISourceEditView {
+-    private final int REQUEST_QR_CAMERA = 201;
+     private final int REQUEST_QR_IMAGE = 202;
+ 
+     @BindView(R.id.toolbar)
+@@ -224,6 +223,7 @@ private void saveBookSource() {
+             public void success() {
+                 bookSourceBean = getBookSource();
+                 Toast.makeText(MApplication.getInstance(), "保存成功", Toast.LENGTH_SHORT).show();
++                setResult(RESULT_OK);
+                 finish();
+             }
+ 
+
+File: app/src/main/java/com/monke/monkeybook/presenter/IBookReadPresenter.java
+Patch:
+@@ -26,6 +26,8 @@ public interface IBookReadPresenter extends IPresenter{
+ 
+     void setPageLineCount(int pageLineCount);
+ 
++    void setPageWidth(int pageWidth);
++
+     void addToShelf(final ReadBookPresenterImpl.OnAddListener addListner);
+ 
+     Boolean getAdd();
+
+File: app/src/main/java/com/monke/monkeybook/view/activity/ReadBookActivity.java
+Patch:
+@@ -610,7 +610,6 @@ protected void onResume() {
+     protected void onDestroy() {
+         super.onDestroy();
+         stopService(readAloudIntent);
+-        unbindService(conn);
+     }
+ 
+     @Override
+
+File: app/src/main/java/com/monke/monkeybook/bean/BookShelfBean.java
+Patch:
+@@ -136,8 +136,8 @@ public void setBookInfoBean(BookInfoBean bookInfoBean) {
+     @Override
+     public Object clone() throws CloneNotSupportedException {
+         BookShelfBean bookShelfBean = (BookShelfBean) super.clone();
+-        bookShelfBean.noteUrl = new String(noteUrl);
+-        bookShelfBean.tag = new String(tag);
++        bookShelfBean.noteUrl = noteUrl;
++        bookShelfBean.tag = tag;
+         bookShelfBean.bookInfoBean = (BookInfoBean) bookInfoBean.clone();
+         return bookShelfBean;
+     }
+

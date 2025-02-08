@@ -1,0 +1,476 @@
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/eval/LiteralEvaluator.java
+Patch:
+@@ -98,7 +98,7 @@ public static Object eval(Parameter param, Map<String, Parameter> params) {
+             throw e;
+           }
+         default:
+-          return param.getValue();
++          return param.getLiteralValue();
+       }
+     } else {
+       return param.getEvaluatedResult();
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/tasks/MaestroTask.java
+Patch:
+@@ -306,9 +306,6 @@ private boolean initializeAndSendOutputSignals(
+       Map<String, Map<String, Object>> allStepOutputData = TaskHelper.getAllStepOutputData(flow);
+ 
+       initializeOutputSignals(allStepOutputData, stepDefinition, workflowSummary, runtimeSummary);
+-
+-      return runtimeSummary.getOutputs() == null
+-          || signalHandler.sendOutputSignals(workflowSummary, runtimeSummary);
+     } catch (Exception e) {
+       LOG.error(
+           "Failed to evaluate Maestro params for output signals for {}{} due to error:",
+@@ -317,6 +314,8 @@ private boolean initializeAndSendOutputSignals(
+           e);
+       throw e;
+     }
++    return runtimeSummary.getOutputs() == null
++        || signalHandler.sendOutputSignals(workflowSummary, runtimeSummary);
+   }
+ 
+   private boolean initialize(
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/tracing/MaestroTracingManager.java
+Patch:
+@@ -120,7 +120,7 @@ void annotate(MaestroTracingContext tracingContext, String value) {
+ 
+   private Span getSpan(MaestroTracingContext tracingContext) {
+     TraceContext context = tracingContext.toTraceContext();
+-    return tracer.joinSpan(context);
++    return tracer.toSpan(context);
+   }
+ 
+   /**
+
+File: maestro-engine/src/test/java/com/netflix/maestro/engine/tracing/MaestroTracingManagerTest.java
+Patch:
+@@ -65,7 +65,7 @@ public void setup() {
+             .spanId(30L)
+             .parentSpanId(200L)
+             .build();
+-    when(mockTracer.joinSpan(defaultContext.toTraceContext())).thenReturn(mockSpan);
++    when(mockTracer.toSpan(defaultContext.toTraceContext())).thenReturn(mockSpan);
+     when(mockSpan.context()).thenReturn(defaultContext.toTraceContext());
+   }
+ 
+
+File: maestro-server/src/main/java/com/netflix/maestro/server/controllers/WorkflowActionController.java
+Patch:
+@@ -83,6 +83,8 @@ private RunRequest toRunRequest(WorkflowStartRequest request, User caller) {
+         .currentPolicy(RunPolicy.START_FRESH_NEW_RUN)
+         .runParams(ObjectHelper.valueOrDefault(request.getRunParams(), new LinkedHashMap<>()))
+         .persistFailedRun(request.isPersistFailedRun())
++        .runtimeTags(request.getRuntimeTags())
++        .artifacts(request.getArtifacts()) // todo restart unable to keep input artifacts
+         .build();
+   }
+ 
+
+File: maestro-common/src/main/java/com/netflix/maestro/models/Constants.java
+Patch:
+@@ -148,7 +148,7 @@ private Constants() {}
+   public static final int MAX_PLATFORM_RETRY_LIMIT_SECS = 24 * 3600; // 1 day
+ 
+   /** maximum retry wait limit for timeout errors. */
+-  public static final int MAX_TIMEOUT_RETRY_LIMIT_SECS = 24 * 3600; // 1 days
++  public static final int MAX_TIMEOUT_RETRY_LIMIT_SECS = 24 * 3600; // 1 day
+ 
+   /** Max timeout limit in milliseconds. */
+   public static final long MAX_TIME_OUT_LIMIT_IN_MILLIS = TimeUnit.DAYS.toMillis(120); // 120 days
+@@ -316,7 +316,7 @@ public static WorkflowVersion of(String version) {
+   /** Workflow create request data size limit used for validation. */
+   public static final String WORKFLOW_CREATE_REQUEST_DATA_SIZE_LIMIT = "256KB";
+ 
+-  /** params' total size (in JSON format) limit for a workflow instance or a step instance. */
++  /** param's total size (in JSON format) limit for a workflow instance or a step instance. */
+   public static final int JSONIFIED_PARAMS_STRING_SIZE_LIMIT = 750000;
+ 
+   /** Defines limit for the query for step attempt state view. */
+
+File: maestro-common/src/main/java/com/netflix/maestro/models/definition/Properties.java
+Patch:
+@@ -31,7 +31,7 @@
+  *
+  * <p>If unset (null value), means there is no change for this field.
+  *
+- * <p>Properties changes are kept separately and can evolve independently from the workflow version
++ * <p>Properties changes are kept separately and can evolve independently of the workflow version
+  * changes.
+  */
+ @JsonNaming(PropertyNamingStrategy.SnakeCaseStrategy.class)
+
+File: maestro-common/src/main/java/com/netflix/maestro/models/definition/Step.java
+Patch:
+@@ -50,7 +50,7 @@ public interface Step {
+   /** Get step type. */
+   StepType getType();
+ 
+-  /** Get step sub type. */
++  /** Get step subtype. */
+   default String getSubType() {
+     return null;
+   }
+
+File: maestro-common/src/main/java/com/netflix/maestro/models/definition/StepDependenciesDefinition.java
+Patch:
+@@ -34,7 +34,7 @@ public class StepDependenciesDefinition {
+   /** param name for step dependency name. */
+   public static final String STEP_DEPENDENCY_NAME = "name";
+ 
+-  /** param name for step dependency sub type, like input_table, input_s3. */
++  /** param name for step dependency subtype, like input_table, input_s3. */
+   public static final String STEP_DEPENDENCY_SUB_TYPE = "_step_dependency_sub_type";
+ 
+   private final List<MapParamDefinition> definitions;
+
+File: maestro-common/src/main/java/com/netflix/maestro/models/instance/OutputSignalInstance.java
+Patch:
+@@ -29,6 +29,6 @@
+ @JsonInclude(JsonInclude.Include.NON_NULL)
+ public class OutputSignalInstance {
+   private String outputSignalInstanceId;
+-  // announced time will be null if its a duplicate signal
++  // announced time will be null if it is a duplicate signal
+   private Long announcedTime;
+ }
+
+File: maestro-common/src/main/java/com/netflix/maestro/models/instance/StepInstance.java
+Patch:
+@@ -275,9 +275,9 @@ public enum Status {
+     /** Step is disabled at workflow instance start time, terminal state. */
+     DISABLED(true, true, false, false),
+     /**
+-     * Step should not run and user logic does not run. Maestro runs over this step when its if
+-     * condition is false or the workflow is already failed when failure mode is FAIL_AFTER_RUNNING.
+-     * Users can discard steps with this status. terminal state.
++     * Step should not run and user logic does not run. Maestro runs over this step when condition
++     * is false or the workflow is already failed when failure mode is FAIL_AFTER_RUNNING. Users can
++     * discard steps with this status. terminal state.
+      */
+     UNSATISFIED(true, true, false, false),
+     /** Step is skipped by users at runtime, terminal state. */
+
+File: maestro-common/src/main/java/com/netflix/maestro/models/timeline/TimelineLogEvent.java
+Patch:
+@@ -100,7 +100,7 @@ public static TimelineLogEvent debug(String template, Object... args) {
+     return TimelineLogEvent.builder().level(Level.DEBUG).message(template, args).build();
+   }
+ 
+-  /** static method to generate a info level {@link TimelineLogEvent}. */
++  /** static method to generate an info level {@link TimelineLogEvent}. */
+   @JsonIgnore
+   public static TimelineLogEvent info(String template, Object... args) {
+     return TimelineLogEvent.builder().level(Level.INFO).message(template, args).build();
+@@ -112,7 +112,7 @@ public static TimelineLogEvent warn(String template, Object... args) {
+     return TimelineLogEvent.builder().level(Level.WARN).message(template, args).build();
+   }
+ 
+-  /** static method to generate a error level {@link TimelineLogEvent}. */
++  /** static method to generate an error level {@link TimelineLogEvent}. */
+   @JsonIgnore
+   public static TimelineLogEvent error(String template, Object... args) {
+     return TimelineLogEvent.builder().level(Level.ERROR).message(template, args).build();
+
+File: maestro-common/src/main/java/com/netflix/maestro/utils/IdHelper.java
+Patch:
+@@ -100,7 +100,7 @@ public static boolean isInlineWorkflowId(String workflowId) {
+    * 11) vs 9 (base62: 9) -> 211 vs 19.
+    *
+    * @param value value to encode
+-   * @param isOrdered should the output encoded string perserve the ordering. True for rangeKey case
++   * @param isOrdered should the output encoded string preserve the ordering. True for rangeKey case
+    *     and false for hashKey.
+    * @return encoded base62 string
+    */
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/concurrency/TagPermitManager.java
+Patch:
+@@ -46,7 +46,7 @@ public Status(boolean success, String message) {
+     }
+   }
+ 
+-  /** acquire permits for every tag in tagList for a given a uuid (e.g. step uuid). */
++  /** acquire permits for every tag in tagList for a given an uuid (e.g. step uuid). */
+   Status acquire(List<Tag> tagsList, String uuid);
+ 
+   /**
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/steps/StepRuntime.java
+Patch:
+@@ -118,7 +118,7 @@ default Result start(
+    * Customized step execution logic.
+    *
+    * <p>While the step status is RUNNING, the code in execute() will be called periodically with a
+-   * preset polling interval. Additionally, if the execution throws an exception, the execute will
++   * preset polling interval. Additionally, if the execution throws an exception, the execution will
+    * be retried as another step instance run.
+    *
+    * <p>The input data are a copy of the original summary data. Any changes on them will be
+
+File: maestro-flow/src/main/java/com/netflix/maestro/flow/engine/FlowExecutor.java
+Patch:
+@@ -163,10 +163,12 @@ private Actor getOrCreateNewGroup(long groupId) {
+   }
+ 
+   /** Wake up a flow or a task. */
+-  public void wakeUp(Long groupId, String flowReference, String taskReference) {
++  public boolean wakeUp(Long groupId, String flowReference, String taskReference) {
+     Actor groupActor = groupActors.get(groupId);
+     if (groupActor != null && groupActor.isRunning()) {
+       groupActor.post(new Action.FlowWakeUp(flowReference, taskReference));
++      return true;
+     }
++    return false;
+   }
+ }
+
+File: maestro-flow/src/main/java/com/netflix/maestro/flow/models/Task.java
+Patch:
+@@ -15,7 +15,7 @@
+  * task actor can switch to execute. So those inactive tasks are not real maestro tasks. This is
+  * required to avoid that the child actor runs the business logic but the parent flow is unaware and
+  * decide to finish. Also, the active flag is a local state and not thread safe and can only be
+- * accessed within the actor (e.g. flow owns a list of copied tasks, and it can mutate active flag
++ * accessed within the actor, e.g. flow owns a list of copied tasks, and it can mutate active flag
+  * for its own snapshots.
+  *
+  * <p>Basic rule: flow actor can only activate a task actor. A task actor can only deactivate itself
+
+File: maestro-common/src/main/java/com/netflix/maestro/metrics/MaestroMetrics.java
+Patch:
+@@ -10,7 +10,7 @@
+  * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+  * specific language governing permissions and limitations under the License.
+  */
+-package com.netflix.maestro.engine.metrics;
++package com.netflix.maestro.metrics;
+ 
+ /** Maestro metrics interface to record metrics. */
+ public interface MaestroMetrics {
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/dao/MaestroRunStrategyDao.java
+Patch:
+@@ -22,12 +22,12 @@
+ import com.netflix.maestro.engine.jobevents.StartWorkflowJobEvent;
+ import com.netflix.maestro.engine.jobevents.TerminateThenRunInstanceJobEvent;
+ import com.netflix.maestro.engine.jobevents.WorkflowInstanceUpdateJobEvent;
+-import com.netflix.maestro.engine.metrics.MaestroMetrics;
+ import com.netflix.maestro.engine.metrics.MetricConstants;
+ import com.netflix.maestro.engine.publisher.MaestroJobEventPublisher;
+ import com.netflix.maestro.exceptions.MaestroInternalError;
+ import com.netflix.maestro.exceptions.MaestroInvalidStatusException;
+ import com.netflix.maestro.exceptions.MaestroNotFoundException;
++import com.netflix.maestro.metrics.MaestroMetrics;
+ import com.netflix.maestro.models.Actions;
+ import com.netflix.maestro.models.Constants;
+ import com.netflix.maestro.models.definition.RunStrategy;
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/execution/StepRuntimeManager.java
+Patch:
+@@ -14,12 +14,12 @@
+ 
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import com.netflix.maestro.engine.db.StepAction;
+-import com.netflix.maestro.engine.metrics.MaestroMetrics;
+ import com.netflix.maestro.engine.metrics.MetricConstants;
+ import com.netflix.maestro.engine.params.ParamsManager;
+ import com.netflix.maestro.engine.steps.StepRuntime;
+ import com.netflix.maestro.engine.tracing.MaestroTracingManager;
+ import com.netflix.maestro.exceptions.MaestroInternalError;
++import com.netflix.maestro.metrics.MaestroMetrics;
+ import com.netflix.maestro.models.definition.Step;
+ import com.netflix.maestro.models.definition.StepType;
+ import com.netflix.maestro.models.definition.Tag;
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/listeners/MaestroWorkflowStatusListener.java
+Patch:
+@@ -21,7 +21,6 @@
+ import com.netflix.maestro.engine.execution.WorkflowRuntimeSummary;
+ import com.netflix.maestro.engine.execution.WorkflowSummary;
+ import com.netflix.maestro.engine.jobevents.WorkflowInstanceUpdateJobEvent;
+-import com.netflix.maestro.engine.metrics.MaestroMetrics;
+ import com.netflix.maestro.engine.metrics.MetricConstants;
+ import com.netflix.maestro.engine.publisher.MaestroJobEventPublisher;
+ import com.netflix.maestro.engine.tasks.MaestroStartTask;
+@@ -31,6 +30,7 @@
+ import com.netflix.maestro.engine.utils.TaskHelper;
+ import com.netflix.maestro.exceptions.MaestroInternalError;
+ import com.netflix.maestro.exceptions.MaestroRetryableError;
++import com.netflix.maestro.metrics.MaestroMetrics;
+ import com.netflix.maestro.models.Constants;
+ import com.netflix.maestro.models.error.Details;
+ import com.netflix.maestro.models.instance.StepInstance;
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/metrics/MaestroMetricRepo.java
+Patch:
+@@ -12,6 +12,7 @@
+  */
+ package com.netflix.maestro.engine.metrics;
+ 
++import com.netflix.maestro.metrics.MaestroMetrics;
+ import com.netflix.maestro.utils.Checks;
+ import com.netflix.spectator.api.Clock;
+ import com.netflix.spectator.api.Counter;
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/tasks/MaestroEndTask.java
+Patch:
+@@ -23,7 +23,6 @@
+ import com.netflix.maestro.engine.execution.WorkflowSummary;
+ import com.netflix.maestro.engine.jobevents.TerminateInstancesJobEvent;
+ import com.netflix.maestro.engine.jobevents.WorkflowInstanceUpdateJobEvent;
+-import com.netflix.maestro.engine.metrics.MaestroMetrics;
+ import com.netflix.maestro.engine.metrics.MetricConstants;
+ import com.netflix.maestro.engine.publisher.MaestroJobEventPublisher;
+ import com.netflix.maestro.engine.steps.StepRuntime;
+@@ -33,6 +32,7 @@
+ import com.netflix.maestro.engine.utils.TaskHelper;
+ import com.netflix.maestro.exceptions.MaestroInternalError;
+ import com.netflix.maestro.exceptions.MaestroNotFoundException;
++import com.netflix.maestro.metrics.MaestroMetrics;
+ import com.netflix.maestro.models.Actions;
+ import com.netflix.maestro.models.Constants;
+ import com.netflix.maestro.models.error.Details;
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/tasks/MaestroTask.java
+Patch:
+@@ -33,7 +33,6 @@
+ import com.netflix.maestro.engine.execution.StepSyncManager;
+ import com.netflix.maestro.engine.execution.WorkflowSummary;
+ import com.netflix.maestro.engine.handlers.SignalHandler;
+-import com.netflix.maestro.engine.metrics.MaestroMetrics;
+ import com.netflix.maestro.engine.metrics.MetricConstants;
+ import com.netflix.maestro.engine.params.OutputDataManager;
+ import com.netflix.maestro.engine.params.ParamsManager;
+@@ -48,6 +47,7 @@
+ import com.netflix.maestro.engine.utils.TaskHelper;
+ import com.netflix.maestro.exceptions.MaestroInternalError;
+ import com.netflix.maestro.exceptions.MaestroRetryableError;
++import com.netflix.maestro.metrics.MaestroMetrics;
+ import com.netflix.maestro.models.Actions;
+ import com.netflix.maestro.models.Constants;
+ import com.netflix.maestro.models.Defaults;
+
+File: maestro-server/src/main/java/com/netflix/maestro/server/config/ConductorConfiguration.java
+Patch:
+@@ -49,9 +49,9 @@
+ import com.netflix.maestro.engine.dao.MaestroWorkflowInstanceDao;
+ import com.netflix.maestro.engine.execution.StepRuntimeCallbackDelayPolicy;
+ import com.netflix.maestro.engine.listeners.MaestroWorkflowStatusListener;
+-import com.netflix.maestro.engine.metrics.MaestroMetrics;
+ import com.netflix.maestro.engine.publisher.MaestroJobEventPublisher;
+ import com.netflix.maestro.engine.tasks.MaestroTask;
++import com.netflix.maestro.metrics.MaestroMetrics;
+ import com.netflix.maestro.models.Constants;
+ import com.netflix.maestro.server.properties.ConductorProperties;
+ import java.util.Collections;
+
+File: maestro-server/src/main/java/com/netflix/maestro/server/config/DatabaseConfiguration.java
+Patch:
+@@ -36,9 +36,9 @@
+ import com.netflix.maestro.engine.dao.MaestroWorkflowDeletionDao;
+ import com.netflix.maestro.engine.dao.MaestroWorkflowInstanceDao;
+ import com.netflix.maestro.engine.dao.OutputDataDao;
+-import com.netflix.maestro.engine.metrics.MaestroMetrics;
+ import com.netflix.maestro.engine.publisher.MaestroJobEventPublisher;
+ import com.netflix.maestro.engine.utils.TriggerSubscriptionClient;
++import com.netflix.maestro.metrics.MaestroMetrics;
+ import com.netflix.maestro.models.Constants;
+ import com.netflix.maestro.server.properties.ConductorProperties;
+ import java.util.Collections;
+
+File: maestro-server/src/main/java/com/netflix/maestro/server/config/MaestroWorkflowConfiguration.java
+Patch:
+@@ -38,7 +38,6 @@
+ import com.netflix.maestro.engine.handlers.WorkflowActionHandler;
+ import com.netflix.maestro.engine.handlers.WorkflowInstanceActionHandler;
+ import com.netflix.maestro.engine.handlers.WorkflowRunner;
+-import com.netflix.maestro.engine.metrics.MaestroMetrics;
+ import com.netflix.maestro.engine.params.DefaultParamManager;
+ import com.netflix.maestro.engine.params.OutputDataManager;
+ import com.netflix.maestro.engine.params.ParamsManager;
+@@ -60,6 +59,7 @@
+ import com.netflix.maestro.engine.utils.WorkflowEnrichmentHelper;
+ import com.netflix.maestro.engine.utils.WorkflowHelper;
+ import com.netflix.maestro.engine.validations.DryRunValidator;
++import com.netflix.maestro.metrics.MaestroMetrics;
+ import com.netflix.maestro.models.Constants;
+ import com.netflix.maestro.models.definition.StepType;
+ import com.netflix.maestro.models.parameter.Parameter;
+
+File: netflix-sel/src/test/java/com/netflix/sel/type/SelJodaDateTimePropertyTest.java
+Patch:
+@@ -12,7 +12,7 @@
+  */
+ package com.netflix.sel.type;
+ 
+-import static org.junit.Assert.*;
++import static org.junit.Assert.assertEquals;
+ 
+ import com.netflix.sel.visitor.SelOp;
+ import org.joda.time.DateTime;
+
+File: netflix-sel/src/main/java/com/netflix/sel/type/SelJodaDateTimeProperty.java
+Patch:
+@@ -14,6 +14,7 @@
+ 
+ import com.netflix.sel.visitor.SelOp;
+ import java.util.Arrays;
++import java.util.Locale;
+ import org.joda.time.DateTime;
+ 
+ /** Wrapper class to support org.joda.time.DateTime.Property. */
+@@ -52,7 +53,7 @@ public DateTime.Property getInternalVal() {
+   public SelType call(String methodName, SelType[] args) {
+     if (args.length == 0) {
+       if ("getAsText".equals(methodName)) {
+-        return SelString.of(val.getAsText());
++        return SelString.of(val.getAsText(Locale.US));
+       } else if ("withMinimumValue".equals(methodName)) {
+         return SelJodaDateTime.of(val.withMinimumValue());
+       } else if ("withMaximumValue".equals(methodName)) {
+
+File: maestro-common/src/main/java/com/netflix/maestro/models/Constants.java
+Patch:
+@@ -311,7 +311,7 @@ public static WorkflowVersion of(String version) {
+   public static final String WORKFLOW_CREATE_REQUEST_DATA_SIZE_LIMIT = "256KB";
+ 
+   /** params' total size (in JSON format) limit for a workflow instance or a step instance. */
+-  public static final int JSONIFIED_PARAMS_STRING_SIZE_LIMIT = 500000;
++  public static final int JSONIFIED_PARAMS_STRING_SIZE_LIMIT = 750000;
+ 
+   /** Defines limit for the query for step attempt state view. */
+   public static final int STEP_ATTEMPT_STATE_LIMIT = 100;
+
+File: maestro-engine/src/main/java/com/netflix/maestro/engine/eval/ParamEvaluator.java
+Patch:
+@@ -482,7 +482,7 @@ private void paramsSizeCheck(Map<String, Parameter> params, String id) {
+     try {
+       long size = objectMapper.writeValueAsString(params).length();
+       Checks.checkTrue(
+-          size < Constants.JSONIFIED_PARAMS_STRING_SIZE_LIMIT,
++          size <= Constants.JSONIFIED_PARAMS_STRING_SIZE_LIMIT,
+           "Parameters' total size [%s] is larger than system limit [%s]",
+           size,
+           Constants.JSONIFIED_PARAMS_STRING_SIZE_LIMIT);
+
+File: maestro-engine/src/test/java/com/netflix/maestro/engine/eval/ParamEvaluatorTest.java
+Patch:
+@@ -807,13 +807,13 @@ public void testParamsSizeOverLimit() throws Exception {
+     AssertHelper.assertThrows(
+         "Parameter size is over limit",
+         IllegalArgumentException.class,
+-        "Parameters' total size [500001] is larger than system limit [500000]",
++        "Parameters' total size [750001] is larger than system limit [750000]",
+         () -> testEvaluator.evaluateWorkflowParameters(Collections.emptyMap(), "foo"));
+ 
+     AssertHelper.assertThrows(
+         "Parameter size is over limit",
+         IllegalArgumentException.class,
+-        "Parameters' total size [500001] is larger than system limit [500000]",
++        "Parameters' total size [750001] is larger than system limit [750000]",
+         () ->
+             testEvaluator.evaluateStepParameters(
+                 Collections.emptyMap(), Collections.emptyMap(), Collections.emptyMap(), "bar"));
+

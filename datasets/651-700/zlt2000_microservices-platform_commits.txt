@@ -1,0 +1,541 @@
+File: zlt-commons/zlt-common-core/src/main/java/com/central/common/utils/ResponseUtil.java
+Patch:
+@@ -54,7 +54,7 @@ public static void responseFailed(ObjectMapper objectMapper, HttpServletResponse
+     }
+ 
+     private static void responseWrite(ObjectMapper objectMapper, HttpServletResponse response, Result result) throws IOException {
+-        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
++        response.setContentType(MediaType.APPLICATION_JSON_UTF8_VALUE);
+         try (
+                 Writer writer = response.getWriter()
+         ) {
+
+File: zlt-uaa/src/main/java/com/central/oauth/config/SecurityConfig.java
+Patch:
+@@ -5,6 +5,7 @@
+ import com.central.common.utils.ResponseUtil;
+ import com.central.oauth.component.CustomAccessTokenResponseHttpMessageConverter;
+ import com.central.oauth.component.CustomeOAuth2TokenCustomizer;
++import com.central.oauth2.common.properties.SecurityProperties;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import org.apache.catalina.util.StandardSessionIdGenerator;
+ import org.springframework.context.annotation.Bean;
+@@ -87,9 +88,9 @@ public OAuth2TokenGenerator oAuth2TokenGenerator(JwtEncoder jwtEncoder, OAuth2To
+ 	 * 授权服务信息配置
+ 	 */
+ 	@Bean
+-	public AuthorizationServerSettings authorizationServerSettings() {
++	public AuthorizationServerSettings authorizationServerSettings(SecurityProperties securityProperties) {
+ 		return AuthorizationServerSettings.builder()
+-				.issuer(SecurityConstants.PROJECT_LICENSE)
++				.issuer(securityProperties.getAuth().getIssuer())
+ 				.authorizationEndpoint(SecurityConstants.AUTH_CODE_URL)
+ 				.tokenEndpoint(SecurityConstants.OAUTH_TOKEN_URL)
+ 				.tokenIntrospectionEndpoint(SecurityConstants.OAUTH_CHECK_TOKEN_URL)
+
+File: zlt-uaa/src/main/java/com/central/oauth/component/LoginProcessSetTenantFilter.java
+Patch:
+@@ -16,7 +16,7 @@
+ import java.io.IOException;
+ 
+ /**
+- * 设置租户id过滤器
++ * 授权码模式登录时设置租户id过滤器
+  *
+  * @author zlt
+  * @date 2020/3/29
+
+File: zlt-uaa/src/main/java/com/central/oauth/support/base/BaseAuthenticationProvider.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import cn.hutool.core.util.StrUtil;
+ import com.central.common.constant.SecurityConstants;
++import com.central.common.context.TenantContextHolder;
+ import com.central.oauth2.common.token.BaseAuthenticationToken;
+ import lombok.Getter;
+ import lombok.Setter;
+@@ -74,7 +75,9 @@ public Authentication authenticate(Authentication authentication) {
+         }
+ 
+         // 执行登录验证逻辑
++        TenantContextHolder.setTenant(registeredClient.getClientId());
+         Authentication principal = this.getPrincipal(authentication);
++        TenantContextHolder.clear();
+ 
+         String accountType = (String)authToken.getAdditionalParameters().get(SecurityConstants.ACCOUNT_TYPE_PARAM_NAME);
+         if (StrUtil.isEmpty(accountType)) {
+
+File: zlt-business/code-generator/src/main/java/com/central/generator/CodeGeneratorApp.java
+Patch:
+@@ -3,11 +3,13 @@
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
++import org.springframework.cloud.openfeign.EnableFeignClients;
+ 
+ /**
+  * @author zlt
+  */
+ @EnableDiscoveryClient
++@EnableFeignClients(basePackages = "com.central")
+ @SpringBootApplication
+ public class CodeGeneratorApp {
+     public static void main(String[] args) {
+
+File: zlt-business/user-center/src/main/java/com/central/user/controller/SysUserController.java
+Patch:
+@@ -12,7 +12,6 @@
+ import com.central.common.constant.CommonConstant;
+ import com.central.common.model.*;
+ import com.central.common.utils.ExcelUtil;
+-//import com.central.log.annotation.AuditLog;
+ import com.central.log.annotation.AuditLog;
+ import com.central.search.client.service.IQueryService;
+ import com.central.search.model.LogicDelDto;
+
+File: zlt-commons/zlt-common-core/src/main/java/com/central/common/datascope/mp/interceptor/DataScopeInnerInterceptor.java
+Patch:
+@@ -206,8 +206,7 @@ private String explainFromItem(FromItem fromItem) throws JSQLParserException {
+                 if(Objects.nonNull(tablealias)&& StrUtil.isNotBlank(tablealias.getName())){
+                     alias = tablealias.getName();
+                 }else{
+-                    alias = ALIAS_SYNBOL;
+-                    ((Table) fromItem).setAlias(new Alias(ALIAS_SYNBOL, false));
++                    alias = ((Table) fromItem).getName();
+                 }
+             }
+             // 如果from的子查询
+
+File: zlt-commons/zlt-common-core/src/main/java/com/central/common/utils/SpringUtil.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import org.springframework.context.ApplicationContext;
+ import org.springframework.context.ApplicationContextAware;
++import org.springframework.core.annotation.Order;
+ import org.springframework.core.env.Environment;
+ import org.springframework.stereotype.Component;
+ 
+@@ -11,6 +12,7 @@
+  * @author 作者 owen E-mail: 624191343@qq.com
+  */
+ @Component
++@Order(0)
+ public class SpringUtil implements ApplicationContextAware {
+ 
+     private static ApplicationContext applicationContext = null;
+
+File: zlt-commons/zlt-auth-client-spring-boot-starter/src/main/java/com/central/oauth2/common/store/AuthRedisTokenStore.java
+Patch:
+@@ -21,7 +21,7 @@
+ @ConditionalOnProperty(prefix = "zlt.oauth2.token.store", name = "type", havingValue = "redis", matchIfMissing = true)
+ public class AuthRedisTokenStore {
+     @Bean
+-    public TokenStore tokenStore(RedisConnectionFactory connectionFactory, SecurityProperties securityProperties) {
+-        return new CustomRedisTokenStore(connectionFactory, securityProperties);
++    public TokenStore tokenStore(RedisConnectionFactory connectionFactory, SecurityProperties securityProperties, RedisSerializer<Object> redisValueSerializer) {
++        return new CustomRedisTokenStore(connectionFactory, securityProperties, redisValueSerializer);
+     }
+ }
+
+File: zlt-commons/zlt-redis-spring-boot-starter/src/main/java/com/central/common/redis/RedisAutoConfigure.java
+Patch:
+@@ -41,7 +41,7 @@ public RedisSerializer<String> redisKeySerializer() {
+ 
+     @Bean
+     public RedisSerializer<Object> redisValueSerializer() {
+-        return RedisSerializer.java();
++        return RedisSerializer.json();
+     }
+ 
+     /**
+
+File: zlt-commons/zlt-auth-client-spring-boot-starter/src/main/java/com/central/oauth2/common/store/AuthRedisTokenStore.java
+Patch:
+@@ -21,7 +21,7 @@
+ @ConditionalOnProperty(prefix = "zlt.oauth2.token.store", name = "type", havingValue = "redis", matchIfMissing = true)
+ public class AuthRedisTokenStore {
+     @Bean
+-    public TokenStore tokenStore(RedisConnectionFactory connectionFactory, SecurityProperties securityProperties) {
+-        return new CustomRedisTokenStore(connectionFactory, securityProperties);
++    public TokenStore tokenStore(RedisConnectionFactory connectionFactory, SecurityProperties securityProperties, RedisSerializer<Object> redisValueSerializer) {
++        return new CustomRedisTokenStore(connectionFactory, securityProperties, redisValueSerializer);
+     }
+ }
+
+File: zlt-commons/zlt-redis-spring-boot-starter/src/main/java/com/central/common/redis/RedisAutoConfigure.java
+Patch:
+@@ -41,7 +41,7 @@ public RedisSerializer<String> redisKeySerializer() {
+ 
+     @Bean
+     public RedisSerializer<Object> redisValueSerializer() {
+-        return RedisSerializer.java();
++        return RedisSerializer.json();
+     }
+ 
+     /**
+
+File: zlt-commons/zlt-auth-client-spring-boot-starter/src/main/java/com/central/oauth2/common/converter/CustomUserAuthenticationConverter.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.central.oauth2.common.converter;
+ 
++import com.central.common.model.LoginAppUser;
+ import com.central.common.model.SysUser;
+ import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+ import org.springframework.security.core.Authentication;
+@@ -68,7 +69,7 @@ public Authentication extractAuthentication(Map<String, ?> map) {
+                 principal = user;
+             } else {
+                 Integer id = (Integer)map.get("id");
+-                SysUser user = new SysUser();
++                LoginAppUser user = new LoginAppUser();
+                 user.setUsername((String)principal);
+                 user.setId(Long.valueOf(id));
+                 principal = user;
+
+File: zlt-commons/zlt-auth-client-spring-boot-starter/src/main/java/com/central/oauth2/common/converter/CustomUserAuthenticationConverter.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.central.oauth2.common.converter;
+ 
++import com.central.common.model.LoginAppUser;
+ import com.central.common.model.SysUser;
+ import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+ import org.springframework.security.core.Authentication;
+@@ -68,7 +69,7 @@ public Authentication extractAuthentication(Map<String, ?> map) {
+                 principal = user;
+             } else {
+                 Integer id = (Integer)map.get("id");
+-                SysUser user = new SysUser();
++                LoginAppUser user = new LoginAppUser();
+                 user.setUsername((String)principal);
+                 user.setId(Long.valueOf(id));
+                 principal = user;
+
+File: zlt-uaa/src/main/java/com/central/oauth/service/impl/RedisClientDetailsService.java
+Patch:
+@@ -88,7 +88,7 @@ public void removeClientDetails(String clientId) {
+      * @param clientId
+      */
+     private void removeRedisCache(String clientId) {
+-        redisTemplate.opsForValue().get(clientRedisKey(clientId));
++        redisTemplate.delete(clientRedisKey(clientId));
+     }
+ 
+     /**
+
+File: zlt-uaa/src/main/java/com/central/oauth/service/impl/RedisClientDetailsService.java
+Patch:
+@@ -88,7 +88,7 @@ public void removeClientDetails(String clientId) {
+      * @param clientId
+      */
+     private void removeRedisCache(String clientId) {
+-        redisTemplate.opsForValue().get(clientRedisKey(clientId));
++        redisTemplate.delete(clientRedisKey(clientId));
+     }
+ 
+     /**
+
+File: zlt-commons/zlt-common-core/src/main/java/com/central/common/model/SysRole.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.central.common.model;
+ 
++import com.baomidou.mybatisplus.annotation.TableField;
+ import com.baomidou.mybatisplus.annotation.TableName;
+ import lombok.Data;
+ import lombok.EqualsAndHashCode;
+@@ -15,5 +16,6 @@ public class SysRole extends SuperEntity {
+     private static final long serialVersionUID = 4497149010220586111L;
+     private String code;
+     private String name;
++    @TableField(exist = false)
+     private Long userId;
+ }
+
+File: zlt-commons/zlt-common-core/src/main/java/com/central/common/model/SysRole.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.central.common.model;
+ 
++import com.baomidou.mybatisplus.annotation.TableField;
+ import com.baomidou.mybatisplus.annotation.TableName;
+ import lombok.Data;
+ import lombok.EqualsAndHashCode;
+@@ -15,5 +16,6 @@ public class SysRole extends SuperEntity {
+     private static final long serialVersionUID = 4497149010220586111L;
+     private String code;
+     private String name;
++    @TableField(exist = false)
+     private Long userId;
+ }
+
+File: zlt-gateway/sc-gateway/src/main/java/com/central/gateway/config/CorsConfig.java
+Patch:
+@@ -2,6 +2,8 @@
+ 
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
++import org.springframework.core.Ordered;
++import org.springframework.core.annotation.Order;
+ import org.springframework.web.cors.CorsConfiguration;
+ import org.springframework.web.cors.reactive.CorsWebFilter;
+ import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
+@@ -20,6 +22,7 @@
+ public class CorsConfig {
+     private static final String ALL = "*";
+ 
++    @Order(Ordered.HIGHEST_PRECEDENCE)
+     @Bean
+     public CorsWebFilter corsFilter() {
+         CorsConfiguration config = new CorsConfiguration();
+
+File: zlt-gateway/sc-gateway/src/main/java/com/central/gateway/config/CorsConfig.java
+Patch:
+@@ -2,6 +2,8 @@
+ 
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
++import org.springframework.core.Ordered;
++import org.springframework.core.annotation.Order;
+ import org.springframework.web.cors.CorsConfiguration;
+ import org.springframework.web.cors.reactive.CorsWebFilter;
+ import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
+@@ -20,6 +22,7 @@
+ public class CorsConfig {
+     private static final String ALL = "*";
+ 
++    @Order(Ordered.HIGHEST_PRECEDENCE)
+     @Bean
+     public CorsWebFilter corsFilter() {
+         CorsConfiguration config = new CorsConfiguration();
+
+File: zlt-commons/zlt-common-core/src/main/java/com/central/common/service/impl/SuperServiceImpl.java
+Patch:
+@@ -36,7 +36,7 @@ public boolean saveIdempotency(T entity, DistributedLock locker, String lockKey,
+         if (StrUtil.isEmpty(lockKey)) {
+             throw new LockException("lockKey is null");
+         }
+-        Object lock;
++        Object lock = null;
+         try {
+             //加锁
+             lock = locker.tryLock(lockKey, 10, 60, TimeUnit.SECONDS);
+@@ -55,7 +55,7 @@ public boolean saveIdempotency(T entity, DistributedLock locker, String lockKey,
+                 throw new LockException("锁等待超时");
+             }
+         } finally {
+-            locker.unlock(lockKey);
++            locker.unlock(lock);
+         }
+     }
+ 
+
+File: zlt-commons/zlt-common-core/src/main/java/com/central/common/service/impl/SuperServiceImpl.java
+Patch:
+@@ -36,7 +36,7 @@ public boolean saveIdempotency(T entity, DistributedLock locker, String lockKey,
+         if (StrUtil.isEmpty(lockKey)) {
+             throw new LockException("lockKey is null");
+         }
+-        Object lock;
++        Object lock = null;
+         try {
+             //加锁
+             lock = locker.tryLock(lockKey, 10, 60, TimeUnit.SECONDS);
+@@ -55,7 +55,7 @@ public boolean saveIdempotency(T entity, DistributedLock locker, String lockKey,
+                 throw new LockException("锁等待超时");
+             }
+         } finally {
+-            locker.unlock(lockKey);
++            locker.unlock(lock);
+         }
+     }
+ 
+
+File: zlt-business/file-center/src/main/java/com/central/file/mapper/FileMapper.java
+Patch:
+@@ -7,13 +7,15 @@
+ import com.central.db.mapper.SuperMapper;
+ 
+ import com.central.file.model.FileInfo;
++import org.apache.ibatis.annotations.Mapper;
+ import org.apache.ibatis.annotations.Param;
+ 
+ /**
+  * 上传存储db
+  *
+  * @author zlt
+  */
++@Mapper
+ public interface FileMapper extends SuperMapper<FileInfo> {
+     List<FileInfo> findList(Page<FileInfo> page, @Param("f") Map<String, Object> params);
+ }
+
+File: zlt-business/user-center/src/main/java/com/central/user/mapper/SysMenuMapper.java
+Patch:
+@@ -2,12 +2,14 @@
+ 
+ import com.central.db.mapper.SuperMapper;
+ import com.central.common.model.SysMenu;
++import org.apache.ibatis.annotations.Mapper;
+ 
+ /**
+  * 菜单
+  *
+  * @author zlt
+  */
++@Mapper
+ public interface SysMenuMapper extends SuperMapper<SysMenu> {
+ 
+ }
+
+File: zlt-business/user-center/src/main/java/com/central/user/mapper/SysRoleMapper.java
+Patch:
+@@ -7,12 +7,14 @@
+ import com.central.db.mapper.SuperMapper;
+ 
+ import com.central.common.model.SysRole;
++import org.apache.ibatis.annotations.Mapper;
+ import org.apache.ibatis.annotations.Param;
+ 
+ /**
+ * @author zlt
+  * 角色
+  */
++@Mapper
+ public interface SysRoleMapper extends SuperMapper<SysRole> {
+ 	List<SysRole> findList(Page<SysRole> page, @Param("r") Map<String, Object> params);
+ 
+
+File: zlt-business/user-center/src/main/java/com/central/user/mapper/SysUserMapper.java
+Patch:
+@@ -3,6 +3,7 @@
+ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+ import com.central.db.mapper.SuperMapper;
+ import com.central.common.model.SysUser;
++import org.apache.ibatis.annotations.Mapper;
+ import org.apache.ibatis.annotations.Param;
+ 
+ import java.util.List;
+@@ -14,6 +15,7 @@
+  * @author zlt
+  * @data 2018-10-29
+  */
++@Mapper
+ public interface SysUserMapper extends SuperMapper<SysUser> {
+     /**
+      * 分页查询用户列表
+
+File: zlt-demo/sharding-jdbc-demo/src/main/java/com/sharding/demo/mapper/UserMapper.java
+Patch:
+@@ -2,10 +2,12 @@
+ 
+ import com.central.db.mapper.SuperMapper;
+ import com.sharding.demo.model.User;
++import org.apache.ibatis.annotations.Mapper;
+ 
+ /**
+  * @author zlt
+  */
++@Mapper
+ public interface UserMapper extends SuperMapper<User> {
+ 
+ }
+
+File: zlt-uaa/src/main/java/com/central/oauth/mapper/ClientMapper.java
+Patch:
+@@ -5,13 +5,15 @@
+ 
+ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+ import com.central.db.mapper.SuperMapper;
++import org.apache.ibatis.annotations.Mapper;
+ import org.apache.ibatis.annotations.Param;
+ 
+ import com.central.oauth.model.Client;
+ 
+ /**
+  * @author zlt
+  */
++@Mapper
+ public interface ClientMapper extends SuperMapper<Client> {
+     List<Client> findList(Page<Client> page, @Param("params") Map<String, Object> params );
+ }
+
+File: zlt-business/user-center/src/main/java/com/central/user/mapper/SysRoleMapper.java
+Patch:
+@@ -15,4 +15,6 @@
+  */
+ public interface SysRoleMapper extends SuperMapper<SysRole> {
+ 	List<SysRole> findList(Page<SysRole> page, @Param("r") Map<String, Object> params);
++
++	List<SysRole> findAll();
+ }
+
+File: zlt-commons/zlt-auth-client-spring-boot-starter/src/main/java/com/central/oauth2/common/util/AuthUtils.java
+Patch:
+@@ -52,7 +52,7 @@ private static String extractHeaderToken(HttpServletRequest request) {
+         Enumeration<String> headers = request.getHeaders(CommonConstant.TOKEN_HEADER);
+         while (headers.hasMoreElements()) {
+             String value = headers.nextElement();
+-            if ((value.toLowerCase().startsWith(OAuth2AccessToken.BEARER_TYPE))) {
++            if ((value.startsWith(OAuth2AccessToken.BEARER_TYPE))) {
+                 String authHeaderValue = value.substring(OAuth2AccessToken.BEARER_TYPE.length()).trim();
+                 int commaIndex = authHeaderValue.indexOf(',');
+                 if (commaIndex > 0) {
+
+File: zlt-commons/zlt-common-spring-boot-starter/src/main/java/com/central/common/interceptor/TenantInterceptor.java
+Patch:
+@@ -26,6 +26,8 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
+         //保存租户id
+         if(StrUtil.isNotEmpty(tenantId)){
+             TenantContextHolder.setTenant(tenantId);
++        } else {
++            TenantContextHolder.clear();
+         }
+         return true;
+     }
+
+File: zlt-gateway/zuul-gateway/src/main/java/com/central/GatewayApp.java
+Patch:
+@@ -1,5 +1,6 @@
+ package com.central;
+ 
++import com.central.common.ribbon.annotation.EnableFeignInterceptor;
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+@@ -11,6 +12,7 @@
+  */
+ @EnableZuulProxy
+ @EnableFeignClients
++@EnableFeignInterceptor
+ @EnableDiscoveryClient
+ @SpringBootApplication
+ public class GatewayApp {
+
+File: zlt-business/user-center/src/main/java/com/central/user/service/impl/SysUserServiceImpl.java
+Patch:
+@@ -127,7 +127,7 @@ public SysUser selectByMobile(String mobile) {
+     @Override
+     public SysUser selectByOpenId(String openId) {
+         List<SysUser> users = baseMapper.selectList(
+-                new QueryWrapper<SysUser>().eq("openId", openId)
++                new QueryWrapper<SysUser>().eq("open_id", openId)
+         );
+         return getUser(users);
+     }
+
+File: zlt-uaa/src/main/java/com/central/oauth/service/impl/ValidateCodeServiceImpl.java
+Patch:
+@@ -62,7 +62,7 @@ public Result sendSmsCode(String mobile) {
+         }
+ 
+         SysUser user = userService.findByMobile(mobile);
+-        if (user != null) {
++        if (user == null) {
+             log.error("根据用户手机号{}查询用户为空", mobile);
+             return Result.failed("手机号不存在");
+         }
+

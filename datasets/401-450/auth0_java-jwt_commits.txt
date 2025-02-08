@@ -1,0 +1,1051 @@
+File: lib/src/main/java/com/auth0/jwt/JWTCreator.java
+Patch:
+@@ -582,7 +582,7 @@ private static boolean isBasicType(Object value) {
+         }
+ 
+         /**
+-         * Creates a new JWT and signs is with the given algorithm.
++         * Creates a new JWT and signs it with the given algorithm.
+          *
+          * @param algorithm used to sign the JWT
+          * @return a new JWT token
+
+File: lib/src/test/java/com/auth0/jwt/impl/JWTParserTest.java
+Patch:
+@@ -42,7 +42,7 @@ public void shouldGetDefaultObjectMapper() {
+     @Test
+     public void shouldAddDeserializers() {
+         ObjectMapper mapper = mock(ObjectMapper.class);
+-        new JWTParser(mapper);
++        JWTParser.addDeserializers(mapper);
+         verify(mapper).registerModule(any(Module.class));
+     }
+ 
+
+File: lib/src/main/java/com/auth0/jwt/JWTVerifier.java
+Patch:
+@@ -346,7 +346,7 @@ private boolean assertValidInstantClaim(String claimName, Claim claim, long leew
+                     throw new TokenExpiredException(String.format("The Token has expired on %s.", claimVal), claimVal);
+                 }
+             } else {
+-                isValid = assertInstantIsPast(claimVal, leeway, now);
++                isValid = assertInstantIsLessThanOrEqualToNow(claimVal, leeway, now);
+                 if (!isValid) {
+                     throw new IncorrectClaimException(
+                             String.format("The Token can't be used before %s.", claimVal), claimName, claim);
+@@ -356,10 +356,10 @@ private boolean assertValidInstantClaim(String claimName, Claim claim, long leew
+         }
+ 
+         private boolean assertInstantIsFuture(Instant claimVal, long leeway, Instant now) {
+-            return !(claimVal != null && now.minus(Duration.ofSeconds(leeway)).isAfter(claimVal));
++            return claimVal == null || now.minus(Duration.ofSeconds(leeway)).isBefore(claimVal);
+         }
+ 
+-        private boolean assertInstantIsPast(Instant claimVal, long leeway, Instant now) {
++        private boolean assertInstantIsLessThanOrEqualToNow(Instant claimVal, long leeway, Instant now) {
+             return !(claimVal != null && now.plus(Duration.ofSeconds(leeway)).isBefore(claimVal));
+         }
+ 
+
+File: lib/src/test/java/com/auth0/jwt/JWTTest.java
+Patch:
+@@ -12,6 +12,7 @@
+ import java.security.interfaces.ECKey;
+ import java.security.interfaces.RSAKey;
+ import java.time.Clock;
++import java.time.Duration;
+ import java.time.Instant;
+ import java.time.ZoneId;
+ import java.util.Base64;
+@@ -270,12 +271,12 @@ public void shouldGetStringAudience() {
+     @Test
+     public void shouldGetExpirationTime() {
+         long seconds = 1477592L;
+-        Clock clock = Clock.fixed(Instant.ofEpochSecond(seconds), ZoneId.of("UTC"));
++        Clock mockNow = Clock.fixed(Instant.ofEpochSecond(seconds - 1), ZoneId.of("UTC"));
+ 
+         String token = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjE0Nzc1OTJ9.x_ZjkPkKYUV5tdvc0l8go6D_z2kez1MQcOxokXrDc3k";
+         JWTVerifier.BaseVerification verification = (JWTVerifier.BaseVerification) JWT.require(Algorithm.HMAC256("secret"));
+         DecodedJWT jwt = verification
+-                .build(clock)
++                .build(mockNow)
+                 .verify(token);
+ 
+         assertThat(jwt, is(notNullValue()));
+
+File: lib/src/test/java/com/auth0/jwt/JWTDecoderTest.java
+Patch:
+@@ -50,7 +50,7 @@ public void shouldThrowIfLessThan3Parts() {
+     @Test
+     public void shouldThrowIfMoreThan3Parts() {
+         exception.expect(JWTDecodeException.class);
+-        exception.expectMessage("The token was expected to have 3 parts, but got 4.");
++        exception.expectMessage("The token was expected to have 3 parts, but got > 3.");
+         JWT.decode("this.has.four.parts");
+     }
+ 
+
+File: lib/src/main/java/com/auth0/jwt/exceptions/InvalidClaimException.java
+Patch:
+@@ -7,4 +7,4 @@ public class InvalidClaimException extends JWTVerificationException {
+     public InvalidClaimException(String message) {
+         super(message);
+     }
+-}
++}
+\ No newline at end of file
+
+File: lib/src/main/java/com/auth0/jwt/impl/JsonNodeClaim.java
+Patch:
+@@ -177,5 +177,4 @@ static Claim claimFromNode(JsonNode node, ObjectReader objectReader) {
+         return new JsonNodeClaim(node, objectReader);
+     }
+ 
+-}
+-//todo test all as* methods in JsonNodeClaim to ensure isMissing isNull calls are made
+\ No newline at end of file
++}
+\ No newline at end of file
+
+File: lib/src/test/java/com/auth0/jwt/impl/BasicHeaderTest.java
+Patch:
+@@ -135,6 +135,7 @@ public void shouldGetNotNullExtraClaimIfMissing() {
+ 
+         assertThat(header, is(notNullValue()));
+         assertThat(header.getHeaderClaim("missing"), is(notNullValue()));
+-        assertThat(header.getHeaderClaim("missing"), is(instanceOf(NullClaim.class)));
++        assertThat(header.getHeaderClaim("missing").isMissing(), is(true));
++        assertThat(header.getHeaderClaim("missing").isNull(), is(false));
+     }
+ }
+\ No newline at end of file
+
+File: lib/src/test/java/com/auth0/jwt/impl/PayloadImplTest.java
+Patch:
+@@ -166,7 +166,8 @@ public void shouldGetNotNullExtraClaimIfMissing() {
+         PayloadImpl payload = new PayloadImpl(null, null, null, null, null, null, null, null, objectReader);
+         assertThat(payload, is(notNullValue()));
+         assertThat(payload.getClaim("missing"), is(notNullValue()));
+-        assertThat(payload.getClaim("missing"), is(instanceOf(NullClaim.class)));
++        assertThat(payload.getClaim("missing").isMissing(), is(true));
++        assertThat(payload.getClaim("missing").isNull(), is(false));
+     }
+ 
+     @Test
+
+File: lib/src/main/java/com/auth0/jwt/JWTDecoder.java
+Patch:
+@@ -42,7 +42,7 @@ final class JWTDecoder implements DecodedJWT, Serializable {
+             payloadJson = new String(Base64.getUrlDecoder().decode(parts[1]), StandardCharsets.UTF_8);
+         } catch (NullPointerException e) {
+             throw new JWTDecodeException("The UTF-8 Charset isn't initialized.", e);
+-        } catch (IllegalArgumentException e){
++        } catch (IllegalArgumentException e) {
+             throw new JWTDecodeException("The input is not a valid base 64 encoded string.", e);
+         }
+         header = converter.parseHeader(headerJson);
+
+File: lib/src/main/java/com/auth0/jwt/TokenUtils.java
+Patch:
+@@ -18,7 +18,8 @@ static String[] splitToken(String token) throws JWTDecodeException {
+             parts = new String[]{parts[0], parts[1], ""};
+         }
+         if (parts.length != 3) {
+-            throw new JWTDecodeException(String.format("The token was expected to have 3 parts, but got %s.", parts.length));
++            throw new JWTDecodeException(
++                    String.format("The token was expected to have 3 parts, but got %s.", parts.length));
+         }
+         return parts;
+     }
+
+File: lib/src/main/java/com/auth0/jwt/algorithms/NoneAlgorithm.java
+Patch:
+@@ -3,7 +3,6 @@
+ import com.auth0.jwt.exceptions.SignatureGenerationException;
+ import com.auth0.jwt.exceptions.SignatureVerificationException;
+ import com.auth0.jwt.interfaces.DecodedJWT;
+-
+ import java.util.Base64;
+ 
+ class NoneAlgorithm extends Algorithm {
+
+File: lib/src/main/java/com/auth0/jwt/exceptions/AlgorithmMismatchException.java
+Patch:
+@@ -1,5 +1,8 @@
+ package com.auth0.jwt.exceptions;
+ 
++/**
++ * The exception that will be thrown if the exception doesn't match the one mentioned in the JWT Header.
++ */
+ public class AlgorithmMismatchException extends JWTVerificationException {
+     public AlgorithmMismatchException(String message) {
+         super(message);
+
+File: lib/src/main/java/com/auth0/jwt/exceptions/InvalidClaimException.java
+Patch:
+@@ -1,6 +1,8 @@
+ package com.auth0.jwt.exceptions;
+ 
+-
++/**
++ * The exception that will be thrown while verifying Claims of a JWT.
++ */
+ public class InvalidClaimException extends JWTVerificationException {
+     public InvalidClaimException(String message) {
+         super(message);
+
+File: lib/src/main/java/com/auth0/jwt/exceptions/JWTCreationException.java
+Patch:
+@@ -1,5 +1,8 @@
+ package com.auth0.jwt.exceptions;
+ 
++/**
++ * The exception that is thrown when a JWT cannot be created.
++ */
+ public class JWTCreationException extends RuntimeException {
+     public JWTCreationException(String message, Throwable cause) {
+         super(message, cause);
+
+File: lib/src/main/java/com/auth0/jwt/exceptions/JWTDecodeException.java
+Patch:
+@@ -1,5 +1,8 @@
+ package com.auth0.jwt.exceptions;
+ 
++/**
++ * The exception that is thrown when any part of the token contained an invalid JWT or JSON format.
++ */
+ public class JWTDecodeException extends JWTVerificationException {
+     public JWTDecodeException(String message) {
+         this(message, null);
+
+File: lib/src/main/java/com/auth0/jwt/exceptions/JWTVerificationException.java
+Patch:
+@@ -1,5 +1,8 @@
+ package com.auth0.jwt.exceptions;
+ 
++/**
++ * Parent to all the exception thrown while verifying a JWT.
++ */
+ public class JWTVerificationException extends RuntimeException {
+     public JWTVerificationException(String message) {
+         this(message, null);
+
+File: lib/src/main/java/com/auth0/jwt/exceptions/SignatureGenerationException.java
+Patch:
+@@ -2,6 +2,9 @@
+ 
+ import com.auth0.jwt.algorithms.Algorithm;
+ 
++/**
++ * The exception that is thrown when signature is not able to be generated.
++ */
+ public class SignatureGenerationException extends JWTCreationException {
+     public SignatureGenerationException(Algorithm algorithm, Throwable cause) {
+         super("The Token's Signature couldn't be generated when signing using the Algorithm: " + algorithm, cause);
+
+File: lib/src/main/java/com/auth0/jwt/exceptions/SignatureVerificationException.java
+Patch:
+@@ -2,6 +2,9 @@
+ 
+ import com.auth0.jwt.algorithms.Algorithm;
+ 
++/**
++ * The exception that is thrown if the Signature verification fails.
++ */
+ public class SignatureVerificationException extends JWTVerificationException {
+     public SignatureVerificationException(Algorithm algorithm) {
+         this(algorithm, null);
+
+File: lib/src/main/java/com/auth0/jwt/exceptions/TokenExpiredException.java
+Patch:
+@@ -1,5 +1,8 @@
+ package com.auth0.jwt.exceptions;
+ 
++/**
++ * The exception that is thrown if the token is expired.
++ */
+ public class TokenExpiredException extends JWTVerificationException {
+ 
+     private static final long serialVersionUID = -7076928975713577708L;
+
+File: lib/src/main/java/com/auth0/jwt/impl/ClaimsSerializer.java
+Patch:
+@@ -32,12 +32,12 @@ public void serialize(T holder, JsonGenerator gen, SerializerProvider provider)
+ 
+     /**
+      * Writes the given entry to the JSON representation. Custom claim serialization handling can override this method
+-     * to provide use-case specific serialization. Implementors who override this method must write the field name and the
+-     * field value.
++     * to provide use-case specific serialization. Implementors who override this method must write
++     * the field name and the field value.
+      *
+      * @param entry The entry that corresponds to the JSON field to write
+      * @param gen The {@code JsonGenerator} to use
+-     * @throws IOException
++     * @throws IOException if there is either an underlying I/O problem or encoding issue at format layer
+      */
+     protected void writeClaim(Map.Entry<String, Object> entry, JsonGenerator gen) throws IOException {
+         gen.writeFieldName(entry.getKey());
+
+File: lib/src/main/java/com/auth0/jwt/impl/HeaderDeserializer.java
+Patch:
+@@ -13,10 +13,10 @@
+ 
+ /**
+  * Jackson deserializer implementation for converting from JWT Header parts.
+- *
+- * @see JWTParser
+  * <p>
+  * This class is thread-safe.
++ *
++ * @see JWTParser
+  */
+ class HeaderDeserializer extends StdDeserializer<BasicHeader> {
+ 
+
+File: lib/src/main/java/com/auth0/jwt/impl/NullClaim.java
+Patch:
+@@ -53,12 +53,12 @@ public Instant asInstant() {
+     }
+ 
+     @Override
+-    public <T> T[] asArray(Class<T> tClazz) throws JWTDecodeException {
++    public <T> T[] asArray(Class<T> clazz) throws JWTDecodeException {
+         return null;
+     }
+ 
+     @Override
+-    public <T> List<T> asList(Class<T> tClazz) throws JWTDecodeException {
++    public <T> List<T> asList(Class<T> clazz) throws JWTDecodeException {
+         return null;
+     }
+ 
+@@ -68,7 +68,7 @@ public Map<String, Object> asMap() throws JWTDecodeException {
+     }
+ 
+     @Override
+-    public <T> T as(Class<T> tClazz) throws JWTDecodeException {
++    public <T> T as(Class<T> clazz) throws JWTDecodeException {
+         return null;
+     }
+ 
+
+File: lib/src/main/java/com/auth0/jwt/impl/PayloadSerializer.java
+Patch:
+@@ -10,10 +10,10 @@
+ 
+ /**
+  * Jackson serializer implementation for converting into JWT Payload parts.
+- *
+- * @see com.auth0.jwt.JWTCreator
+  * <p>
+  * This class is thread-safe.
++ *
++ * @see com.auth0.jwt.JWTCreator
+  */
+ public class PayloadSerializer extends ClaimsSerializer<PayloadClaimsHolder> {
+     public PayloadSerializer() {
+@@ -47,7 +47,7 @@ private void writeAudience(JsonGenerator gen, Map.Entry<String, Object> e) throw
+                 List<?> audList = (List<?>) e.getValue();
+                 for (Object aud : audList) {
+                     if (aud instanceof String) {
+-                        audArray.add((String)aud);
++                        audArray.add((String) aud);
+                     }
+                 }
+             }
+
+File: lib/src/main/java/com/auth0/jwt/impl/PublicClaims.java
+Patch:
+@@ -1,6 +1,8 @@
+ package com.auth0.jwt.impl;
+ 
+-
++/**
++ * Contains the claim name for all Public claims.
++ */
+ public interface PublicClaims {
+ 
+     //Header
+
+File: lib/src/main/java/com/auth0/jwt/interfaces/JWTPartsParser.java
+Patch:
+@@ -3,7 +3,8 @@
+ import com.auth0.jwt.exceptions.JWTDecodeException;
+ 
+ /**
+- * The JWTPartsParser class defines which parts of the JWT should be converted to it's specific Object representation instance.
++ * The JWTPartsParser class defines which parts of the JWT should be converted
++ * to it's specific Object representation instance.
+  */
+ public interface JWTPartsParser {
+ 
+
+File: lib/src/test/java/com/auth0/jwt/interfaces/ClaimTest.java
+Patch:
+@@ -71,12 +71,12 @@ public Date asDate() {
+         }
+ 
+         @Override
+-        public <T> T[] asArray(Class<T> tClazz) throws JWTDecodeException {
++        public <T> T[] asArray(Class<T> clazz) throws JWTDecodeException {
+             return null;
+         }
+ 
+         @Override
+-        public <T> List<T> asList(Class<T> tClazz) throws JWTDecodeException {
++        public <T> List<T> asList(Class<T> clazz) throws JWTDecodeException {
+             return null;
+         }
+ 
+
+File: lib/src/main/java/com/auth0/jwt/impl/ClaimsHolder.java
+Patch:
+@@ -6,11 +6,11 @@
+ /**
+  * The ClaimsHolder class is just a wrapper for the Map of Claims used for building a JWT.
+  */
+-public final class ClaimsHolder {
++public abstract class ClaimsHolder {
+     private Map<String, Object> claims;
+ 
+-    public ClaimsHolder(Map<String, Object> claims) {
+-        this.claims = claims == null ? new HashMap<String, Object>() : claims;
++    protected ClaimsHolder(Map<String, Object> claims) {
++        this.claims = claims == null ? new HashMap<>() : claims;
+     }
+ 
+     Map<String, Object> getClaims() {
+
+File: lib/src/main/java/com/auth0/jwt/JWTVerifier.java
+Patch:
+@@ -272,7 +272,7 @@ private static boolean isNullOrEmpty(String[] args) {
+      *
+      * @param token to verify.
+      * @return a verified and decoded JWT.
+-     * @throws AlgorithmMismatchException     if the algorithm stated in the token's header it's not equal to the one defined in the {@link JWTVerifier}.
++     * @throws AlgorithmMismatchException     if the algorithm stated in the token's header is not equal to the one defined in the {@link JWTVerifier}.
+      * @throws SignatureVerificationException if the signature is invalid.
+      * @throws TokenExpiredException          if the token has expired.
+      * @throws InvalidClaimException          if a claim contained a different value than the expected one.
+@@ -288,7 +288,7 @@ public DecodedJWT verify(String token) throws JWTVerificationException {
+      *
+      * @param jwt to verify.
+      * @return a verified and decoded JWT.
+-     * @throws AlgorithmMismatchException     if the algorithm stated in the token's header it's not equal to the one defined in the {@link JWTVerifier}.
++     * @throws AlgorithmMismatchException     if the algorithm stated in the token's header is not equal to the one defined in the {@link JWTVerifier}.
+      * @throws SignatureVerificationException if the signature is invalid.
+      * @throws TokenExpiredException          if the token has expired.
+      * @throws InvalidClaimException          if a claim contained a different value than the expected one.
+
+File: lib/src/main/java/com/auth0/jwt/JWTVerifier.java
+Patch:
+@@ -272,7 +272,7 @@ private static boolean isNullOrEmpty(String[] args) {
+      *
+      * @param token to verify.
+      * @return a verified and decoded JWT.
+-     * @throws AlgorithmMismatchException     if the algorithm stated in the token's header it's not equal to the one defined in the {@link JWTVerifier}.
++     * @throws AlgorithmMismatchException     if the algorithm stated in the token's header is not equal to the one defined in the {@link JWTVerifier}.
+      * @throws SignatureVerificationException if the signature is invalid.
+      * @throws TokenExpiredException          if the token has expired.
+      * @throws InvalidClaimException          if a claim contained a different value than the expected one.
+@@ -288,7 +288,7 @@ public DecodedJWT verify(String token) throws JWTVerificationException {
+      *
+      * @param jwt to verify.
+      * @return a verified and decoded JWT.
+-     * @throws AlgorithmMismatchException     if the algorithm stated in the token's header it's not equal to the one defined in the {@link JWTVerifier}.
++     * @throws AlgorithmMismatchException     if the algorithm stated in the token's header is not equal to the one defined in the {@link JWTVerifier}.
+      * @throws SignatureVerificationException if the signature is invalid.
+      * @throws TokenExpiredException          if the token has expired.
+      * @throws InvalidClaimException          if a claim contained a different value than the expected one.
+
+File: lib/src/main/java/com/auth0/jwt/JWTVerifier.java
+Patch:
+@@ -14,7 +14,7 @@
+ import java.util.stream.Collectors;
+ 
+ /**
+- * The JWTVerifier class holds the verify method to assert that a given Token has not only a proper JWT format, but also it's signature matches.
++ * The JWTVerifier class holds the verify method to assert that a given Token has not only a proper JWT format, but also its signature matches.
+  * <p>
+  * This class is thread-safe.
+  */
+
+File: lib/src/main/java/com/auth0/jwt/JWTVerifier.java
+Patch:
+@@ -14,7 +14,7 @@
+ import java.util.stream.Collectors;
+ 
+ /**
+- * The JWTVerifier class holds the verify method to assert that a given Token has not only a proper JWT format, but also it's signature matches.
++ * The JWTVerifier class holds the verify method to assert that a given Token has not only a proper JWT format, but also its signature matches.
+  * <p>
+  * This class is thread-safe.
+  */
+
+File: lib/src/main/java/com/auth0/jwt/interfaces/Verification.java
+Patch:
+@@ -64,7 +64,9 @@ public interface Verification {
+ 
+     /**
+      * Set a specific leeway window in seconds in which the Issued At ("iat") Claim will still be valid.
+-     * Issued At Date is always verified when the value is present. This method overrides the value set with acceptLeeway
++     * This method overrides the value set with {@link #acceptLeeway(long)}.
++     * By default, the Issued At claim is always verified when the value is present, unless disabled with {@link #ignoreIssuedAt()}.
++     * If Issued At verification has been disabled, no verification of the Issued At claim will be performed, and this method has no effect.
+      *
+      * @param leeway the window in seconds in which the Issued At Claim will still be valid.
+      * @return this same Verification instance.
+
+File: lib/src/main/java/com/auth0/jwt/algorithms/HMACAlgorithm.java
+Patch:
+@@ -8,6 +8,7 @@
+ import java.nio.charset.StandardCharsets;
+ import java.security.InvalidKeyException;
+ import java.security.NoSuchAlgorithmException;
++import java.util.Arrays;
+ 
+ class HMACAlgorithm extends Algorithm {
+ 
+@@ -20,7 +21,7 @@ class HMACAlgorithm extends Algorithm {
+         if (secretBytes == null) {
+             throw new IllegalArgumentException("The Secret cannot be null");
+         }
+-        this.secret = secretBytes;
++        this.secret = Arrays.copyOf(secretBytes, secretBytes.length);
+         this.crypto = crypto;
+     }
+ 
+
+File: lib/src/main/java/com/auth0/jwt/JWTVerifier.java
+Patch:
+@@ -235,7 +235,7 @@ private static boolean isNullOrEmpty(String[] args) {
+             return true;
+         }
+         boolean isAllNull = true;
+-        for (String arg: args) {
++        for (String arg : args) {
+             if (arg != null) {
+                 isAllNull = false;
+                 break;
+@@ -364,7 +364,7 @@ private void assertValidStringClaim(String claimName, String value, String expec
+     }
+ 
+     private void assertValidDateClaim(Date date, long leeway, boolean shouldBeFuture) {
+-        Date today = clock.getToday();
++        Date today = new Date(clock.getToday().getTime());
+         today.setTime(today.getTime() / 1000 * 1000); // truncate millis
+         if (shouldBeFuture) {
+             assertDateIsFuture(date, leeway, today);
+
+File: lib/src/main/java/com/auth0/jwt/JWTCreator.java
+Patch:
+@@ -321,7 +321,7 @@ public Builder withArrayClaim(String name, Long[] items) throws IllegalArgumentE
+         public Builder withClaim(String name, Map<String, ?> map) throws IllegalArgumentException {
+             assertNonNull(name);
+             // validate map contents
+-            if (!validateClaim(map)) {
++            if (map != null && !validateClaim(map)) {
+                 throw new IllegalArgumentException("Expected map containing Map, List, Boolean, Integer, Long, Double, String and Date");
+             }
+             addClaim(name, map);
+@@ -345,7 +345,7 @@ public Builder withClaim(String name, Map<String, ?> map) throws IllegalArgument
+         public Builder withClaim(String name, List<?> list) throws IllegalArgumentException {
+             assertNonNull(name);
+             // validate list contents
+-            if (!validateClaim(list)) {
++            if (list != null && !validateClaim(list)) {
+                 throw new IllegalArgumentException("Expected list containing Map, List, Boolean, Integer, Long, Double, String and Date");
+             }
+             addClaim(name, list);
+
+File: lib/src/main/java/com/auth0/jwt/interfaces/Verification.java
+Patch:
+@@ -173,6 +173,8 @@ public interface Verification {
+ 
+     /**
+      * Skip the Issued At ("iat") date verification. By default, the verification is performed.
++     *
++     * @return this same Verification instance.
+      */
+     Verification ignoreIssuedAt();
+ 
+
+File: lib/src/main/java/com/auth0/jwt/JWTCreator.java
+Patch:
+@@ -67,14 +67,15 @@ public static class Builder {
+         /**
+          * Add specific Claims to set as the Header.
+          * If provided map is null then nothing is changed
+-         * If provided map contains a header with null value then that header will be removed from the header claims
++         * If provided map contains a claim with null value then that claim will be removed from the header
+          *
+          * @param headerClaims the values to use as Claims in the token's Header.
+          * @return this same Builder instance.
+          */
+         public Builder withHeader(Map<String, Object> headerClaims) {
+-            if (headerClaims == null)
++            if (headerClaims == null) {
+                 return this;
++            }
+ 
+             for (Map.Entry<String, Object> entry : headerClaims.entrySet()) {
+                 if (entry.getValue() == null) {
+
+File: lib/src/main/java/com/auth0/jwt/algorithms/CryptoHelper.java
+Patch:
+@@ -32,8 +32,8 @@ boolean verifySignatureFor(String algorithm, byte[] secretBytes, String header,
+      *
+      * @param algorithm algorithm name.
+      * @param secretBytes algorithm secret.
+-     * @param header JWT header.
+-     * @param payload JWT payload.
++     * @param headerBytes JWT header.
++     * @param payloadBytes JWT payload.
+      * @param signatureBytes JWT signature.
+      * @return true if signature is valid.
+      * @throws NoSuchAlgorithmException if the algorithm is not supported.
+
+File: lib/src/main/java/com/auth0/jwt/interfaces/Verification.java
+Patch:
+@@ -5,7 +5,7 @@
+ import java.util.Date;
+ 
+ public interface Verification {
+-    Verification withIssuer(String issuer);
++    Verification withIssuer(String... issuer);
+ 
+     Verification withSubject(String subject);
+ 
+
+File: lib/src/main/java/com/auth0/jwt/algorithms/CryptoHelper.java
+Patch:
+@@ -32,8 +32,8 @@ boolean verifySignatureFor(String algorithm, byte[] secretBytes, String header,
+      *
+      * @param algorithm algorithm name.
+      * @param secretBytes algorithm secret.
+-     * @param header JWT header.
+-     * @param payload JWT payload.
++     * @param headerBytes JWT header.
++     * @param payloadBytes JWT payload.
+      * @param signatureBytes JWT signature.
+      * @return true if signature is valid.
+      * @throws NoSuchAlgorithmException if the algorithm is not supported.
+
+File: lib/src/main/java/com/auth0/jwt/interfaces/Verification.java
+Patch:
+@@ -5,7 +5,7 @@
+ import java.util.Date;
+ 
+ public interface Verification {
+-    Verification withIssuer(String issuer);
++    Verification withIssuer(String... issuer);
+ 
+     Verification withSubject(String subject);
+ 
+
+File: lib/src/main/java/com/auth0/jwt/JWTCreator.java
+Patch:
+@@ -341,11 +341,10 @@ private void addClaim(String name, Object value) {
+     private String sign() throws SignatureGenerationException {
+         String header = Base64.encodeBase64URLSafeString(headerJson.getBytes(StandardCharsets.UTF_8));
+         String payload = Base64.encodeBase64URLSafeString(payloadJson.getBytes(StandardCharsets.UTF_8));
+-        String content = String.format("%s.%s", header, payload);
+ 
+-        byte[] signatureBytes = algorithm.sign(content.getBytes(StandardCharsets.UTF_8));
++        byte[] signatureBytes = algorithm.sign(header.getBytes(StandardCharsets.UTF_8), payload.getBytes(StandardCharsets.UTF_8));
+         String signature = Base64.encodeBase64URLSafeString((signatureBytes));
+ 
+-        return String.format("%s.%s", content, signature);
++        return String.format("%s.%s.%s", header, payload, signature);
+     }
+ }
+
+File: lib/src/test/java/com/auth0/jwt/impl/PayloadDeserializerTest.java
+Patch:
+@@ -36,7 +36,7 @@ public class PayloadDeserializerTest {
+ 
+     @Before
+     public void setUp() throws Exception {
+-        deserializer = new PayloadDeserializer();
++        deserializer = new PayloadDeserializer(new ObjectMapper().reader());
+     }
+ 
+     @Test
+
+File: lib/src/main/java/com/auth0/jwt/JWTCreator.java
+Patch:
+@@ -329,11 +329,10 @@ private void addClaim(String name, Object value) {
+     private String sign() throws SignatureGenerationException {
+         String header = Base64.encodeBase64URLSafeString(headerJson.getBytes(StandardCharsets.UTF_8));
+         String payload = Base64.encodeBase64URLSafeString(payloadJson.getBytes(StandardCharsets.UTF_8));
+-        String content = String.format("%s.%s", header, payload);
+ 
+-        byte[] signatureBytes = algorithm.sign(content.getBytes(StandardCharsets.UTF_8));
++        byte[] signatureBytes = algorithm.sign(header.getBytes(StandardCharsets.UTF_8), payload.getBytes(StandardCharsets.UTF_8));
+         String signature = Base64.encodeBase64URLSafeString((signatureBytes));
+ 
+-        return String.format("%s.%s", content, signature);
++        return String.format("%s.%s.%s", header, payload, signature);
+     }
+ }
+
+File: lib/src/test/java/com/auth0/jwt/impl/PayloadDeserializerTest.java
+Patch:
+@@ -36,7 +36,7 @@ public class PayloadDeserializerTest {
+ 
+     @Before
+     public void setUp() throws Exception {
+-        deserializer = new PayloadDeserializer();
++        deserializer = new PayloadDeserializer(new ObjectMapper().reader());
+     }
+ 
+     @Test
+
+File: lib/src/main/java/com/auth0/jwt/JWTCreator.java
+Patch:
+@@ -66,7 +66,7 @@ public static class Builder {
+ 
+         /**
+          * Add specific Claims to set as the Header.
+-         * If provided map is null then nothing
++         * If provided map is null then nothing is changed
+          * If provided map contains a header with null value then that header will be removed from the header claims
+          *
+          * @param headerClaims the values to use as Claims in the token's Header.
+
+File: lib/src/main/java/com/auth0/jwt/JWTCreator.java
+Patch:
+@@ -71,7 +71,7 @@ public static class Builder {
+          * @return this same Builder instance.
+          */
+         public Builder withHeader(Map<String, Object> headerClaims) {
+-            this.headerClaims = new HashMap<>(headerClaims);
++            this.headerClaims.putAll(headerClaims);
+             return this;
+         }
+ 
+
+File: lib/src/main/java/com/auth0/jwt/interfaces/Verification.java
+Patch:
+@@ -37,5 +37,7 @@ public interface Verification {
+ 
+     Verification withArrayClaim(String name, Integer... items) throws IllegalArgumentException;
+ 
++    Verification ignoreIssuedAt();
++
+     JWTVerifier build();
+ }
+
+File: lib/src/main/java/com/auth0/jwt/JWTVerifier.java
+Patch:
+@@ -14,7 +14,7 @@
+  * The JWTVerifier class holds the verify method to assert that a given Token has not only a proper JWT format, but also it's signature matches.
+  */
+ @SuppressWarnings("WeakerAccess")
+-public final class JWTVerifier {
++public final class JWTVerifier implements com.auth0.jwt.interfaces.JWTVerifier {
+     private final Algorithm algorithm;
+     final Map<String, Object> claims;
+     private final Clock clock;
+@@ -348,6 +348,7 @@ private void requireClaim(String name, Object value) {
+      * @throws TokenExpiredException          if the token has expired.
+      * @throws InvalidClaimException          if a claim contained a different value than the expected one.
+      */
++    @Override
+     public DecodedJWT verify(String token) throws JWTVerificationException {
+         DecodedJWT jwt = JWT.decode(token);
+         verifyAlgorithm(jwt, algorithm);
+@@ -427,7 +428,7 @@ private void assertValidStringClaim(String claimName, String value, String expec
+ 
+     private void assertValidDateClaim(Date date, long leeway, boolean shouldBeFuture) {
+         Date today = clock.getToday();
+-        today.setTime((long) Math.floor((today.getTime() / 1000) * 1000)); // truncate millis
++        today.setTime(today.getTime() / 1000 * 1000); // truncate millis
+         if (shouldBeFuture) {
+             assertDateIsFuture(date, leeway, today);
+         } else {
+
+File: lib/src/test/java/com/auth0/jwt/JWTCreatorTest.java
+Patch:
+@@ -195,6 +195,7 @@ public void shouldAddIssuedAt() throws Exception {
+                 .withIssuedAt(new Date(1477592000))
+                 .sign(Algorithm.HMAC256("secret"));
+ 
++        System.out.println(signed);
+         assertThat(signed, is(notNullValue()));
+         assertThat(TokenUtils.splitToken(signed)[1], is("eyJpYXQiOjE0Nzc1OTJ9"));
+     }
+
+File: lib/src/main/java/com/auth0/jwt/impl/JsonNodeClaim.java
+Patch:
+@@ -35,6 +35,9 @@ public Integer asInt() {
+         return !data.isNumber() ? null : data.asInt();
+     }
+ 
++    @Override
++    public Long asLong() { return !data.isNumber() ? null : data.asLong(); }
++
+     @Override
+     public Double asDouble() {
+         return !data.isNumber() ? null : data.asDouble();
+
+File: lib/src/main/java/com/auth0/jwt/interfaces/Verification.java
+Patch:
+@@ -25,6 +25,8 @@ public interface Verification {
+ 
+     Verification withClaim(String name, Integer value) throws IllegalArgumentException;
+ 
++    Verification withClaim(String name, Long value) throws IllegalArgumentException;
++
+     Verification withClaim(String name, Double value) throws IllegalArgumentException;
+ 
+     Verification withClaim(String name, String value) throws IllegalArgumentException;
+
+File: lib/src/main/java/com/auth0/jwt/impl/JsonNodeClaim.java
+Patch:
+@@ -102,7 +102,7 @@ public <T> T as(Class<T> tClazz) throws JWTDecodeException {
+ 
+     @Override
+     public boolean isNull() {
+-        return !(data.isArray() || data.canConvertToLong() || data.isTextual() || data.isNumber() || data.isBoolean());
++        return false;
+     }
+ 
+     /**
+
+File: lib/src/test/java/com/auth0/jwt/JWTDecoderTest.java
+Patch:
+@@ -192,11 +192,11 @@ public void shouldGetValidClaim() throws Exception {
+     }
+ 
+     @Test
+-    public void shouldGetNullClaimIfClaimValueIsNull() throws Exception {
++    public void shouldNotGetNullClaimIfClaimIsEmptyObject() throws Exception {
+         DecodedJWT jwt = JWTDecoder.decode("eyJhbGciOiJIUzI1NiJ9.eyJvYmplY3QiOnt9fQ.d3nUeeL_69QsrHL0ZWij612LHEQxD8EZg1rNoY3a4aI");
+         assertThat(jwt, is(notNullValue()));
+         assertThat(jwt.getClaim("object"), is(notNullValue()));
+-        assertThat(jwt.getClaim("object").isNull(), is(true));
++        assertThat(jwt.getClaim("object").isNull(), is(false));
+     }
+ 
+     @Test
+
+File: lib/src/main/java/com/auth0/jwt/impl/JsonNodeClaim.java
+Patch:
+@@ -102,7 +102,7 @@ public <T> T as(Class<T> tClazz) throws JWTDecodeException {
+ 
+     @Override
+     public boolean isNull() {
+-        return !(data.isArray() || data.canConvertToLong() || data.isTextual() || data.isNumber() || data.isBoolean());
++        return !(data.isObject() || data.isArray() || data.canConvertToLong() || data.isTextual() || data.isNumber() || data.isBoolean());
+     }
+ 
+     /**
+
+File: lib/src/test/java/com/auth0/jwt/JWTDecoderTest.java
+Patch:
+@@ -192,11 +192,11 @@ public void shouldGetValidClaim() throws Exception {
+     }
+ 
+     @Test
+-    public void shouldGetNullClaimIfClaimValueIsNull() throws Exception {
++    public void shouldNotGetNullClaimIfClaimIsEmptyObject() throws Exception {
+         DecodedJWT jwt = JWTDecoder.decode("eyJhbGciOiJIUzI1NiJ9.eyJvYmplY3QiOnt9fQ.d3nUeeL_69QsrHL0ZWij612LHEQxD8EZg1rNoY3a4aI");
+         assertThat(jwt, is(notNullValue()));
+         assertThat(jwt.getClaim("object"), is(notNullValue()));
+-        assertThat(jwt.getClaim("object").isNull(), is(true));
++        assertThat(jwt.getClaim("object").isNull(), is(false));
+     }
+ 
+     @Test
+
+File: lib/src/main/java/com/auth0/jwt/interfaces/Verification.java
+Patch:
+@@ -25,6 +25,8 @@ public interface Verification {
+ 
+     Verification withClaim(String name, Integer value) throws IllegalArgumentException;
+ 
++    Verification withClaim(String name, Long value) throws IllegalArgumentException;
++
+     Verification withClaim(String name, Double value) throws IllegalArgumentException;
+ 
+     Verification withClaim(String name, String value) throws IllegalArgumentException;
+
+File: lib/src/main/java/com/auth0/jwt/JWTVerifier.java
+Patch:
+@@ -393,6 +393,8 @@ private void assertValidClaim(Claim claim, String claimName, Object value) {
+             isValid = value.equals(claim.asString());
+         } else if (value instanceof Integer) {
+             isValid = value.equals(claim.asInt());
++        } else if (value instanceof Long) {
++            isValid = value.equals(claim.asLong());
+         } else if (value instanceof Boolean) {
+             isValid = value.equals(claim.asBoolean());
+         } else if (value instanceof Double) {
+
+File: lib/src/main/java/com/auth0/jwt/impl/JsonNodeClaim.java
+Patch:
+@@ -34,6 +34,9 @@ public Integer asInt() {
+         return !data.isNumber() ? null : data.asInt();
+     }
+ 
++    @Override
++    public Long asLong() { return !data.isNumber() ? null : data.asLong(); }
++
+     @Override
+     public Double asDouble() {
+         return !data.isNumber() ? null : data.asDouble();
+
+File: lib/src/main/java/com/auth0/jwt/impl/JWTParser.java
+Patch:
+@@ -50,7 +50,7 @@ static ObjectMapper getDefaultObjectMapper() {
+     @SuppressWarnings("WeakerAccess")
+     <T> T convertFromJSON(String json, Class<T> tClazz) throws JWTDecodeException {
+         JWTDecodeException exception = new JWTDecodeException(String.format("The string '%s' doesn't have a valid JSON format.", json));
+-        if (json == null || !json.startsWith("{") || !json.endsWith("}")) {
++        if (json == null) {
+             throw exception;
+         }
+         try {
+
+File: lib/src/test/java/com/auth0/jwt/JWTDecoderTest.java
+Patch:
+@@ -47,7 +47,7 @@ public void shouldThrowIfMoreThan3Parts() throws Exception {
+     @Test
+     public void shouldThrowIfPayloadHasInvalidJSONFormat() throws Exception {
+         String validJson = "{}";
+-        String invalidJson = "{}}{";
++        String invalidJson = "}{";
+         exception.expect(JWTDecodeException.class);
+         exception.expectMessage(String.format("The string '%s' doesn't have a valid JSON format.", invalidJson));
+         customJWT(validJson, invalidJson, "signature");
+@@ -56,7 +56,7 @@ public void shouldThrowIfPayloadHasInvalidJSONFormat() throws Exception {
+     @Test
+     public void shouldThrowIfHeaderHasInvalidJSONFormat() throws Exception {
+         String validJson = "{}";
+-        String invalidJson = "{}}{";
++        String invalidJson = "}{";
+         exception.expect(JWTDecodeException.class);
+         exception.expectMessage(String.format("The string '%s' doesn't have a valid JSON format.", invalidJson));
+         customJWT(invalidJson, validJson, "signature");
+
+File: lib/src/main/java/com/auth0/jwt/JWTCreator.java
+Patch:
+@@ -7,7 +7,9 @@
+ import com.auth0.jwt.impl.PayloadSerializer;
+ import com.auth0.jwt.impl.PublicClaims;
+ import com.fasterxml.jackson.core.JsonProcessingException;
++import com.fasterxml.jackson.databind.MapperFeature;
+ import com.fasterxml.jackson.databind.ObjectMapper;
++import com.fasterxml.jackson.databind.SerializationConfig;
+ import com.fasterxml.jackson.databind.module.SimpleModule;
+ import org.apache.commons.codec.binary.Base64;
+ 
+@@ -33,6 +35,7 @@ private JWTCreator(Algorithm algorithm, Map<String, Object> headerClaims, Map<St
+             SimpleModule module = new SimpleModule();
+             module.addSerializer(ClaimsHolder.class, new PayloadSerializer());
+             mapper.registerModule(module);
++            mapper.configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true);
+             headerJson = mapper.writeValueAsString(headerClaims);
+             payloadJson = mapper.writeValueAsString(new ClaimsHolder(payloadClaims));
+         } catch (JsonProcessingException e) {
+
+File: lib/src/main/java/com/auth0/jwt/impl/PayloadSerializer.java
+Patch:
+@@ -54,7 +54,7 @@ public void serialize(ClaimsHolder holder, JsonGenerator gen, SerializerProvider
+         gen.writeObject(safePayload);
+     }
+ 
+-    private int dateToSeconds(Date date) {
+-        return (int) (date.getTime() / 1000);
++    private long dateToSeconds(Date date) {
++        return date.getTime() / 1000;
+     }
+ }
+
+File: lib/src/main/java/com/auth0/jwt/impl/PayloadSerializer.java
+Patch:
+@@ -54,7 +54,7 @@ public void serialize(ClaimsHolder holder, JsonGenerator gen, SerializerProvider
+         gen.writeObject(safePayload);
+     }
+ 
+-    private int dateToSeconds(Date date) {
+-        return (int) (date.getTime() / 1000);
++    private long dateToSeconds(Date date) {
++        return date.getTime() / 1000;
+     }
+ }
+
+File: lib/src/main/java/com/auth0/jwt/JWTVerifier.java
+Patch:
+@@ -96,7 +96,7 @@ public Verification withAudience(String... audience) {
+         }
+ 
+         /**
+-         * Define the default window in milliseconds in which the Not Before, Issued At and Expires At Claims will still be valid.
++         * Define the default window in seconds in which the Not Before, Issued At and Expires At Claims will still be valid.
+          * Setting a specific leeway value on a given Claim will override this value for that Claim.
+          *
+          * @param leeway the window in seconds in which the Not Before, Issued At and Expires At Claims will still be valid.
+
+File: lib/src/test/java/com/auth0/jwt/impl/BasicHeaderTest.java
+Patch:
+@@ -14,7 +14,7 @@
+ import static org.hamcrest.MatcherAssert.assertThat;
+ import static org.hamcrest.Matchers.*;
+ 
+-public class HeaderImplTest {
++public class BasicHeaderTest {
+ 
+     @Rule
+     public ExpectedException exception = ExpectedException.none();
+
+File: lib/src/test/java/com/auth0/jwtdecodejava/impl/HeaderImplTest.java
+Patch:
+@@ -16,10 +16,11 @@ public class HeaderImplTest {
+     @Rule
+     public ExpectedException exception = ExpectedException.none();
+ 
++    @SuppressWarnings("Convert2Diamond")
+     @Test
+     public void shouldHaveUnmodifiableTree() throws Exception {
+         exception.expect(UnsupportedOperationException.class);
+-        HeaderImpl header = new HeaderImpl(new HashMap<>());
++        HeaderImpl header = new HeaderImpl(new HashMap<String, JsonNode>());
+         header.getTree().put("something", null);
+     }
+ 
+
+File: lib/src/test/java/com/auth0/jwtdecodejava/impl/PayloadImplTest.java
+Patch:
+@@ -36,10 +36,11 @@ public void setUp() throws Exception {
+         payload = new PayloadImpl("issuer", "subject", new String[]{"audience"}, expiresAt, notBefore, issuedAt, "jwtId", tree);
+     }
+ 
++    @SuppressWarnings("Convert2Diamond")
+     @Test
+     public void shouldHaveUnmodifiableTree() throws Exception {
+         exception.expect(UnsupportedOperationException.class);
+-        PayloadImpl payload = new PayloadImpl(null, null, null, null, null, null, null, new HashMap<>());
++        PayloadImpl payload = new PayloadImpl(null, null, null, null, null, null, null, new HashMap<String, JsonNode>());
+         payload.getTree().put("something", null);
+     }
+ 
+
+File: lib/src/main/java/com/auth0/jwtdecodejava/interfaces/Payload.java
+Patch:
+@@ -57,10 +57,10 @@ public interface Payload {
+     String getId();
+ 
+     /**
+-     * Get a Private Claim given it's name. If the Claim wasn't specified in the Payload payload, null will be returned.
++     * Get a Private Claim given it's name. If the Claim wasn't specified in the Payload, a BaseClaim will be returned.
+      *
+      * @param name the name of the Claim to retrieve.
+-     * @return the Claim if found or null.
++     * @return a non-null Claim.
+      */
+     Claim getClaim(String name);
+ }
+

@@ -1,0 +1,2020 @@
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/SubDirContextThemeWrapper.java
+Patch:
+@@ -301,7 +301,8 @@ public boolean deleteDatabase(String name) {
+ 
+     @Override
+     public File getDatabasePath(String name) {
+-        if (getSubDirName() == null) {
++        if (getSubDirName() == null
++                || name.charAt(0) == File.separatorChar) {
+             return super.getDatabasePath(name);
+         } else {
+             return super.getDatabasePath(makeSubName(name));
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ShadowWebView.java
+Patch:
+@@ -79,7 +79,7 @@ public ShadowWebView(Context context, AttributeSet attrs, int defStyleAttr, bool
+ 
+     private void init(Context context) {
+         mContext = context;
+-        setWebViewClient(new WebViewClient());
++        super.setWebViewClient(new WarpWebViewClient(new WebViewClient(), mContext));
+     }
+ 
+     @Override
+
+File: projects/sdk/core/transform/src/test/java/com/tencent/shadow/core/runtime/ShadowApplication.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.tencent.shadow.core.runtime;
+ 
+-public class ShadowApplication {
++public class ShadowApplication extends ShadowContext {
+ 
+     public void onCreate() {
+     }
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/BroadcastReceiverWrapper.java
+Patch:
+@@ -17,6 +17,7 @@ public BroadcastReceiverWrapper(BroadcastReceiver broadcastReceiver, ShadowConte
+ 
+     @Override
+     public void onReceive(Context context, Intent intent) {
++        intent.setExtrasClassLoader(mShadowContext.mPluginClassLoader);
+         mRealBroadcastReceiver.onReceive(mShadowContext, intent);
+     }
+ }
+
+File: projects/test/dynamic/host/test-dynamic-host/src/androidTest/java/com/tencent/shadow/test/cases/plugin_service/PluginIntentServiceConnectionTest.java
+Patch:
+@@ -40,6 +40,9 @@ public void testOnServiceConnected() {
+         matchTextWithViewTag("STATUS_VIEW_TAG", "onServiceConnected");
+         matchTextWithViewTag("PACKAGE_VIEW_TAG", packageName);
+         matchTextWithViewTag("CLASS_VIEW_TAG", ServiceClassName);
++
++        //结束Service，避免影响其他用例
++        Espresso.onView(ViewMatchers.withTagValue(Matchers.<Object>is("STOP_BUTTON_TAG"))).perform(ViewActions.click());
+     }
+ 
+     @Test
+
+File: projects/test/dynamic/manager/test-dynamic-manager/src/main/java/com/tencent/shadow/test/dynamic/manager/ServiceTestDynamicPluginManager.java
+Patch:
+@@ -26,6 +26,7 @@
+ 
+ import com.tencent.shadow.core.manager.installplugin.InstalledPlugin;
+ import com.tencent.shadow.dynamic.host.EnterCallback;
++import com.tencent.shadow.test.cases.PluginIntentServiceConnectionTestCase;
+ import com.tencent.shadow.test.cases.PluginServiceConnectionTestCase;
+ import com.tencent.shadow.test.lib.constant.Constant;
+ import com.tencent.shadow.test.lib.test_manager.TestManager;
+@@ -80,7 +81,7 @@ private void doCase(Intent pluginIntent) throws InterruptedException {
+                 systemExitServiceCase.prepareUi();
+                 break;
+             case "com.tencent.shadow.test.plugin.particular_cases.plugin_service_for_host.SystemExitIntentService":
+-                PluginServiceConnectionTestCase systemExitIntentService = new PluginServiceConnectionTestCase(mPluginLoader, pluginIntent);
++                PluginIntentServiceConnectionTestCase systemExitIntentService = new PluginIntentServiceConnectionTestCase(mPluginLoader, pluginIntent);
+                 systemExitIntentService.prepareUi();
+                 break;
+             default:
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/BroadcastReceiverWrapper.java
+Patch:
+@@ -4,13 +4,13 @@
+ import android.content.Context;
+ import android.content.Intent;
+ 
+-public class BroadcastReceiverWapper extends BroadcastReceiver {
++public class BroadcastReceiverWrapper extends BroadcastReceiver {
+ 
+     final private BroadcastReceiver mRealBroadcastReceiver;
+ 
+     final private ShadowContext mShadowContext;
+ 
+-    public BroadcastReceiverWapper(BroadcastReceiver broadcastReceiver, ShadowContext shadowContext) {
++    public BroadcastReceiverWrapper(BroadcastReceiver broadcastReceiver, ShadowContext shadowContext) {
+         mRealBroadcastReceiver = broadcastReceiver;
+         mShadowContext = shadowContext;
+     }
+
+File: projects/sdk/dynamic/dynamic-host/src/main/java/com/tencent/shadow/dynamic/host/PluginManager.java
+Patch:
+@@ -30,9 +30,9 @@ public interface PluginManager {
+ 
+     /**
+      * @param context  context
+-     * @param formId   标识本次请求的来源位置，用于区分入口
++     * @param fromId   标识本次请求的来源位置，用于区分入口
+      * @param bundle   参数列表
+      * @param callback 用于从PluginManager实现中返回View
+      */
+-    void enter(Context context, long formId, Bundle bundle, EnterCallback callback);
++    void enter(Context context, long fromId, Bundle bundle, EnterCallback callback);
+ }
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/manager/installplugin/ODexBloc.java
+Patch:
+@@ -31,13 +31,13 @@ public class ODexBloc {
+     private static ConcurrentHashMap<String, Object> sLocks = new ConcurrentHashMap<>();
+ 
+     /**
+-     * DexClassLoader的optimizedDirectory参数从API 26起就无效了
++     * DexClassLoader的optimizedDirectory参数从API 27起就无效了
+      * 此方法统一判断这一特性是否生效
+      *
+      * @return <code>true</code>表示ODexBloc还有作用
+      */
+     public static boolean isEffective() {
+-        return Build.VERSION.SDK_INT < Build.VERSION_CODES.O;
++        return Build.VERSION.SDK_INT < Build.VERSION_CODES.O_MR1;
+     }
+ 
+     public static void oDexPlugin(File apkFile, File oDexDir, File copiedTagFile) throws InstallPluginException {
+
+File: projects/sdk/core/manager-db-test/src/androidTest/java/com/tencent/shadow/core/manager/installplugin/DbCompatibilityTest.java
+Patch:
+@@ -30,6 +30,7 @@
+ import org.apache.commons.io.FileUtils;
+ import org.apache.commons.io.IOUtils;
+ import org.json.JSONException;
++import org.json.JSONObject;
+ import org.junit.Assert;
+ import org.junit.Assume;
+ import org.junit.Before;
+@@ -141,7 +142,7 @@ private void initDbWithConfigJson(int... configJsonResId)
+         InstalledDao installedDao = new InstalledDao(dbHelper);
+ 
+         for (String configJson : configs) {
+-            installedDao.insert(PluginConfig.parseFromJson(configJson, context.getCacheDir()), null, null);
++            installedDao.insert(PluginConfig.parseFromJson(new JSONObject(configJson), context.getCacheDir()), null, null);
+         }
+ 
+         dbHelper.close();
+
+File: projects/test/lib/constant/src/main/java/com/tencent/shadow/test/lib/constant/Constant.java
+Patch:
+@@ -23,10 +23,12 @@ final public class Constant {
+     public static final String KEY_ACTIVITY_CLASSNAME = "KEY_ACTIVITY_CLASSNAME";
+     public static final String KEY_EXTRAS = "KEY_EXTRAS";
+     public static final String KEY_PLUGIN_PART_KEY = "KEY_PLUGIN_PART_KEY";
++    public static final String KEY_FROM_ID = "KEY_FROM_ID";
+     public static final String PART_KEY_PLUGIN_MAIN_APP = "test-plugin-general-cases";
+     public static final String PART_KEY_PLUGIN_SERVICE_FOR_HOST = "plugin-service-for-host";
+     public static final String PART_KEY_PLUGIN_ANDROIDX = "test-plugin-androidx-cases";
+     public static final int FROM_ID_NOOP = 1000;
+     public static final int FROM_ID_START_ACTIVITY = 1002;
+     public static final int FROM_ID_BIND_SERVICE = 1003;
++    public static final int FROM_ID_REINSTALL_PLUGIN = 1004;
+ }
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ShadowWebViewLayoutInflater.java
+Patch:
+@@ -52,12 +52,12 @@ LayoutInflater createNewContextLayoutInflater(Context newContext) {
+     }
+ 
+     @Override
+-    Pair<String,String> changeViewNameAndPrefix(String prefix,String name) {
++    Pair<String, String> changeViewNameAndPrefix(String name, String prefix) {
+         if (AndroidWebView.equals(prefix + name)) {
+             prefix = ShadowPackagePrefix;
+             name = ShadowWebView;
+         }
+-        return new Pair<>(name,prefix);
++        return new Pair<>(name, prefix);
+     }
+ 
+ 
+
+File: projects/sdk/coding/checks/src/main/kotlin/com/tencent/shadow/lint/issues/package-info.java
+Patch:
+@@ -1 +0,0 @@
+-// TODO #33 添加反射调用的检查，并禁止
+\ No newline at end of file
+
+File: projects/sdk/core/activity-container/src/main/java/com/tencent/shadow/core/runtime/container/NativePluginContainerActivity.java
+Patch:
+@@ -30,7 +30,7 @@
+ import android.view.SurfaceHolder;
+ import android.view.Window;
+ 
+-import com.tencent.shadow.core.container.BuildConfig;
++import com.tencent.shadow.coding.java_build_config.BuildConfig;
+ 
+ /**
+  * NativeActivity位于宿主中的壳子
+
+File: projects/sdk/core/manager-db-test/src/androidTest/java/com/tencent/shadow/core/manager/installplugin/DbCompatibilityTest.java
+Patch:
+@@ -18,6 +18,9 @@
+ 
+ package com.tencent.shadow.core.manager.installplugin;
+ 
++import static com.tencent.shadow.core.manager.installplugin.InstalledPluginDBHelper.DB_NAME_PREFIX;
++import static com.tencent.shadow.core.manager_aar.test.R.raw;
++
+ import android.content.Context;
+ import android.os.Build;
+ 
+@@ -45,9 +48,6 @@
+ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.TimeoutException;
+ 
+-import static com.tencent.shadow.core.manager.installplugin.InstalledPluginDBHelper.DB_NAME_PREFIX;
+-import static com.tencent.shadow.core.manager.test.R.raw;
+-
+ /**
+  * 数据库兼容性测试
+  * <p>
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/PluginActivity.java
+Patch:
+@@ -81,8 +81,7 @@ public boolean onCreatePanelMenu(int featureId, Menu menu) {
+     }
+ 
+     public LayoutInflater getLayoutInflater() {
+-        LayoutInflater inflater = hostActivityDelegator.getWindow().getLayoutInflater();
+-        return ShadowLayoutInflater.build(inflater, this, mPartKey);
++        return LayoutInflater.from(this);
+     }
+ 
+     //TODO: 对齐原手工代码，这个方法签名实际上不对，应该传入ShadowActivity
+
+File: projects/sample/source/sample-constant/src/main/java/com/tencent/shadow/sample/constant/Constant.java
+Patch:
+@@ -28,4 +28,5 @@ final public class Constant {
+ 
+     public static final int FROM_ID_NOOP = 1000;
+     public static final int FROM_ID_START_ACTIVITY = 1002;
++    public static final int FROM_ID_CLOSE = 1003;
+ }
+
+File: projects/sample/source/sample-host/src/main/java/com/tencent/shadow/sample/host/PluginLoadActivity.java
+Patch:
+@@ -87,6 +87,7 @@ public void onEnterComplete() {
+     @Override
+     protected void onDestroy() {
+         super.onDestroy();
++        HostApplication.getApp().getPluginManager().enter(this, Constant.FROM_ID_CLOSE, null, null);
+         mViewGroup.removeAllViews();
+     }
+ }
+
+File: projects/sample/source/sample-manager/src/main/java/com/tencent/shadow/sample/manager/SamplePluginManager.java
+Patch:
+@@ -80,6 +80,8 @@ public void enter(final Context context, long fromId, Bundle bundle, final Enter
+             //do nothing.
+         } else if (fromId == Constant.FROM_ID_START_ACTIVITY) {
+             onStartActivity(context, bundle, callback);
++        } else if (fromId == Constant.FROM_ID_CLOSE) {
++            close();
+         } else {
+             throw new IllegalArgumentException("不认识的fromId==" + fromId);
+         }
+
+File: projects/sample/source/sample-plugin/sample-loader/src/main/java/com/tencent/shadow/sample/plugin/loader/SampleComponentManager.java
+Patch:
+@@ -67,7 +67,7 @@ public ComponentName onBindContainerActivity(ComponentName pluginActivity) {
+     public ContainerProviderInfo onBindContainerContentProvider(ComponentName pluginContentProvider) {
+         return new ContainerProviderInfo(
+                 "com.tencent.shadow.core.runtime.container.PluginContainerContentProvider",
+-                "com.tencent.shadow.contentprovider.authority.dynamic");
++                context.getPackageName() + ".contentprovider.authority.dynamic");
+     }
+ 
+     @Override
+
+File: projects/test/dynamic/plugin/test-dynamic-loader/src/main/java/com/tencent/shadow/test/dynamic/loader/TestComponentManager.java
+Patch:
+@@ -67,7 +67,7 @@ public ComponentName onBindContainerActivity(ComponentName pluginActivity) {
+     public ContainerProviderInfo onBindContainerContentProvider(ComponentName pluginContentProvider) {
+         return new ContainerProviderInfo(
+                 "com.tencent.shadow.core.runtime.container.PluginContainerContentProvider",
+-                "com.tencent.shadow.contentprovider.authority.dynamic");
++                context.getPackageName() + ".contentprovider.authority.dynamic");
+     }
+ 
+     @Override
+
+File: projects/test/lib/constant/src/main/java/com/tencent/shadow/test/lib/constant/Constant.java
+Patch:
+@@ -27,6 +27,7 @@ final public class Constant {
+     public static final String PART_KEY_MULTIDEX_V1_0_2 = "test-plugin-multidex-v1_0_2";
+     public static final String PART_KEY_MULTIDEX_V2_0_1 = "test-plugin-multidex-v2_0_1";
+     public static final String PART_KEY_PLUGIN_SERVICE_FOR_HOST = "plugin-service-for-host";
++    public static final String PART_KEY_PLUGIN_ANDROIDX = "test-plugin-androidx-cases";
+     public static final int FROM_ID_NOOP = 1000;
+     public static final int FROM_ID_START_ACTIVITY = 1002;
+     public static final int FROM_ID_BIND_SERVICE = 1003;
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/PluginActivity.java
+Patch:
+@@ -36,8 +36,7 @@ static PluginActivity get(PluginContainerActivity pluginContainerActivity) {
+             return (PluginActivity) o;
+         } else {
+             //在遇到IllegalIntent时hostActivityDelegate==null。需要返回一个空的Activity避免Crash。
+-            return new ShadowActivity() {
+-            };
++            return new ShadowActivity();
+         }
+     }
+ 
+
+File: projects/sdk/core/transform/src/test/java/com/tencent/shadow/core/runtime/ShadowApplication.java
+Patch:
+@@ -1,4 +1,7 @@
+ package com.tencent.shadow.core.runtime;
+ 
+ public class ShadowApplication {
++
++    public void onCreate() {
++    }
+ }
+
+File: projects/test/plugin/general-cases/general-cases-lib/src/main/java/com/tencent/shadow/test/plugin/general_cases/lib/usecases/activity/TestActivityReCreate.java
+Patch:
+@@ -35,13 +35,13 @@ protected void onCreate(@Nullable Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+         setContentView(R.layout.layout_recreate);
+         TextView textView = findViewById(R.id.tv_msg);
+-        boolean isRecreate = getIntent().getBooleanExtra("reCreate", false);
+-        textView.setText("isRecreate:"+isRecreate);
++        String reCreateMsg = getIntent().getStringExtra("reCreateMsg");
++        textView.setText("reCreateMsg:" + reCreateMsg);
+         ToastUtil.showToast(this, "onCreate");
+     }
+ 
+     public void reCreate(View view) {
+-        getIntent().putExtra("reCreate", true);
++        getIntent().putExtra("reCreateMsg", "afterReCreate");
+         recreate();
+     }
+ 
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ShadowContext.java
+Patch:
+@@ -284,6 +284,9 @@ public void unregisterReceiver(BroadcastReceiver receiver) {
+     }
+ 
+     private BroadcastReceiverWapper wrapBroadcastReceiver(BroadcastReceiver receiver) {
++        if (receiver == null) {
++            return null;
++        }
+         synchronized (mBroadcastReceivers) {
+             BroadcastReceiverWapper broadcastReceiverWapper = mBroadcastReceivers.get(receiver);
+             if (broadcastReceiverWapper == null) {
+
+File: projects/test/plugin/general-cases/general-cases-lib/src/main/java/com/tencent/shadow/test/plugin/general_cases/lib/usecases/fragment/TargetFragmentTestActivity.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.tencent.shadow.test.plugin.general_cases.lib.usecases.fragment;
+ 
+ import android.app.Activity;
++import android.app.Fragment;
+ import android.os.Bundle;
+ import android.view.ViewGroup;
+ 
+@@ -13,8 +14,8 @@ protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+         ViewGroup viewGroup = UiUtil.setActivityContentView(this);
+ 
+-        TestFragment fragA = TestFragment.newInstance(null);
+-        TestFragment fragB = TestFragment.newInstance(null);
++        Fragment fragA = new TestNormalFragment();
++        Fragment fragB = new TestNormalFragment();
+         getFragmentManager().beginTransaction()
+                 .add(fragA, "fragA")
+                 .add(fragB, "fragB")
+
+File: projects/sdk/core/activity-container/src/main/java/com/tencent/shadow/core/runtime/container/PluginContainerActivity.java
+Patch:
+@@ -75,6 +75,7 @@ final protected void onCreate(Bundle savedInstanceState) {
+ 
+         boolean illegalIntent = isIllegalIntent(savedInstanceState);
+         if (illegalIntent) {
++            super.hostActivityDelegate = null;
+             hostActivityDelegate = null;
+             Log.e(TAG, "illegalIntent savedInstanceState==" + savedInstanceState + " getIntent().getExtras()==" + getIntent().getExtras());
+         }
+
+File: projects/sdk/core/manager/src/androidTest/java/com/tencent/shadow/core/manager/installplugin/DbCompatibilityTest.java
+Patch:
+@@ -140,7 +140,7 @@ private void initDbWithConfigJson(int... configJsonResId)
+         InstalledDao installedDao = new InstalledDao(dbHelper);
+ 
+         for (String configJson : configs) {
+-            installedDao.insert(PluginConfig.parseFromJson(configJson, context.getCacheDir()));
++            installedDao.insert(PluginConfig.parseFromJson(configJson, context.getCacheDir()), null, null);
+         }
+ 
+         dbHelper.close();
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/manager/installplugin/InstalledPlugin.java
+Patch:
+@@ -58,7 +58,7 @@ public class InstalledPlugin implements Serializable {
+     public Map<String, PluginPart> plugins = new HashMap<>();
+ 
+ 
+-    public InstalledPlugin() {
++    InstalledPlugin() {
+     }
+ 
+ 
+
+File: projects/sample/source/sample-host/src/main/java/com/tencent/shadow/sample/host/HostApplication.java
+Patch:
+@@ -65,7 +65,6 @@ private static void detectNonSdkApiUsageOnAndroidP() {
+             return;
+         }
+         StrictMode.VmPolicy.Builder builder = new StrictMode.VmPolicy.Builder();
+-        builder.penaltyDeath();
+         builder.detectNonSdkApiUsage();
+         StrictMode.setVmPolicy(builder.build());
+     }
+
+File: projects/test/dynamic/host/test-dynamic-host/src/main/java/com/tencent/shadow/test/dynamic/host/HostApplication.java
+Patch:
+@@ -69,7 +69,6 @@ private static void detectNonSdkApiUsageOnAndroidP() {
+             return;
+         }
+         StrictMode.VmPolicy.Builder builder = new StrictMode.VmPolicy.Builder();
+-        builder.penaltyDeath();
+         builder.detectNonSdkApiUsage();
+         StrictMode.setVmPolicy(builder.build());
+     }
+
+File: projects/test/none-dynamic/host/test-none-dynamic-host/src/main/java/com/tencent/shadow/test/none_dynamic/host/HostApplication.java
+Patch:
+@@ -115,7 +115,6 @@ private static void detectNonSdkApiUsageOnAndroidP() {
+             return;
+         }
+         StrictMode.VmPolicy.Builder builder = new StrictMode.VmPolicy.Builder();
+-        builder.penaltyDeath();
+         builder.detectNonSdkApiUsage();
+         StrictMode.setVmPolicy(builder.build());
+     }
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ShadowApplication.java
+Patch:
+@@ -69,7 +69,7 @@ public void onCreate() {
+                      ) {
+                     intentFilter.addAction(action);
+                 }
+-                mHostApplication.registerReceiver(receiver, intentFilter);
++                registerReceiver(receiver, intentFilter);
+             } catch (Exception e) {
+                 throw new RuntimeException(e);
+             }
+
+File: projects/sdk/core/activity-container/src/main/java/com/tencent/shadow/core/runtime/container/HostActivityDelegate.java
+Patch:
+@@ -33,6 +33,7 @@
+ import android.view.KeyEvent;
+ import android.view.LayoutInflater;
+ import android.view.Menu;
++import android.view.MenuItem;
+ import android.view.MotionEvent;
+ import android.view.View;
+ import android.view.WindowManager;
+@@ -160,4 +161,6 @@ public interface HostActivityDelegate {
+     void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig);
+ 
+     void onStateNotSaved();
++
++    boolean onOptionsItemSelected(MenuItem item);
+ }
+
+File: projects/sample/maven/host-project/introduce-shadow-lib/src/main/java/com/tencent/shadow/sample/introduce_shadow_lib/InitApplication.java
+Patch:
+@@ -25,16 +25,16 @@ public static PluginManager getPluginManager() {
+     }
+ 
+     public static void onApplicationCreate(Application application) {
++        //Log接口Manager也需要使用，所以主进程也初始化。
++        LoggerFactory.setILoggerFactory(new AndroidLoggerFactory());
++
+         if (isProcess(application, ":plugin")) {
+             //在全动态架构中，Activity组件没有打包在宿主而是位于被动态加载的runtime，
+             //为了防止插件crash后，系统自动恢复crash前的Activity组件，此时由于没有加载runtime而发生classNotFound异常，导致二次crash
+             //因此这里恢复加载上一次的runtime
+             DynamicRuntime.recoveryRuntime(application);
+         }
+ 
+-        //Log接口Manager也需要使用，所以主进程也初始化。
+-        LoggerFactory.setILoggerFactory(new AndroidLoggerFactory());
+-
+         FixedPathPmUpdater fixedPathPmUpdater
+                 = new FixedPathPmUpdater(new File("/data/local/tmp/sample-manager-debug.apk"));
+         boolean needWaitingUpdate
+
+File: projects/sample/sunflower/host-project/introduce-shadow-lib/src/main/java/com/tencent/shadow/sample/introduce_shadow_lib/InitApplication.java
+Patch:
+@@ -25,16 +25,16 @@ public static PluginManager getPluginManager() {
+     }
+ 
+     public static void onApplicationCreate(Application application) {
++        //Log接口Manager也需要使用，所以主进程也初始化。
++        LoggerFactory.setILoggerFactory(new AndroidLoggerFactory());
++
+         if (isProcess(application, ":plugin")) {
+             //在全动态架构中，Activity组件没有打包在宿主而是位于被动态加载的runtime，
+             //为了防止插件crash后，系统自动恢复crash前的Activity组件，此时由于没有加载runtime而发生classNotFound异常，导致二次crash
+             //因此这里恢复加载上一次的runtime
+             DynamicRuntime.recoveryRuntime(application);
+         }
+ 
+-        //Log接口Manager也需要使用，所以主进程也初始化。
+-        LoggerFactory.setILoggerFactory(new AndroidLoggerFactory());
+-
+         FixedPathPmUpdater fixedPathPmUpdater
+                 = new FixedPathPmUpdater(new File("/data/local/tmp/sample-manager-debug.apk"));
+         boolean needWaitingUpdate
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ShadowApplication.java
+Patch:
+@@ -35,7 +35,7 @@
+ /**
+  * 用于在plugin-loader中调用假的Application方法的接口
+  */
+-public abstract class ShadowApplication extends ShadowContext {
++public class ShadowApplication extends ShadowContext {
+ 
+     private Application mHostApplication;
+ 
+
+File: projects/sample/source/sample-plugin/sample-app-lib/src/main/java/com/tencent/shadow/sample/plugin/app/lib/gallery/cases/UseCaseManager.java
+Patch:
+@@ -27,6 +27,7 @@
+ import com.tencent.shadow.sample.plugin.app.lib.usecases.activity.TestActivityReCreateBySystem;
+ import com.tencent.shadow.sample.plugin.app.lib.usecases.activity.TestActivitySetTheme;
+ import com.tencent.shadow.sample.plugin.app.lib.usecases.activity.TestActivityWindowSoftMode;
++import com.tencent.shadow.sample.plugin.app.lib.usecases.activity.TestAppCompatActivityOnCreate;
+ import com.tencent.shadow.sample.plugin.app.lib.usecases.context.ActivityContextSubDirTestActivity;
+ import com.tencent.shadow.sample.plugin.app.lib.usecases.context.ApplicationContextSubDirTestActivity;
+ import com.tencent.shadow.sample.plugin.app.lib.usecases.dialog.TestDialogActivity;
+@@ -64,6 +65,7 @@ public static void initCase() {
+                 new TestActivityWindowSoftMode.Case(),
+                 new TestActivitySetTheme.Case(),
+                 new TestActivityOptionMenu.Case(),
++                new TestAppCompatActivityOnCreate.Case()
+         });
+         useCases.add(activityCategory);
+ 
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ShadowFactory2.java
+Patch:
+@@ -42,7 +42,7 @@ public class ShadowFactory2 implements LayoutInflater.Factory2 {
+     private final Class<?>[] mConstructorSignature = new Class[]{
+             Context.class, AttributeSet.class};
+ 
+-    private final HashMap<String, Constructor<? extends View>> sConstructorMap =
++    private final static HashMap<String, Constructor<? extends View>> sConstructorMap =
+             new HashMap<String, Constructor<? extends View>>();
+ 
+ 
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ContainerDialogFragment.java
+Patch:
+@@ -582,7 +582,7 @@ public void onCancel(DialogInterface dialog) {
+ 
+     @Override
+     public void superSetUserVisibleHint(boolean isVisibleToUser) {
+-        if (Build.VERSION.SDK_INT >= 15) {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1) {
+             super.setUserVisibleHint(isVisibleToUser);
+         }
+     }
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ContainerFragment.java
+Patch:
+@@ -561,7 +561,7 @@ public void dump(String prefix, FileDescriptor fd, PrintWriter writer, String[]
+ 
+     @Override
+     public void superSetUserVisibleHint(boolean isVisibleToUser) {
+-        if (Build.VERSION.SDK_INT >= 15) {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1) {
+             super.setUserVisibleHint(isVisibleToUser);
+         }
+     }
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/MixResources.java
+Patch:
+@@ -118,7 +118,7 @@ public Drawable getDrawableForDensity(int id, int density) throws NotFoundExcept
+         try {
+             return super.getDrawableForDensity(id, density);
+         } catch (NotFoundException e) {
+-            if (Build.VERSION.SDK_INT >= 15) {
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1) {
+                 return mHostResources.getDrawableForDensity(id, density);
+             } else {
+                 return null;
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ResolverHook.java
+Patch:
+@@ -61,7 +61,7 @@ public static Cursor query(ContentResolver resolver, Uri uri, String[] projectio
+             String[] selectionArgs, String sortOrder,
+             CancellationSignal cancellationSignal) {
+         Uri containerUri = UriConverter.parse(uri.toString());
+-        if (Build.VERSION.SDK_INT >= 16) {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+             return resolver.query(containerUri, projection, selection, selectionArgs, sortOrder, cancellationSignal);
+         } else {
+             return null;
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ResourcesWrapper.java
+Patch:
+@@ -142,7 +142,7 @@ public Drawable getDrawable(int id, Theme theme) throws NotFoundException {
+ 
+     @Override
+     public Drawable getDrawableForDensity(int id, int density) throws NotFoundException {
+-        if (Build.VERSION.SDK_INT >= 15) {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1) {
+             return mBase.getDrawableForDensity(id, density);
+         } else {
+             return null;
+@@ -229,7 +229,7 @@ public void getValue(int id, TypedValue outValue, boolean resolveRefs) throws No
+ 
+     @Override
+     public void getValueForDensity(int id, int density, TypedValue outValue, boolean resolveRefs) throws NotFoundException {
+-        if (Build.VERSION.SDK_INT >= 15) {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1) {
+             mBase.getValueForDensity(id, density, outValue, resolveRefs);
+         }
+     }
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/ShadowFactory2.java
+Patch:
+@@ -113,7 +113,7 @@ private View createCustomView(String name, Context context, AttributeSet attrs)
+             args[1] = attrs;
+ 
+             final View view = constructor.newInstance(args);
+-            if (view instanceof ViewStub && Build.VERSION.SDK_INT >= 16) {
++            if (view instanceof ViewStub && Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                 // Use the same context when inflating ViewStub later.
+                 final ViewStub viewStub = (ViewStub) view;
+                 viewStub.setLayoutInflater(mLayoutInflater.cloneInContext((Context) args[0]));
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/PackageManagerInvokeRedirect.java
+Patch:
+@@ -54,7 +54,7 @@ public static PackageInfo getPackageInfo(ClassLoader classLoaderOfInvokeCode, St
+     @TargetApi(Build.VERSION_CODES.O)
+     public static PackageInfo getPackageInfo(ClassLoader classLoaderOfInvokeCode, VersionedPackage versionedPackage,
+                                              int flags) throws PackageManager.NameNotFoundException{
+-        return getPluginPackageManager(classLoaderOfInvokeCode).getPackageInfo(versionedPackage, flags);
++        return getPluginPackageManager(classLoaderOfInvokeCode).getPackageInfo(versionedPackage.getPackageName(), flags);
+     }
+ 
+     public static ProviderInfo resolveContentProvider(ClassLoader classLoaderOfInvokeCode, String name, int flags) {
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/PluginPackageManager.java
+Patch:
+@@ -5,7 +5,6 @@
+ import android.content.pm.ApplicationInfo;
+ import android.content.pm.PackageInfo;
+ import android.content.pm.ProviderInfo;
+-import android.content.pm.VersionedPackage;
+ 
+ public interface PluginPackageManager {
+     ApplicationInfo getApplicationInfo(String packageName, int flags);
+@@ -14,7 +13,5 @@ public interface PluginPackageManager {
+ 
+     PackageInfo getPackageInfo(String packageName, int flags);
+ 
+-    PackageInfo getPackageInfo(VersionedPackage versionedPackage, int flags);
+-
+     ProviderInfo resolveContentProvider(String name, int flags);
+ }
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/PackageManagerInvokeRedirect.java
+Patch:
+@@ -54,7 +54,7 @@ public static PackageInfo getPackageInfo(ClassLoader classLoaderOfInvokeCode, St
+     @TargetApi(Build.VERSION_CODES.O)
+     public static PackageInfo getPackageInfo(ClassLoader classLoaderOfInvokeCode, VersionedPackage versionedPackage,
+                                              int flags) throws PackageManager.NameNotFoundException{
+-        return getPluginPackageManager(classLoaderOfInvokeCode).getPackageInfo(versionedPackage, flags);
++        return getPluginPackageManager(classLoaderOfInvokeCode).getPackageInfo(versionedPackage.getPackageName(), flags);
+     }
+ 
+     public static ProviderInfo resolveContentProvider(ClassLoader classLoaderOfInvokeCode, String name, int flags) {
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/core/runtime/PluginPackageManager.java
+Patch:
+@@ -5,7 +5,6 @@
+ import android.content.pm.ApplicationInfo;
+ import android.content.pm.PackageInfo;
+ import android.content.pm.ProviderInfo;
+-import android.content.pm.VersionedPackage;
+ 
+ public interface PluginPackageManager {
+     ApplicationInfo getApplicationInfo(String packageName, int flags);
+@@ -14,7 +13,5 @@ public interface PluginPackageManager {
+ 
+     PackageInfo getPackageInfo(String packageName, int flags);
+ 
+-    PackageInfo getPackageInfo(VersionedPackage versionedPackage, int flags);
+-
+     ProviderInfo resolveContentProvider(String name, int flags);
+ }
+
+File: projects/test/dynamic/host/test-dynamic-host/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/PluginMainAppTest.java
+Patch:
+@@ -21,7 +21,7 @@
+ import com.tencent.shadow.test.PluginTest;
+ import com.tencent.shadow.test.lib.constant.Constant;
+ 
+-abstract class PluginMainAppTest extends PluginTest {
++public abstract class PluginMainAppTest extends PluginTest {
+ 
+     @Override
+     protected String getPartKey() {
+
+File: projects/test/dynamic/manager/test-dynamic-manager/src/main/java/com/tencent/shadow/dynamic/impl/WhiteList.java
+Patch:
+@@ -28,5 +28,6 @@ public interface WhiteList {
+             {
+                     "com.tencent.host.shadow",
+                     "com.tencent.shadow.test.lib.constant",
++                    "com.tencent.shadow.test.lib.test_manager",
+             };
+ }
+
+File: projects/test/dynamic/host/test-dynamic-host/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/PluginMainAppTest.java
+Patch:
+@@ -21,7 +21,7 @@
+ import com.tencent.shadow.test.PluginTest;
+ import com.tencent.shadow.test.lib.constant.Constant;
+ 
+-abstract class PluginMainAppTest extends PluginTest {
++public abstract class PluginMainAppTest extends PluginTest {
+ 
+     @Override
+     protected String getPartKey() {
+
+File: projects/sdk/dynamic/dynamic-host/src/main/java/com/tencent/shadow/dynamic/host/ChangeApkContextWrapper.java
+Patch:
+@@ -49,6 +49,7 @@ private Resources createResources(String apkPath, Context base) {
+         PackageManager packageManager = base.getPackageManager();
+         PackageInfo packageArchiveInfo = packageManager.getPackageArchiveInfo(apkPath, GET_META_DATA);
+         packageArchiveInfo.applicationInfo.publicSourceDir = apkPath;
++        packageArchiveInfo.applicationInfo.sourceDir = apkPath;
+         try {
+             return packageManager.getResourcesForApplication(packageArchiveInfo.applicationInfo);
+         } catch (PackageManager.NameNotFoundException e) {
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/pluginmanager/BasePluginManager.java
+Patch:
+@@ -45,7 +45,7 @@ public abstract class BasePluginManager {
+     /**
+      * UI线程的handler
+      */
+-    protected Handler mHandler = new Handler(Looper.getMainLooper());
++    protected Handler mUiHandler = new Handler(Looper.getMainLooper());
+ 
+ 
+     public BasePluginManager(Context context) {
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/container/PluginContainerActivity.java
+Patch:
+@@ -69,7 +69,7 @@
+ import android.view.accessibility.AccessibilityEvent;
+ import android.widget.Toolbar;
+ 
+-import com.tencent.shadow.lint.BuildConfig;
++import com.tencent.shadow.runtime.BuildConfig;
+ import com.tencent.shadow.runtime.ShadowActivity;
+ 
+ import java.io.File;
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/CustomAndroidJUnitRunner.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test;
+ 
+ import android.os.Bundle;
+ 
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/ActivityContextSubDirTest.java
+Patch:
+@@ -1,12 +1,12 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.cases.plugin_main;
+ 
+ import android.content.Intent;
+ 
+ import androidx.test.core.app.ApplicationProvider;
+ 
+-public class ActivityContextSubDirTest extends DemoBaseTest {
++public class ActivityContextSubDirTest extends PluginMainAppTest {
+     @Override
+-    Intent getLaunchIntent() {
++    protected Intent getLaunchIntent() {
+         Intent pluginIntent = new Intent();
+         String packageName = ApplicationProvider.getApplicationContext().getPackageName();
+         pluginIntent.setClassName(
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/ActivityWindowSoftModeTest.java
+Patch:
+@@ -14,7 +14,7 @@
+  * limitations under the License.
+  */
+ 
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.cases.plugin_main;
+ 
+ import android.content.Intent;
+ 
+@@ -32,10 +32,10 @@
+ 
+ @RunWith(AndroidJUnit4.class)
+ @LargeTest
+-public class ActivityWindowSoftModeTest extends DemoBaseTest {
++public class ActivityWindowSoftModeTest extends PluginMainAppTest {
+ 
+     @Override
+-    Intent getLaunchIntent() {
++    protected Intent getLaunchIntent() {
+         Intent pluginIntent = new Intent();
+         String packageName = ApplicationProvider.getApplicationContext().getPackageName();
+         pluginIntent.setClassName(
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/ApplicationContextSubDirTest.java
+Patch:
+@@ -1,12 +1,12 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.cases.plugin_main;
+ 
+ import android.content.Intent;
+ 
+ import androidx.test.core.app.ApplicationProvider;
+ 
+ public class ApplicationContextSubDirTest extends SubDirContextThemeWrapperTest {
+     @Override
+-    Intent getLaunchIntent() {
++    protected Intent getLaunchIntent() {
+         Intent pluginIntent = new Intent();
+         String packageName = ApplicationProvider.getApplicationContext().getPackageName();
+         pluginIntent.setClassName(
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/ApplicationTest.java
+Patch:
+@@ -14,7 +14,7 @@
+  * limitations under the License.
+  */
+ 
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.cases.plugin_main;
+ 
+ import android.content.Intent;
+ 
+@@ -28,10 +28,10 @@
+ 
+ @RunWith(AndroidJUnit4.class)
+ @LargeTest
+-public class ApplicationTest extends DemoBaseTest {
++public class ApplicationTest extends PluginMainAppTest {
+ 
+     @Override
+-    Intent getLaunchIntent() {
++    protected Intent getLaunchIntent() {
+         Intent pluginIntent = new Intent();
+         String packageName = ApplicationProvider.getApplicationContext().getPackageName();
+         pluginIntent.setClassName(
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/BasicTest.java
+Patch:
+@@ -14,7 +14,7 @@
+  * limitations under the License.
+  */
+ 
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.cases.plugin_main;
+ 
+ import android.content.Intent;
+ 
+@@ -28,10 +28,10 @@
+ 
+ @RunWith(AndroidJUnit4.class)
+ @LargeTest
+-public class BasicTest extends DemoBaseTest {
++public class BasicTest extends PluginMainAppTest {
+ 
+     @Override
+-    Intent getLaunchIntent() {
++    protected Intent getLaunchIntent() {
+         Intent pluginIntent = new Intent();
+         String packageName = ApplicationProvider.getApplicationContext().getPackageName();
+         pluginIntent.setClassName(
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/GetCallingActivityTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.cases.plugin_main;
+ 
+ import android.content.Intent;
+ 
+@@ -10,10 +10,10 @@
+ import org.hamcrest.Matchers;
+ import org.junit.Test;
+ 
+-public class GetCallingActivityTest extends DemoBaseTest {
++public class GetCallingActivityTest extends PluginMainAppTest {
+ 
+     @Override
+-    Intent getLaunchIntent() {
++    protected Intent getLaunchIntent() {
+         Intent pluginIntent = new Intent();
+         String packageName = ApplicationProvider.getApplicationContext().getPackageName();
+         pluginIntent.setClassName(
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/HostInterfaceTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.cases.plugin_main;
+ 
+ import android.content.Intent;
+ 
+@@ -12,10 +12,10 @@
+ import org.hamcrest.Matchers;
+ import org.junit.Test;
+ 
+-public class HostInterfaceTest extends DemoBaseTest {
++public class HostInterfaceTest extends PluginMainAppTest {
+ 
+     @Override
+-    Intent getLaunchIntent() {
++    protected Intent getLaunchIntent() {
+         Intent pluginIntent = new Intent();
+         String packageName = ApplicationProvider.getApplicationContext().getPackageName();
+         pluginIntent.setClassName(
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/PluginServiceTest.java
+Patch:
+@@ -14,7 +14,7 @@
+  * limitations under the License.
+  */
+ 
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.cases.plugin_main;
+ 
+ import android.content.Intent;
+ 
+@@ -32,10 +32,10 @@
+ 
+ @RunWith(AndroidJUnit4.class)
+ @LargeTest
+-public class PluginServiceTest extends DemoBaseTest {
++public class PluginServiceTest extends PluginMainAppTest {
+ 
+     @Override
+-    Intent getLaunchIntent() {
++    protected Intent getLaunchIntent() {
+         Intent pluginIntent = new Intent();
+         String packageName = ApplicationProvider.getApplicationContext().getPackageName();
+         pluginIntent.setClassName(
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/ServiceContextSubDirTest.java
+Patch:
+@@ -1,12 +1,12 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.cases.plugin_main;
+ 
+ import android.content.Intent;
+ 
+ import androidx.test.core.app.ApplicationProvider;
+ 
+ public class ServiceContextSubDirTest extends SubDirContextThemeWrapperTest {
+     @Override
+-    Intent getLaunchIntent() {
++    protected Intent getLaunchIntent() {
+         Intent pluginIntent = new Intent();
+         String packageName = ApplicationProvider.getApplicationContext().getPackageName();
+         pluginIntent.setClassName(
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/cases/plugin_main/SubDirContextThemeWrapperTest.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.cases.plugin_main;
+ 
+ import android.content.SharedPreferences;
+ import android.os.Build;
+@@ -16,7 +16,7 @@
+ import static android.os.Environment.DIRECTORY_MUSIC;
+ import static android.os.Environment.DIRECTORY_PODCASTS;
+ 
+-abstract class SubDirContextThemeWrapperTest extends DemoBaseTest {
++abstract class SubDirContextThemeWrapperTest extends PluginMainAppTest {
+ 
+     private static final String PREFIX = "ShadowPlugin";
+     private static final String BUSINESS_NAME = "demo";
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/repeat/Repeat.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.repeat;
+ 
+ import java.lang.annotation.Retention;
+ import java.lang.annotation.RetentionPolicy;
+
+File: projects/test/host/dynamic/dynamic-host-app/src/androidTest/java/com/tencent/shadow/test/repeat/RepeatRule.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.repeat;
+ 
+ import org.junit.rules.TestRule;
+ import org.junit.runner.Description;
+
+File: projects/test/host/dynamic/dynamic-host-app/src/main/java/com/tencent/shadow/test/host/dynamic/app/DemoLoggerFactory.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.host.dynamic.app;
+ 
+ import android.util.Log;
+ 
+
+File: projects/test/host/dynamic/dynamic-host-app/src/main/java/com/tencent/shadow/test/host/dynamic/app/HostApplication.java
+Patch:
+@@ -1,13 +1,13 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.host.dynamic.app;
+ 
+ import android.app.Application;
+ import android.os.Build;
+ import android.os.StrictMode;
+ 
+ import com.tencent.shadow.core.common.LoggerFactory;
+-import com.tencent.shadow.demo.host.manager.Shadow;
+ import com.tencent.shadow.dynamic.host.DynamicRuntime;
+ import com.tencent.shadow.dynamic.host.PluginManager;
++import com.tencent.shadow.test.host.dynamic.app.manager.Shadow;
+ 
+ import java.io.File;
+ 
+
+File: projects/test/host/dynamic/dynamic-host-app/src/main/java/com/tencent/shadow/test/host/dynamic/app/JumpToPluginActivity.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.host.dynamic.app;
+ 
+ import android.app.Activity;
+ import android.os.Bundle;
+
+File: projects/test/host/dynamic/dynamic-host-app/src/main/java/com/tencent/shadow/test/host/dynamic/app/PluginHelper.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.host.dynamic.app;
+ 
+ import android.content.Context;
+ 
+
+File: projects/test/host/dynamic/dynamic-host-app/src/main/java/com/tencent/shadow/test/host/dynamic/app/PluginLoadActivity.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.host.dynamic.app;
+ 
+ import android.app.Activity;
+ import android.os.Bundle;
+
+File: projects/test/host/dynamic/dynamic-host-app/src/main/java/com/tencent/shadow/test/host/dynamic/app/SimpleIdlingResource.java
+Patch:
+@@ -14,7 +14,7 @@
+  * limitations under the License.
+  */
+ 
+-package com.tencent.shadow.demo.host;
++package com.tencent.shadow.test.host.dynamic.app;
+ 
+ import androidx.test.espresso.IdlingResource;
+ 
+
+File: projects/test/host/dynamic/dynamic-host-app/src/main/java/com/tencent/shadow/test/host/dynamic/app/manager/FixedPathPmUpdater.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host.manager;
++package com.tencent.shadow.test.host.dynamic.app.manager;
+ 
+ import com.tencent.shadow.dynamic.host.PluginManagerUpdater;
+ 
+
+File: projects/test/host/dynamic/dynamic-host-app/src/main/java/com/tencent/shadow/test/host/dynamic/app/manager/Shadow.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.demo.host.manager;
++package com.tencent.shadow.test.host.dynamic.app.manager;
+ 
+ import com.tencent.shadow.dynamic.host.DynamicPluginManager;
+ import com.tencent.shadow.dynamic.host.PluginManager;
+
+File: projects/test/host/dynamic/dynamic-loader/src/main/java/com/tencent/shadow/sdk/pluginloader/DemoComponentManager.java
+Patch:
+@@ -55,7 +55,7 @@ public ContainerProviderInfo onBindContainerContentProvider(ComponentName plugin
+     @Override
+     public List<BroadcastInfo> getBroadcastInfoList(String partKey) {
+         List<ComponentManager.BroadcastInfo> broadcastInfos = new ArrayList<>();
+-        if (partKey.equals(Constant.PART_KEY_DEMO_MAIN)) {
++        if (partKey.equals(Constant.PART_KEY_PLUGIN_MAIN_APP)) {
+             broadcastInfos.add(
+                     new ComponentManager.BroadcastInfo(
+                             "com.tencent.shadow.demo.usecases.receiver.MyReceiver",
+
+File: projects/test/host/dynamic/dynamic-manager/src/main/java/com/tencent/shadow/manager/DemoPluginManager.java
+Patch:
+@@ -47,7 +47,7 @@ public String getAbi() {
+      */
+     @Override
+     protected String getPluginProcessServiceName() {
+-        return "com.tencent.shadow.demo.host.DemoPluginProcessService";
++        return "com.tencent.shadow.test.host.dynamic.app.MainPluginProcessService";
+     }
+ 
+     @Override
+
+File: projects/test/lib/constant/src/main/java/com/tencent/shadow/demo/testutil/Constant.java
+Patch:
+@@ -5,7 +5,7 @@ final public class Constant {
+     public static final String KEY_ACTIVITY_CLASSNAME = "KEY_ACTIVITY_CLASSNAME";
+     public static final String KEY_EXTRAS = "KEY_EXTRAS";
+     public static final String KEY_PLUGIN_PART_KEY = "KEY_PLUGIN_PART_KEY";
+-    public static final String PART_KEY_DEMO_MAIN = "demo_main";
++    public static final String PART_KEY_PLUGIN_MAIN_APP = "plugin-main-app";
+     public static final String PART_KEY_MULTIDEX_V1_0_2 = "plugin-multidex-v1_0_2";
+     public static final String PART_KEY_MULTIDEX_V2_0_1 = "plugin-multidex-v2_0_1";
+     public static final int FROM_ID_NOOP = 1000;
+
+File: projects/test/lib/custom-view/src/main/java/com/tencent/shadow/test/lib/custom_view/TestViewConstructorCacheView.java
+Patch:
+@@ -1,4 +1,4 @@
+-package test;
++package com.tencent.shadow.test.lib.custom_view;
+ 
+ import android.content.Context;
+ import android.util.AttributeSet;
+
+File: projects/test/plugin/plugin-main/plugin-main-lib/src/main/java/com/tencent/shadow/demo/gallery/splash/SplashActivity.java
+Patch:
+@@ -7,9 +7,6 @@
+ 
+ import com.tencent.shadow.demo.gallery.MainActivity;
+ import com.tencent.shadow.demo.gallery.R;
+-import com.tencent.shadow.demo.gallery.cases.UseCaseManager;
+-import com.tencent.shadow.demo.gallery.cases.entity.UseCase;
+-import com.tencent.shadow.demo.gallery.util.ToastUtil;
+ 
+ public class SplashActivity extends Activity {
+ 
+
+File: projects/test/plugin/plugin-main/plugin-main-lib/src/main/java/com/tencent/shadow/demo/usecases/BaseAndroidTestActivity.java
+Patch:
+@@ -3,7 +3,6 @@
+ import android.app.Activity;
+ import android.os.Bundle;
+ import android.support.annotation.Nullable;
+-import android.widget.Toast;
+ 
+ import androidx.test.espresso.IdlingRegistry;
+ 
+
+File: projects/test/plugin/plugin-main/plugin-main-lib/src/main/java/com/tencent/shadow/demo/usecases/activity/WindowSoftModeJumpActivity.java
+Patch:
+@@ -6,7 +6,6 @@
+ import android.view.View;
+ import android.widget.TextView;
+ 
+-
+ import com.tencent.shadow.demo.gallery.R;
+ import com.tencent.shadow.demo.usecases.BaseAndroidTestActivity;
+ 
+
+File: projects/test/plugin/plugin-main/plugin-main-lib/src/main/java/com/tencent/shadow/demo/usecases/view/TestViewConstructorCache.java
+Patch:
+@@ -6,9 +6,9 @@
+ 
+ import com.tencent.shadow.demo.gallery.R;
+ import com.tencent.shadow.demo.gallery.cases.entity.UseCase;
++import com.tencent.shadow.test.lib.custom_view.TestViewConstructorCacheView;
+ 
+ import dalvik.system.PathClassLoader;
+-import test.TestViewConstructorCacheView;
+ 
+ public class TestViewConstructorCache extends Activity {
+ 
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/pluginmanager/BasePluginManager.java
+Patch:
+@@ -45,7 +45,7 @@ public abstract class BasePluginManager {
+     /**
+      * UI线程的handler
+      */
+-    protected Handler mHandler = new Handler(Looper.getMainLooper());
++    protected Handler mUiHandler = new Handler(Looper.getMainLooper());
+ 
+ 
+     public BasePluginManager(Context context) {
+
+File: projects/demo/host-apk/src/androidTest/java/com/tencent/shadow/demo/host/ActivityContextSubDirTest.java
+Patch:
+@@ -4,7 +4,7 @@
+ 
+ import androidx.test.core.app.ApplicationProvider;
+ 
+-public class ActivityContextSubDirTest extends SubDirContextThemeWrapperTest {
++public class ActivityContextSubDirTest extends DemoBaseTest {
+     @Override
+     Intent getLaunchIntent() {
+         Intent pluginIntent = new Intent();
+
+File: projects/demo/host-apk/src/androidTest/java/com/tencent/shadow/demo/host/ActivityWindowSoftModeTest.java
+Patch:
+@@ -32,7 +32,7 @@
+ 
+ @RunWith(AndroidJUnit4.class)
+ @LargeTest
+-public class ActivityWindowSoftModeTest extends BaseTest {
++public class ActivityWindowSoftModeTest extends DemoBaseTest {
+ 
+     @Override
+     Intent getLaunchIntent() {
+
+File: projects/demo/host-apk/src/androidTest/java/com/tencent/shadow/demo/host/BasicTest.java
+Patch:
+@@ -28,7 +28,7 @@
+ 
+ @RunWith(AndroidJUnit4.class)
+ @LargeTest
+-public class BasicTest extends BaseTest {
++public class BasicTest extends DemoBaseTest {
+ 
+     @Override
+     Intent getLaunchIntent() {
+
+File: projects/demo/host-apk/src/androidTest/java/com/tencent/shadow/demo/host/GetCallingActivityTest.java
+Patch:
+@@ -10,7 +10,7 @@
+ import org.hamcrest.Matchers;
+ import org.junit.Test;
+ 
+-public class GetCallingActivityTest extends BaseTest {
++public class GetCallingActivityTest extends DemoBaseTest {
+ 
+     @Override
+     Intent getLaunchIntent() {
+
+File: projects/demo/host-apk/src/androidTest/java/com/tencent/shadow/demo/host/HostInterfaceTest.java
+Patch:
+@@ -8,12 +8,11 @@
+ import androidx.test.espresso.matcher.ViewMatchers;
+ 
+ import com.tencent.shadow.demo.interfaces.HostTestInterface;
+-import com.tencent.shadow.demo.other.HostOtherInterface;
+ 
+ import org.hamcrest.Matchers;
+ import org.junit.Test;
+ 
+-public class HostInterfaceTest extends BaseTest {
++public class HostInterfaceTest extends DemoBaseTest {
+ 
+     @Override
+     Intent getLaunchIntent() {
+
+File: projects/demo/host-apk/src/androidTest/java/com/tencent/shadow/demo/host/PluginActivityScenario.java
+Patch:
+@@ -8,8 +8,9 @@
+ import com.tencent.shadow.demo.testutil.Constant;
+ 
+ final class PluginActivityScenario {
+-    static ActivityScenario<JumpToPluginActivity> launch(Intent pluginIntent) {
++    static ActivityScenario<JumpToPluginActivity> launch(String partKey, Intent pluginIntent) {
+         Intent intent = new Intent(ApplicationProvider.getApplicationContext(), JumpToPluginActivity.class);
++        intent.putExtra(Constant.KEY_PLUGIN_PART_KEY, partKey);
+         intent.putExtra(Constant.KEY_ACTIVITY_CLASSNAME, pluginIntent.getComponent().getClassName());
+         intent.putExtra(Constant.KEY_EXTRAS, pluginIntent.getExtras());
+         return ActivityScenario.launch(intent);
+
+File: projects/demo/host-apk/src/androidTest/java/com/tencent/shadow/demo/host/PluginServiceTest.java
+Patch:
+@@ -32,7 +32,7 @@
+ 
+ @RunWith(AndroidJUnit4.class)
+ @LargeTest
+-public class PluginServiceTest extends BaseTest {
++public class PluginServiceTest extends DemoBaseTest {
+ 
+     @Override
+     Intent getLaunchIntent() {
+
+File: projects/demo/host-apk/src/androidTest/java/com/tencent/shadow/demo/host/SubDirContextThemeWrapperTest.java
+Patch:
+@@ -16,7 +16,7 @@
+ import static android.os.Environment.DIRECTORY_MUSIC;
+ import static android.os.Environment.DIRECTORY_PODCASTS;
+ 
+-abstract class SubDirContextThemeWrapperTest extends BaseTest {
++abstract class SubDirContextThemeWrapperTest extends DemoBaseTest {
+ 
+     private static final String PREFIX = "ShadowPlugin";
+     private static final String BUSINESS_NAME = "demo";
+
+File: projects/demo/host-apk/src/main/java/com/tencent/shadow/demo/host/JumpToPluginActivity.java
+Patch:
+@@ -20,6 +20,7 @@ public void jump(View view) {
+ 
+         Bundle bundle = new Bundle();
+         bundle.putString(Constant.KEY_PLUGIN_ZIP_PATH, PluginHelper.getInstance().pluginZipFile.getAbsolutePath());
++        bundle.putString(Constant.KEY_PLUGIN_PART_KEY, getIntent().getStringExtra(Constant.KEY_PLUGIN_PART_KEY));
+         bundle.putString(Constant.KEY_ACTIVITY_CLASSNAME, getIntent().getStringExtra(Constant.KEY_ACTIVITY_CLASSNAME));
+         bundle.putBundle(Constant.KEY_EXTRAS, getIntent().getBundleExtra(Constant.KEY_EXTRAS));
+ 
+
+File: projects/demo/host-apk/src/main/java/com/tencent/shadow/demo/host/PluginLoadActivity.java
+Patch:
+@@ -37,9 +37,11 @@ public void run() {
+ 
+                 Bundle bundle = new Bundle();
+                 bundle.putString(Constant.KEY_PLUGIN_ZIP_PATH, PluginHelper.getInstance().pluginZipFile.getAbsolutePath());
++                bundle.putString(Constant.KEY_PLUGIN_PART_KEY, getIntent().getStringExtra(Constant.KEY_PLUGIN_PART_KEY));
++                bundle.putString(Constant.KEY_ACTIVITY_CLASSNAME, getIntent().getStringExtra(Constant.KEY_ACTIVITY_CLASSNAME));
+ 
+                 HostApplication.getApp().getPluginManager()
+-                        .enter(PluginLoadActivity.this, Constant.FROM_ID_ENTRY_START_DEMO_PLUGIN, bundle, new EnterCallback() {
++                        .enter(PluginLoadActivity.this, Constant.FROM_ID_START_ACTIVITY, bundle, new EnterCallback() {
+                     @Override
+                     public void onShowLoadingView(final View view) {
+                         mHandler.post(new Runnable() {
+
+File: projects/demo/test-util/src/main/java/com/tencent/shadow/demo/testutil/Constant.java
+Patch:
+@@ -4,8 +4,10 @@ final public class Constant {
+     public static final String KEY_PLUGIN_ZIP_PATH = "pluginZipPath";
+     public static final String KEY_ACTIVITY_CLASSNAME = "KEY_ACTIVITY_CLASSNAME";
+     public static final String KEY_EXTRAS = "KEY_EXTRAS";
++    public static final String KEY_PLUGIN_PART_KEY = "KEY_PLUGIN_PART_KEY";
+     public static final String PART_KEY_DEMO_MAIN = "demo_main";
++    public static final String PART_KEY_MULTIDEX_V1_0_2 = "plugin-multidex-v1_0_2";
++    public static final String PART_KEY_MULTIDEX_V2_0_1 = "plugin-multidex-v2_0_1";
+     public static final int FROM_ID_NOOP = 1000;
+-    public static final int FROM_ID_ENTRY_START_DEMO_PLUGIN = 1001;
+     public static final int FROM_ID_START_ACTIVITY = 1002;
+ }
+
+File: projects/demo-none-dynamic/host-apk-none-dynamic/src/main/java/com/tencent/shadow/demo/host/HostApplication.java
+Patch:
+@@ -43,7 +43,7 @@ public void loadPlugin(String partKey) {
+             throw new NullPointerException("partKey == " + partKey);
+         }
+ 
+-        LoadParameters loadParameters = new LoadParameters(partKey, null, null);
++        LoadParameters loadParameters = new LoadParameters(null, partKey, null, null);
+ 
+         Parcel parcel = Parcel.obtain();
+         loadParameters.writeToParcel(parcel, 0);
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/pluginmanager/installplugin/InstalledPlugin.java
+Patch:
+@@ -71,11 +71,13 @@ static public class Part implements Serializable {
+     }
+ 
+     static public class PluginPart extends Part {
++        final public String businessName;
+         final public String[] dependsOn;
+         final public String[] hostWhiteList;
+ 
+-        PluginPart(int pluginType, File file, File oDexDir, File libraryDir, String[] dependsOn, String[] hostWhiteList) {
++        PluginPart(int pluginType, String businessName, File file, File oDexDir, File libraryDir, String[] dependsOn, String[] hostWhiteList) {
+             super(pluginType, file, oDexDir, libraryDir);
++            this.businessName = businessName;
+             this.dependsOn = dependsOn;
+             this.hostWhiteList = hostWhiteList;
+         }
+
+File: projects/sdk/dynamic/dynamic-manager/src/main/java/com/tencent/shadow/dynamic/manager/PluginManagerThatUseDynamicLoader.java
+Patch:
+@@ -228,10 +228,11 @@ public InstalledApk getPlugin(String uuid, String partKey) throws FailedExceptio
+             } catch (RuntimeException e) {
+                 throw new NotFoundException("uuid==" + uuid + "partKey==" + partKey + "的Plugin找不到");
+             }
++            String businessName = part instanceof InstalledPlugin.PluginPart ? ((InstalledPlugin.PluginPart) part).businessName : null;
+             String[] dependsOn = part instanceof InstalledPlugin.PluginPart ? ((InstalledPlugin.PluginPart) part).dependsOn : null;
+             String[] hostWhiteList = part instanceof InstalledPlugin.PluginPart ? ((InstalledPlugin.PluginPart) part).hostWhiteList : null;
+             LoadParameters loadParameters
+-                    = new LoadParameters(partKey, dependsOn, hostWhiteList);
++                    = new LoadParameters(businessName, partKey, dependsOn, hostWhiteList);
+ 
+             Parcel parcelExtras = Parcel.obtain();
+             loadParameters.writeToParcel(parcelExtras, 0);
+
+File: projects/demo-none-dynamic/host-apk-none-dynamic/src/main/java/com/tencent/shadow/demo/host/HostApplication.java
+Patch:
+@@ -43,7 +43,7 @@ public void loadPlugin(String partKey) {
+             throw new NullPointerException("partKey == " + partKey);
+         }
+ 
+-        LoadParameters loadParameters = new LoadParameters(partKey, 0, null);
++        LoadParameters loadParameters = new LoadParameters(partKey, null);
+ 
+         Parcel parcel = Parcel.obtain();
+         loadParameters.writeToParcel(parcel, 0);
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/pluginmanager/installplugin/InstalledType.java
+Patch:
+@@ -4,8 +4,6 @@ public class InstalledType {
+ 
+     public final static int TYPE_PLUGIN = 1;
+ 
+-    public final static int TYPE_INTERFACE = 2;
+-
+     public final static int TYPE_PLUGIN_LOADER = 3;
+ 
+     public final static int TYPE_PLUGIN_RUNTIME = 4;
+
+File: projects/sdk/dynamic/dynamic-manager/src/main/java/com/tencent/shadow/dynamic/manager/PluginManagerThatUseDynamicLoader.java
+Patch:
+@@ -229,11 +229,9 @@ public InstalledApk getPlugin(String uuid, String partKey) throws FailedExceptio
+                 throw new NotFoundException("uuid==" + uuid + "partKey==" + partKey + "的Plugin找不到");
+             }
+             String[] dependsOn = part instanceof InstalledPlugin.PluginPart ? ((InstalledPlugin.PluginPart) part).dependsOn : null;
+-            int type = part instanceof InstalledPlugin.PluginPart ? InstalledType.TYPE_PLUGIN : InstalledType.TYPE_INTERFACE;
+ 
+-            int loaderType = type == 1 ? 0 : 1;
+             LoadParameters loadParameters
+-                    = new LoadParameters(partKey, loaderType, dependsOn);
++                    = new LoadParameters(partKey, dependsOn);
+ 
+             Parcel parcelExtras = Parcel.obtain();
+             loadParameters.writeToParcel(parcelExtras, 0);
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/pluginmanager/installplugin/InstalledPluginDBHelper.java
+Patch:
+@@ -95,7 +95,7 @@ public void onCreate(SQLiteDatabase db) {
+     @Override
+     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+         if (oldVersion < 2) {
+-            //todo 查询COLUMN_TYPE是Interface的uuid，然后删除这些uuid的记录。
++            //todo #59 查询COLUMN_TYPE是Interface的uuid，然后删除这些uuid的记录。
+             db.beginTransaction();
+             try {
+                 Cursor cursor = db.query(
+
+File: projects/demo-none-dynamic/host-apk-none-dynamic/src/main/java/com/tencent/shadow/demo/host/HostApplication.java
+Patch:
+@@ -7,7 +7,7 @@
+ 
+ import com.tencent.shadow.core.common.InstalledApk;
+ import com.tencent.shadow.core.common.LoggerFactory;
+-import com.tencent.shadow.core.loader.LoadParameters;
++import com.tencent.shadow.core.load_parameters.LoadParameters;
+ import com.tencent.shadow.core.loader.ShadowPluginLoader;
+ import com.tencent.shadow.runtime.container.ContentProviderDelegateProviderHolder;
+ import com.tencent.shadow.runtime.container.DelegateProviderHolder;
+
+File: projects/sdk/core/load-parameters/src/main/java/com/tencent/shadow/core/load_parameters/LoadParameters.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.core.loader;
++package com.tencent.shadow.core.load_parameters;
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
+@@ -23,7 +23,7 @@ public LoadParameters(String partKey, int pluginFileType, String[] dependsOn) {
+         this.dependsOn = dependsOn;
+     }
+ 
+-    protected LoadParameters(Parcel in) {
++    public LoadParameters(Parcel in) {
+         partKey = in.readString();
+         pluginFileType = in.readInt();
+         dependsOn = in.createStringArray();
+
+File: projects/sdk/dynamic/dynamic-manager/src/main/java/com/tencent/shadow/dynamic/manager/PluginManagerThatUseDynamicLoader.java
+Patch:
+@@ -15,7 +15,7 @@
+ import com.tencent.shadow.core.common.InstalledApk;
+ import com.tencent.shadow.core.common.Logger;
+ import com.tencent.shadow.core.common.LoggerFactory;
+-import com.tencent.shadow.core.loader.LoadParametersInManager;
++import com.tencent.shadow.core.load_parameters.LoadParameters;
+ import com.tencent.shadow.core.pluginmanager.BasePluginManager;
+ import com.tencent.shadow.core.pluginmanager.installplugin.InstalledPlugin;
+ import com.tencent.shadow.core.pluginmanager.installplugin.InstalledType;
+@@ -232,8 +232,8 @@ public InstalledApk getPlugin(String uuid, String partKey) throws FailedExceptio
+             int type = part instanceof InstalledPlugin.PluginPart ? InstalledType.TYPE_PLUGIN : InstalledType.TYPE_INTERFACE;
+ 
+             int loaderType = type == 1 ? 0 : 1;
+-            LoadParametersInManager loadParameters
+-                    = new LoadParametersInManager(partKey, loaderType, dependsOn);
++            LoadParameters loadParameters
++                    = new LoadParameters(partKey, loaderType, dependsOn);
+ 
+             Parcel parcelExtras = Parcel.obtain();
+             loadParameters.writeToParcel(parcelExtras, 0);
+
+File: projects/demo-none-dynamic/host-apk-none-dynamic/src/main/java/com/tencent/shadow/demo/host/HostApplication.java
+Patch:
+@@ -7,7 +7,7 @@
+ 
+ import com.tencent.shadow.core.common.InstalledApk;
+ import com.tencent.shadow.core.common.LoggerFactory;
+-import com.tencent.shadow.core.loader.LoadParameters;
++import com.tencent.shadow.core.load_parameters.LoadParameters;
+ import com.tencent.shadow.core.loader.ShadowPluginLoader;
+ import com.tencent.shadow.runtime.container.ContentProviderDelegateProviderHolder;
+ import com.tencent.shadow.runtime.container.DelegateProviderHolder;
+
+File: projects/sdk/core/load-parameters/src/main/java/com/tencent/shadow/core/load_parameters/LoadParameters.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.tencent.shadow.core.loader;
++package com.tencent.shadow.core.load_parameters;
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
+@@ -23,7 +23,7 @@ public LoadParameters(String partKey, int pluginFileType, String[] dependsOn) {
+         this.dependsOn = dependsOn;
+     }
+ 
+-    protected LoadParameters(Parcel in) {
++    public LoadParameters(Parcel in) {
+         partKey = in.readString();
+         pluginFileType = in.readInt();
+         dependsOn = in.createStringArray();
+
+File: projects/sdk/dynamic/dynamic-manager/src/main/java/com/tencent/shadow/dynamic/manager/PluginManagerThatUseDynamicLoader.java
+Patch:
+@@ -15,7 +15,7 @@
+ import com.tencent.shadow.core.common.InstalledApk;
+ import com.tencent.shadow.core.common.Logger;
+ import com.tencent.shadow.core.common.LoggerFactory;
+-import com.tencent.shadow.core.loader.LoadParametersInManager;
++import com.tencent.shadow.core.load_parameters.LoadParameters;
+ import com.tencent.shadow.core.pluginmanager.BasePluginManager;
+ import com.tencent.shadow.core.pluginmanager.installplugin.InstalledPlugin;
+ import com.tencent.shadow.core.pluginmanager.installplugin.InstalledType;
+@@ -232,8 +232,8 @@ public InstalledApk getPlugin(String uuid, String partKey) throws FailedExceptio
+             int type = part instanceof InstalledPlugin.PluginPart ? InstalledType.TYPE_PLUGIN : InstalledType.TYPE_INTERFACE;
+ 
+             int loaderType = type == 1 ? 0 : 1;
+-            LoadParametersInManager loadParameters
+-                    = new LoadParametersInManager(partKey, loaderType, dependsOn);
++            LoadParameters loadParameters
++                    = new LoadParameters(partKey, loaderType, dependsOn);
+ 
+             Parcel parcelExtras = Parcel.obtain();
+             loadParameters.writeToParcel(parcelExtras, 0);
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/ShadowPendingIntent.java
+Patch:
+@@ -12,7 +12,7 @@ public class ShadowPendingIntent {
+ 
+     public static PendingIntent getService(Context context, int requestCode,
+                                             Intent intent,  int flags) {
+-        //todo 实现PendingIntent 中的 Service和广播
++        //todo #51 实现PendingIntent 中的 Service和广播
+         return PendingIntent.getService(context, requestCode, intent, flags);
+     }
+ 
+
+File: projects/demo/plugin-app/demo-main/src/main/java/com/tencent/shadow/demo/usecases/view/TestViewConstructorCache.java
+Patch:
+@@ -17,7 +17,7 @@ protected void onCreate(@Nullable Bundle savedInstanceState) {
+         setContentView(R.layout.layout_test_view_cons_cache);
+         TestViewConstructorCacheView testView = findViewById(R.id.testView);
+ 
+-        PathClassLoader pathClassLoader = (PathClassLoader) getBaseContext().getClass().getClassLoader();
++        PathClassLoader pathClassLoader = (PathClassLoader) getApplication().getBaseContext().getClass().getClassLoader();
+ 
+         boolean assertTrue;
+         try {
+
+File: projects/demo/plugin-app/demo-main/src/main/java/com/tencent/shadow/demo/usecases/view/TestViewConstructorCache.java
+Patch:
+@@ -17,7 +17,7 @@ protected void onCreate(@Nullable Bundle savedInstanceState) {
+         setContentView(R.layout.layout_test_view_cons_cache);
+         TestViewConstructorCacheView testView = findViewById(R.id.testView);
+ 
+-        PathClassLoader pathClassLoader = (PathClassLoader) getBaseContext().getClass().getClassLoader();
++        PathClassLoader pathClassLoader = (PathClassLoader) getApplication().getBaseContext().getClass().getClassLoader();
+ 
+         boolean assertTrue;
+         try {
+
+File: projects/demo/loader-apk/src/main/java/com/tencent/shadow/sdk/pluginloader/DemoPluginBroadcastManager.java
+Patch:
+@@ -7,8 +7,8 @@
+ 
+ /**
+  * 插件静态广播配置
+- * todo 将广播配置移到ComponentManager
+- * todo 动态解析AndroidManifest.xml 中的广播信息动态注册
++ * todo #38 将广播配置移到ComponentManager
++ * todo #39 动态解析AndroidManifest.xml 中的广播信息动态注册
+  */
+ public class DemoPluginBroadcastManager extends PluginBroadcastManager {
+ 
+
+File: projects/demo/plugin-app/pinnedheaderexpandablelistview/src/main/java/com/ryg/expandable/ui/PinnedHeaderExpandableListView.java
+Patch:
+@@ -242,7 +242,6 @@ protected void refreshHeader() {
+                 int delta = mHeaderHeight - view.getTop();
+                 mHeaderView.layout(0, -delta, mHeaderWidth, mHeaderHeight - delta);
+             } else {
+-                //TODO : note it, when cause bug, remove it
+                 mHeaderView.layout(0, 0, mHeaderWidth, mHeaderHeight);
+             }
+         } else {
+
+File: projects/demo/plugin-app/slidingmenu/src/main/java/com/jeremyfeinstein/slidingmenu/lib/CustomViewAbove.java
+Patch:
+@@ -788,7 +788,6 @@ private void determineDrag(MotionEvent ev) {
+ 			mLastMotionX = x;
+ 			mLastMotionY = y;
+ 			setScrollingCacheEnabled(true);
+-			// TODO add back in touch slop check
+ 		} else if (xDiff > mTouchSlop) {
+ 			mIsUnableToDrag = true;
+ 		}
+
+File: projects/sdk/coding/checks/src/main/kotlin/com/tencent/shadow/lint/issues/package-info.java
+Patch:
+@@ -1 +1 @@
+-// TODO cubershi: 2018-12-27 添加反射调用的检查，并禁止
+\ No newline at end of file
++// TODO #33 添加反射调用的检查，并禁止
+\ No newline at end of file
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/loader/LoadParametersInManager.java
+Patch:
+@@ -5,7 +5,7 @@
+ 
+ /**
+  * 这个类是Loader中复制过来的，需要和Loader中的保持一致。
+- * todo 这个类要抽出一个单独的模块避免这种一个文件写两份的问题
++ * todo #26 这个类要抽出一个单独的模块避免这种一个文件写两份的问题
+  */
+ public class LoadParametersInManager implements Parcelable {
+     public final String partKey;
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/pluginmanager/installplugin/PluginConfig.java
+Patch:
+@@ -82,7 +82,7 @@ public static PluginConfig parseFromJson(String json, File storageDir) throws JS
+                 pluginConfig.compact_version[i] = compact_version_json.getInt(i);
+             }
+         }
+-        //todo json的版本检查和不兼容检查
++        //todo #27 json的版本检查和不兼容检查
+         pluginConfig.UUID = jsonObject.getString("UUID");
+         pluginConfig.UUID_NickName = jsonObject.getString("UUID_NickName");
+ 
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/pluginmanager/installplugin/UnpackManager.java
+Patch:
+@@ -16,7 +16,7 @@
+ public class UnpackManager {
+ 
+     private static final String UNPACK_DONE_PRE_FIX = "unpacked.";
+-    private static final String CONFIG_FILENAME = "config.json";//todo json的格式需要沉淀文档。
++    private static final String CONFIG_FILENAME = "config.json";//todo #28 json的格式需要沉淀文档。
+     private static final String DEFAULT_STORE_DIR_NAME = "ShadowPluginManager";
+ 
+     private final File mPluginUnpackedDir;
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/ShadowActivity.java
+Patch:
+@@ -297,7 +297,7 @@ public String getCallingPackage() {
+     }
+ 
+     public ComponentName getCallingActivity() {
+-        return mHostActivityDelegator.getCallingActivity();//todo 这里可能需要返回插件的ComponentName
++        return mHostActivityDelegator.getCallingActivity();//todo #35 这里可能需要返回插件的ComponentName
+     }
+ 
+ }
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/ShadowFactory2.java
+Patch:
+@@ -13,7 +13,7 @@
+ /**
+  * 具备创建自定义View功能的Factory2
+  *
+- * // TODO: 2018/10/25  实现LayoutInflater 的 filter功能
++ * // TODO #36 实现LayoutInflater 的 filter功能
+  */
+ public class ShadowFactory2 implements LayoutInflater.Factory2 {
+ 
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/ShadowService.java
+Patch:
+@@ -64,16 +64,16 @@ public void onStart(Intent intent, int startId) {
+ 
+     @Deprecated
+     public final void setForeground(boolean isForeground) {
+-
++        //todo #37 支持Service设置Foreground
+     }
+ 
+     public final void startForeground(int id, Notification notification) {
+         //mHostServiceDelegator.startForeground(id, notification);
+-        // todo: 这里需要重新实现
++        //todo #37 支持Service设置Foreground
+     }
+ 
+     public final void stopForeground(boolean removeNotification) {
+-        //todo cubershi: 这里没有考虑多Service复用的情况。多Service复用时不能其中一个Service要stop就stop。
++        //todo #37 支持Service设置Foreground
+         //mHostServiceDelegator.stopForeground(removeNotification);
+     }
+ 
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/package-info.java
+Patch:
+@@ -1 +1 @@
+-// TODO cubershi: 2018-12-27 将runtime中的复杂逻辑移到loader中去
+\ No newline at end of file
++// TODO #34 将runtime中的复杂逻辑移到loader中去
+\ No newline at end of file
+
+File: projects/demo/loader-apk/src/main/java/com/tencent/shadow/sdk/pluginloader/DemoPluginBroadcastManager.java
+Patch:
+@@ -7,8 +7,8 @@
+ 
+ /**
+  * 插件静态广播配置
+- * todo 将广播配置移到ComponentManager
+- * todo 动态解析AndroidManifest.xml 中的广播信息动态注册
++ * todo #38 将广播配置移到ComponentManager
++ * todo #39 动态解析AndroidManifest.xml 中的广播信息动态注册
+  */
+ public class DemoPluginBroadcastManager extends PluginBroadcastManager {
+ 
+
+File: projects/sdk/coding/checks/src/main/kotlin/com/tencent/shadow/lint/issues/package-info.java
+Patch:
+@@ -1 +1 @@
+-// TODO cubershi: 2018-12-27 添加反射调用的检查，并禁止
+\ No newline at end of file
++// TODO #33 添加反射调用的检查，并禁止
+\ No newline at end of file
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/loader/LoadParametersInManager.java
+Patch:
+@@ -5,7 +5,7 @@
+ 
+ /**
+  * 这个类是Loader中复制过来的，需要和Loader中的保持一致。
+- * todo 这个类要抽出一个单独的模块避免这种一个文件写两份的问题
++ * todo #26 这个类要抽出一个单独的模块避免这种一个文件写两份的问题
+  */
+ public class LoadParametersInManager implements Parcelable {
+     public final String partKey;
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/pluginmanager/installplugin/PluginConfig.java
+Patch:
+@@ -82,7 +82,7 @@ public static PluginConfig parseFromJson(String json, File storageDir) throws JS
+                 pluginConfig.compact_version[i] = compact_version_json.getInt(i);
+             }
+         }
+-        //todo json的版本检查和不兼容检查
++        //todo #27 json的版本检查和不兼容检查
+         pluginConfig.UUID = jsonObject.getString("UUID");
+         pluginConfig.UUID_NickName = jsonObject.getString("UUID_NickName");
+ 
+
+File: projects/sdk/core/manager/src/main/java/com/tencent/shadow/core/pluginmanager/installplugin/UnpackManager.java
+Patch:
+@@ -16,7 +16,7 @@
+ public class UnpackManager {
+ 
+     private static final String UNPACK_DONE_PRE_FIX = "unpacked.";
+-    private static final String CONFIG_FILENAME = "config.json";//todo json的格式需要沉淀文档。
++    private static final String CONFIG_FILENAME = "config.json";//todo #28 json的格式需要沉淀文档。
+     private static final String DEFAULT_STORE_DIR_NAME = "ShadowPluginManager";
+ 
+     private final File mPluginUnpackedDir;
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/ShadowActivity.java
+Patch:
+@@ -297,7 +297,7 @@ public String getCallingPackage() {
+     }
+ 
+     public ComponentName getCallingActivity() {
+-        return mHostActivityDelegator.getCallingActivity();//todo 这里可能需要返回插件的ComponentName
++        return mHostActivityDelegator.getCallingActivity();//todo #35 这里可能需要返回插件的ComponentName
+     }
+ 
+ }
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/ShadowFactory2.java
+Patch:
+@@ -13,7 +13,7 @@
+ /**
+  * 具备创建自定义View功能的Factory2
+  *
+- * // TODO: 2018/10/25  实现LayoutInflater 的 filter功能
++ * // TODO #36 实现LayoutInflater 的 filter功能
+  */
+ public class ShadowFactory2 implements LayoutInflater.Factory2 {
+ 
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/ShadowService.java
+Patch:
+@@ -64,16 +64,16 @@ public void onStart(Intent intent, int startId) {
+ 
+     @Deprecated
+     public final void setForeground(boolean isForeground) {
+-
++        //todo #37 支持Service设置Foreground
+     }
+ 
+     public final void startForeground(int id, Notification notification) {
+         //mHostServiceDelegator.startForeground(id, notification);
+-        // todo: 这里需要重新实现
++        //todo #37 支持Service设置Foreground
+     }
+ 
+     public final void stopForeground(boolean removeNotification) {
+-        //todo cubershi: 这里没有考虑多Service复用的情况。多Service复用时不能其中一个Service要stop就stop。
++        //todo #37 支持Service设置Foreground
+         //mHostServiceDelegator.stopForeground(removeNotification);
+     }
+ 
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/package-info.java
+Patch:
+@@ -1 +1 @@
+-// TODO cubershi: 2018-12-27 将runtime中的复杂逻辑移到loader中去
+\ No newline at end of file
++// TODO #34 将runtime中的复杂逻辑移到loader中去
+\ No newline at end of file
+
+File: projects/demo/host-apk/src/main/java/com/tencent/shadow/demo/host/PluginHelper.java
+Patch:
+@@ -15,7 +15,7 @@ public class PluginHelper {
+     /**
+      * 动态加载的插件管理apk
+      */
+-    public final static String sPluginManagerName = "dynamic-pluginmanager.apk";
++    public final static String sPluginManagerName = "pluginmanager.apk";
+ 
+     /**
+      * 动态加载的插件包，里面包含以下几个部分，插件apk，插件框架apk（loader apk和runtime apk）, apk信息配置关系json文件
+
+File: projects/demo/dynamic-loader-apk/src/main/java/com/tencent/shadow/sdk/pluginloader/DemoComponentManager.java
+Patch:
+@@ -62,6 +62,6 @@ public ComponentName onBindContainerService(ComponentName shadowService) {
+     public ContainerProviderInfo onBindContainerContentProvider(ComponentName pluginContentProvider) {
+         return new ContainerProviderInfo(
+                 "com.tencent.shadow.runtime.container.PluginContainerContentProvider",
+-                "com.tencent.shadow.contentprovider.authority");
++                "com.tencent.shadow.contentprovider.authority.dynamic");
+     }
+ }
+
+File: projects/demo/plugin-app/demo-main/src/main/java/com/tencent/shadow/demo/gallery/cases/UseCaseManager.java
+Patch:
+@@ -5,6 +5,7 @@
+ import com.tencent.shadow.demo.gallery.cases.entity.UseCase;
+ import com.tencent.shadow.demo.gallery.cases.entity.UseCaseCategory;
+ import com.tencent.shadow.demo.usecases.activity.TestActivityOnCreate;
++import com.tencent.shadow.demo.usecases.activity.TestActivityOrientation;
+ import com.tencent.shadow.demo.usecases.activity.TestActivityReCreate;
+ import com.tencent.shadow.demo.usecases.activity.TestActivityReCreateBySystem;
+ import com.tencent.shadow.demo.usecases.dialog.TestDialogActivity;
+@@ -48,6 +49,7 @@ public static void initCase() {
+         useCase.bundle.putString("url", "https://www.baidu.com");
+ 
+         activityCategory.caseList.add(useCase);
++        activityCategory.caseList.add(new UseCase(Case_Activity.CASE_ORIENTATION,"横竖屏切换测试","测试横竖屏切换时，Activity的生命周期变化是否和AndroidManifest.xml中配置的config相关", TestActivityOrientation.class));
+ 
+ 
+ 
+@@ -116,6 +118,7 @@ private static class Case_Activity {
+         public final static int CASE_ONCREATE = 10000;
+         public final static int CASE_RECREATE = 10001;
+         public final static int CASE_RECREATE_BY_SYTEM = 10002;
++        public final static int CASE_ORIENTATION = 10003;
+     }
+ 
+     private static class Case_Service {
+
+File: projects/sdk/core/runtime/src/main/java/com/tencent/shadow/runtime/ShadowApplication.java
+Patch:
+@@ -114,6 +114,7 @@ public void unregisterActivityLifecycleCallbacks(ShadowActivityLifecycleCallback
+                 = mActivityLifecycleCallbacksMap.get(callback);
+         if (activityLifecycleCallbacks != null) {
+             mHostApplication.unregisterActivityLifecycleCallbacks(activityLifecycleCallbacks);
++            mActivityLifecycleCallbacksMap.remove(callback);
+         }
+     }
+ 
+
+File: projects/demo/plugin-app/demo-main/src/main/java/com/tencent/shadow/demo/gallery/cases/UseCaseManager.java
+Patch:
+@@ -11,12 +11,10 @@
+ import com.tencent.shadow.demo.usecases.fragment.TestDynamicFragmentActivity;
+ import com.tencent.shadow.demo.usecases.fragment.TestXmlFragmentActivity;
+ import com.tencent.shadow.demo.usecases.provider.TestDBContentProviderActivity;
++import com.tencent.shadow.demo.usecases.provider.TestFileProviderActivity;
+ import com.tencent.shadow.demo.usecases.receiver.TestDynamicReceiverActivity;
+ import com.tencent.shadow.demo.usecases.receiver.TestReceiverActivity;
+ import com.tencent.shadow.demo.usecases.service.TestStartServiceActivity;
+-import com.tencent.shadow.demo.usecases.provider.TestFileProviderActivity;
+-import com.tencent.shadow.demo.usecases.receiver.MyReceiver;
+-import com.tencent.shadow.demo.usecases.service.MyLocalService;
+ 
+ import java.util.ArrayList;
+ import java.util.List;
+
+File: projects/sdk/dynamic/dynamic-manager/src/main/java/com/tencent/shadow/dynamic/manager/PluginManagerThatUseDynamicLoader.java
+Patch:
+@@ -53,7 +53,7 @@ protected PluginManagerThatUseDynamicLoader(Context context) {
+     /**
+      * 等待service绑定完成的计数器
+      */
+-    private CountDownLatch mConnectCountDownLatch = new CountDownLatch(1);
++    private CountDownLatch mConnectCountDownLatch ;
+ 
+     private ServiceConnection mServiceConnection = new ServiceConnection() {
+ 
+@@ -94,6 +94,7 @@ public final void startPluginProcessService(final String serviceName) {
+         if (mLogger.isInfoEnabled()) {
+             mLogger.info("startPluginProcessService "+serviceName);
+         }
++        mConnectCountDownLatch = new CountDownLatch(1);
+         mServiceConnecting.set(true);
+         mHandler.post(new Runnable() {
+             @Override
+
+File: shadow-sdk/shadow-runtime/src/main/java/com/tencent/shadow/runtime/ContainerFragment.java
+Patch:
+@@ -81,6 +81,7 @@ private static ShadowFragment instantiatePluginFragment(ContainerFragment contai
+      */
+     private boolean mIsAppCreateFragment = false;
+ 
++    @Override
+     public ShadowFragment getPluginFragment() {
+         return mPluginFragment;
+     }
+
+File: shadow-sdk/shadow-runtime/src/main/java/com/tencent/shadow/runtime/IContainerFragment.java
+Patch:
+@@ -8,6 +8,8 @@
+ public interface IContainerFragment {
+     Fragment asFragment();
+ 
++    ShadowFragment getPluginFragment();
++
+     void bindPluginFragment(ShadowFragment pluginFragment);
+ 
+     void unbindPluginFragment();
+
+File: shadow-sdk/shadow-runtime/src/main/java/com/tencent/shadow/runtime/PluginFragmentManager.java
+Patch:
+@@ -18,8 +18,8 @@ public PluginFragmentTransaction beginTransaction() {
+ 
+     public ShadowFragment findFragmentByTag(String tag) {
+         Fragment fragmentByTag = mBase.findFragmentByTag(tag);
+-        if (fragmentByTag instanceof ContainerFragment) {
+-            return ((ContainerFragment) fragmentByTag).getPluginFragment();
++        if (fragmentByTag instanceof IContainerFragment) {
++            return ((IContainerFragment) fragmentByTag).getPluginFragment();
+         } else {
+             return null;
+         }
+
+File: shadow-sdk/shadow-runtime/src/main/java/com/tencent/shadow/runtime/ShadowContext.java
+Patch:
+@@ -7,6 +7,7 @@
+ import android.content.pm.ApplicationInfo;
+ import android.content.res.AssetManager;
+ import android.content.res.Resources;
++import android.os.Bundle;
+ import android.util.Pair;
+ import android.view.ContextThemeWrapper;
+ import android.view.LayoutInflater;
+@@ -106,6 +107,8 @@ public interface PluginComponentLauncher {
+          */
+         boolean startActivityForResult(HostActivityDelegator delegator, Intent intent, int requestCode);
+ 
++        boolean startActivityForResult(HostActivityDelegator delegator, Intent intent, int requestCode, Bundle option);
++
+         Pair<Boolean, ComponentName> startService(ShadowContext context, Intent service);
+ 
+         Pair<Boolean, Boolean> stopService(ShadowContext context, Intent name);
+
+File: shadow-sdk/shadow-runtime/src/main/java/com/tencent/hydevteam/pluginframework/plugincontainer/PluginContainerActivity.java
+Patch:
+@@ -117,6 +117,7 @@ final protected void onCreate(Bundle savedInstanceState) {
+             super.onCreate(null);
+             Log.e(TAG, "onCreate: hostActivityDelegate==null finish activity");
+             finish();
++            System.exit(0);
+         }
+     }
+ 
+

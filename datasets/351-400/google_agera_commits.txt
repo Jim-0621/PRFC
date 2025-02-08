@@ -1,0 +1,261 @@
+File: extensions/rvdatabinding/src/main/java/com/google/android/agera/rvdatabinding/DataBindingRepositoryPresenterCompilerStates.java
+Patch:
+@@ -22,9 +22,9 @@
+ import com.google.android.agera.Result;
+ import com.google.android.agera.rvadapter.RepositoryAdapter;
+ import com.google.android.agera.rvadapter.RepositoryPresenter;
++import com.google.android.agera.rvadapter.RepositoryPresenterCompilerStates.RPDiff;
+ import com.google.android.agera.rvadapter.RepositoryPresenterCompilerStates.RPItemCompile;
+ import com.google.android.agera.rvadapter.RepositoryPresenterCompilerStates.RPLayout;
+-import com.google.android.agera.rvadapter.RepositoryPresenterCompilerStates.RPTypedCollectionCompile;
+ import java.util.List;
+ 
+ /**
+@@ -36,7 +36,7 @@ public interface DataBindingRepositoryPresenterCompilerStates {
+   /**
+    * Compiler state to specify how to bind the {@code View} using data binding.
+    */
+-  interface DBRPMain<T> extends RPItemCompile<T> {
++  interface DBRPMain<T> extends RPItemCompile<T>, RPDiff<T, DBRPMain<T>> {
+ 
+     /**
+      * Specifies a data binding {@code itemId} from the previously given {@code layout} to bind a
+
+File: extensions/rvdatabinding/src/test/java/com/google/android/agera/rvdatabinding/DataBindingLayoutPresentersTest.java
+Patch:
+@@ -16,7 +16,7 @@
+ package com.google.android.agera.rvdatabinding;
+ 
+ import static android.databinding.DataBinderMapper.setDataBinding;
+-import static com.google.android.agera.rvadapter.test.matchers.HasPrivateConstructor.hasPrivateConstructor;
++import static com.google.android.agera.rvdatabinding.test.matchers.HasPrivateConstructor.hasPrivateConstructor;
+ import static com.google.android.agera.rvdatabinding.DataBindingLayoutPresenters.dataBindingLayoutPresenterFor;
+ import static com.google.android.agera.rvdatabinding.RecycleConfig.CLEAR_ALL;
+ import static com.google.android.agera.rvdatabinding.RecycleConfig.CLEAR_HANDLERS;
+
+File: extensions/rvdatabinding/src/test/java/com/google/android/agera/rvdatabinding/test/matchers/HasPrivateConstructor.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.google.android.agera.rvadapter.test.matchers;
++package com.google.android.agera.rvdatabinding.test.matchers;
+ 
+ import android.support.annotation.NonNull;
+ import java.lang.reflect.Constructor;
+
+File: extensions/rvdatabinding/src/main/java/com/google/android/agera/rvdatabinding/RecycleConfig.java
+Patch:
+@@ -48,7 +48,7 @@
+   /**
+    * When the {@link RecyclerView} recycles a view, rebind and all handlers with {@code null}.
+    */
+-  int CLEAR_HANDLERS = 2;
++  int CLEAR_HANDLERS = 1 << 1;
+ 
+   /**
+    * When the {@link RecyclerView} recycles a view, rebind both the item from the {@link Repository}
+
+File: testapp/src/main/java/com/google/android/agera/testapp/NotesFragment.java
+Patch:
+@@ -173,5 +173,6 @@ public void onDestroyView() {
+     recyclerView.setAdapter(null);
+     recyclerView = null;
+     pool.clear();
++    notesStore.closeDatabase();
+   }
+ }
+
+File: agera/src/main/java/com/google/android/agera/Result.java
+Patch:
+@@ -484,7 +484,7 @@ public T orElse(@NonNull final T other) {
+    */
+   @NonNull
+   public T orGetFrom(@NonNull final Supplier<? extends T> supplier) {
+-    return value != null ? value : checkNotNull(supplier.get());
++    return value != null ? value : Preconditions.<T>checkNotNull(supplier.get());
+   }
+ 
+   /**
+
+File: extensions/rvadapter/src/main/java/com/google/android/agera/rvadapter/RepositoryPresenterCompilerStates.java
+Patch:
+@@ -84,7 +84,7 @@ interface RPStableId<TVal, TRet> {
+      * in the whole {@link RecyclerView} throughout all changes.
+      */
+     @NonNull
+-    TRet stableIdForItem(@NonNull Function<TVal, Long> stableIdForItem);
++    TRet stableIdForItem(@NonNull Function<? super TVal, Long> stableIdForItem);
+   }
+ 
+   /**
+
+File: agera/src/main/java/com/google/android/agera/ActivationHandler.java
+Patch:
+@@ -25,8 +25,8 @@
+  * <p>Typically an {@link Observable} service implemented using a {@link UpdateDispatcher} only
+  * needs to be updated if it has clients of its own. By starting to listen to updates from its
+  * clients on {@link #observableActivated} and stopping on {@link #observableDeactivated}, the
+- * service of the service can implement an <i>active</i>/<i>inactive</i> lifecycle,
+- * saving memory and execution time when not needed.
++ * service can implement an <i>active</i>/<i>inactive</i> lifecycle, saving memory and execution
++ * time when not needed.
+  */
+ public interface ActivationHandler {
+ 
+
+File: agera/src/main/java/com/google/android/agera/BaseObservable.java
+Patch:
+@@ -46,6 +46,7 @@ public abstract class BaseObservable implements Observable {
+   @NonNull
+   private final Object token = new Object();
+   final int shortestUpdateWindowMillis;
++  // Pairs of updatables and their associated handlers. Always of even length.
+   @NonNull
+   private Object[] updatablesAndHandlers;
+   private int size;
+
+File: extensions/database/src/main/java/com/google/android/agera/database/SqlRequestCompiler.java
+Patch:
+@@ -21,18 +21,19 @@
+ import static android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE;
+ import static com.google.android.agera.Preconditions.checkNotNull;
+ import static com.google.android.agera.Preconditions.checkState;
+-import static com.google.android.agera.database.SqlRequestCompilerStates.DBColumnConflictCompile;
+-import static com.google.android.agera.database.SqlRequestCompilerStates.DBColumnWhereConflictCompile;
+ 
+ import com.google.android.agera.database.SqlRequestCompilerStates.DBArgumentCompile;
+ import com.google.android.agera.database.SqlRequestCompilerStates.DBArgumentConflictCompile;
++import com.google.android.agera.database.SqlRequestCompilerStates.DBColumnConflictCompile;
++import com.google.android.agera.database.SqlRequestCompilerStates.DBColumnWhereConflictCompile;
+ import com.google.android.agera.database.SqlRequestCompilerStates.DBSql;
+ import com.google.android.agera.database.SqlRequestCompilerStates.DBTable;
+ import com.google.android.agera.database.SqlRequestCompilerStates.DBWhereCompile;
+ 
+ import android.content.ContentValues;
+ import android.support.annotation.NonNull;
+ 
++@SuppressWarnings({"unchecked, rawtypes"})
+ final class SqlRequestCompiler
+     implements DBTable, DBSql, DBArgumentCompile, DBColumnConflictCompile, DBWhereCompile,
+     DBColumnWhereConflictCompile, DBArgumentConflictCompile {
+
+File: extensions/rvadapter/src/main/java/com/google/android/agera/rvadapter/RepositoryPresenterCompiler.java
+Patch:
+@@ -17,12 +17,12 @@
+ 
+ import static com.google.android.agera.Functions.staticFunction;
+ import static com.google.android.agera.Preconditions.checkNotNull;
+-import static com.google.android.agera.rvadapter.RepositoryPresenterCompilerStates.RPViewBinderCompile;
+ 
+ import com.google.android.agera.Binder;
+ import com.google.android.agera.Function;
+ import com.google.android.agera.Result;
+ import com.google.android.agera.rvadapter.RepositoryPresenterCompilerStates.RPLayout;
++import com.google.android.agera.rvadapter.RepositoryPresenterCompilerStates.RPViewBinderCompile;
+ 
+ import android.support.annotation.LayoutRes;
+ import android.support.annotation.NonNull;
+@@ -31,7 +31,7 @@
+ 
+ import java.util.List;
+ 
+-@SuppressWarnings("unchecked")
++@SuppressWarnings({"unchecked, rawtypes"})
+ final class RepositoryPresenterCompiler implements RPLayout, RPViewBinderCompile {
+   @NonNull
+   private static final NullBinder NULL_BINDER = new NullBinder();
+
+File: agera/src/main/java/com/google/android/agera/BaseObservable.java
+Patch:
+@@ -45,7 +45,7 @@ public abstract class BaseObservable implements Observable {
+   private final WorkerHandler handler;
+   @NonNull
+   private final Object token = new Object();
+-  private final int shortestUpdateWindowMillis;
++  final int shortestUpdateWindowMillis;
+   @NonNull
+   private Object[] updatablesAndHandlers;
+   private int size;
+
+File: agera/src/main/java/com/google/android/agera/CompiledRepository.java
+Patch:
+@@ -155,6 +155,9 @@ void maybeStartFlow() {
+         lastDirectiveIndex = -1; // this could be pointing at the goLazy directive
+         restartNeeded = false;
+       } else {
++        if (runState == CANCEL_REQUESTED) {
++          restartNeeded = true;
++        }
+         return; // flow already running, do not continue.
+       }
+     }
+
+File: agera/src/main/java/com/google/android/agera/BaseObservable.java
+Patch:
+@@ -16,6 +16,7 @@
+ package com.google.android.agera;
+ 
+ import static android.os.SystemClock.elapsedRealtime;
++import static com.google.android.agera.Preconditions.checkNotNull;
+ import static com.google.android.agera.Preconditions.checkState;
+ import static com.google.android.agera.WorkerHandler.MSG_LAST_REMOVED;
+ import static com.google.android.agera.WorkerHandler.MSG_UPDATE;
+@@ -64,6 +65,7 @@ protected BaseObservable() {
+   @Override
+   public synchronized final void addUpdatable(@NonNull final Updatable updatable) {
+     checkState(Looper.myLooper() != null, "Can only be added on a Looper thread");
++    checkNotNull(updatable);
+     add(updatable, workerHandler());
+     if (size == 1) {
+       if (handler.hasMessages(MSG_LAST_REMOVED, this)) {
+@@ -77,6 +79,7 @@ public synchronized final void addUpdatable(@NonNull final Updatable updatable)
+   @Override
+   public synchronized final void removeUpdatable(@NonNull final Updatable updatable) {
+     checkState(Looper.myLooper() != null, "Can only be removed on a Looper thread");
++    checkNotNull(updatable);
+     remove(updatable);
+     if (size == 0) {
+       handler.obtainMessage(MSG_LAST_REMOVED, this).sendToTarget();
+
+File: agera/src/main/java/com/google/android/agera/Observables.java
+Patch:
+@@ -15,11 +15,9 @@
+  */
+ package com.google.android.agera;
+ 
+-import static com.google.android.agera.Common.workerHandler;
++import static com.google.android.agera.WorkerHandler.workerHandler;
+ import static com.google.android.agera.Preconditions.checkNotNull;
+ 
+-import com.google.android.agera.Common.WorkerHandler;
+-
+ import android.os.Looper;
+ import android.os.SystemClock;
+ import android.support.annotation.NonNull;
+
+File: extensions/net/src/main/java/com/google/android/agera/net/HttpResponse.java
+Patch:
+@@ -43,7 +43,7 @@ public final class HttpResponse {
+   @NonNull
+   private static final String CONTENT_TYPE = "Content-Type";
+   @NonNull
+-  private static final String DEFAULT_CHARSET = "ISO-8859-1";
++  private static final String DEFAULT_CHARSET = "UTF-8";
+ 
+   private final int responseCode;
+   @NonNull
+
+File: extensions/net/src/test/java/com/google/android/agera/net/HttpResponseTest.java
+Patch:
+@@ -41,7 +41,7 @@
+ @Config(manifest = NONE)
+ @RunWith(RobolectricTestRunner.class)
+ public final class HttpResponseTest {
+-  private static final String DEFAULT_CHARSET = "ISO-8859-1";
++  private static final String DEFAULT_CHARSET = "UTF-8";
+   private static final String UTF16_CHARSET = "UTF-16";
+   private static final String BODY_STRING = "body stringÿ";
+   private static final String CONTENT_TYPE = "content-type";
+

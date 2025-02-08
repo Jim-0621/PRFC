@@ -1,0 +1,1495 @@
+File: tpc/src/serializers/BenchmarkBase.java
+Patch:
+@@ -446,15 +446,15 @@ protected <J> EnumMap<measurements, Map<String, Double>> runMeasurements(PrintWr
+                                 doGc();
+                                 // ruediger: turns out startup/init time is pretty equal for all tests. 
+                                 // No need to spend too much time here
+-                                double timeCreate = runner.runWithTimeMeasurement(params.testRunMillis / 3, testCreate, params.iterations); 
++                                double timeCreate = runner.runWithTimeMeasurement(params.testRunMillis / 3, testCreate, params.iterations, "Create");
+ 
+                                 warmTest(runner, params.warmupTime, testSerialize);
+ 
+                                 doGc();
+-                                double timeSerialize = runner.runWithTimeMeasurement(params.testRunMillis, testSerialize, params.iterations);
++                                double timeSerialize = runner.runWithTimeMeasurement(params.testRunMillis, testSerialize, params.iterations, "Serialize");
+                             
+                                 doGc();
+-                                double timeDeserialize = runner.runWithTimeMeasurement(params.testRunMillis, testDeserialize, params.iterations);
++                                double timeDeserialize = runner.runWithTimeMeasurement(params.testRunMillis, testDeserialize, params.iterations, "Deserialize");
+ 
+                                 double totalTime = timeSerialize + timeDeserialize;
+ 
+
+File: tpc/src/serializers/TestCase.java
+Patch:
+@@ -2,5 +2,8 @@
+ 
+ public abstract class TestCase
+ {
++    /**
++     * @return avg time cost every iteration, measure in nanosecond unit
++     */
+     public abstract <J> double run(Transformer<J,Object> transformer, Serializer<Object> serializer, J value, int iterations) throws Exception;
+ }
+
+File: tpc/src/serializers/TestCaseRunner.java
+Patch:
+@@ -58,7 +58,7 @@ public double runWithTimeMeasurement(int timeMillis, TestCase tc, int iterations
+         System.err.println("1/2:"+measurementVals[count/2]);
+         System.err.println("3/4:"+measurementVals[count/4*3]);
+         System.err.println("max:"+measurementVals[count-1]);
+-        System.err.println("average:"+ avg +"ms deviation:"+(avg-measurementVals[count/2])+"ms");
++        System.err.println("average:"+ avg +"ns deviation:"+(avg-measurementVals[count/2])+"ns, total iteration:" + count * iterations);
+         System.err.println("-----------------------------------------------------------------------------");
+         return avg;
+     }
+
+File: tpc/src/serializers/TestCase.java
+Patch:
+@@ -2,5 +2,8 @@
+ 
+ public abstract class TestCase
+ {
++    /**
++     * @return avg time cost every iteration, measure in nanosecond unit
++     */
+     public abstract <J> double run(Transformer<J,Object> transformer, Serializer<Object> serializer, J value, int iterations) throws Exception;
+ }
+
+File: tpc/src/serializers/TestCaseRunner.java
+Patch:
+@@ -58,7 +58,7 @@ public double runWithTimeMeasurement(int timeMillis, TestCase tc, int iterations
+         System.err.println("1/2:"+measurementVals[count/2]);
+         System.err.println("3/4:"+measurementVals[count/4*3]);
+         System.err.println("max:"+measurementVals[count-1]);
+-        System.err.println("average:"+ avg +"ms deviation:"+(avg-measurementVals[count/2])+"ms");
++        System.err.println("average:"+ avg +"ns deviation:"+(avg-measurementVals[count/2])+"ns, total iteration:" + count * iterations);
+         System.err.println("-----------------------------------------------------------------------------");
+         return avg;
+     }
+
+File: tpc/src/serializers/BenchmarkExporter.java
+Patch:
+@@ -44,12 +44,12 @@ protected void runBenchmark(String[] args)
+     {
+         TestGroups groups = new TestGroups();
+         addTests(groups);
+-        Set<String> media = groups.groupMap.get("media").entryNames;
++        Set<String> media = groups.groupMap.get("media").entries.keySet();
+         for (Iterator<String> iterator = media.iterator(); iterator.hasNext(); ) {
+             String next = iterator.next().trim();
+             if ( ! next.equals("cks") && ! next.equals("cks-text") ) // used to read data, exclude
+                 alltests += next+ (iterator.hasNext() ? "," : "");
+-            SerFeatures features = groups.groupMap.get("media").getSerMap().get(next).getFeatures();
++            SerFeatures features = groups.groupMap.get("media").entries.get(next).serializer.getFeatures();
+ //            System.out.println("serializer:"+next+" miscFeatures: "+miscFeatures);
+             featureMap.put(next, features);
+         }
+
+File: tpc/src/serializers/datakernel/DataKernelSerializer.java
+Patch:
+@@ -35,7 +35,6 @@ public static class DefaultSerializer<T> extends Serializer<T> {
+ 		private BufferSerializer<T> serializer;
+ 		private byte[] array = new byte[20000];
+ 		SerializationOutputBuffer output = new SerializationOutputBuffer(array);
+-		SerializationInputBuffer input = new SerializationInputBuffer(array, 0);
+ 
+ 		public DefaultSerializer() {
+ 			serializer = SerializerBuilder
+@@ -45,8 +44,7 @@ public DefaultSerializer() {
+ 
+ 		@Override
+ 		public T deserialize(byte[] array) throws Exception {
+-			input.position(0);
+-			return serializer.deserialize(input);
++			return serializer.deserialize(new SerializationInputBuffer(array, 0));
+ 		}
+ 
+ 		@Override
+
+File: tpc/src/serializers/json/FastJSONArrayDatabind.java
+Patch:
+@@ -15,7 +15,7 @@
+ import com.alibaba.fastjson.serializer.SerializeFilter;
+ 
+ /**
+- * This serializer uses FastJSON [http://code.alibabatech.com/wiki/display/FastJSON] for JSON data binding.
++ * This serializer uses FastJSON [https://github.com/alibaba/fastjson] for JSON data binding.
+  */
+ public class FastJSONArrayDatabind
+ {
+
+File: tpc/src/serializers/json/FastJSONDatabind.java
+Patch:
+@@ -13,7 +13,7 @@
+ import com.alibaba.fastjson.serializer.SerializeWriter;
+ 
+ /**
+- * This serializer uses FastJSON [http://code.alibabatech.com/wiki/display/FastJSON] for JSON data binding.
++ * This serializer uses FastJSON [https://github.com/alibaba/fastjson] for JSON data binding.
+  */
+ public class FastJSONDatabind
+ {
+
+File: tpc/src/serializers/dslplatform/DSLPlatform.java
+Patch:
+@@ -63,7 +63,7 @@ static class DSLPlatformMinifiedSerializer extends Serializer<MediaContentMinifi
+ 
+         @Override
+         public String getName() {
+-            return "json/dsl-platform/minified";
++            return "minified-json/dsl-platform";
+         }
+ 
+         @Override
+
+File: tpc/pregen/media.dsl/serializers/dslplatform/shared/Player.java
+Patch:
+@@ -1,4 +1,4 @@
+-package serializers.dslplatform.media;
++package serializers.dslplatform.shared;
+ 
+ 
+ 
+
+File: tpc/src/serializers/TestCaseRunner.java
+Patch:
+@@ -58,7 +58,7 @@ public double runWithTimeMeasurement(int timeMillis, TestCase tc, int iterations
+         System.err.println("1/2:"+measurementVals[count/2]);
+         System.err.println("3/4:"+measurementVals[count/4*3]);
+         System.err.println("max:"+measurementVals[count-1]);
+-        System.err.println("average:"+ avg +" deviation:"+(avg-measurementVals[count/2]));
++        System.err.println("average:"+ avg +"ms deviation:"+(avg-measurementVals[count/2])+"ms");
+         System.err.println("-----------------------------------------------------------------------------");
+         return avg;
+     }
+
+File: tpc/src/serializers/TestCaseRunner.java
+Patch:
+@@ -58,7 +58,7 @@ public double runWithTimeMeasurement(int timeMillis, TestCase tc, int iterations
+         System.err.println("1/2:"+measurementVals[count/2]);
+         System.err.println("3/4:"+measurementVals[count/4*3]);
+         System.err.println("max:"+measurementVals[count-1]);
+-        System.err.println("average:"+ avg +" deviation:"+(avg-measurementVals[count/2]));
++        System.err.println("average:"+ avg +"ms deviation:"+(avg-measurementVals[count/2])+"ms");
+         System.err.println("-----------------------------------------------------------------------------");
+         return avg;
+     }
+
+File: tpc/src/serializers/jackson/BaseJacksonDataBind.java
+Patch:
+@@ -21,7 +21,7 @@ protected BaseJacksonDataBind(String name, Class<T> clazz, ObjectMapper mapper)
+         type = mapper.getTypeFactory().constructType(clazz);
+         this.mapper = mapper;
+         reader = mapper.reader(type);
+-        writer = mapper.writerWithType(type);
++        writer = mapper.writerFor(type);
+     }
+ 
+     protected BaseJacksonDataBind(String name, JavaType type,
+
+File: tpc/src/serializers/jackson/JacksonAvroDatabind.java
+Patch:
+@@ -22,7 +22,7 @@ public static void register(TestGroups groups)
+         JavaType type = mapper.constructType(MediaContent.class);
+         AvroSchema schema = new AvroSchema(Avro.Media.sMediaContent);
+         ObjectReader reader =  mapper.reader(type).with(schema);
+-        ObjectWriter writer = mapper.writerWithType(type).withSchema(schema);
++        ObjectWriter writer = mapper.writerFor(type).with(schema);
+         groups.media.add(JavaBuiltIn.mediaTransformer, new StdJacksonDataBind<MediaContent>
+             ("avro/jackson/databind", type, mapper, reader, writer),
+                 new SerFeatures(
+
+File: tpc/src/serializers/jackson/JacksonBsonDatabind.java
+Patch:
+@@ -38,8 +38,6 @@ public static void register(TestGroups groups)
+         );
+     }
+ 
+-    // Must bundle, because BSON module still uses Jackson 1.x...
+-    
+     public final static class DataBindBase<T> extends Serializer<T>
+     {
+         protected final String name;
+@@ -54,7 +52,7 @@ public DataBindBase(String name, Class<T> clazz, ObjectMapper mapper)
+             type = mapper.constructType(clazz);
+             this.mapper = mapper;
+             objectReader = mapper.reader(type);
+-	    objectWriter = mapper.writerWithType(type);
++            objectWriter = mapper.writerFor(type);
+         }
+ 
+         @Override
+
+File: tpc/src/serializers/jackson/JacksonWithColumnsDatabind.java
+Patch:
+@@ -13,7 +13,7 @@
+  */
+ public class JacksonWithColumnsDatabind
+ {
+-    private final static String STD_DESC = "uses positional (column) laytout to eliminate use of names";
++    private final static String STD_DESC = "uses positional (column) layout to eliminate use of names";
+ 
+     public static void registerAll(TestGroups groups)
+     {
+
+File: tpc/src/serializers/msgpack/MsgPack.java
+Patch:
+@@ -7,7 +7,7 @@
+ public class MsgPack
+ {
+     private final static String DESC = 
+-            "uses positional (column) laytout (instead of typical MsgPack Maps) to eliminate use of names";
++            "uses positional (column) layout (instead of Maps std impl uses) to eliminate use of names";
+     
+     public static void register(TestGroups groups) {
+         register(groups.media, JavaBuiltIn.mediaTransformer);
+
+File: tpc/src/serializers/jackson/JacksonJsonTree.java
+Patch:
+@@ -173,7 +173,7 @@ protected static ObjectNode addMedia(Media media, ObjectNode node)
+       for (String person : media.persons) {
+         persons.add(person);
+       }
+-      node.put("persons", persons);
++      node.set("persons", persons);
+       node.put("player", media.player.name());
+       node.put("size", media.size);
+       node.put("title", media.title);
+
+File: tpc/src/serializers/jackson/JacksonSmileAfterburner.java
+Patch:
+@@ -31,7 +31,7 @@ public static void register(TestGroups groups, boolean sharedNames, boolean shar
+         
+         smileMapper.registerModule(new AfterburnerModule());
+         groups.media.add(JavaBuiltIn.mediaTransformer,
+-                new StdJacksonDataBind<MediaContent>("smile/jackson+afterburner/afterburner", MediaContent.class, smileMapper),
++                new StdJacksonDataBind<MediaContent>("smile/jackson+afterburner/databind", MediaContent.class, smileMapper),
+                 new SerFeatures(
+                         SerFormat.BINARY,
+                         SerGraph.FLAT_TREE,
+
+File: tpc/src/serializers/WriteResultsToJavascript.java
+Patch:
+@@ -293,7 +293,7 @@ public enum Category
+ 
+     public enum Property
+     {
+-        Neutral(Category.Format, "netural", "The serialization format is language-neutral."),
++        Neutral(Category.Format, "neutral", "The serialization format is language-neutral."),
+         Binary (Category.Format, "binary", "Some binary format."),
+         Text   (Category.Format, "text", "Some human-readable text format."),
+         Json   (Category.Format, "json", null),
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -12,6 +12,7 @@
+ import serializers.protobuf.ProtobufJson;
+ import serializers.protostuff.Protostuff;
+ import serializers.protostuff.ProtostuffJson;
++import serializers.wobly.Wobly;
+ import serializers.xml.ExiExificient;
+ import serializers.xml.XmlJavolution;
+ import serializers.xml.XmlStax;
+
+File: tpc/src/serializers/jackson/JacksonJsonTree.java
+Patch:
+@@ -45,6 +45,7 @@ public MediaContent deserialize(byte[] array) throws IOException
+       return readMediaContent(mapper.readTree(new ByteArrayInputStream(array)));
+   }
+ 
++  @Override
+   public byte[] serialize(MediaContent mediaContent) throws IOException
+   {
+       JsonNode root = asTree(mediaContent, mapper.createObjectNode());
+
+File: tpc/src/serializers/jackson/JacksonSmileAfterburner.java
+Patch:
+@@ -33,7 +33,7 @@ public static void register(TestGroups groups, boolean sharedNames, boolean shar
+         groups.media.add(JavaBuiltIn.mediaTransformer,
+                 new StdJacksonDataBind<MediaContent>("smile/jackson/db-afterburner", MediaContent.class, smileMapper),
+                 new SerFeatures(
+-                        SerFormat.JSON,
++                        SerFormat.BINARY,
+                         SerGraph.FLAT_TREE,
+                         SerClass.ZERO_KNOWLEDGE,
+                         ""
+
+File: tpc/src/serializers/jackson/JacksonSmileManual.java
+Patch:
+@@ -17,7 +17,7 @@ public static void register(TestGroups groups, boolean sharedNames, boolean shar
+ 	factory.configure(SmileGenerator.Feature.CHECK_SHARED_STRING_VALUES, sharedValues);
+         groups.media.add(JavaBuiltIn.mediaTransformer, new JacksonJsonManual("smile/jackson/manual", factory),
+                 new SerFeatures(
+-                        SerFormat.JSON,
++                        SerFormat.BINARY,
+                         SerGraph.FLAT_TREE,
+                         SerClass.MANUAL_OPT,
+                         ""
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -12,7 +12,7 @@
+ import serializers.cks.CksBinary;
+ import serializers.cks.CksText;
+ import serializers.jackson.*;
+-import serializers.javaxjson.JavaxJsonDriver;
++import serializers.javaxjson.*;
+ import serializers.json.*;
+ import serializers.msgpack.MsgPack;
+ import serializers.protobuf.ActiveMQProtobuf;
+@@ -72,7 +72,8 @@ protected void addTests(TestGroups groups)
+ // 01-May-2012, tatu: not all that useful (IMO) for general comparisons
+ //        JacksonJsonDatabindWithStrings.register(groups);
+ //        JacksonJsonTreeWithStrings.register(groups);
+-        JavaxJsonDriver.register(groups);
++        JavaxJsonTreeGlassfish.register(groups);
++        JavaxJsonStreamGlassfish.register(groups);
+         JsonTwoLattes.register(groups);
+         ProtostuffJson.register(groups);
+ // too slow, why bother:
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -12,6 +12,7 @@
+ import serializers.cks.CksBinary;
+ import serializers.cks.CksText;
+ import serializers.jackson.*;
++import serializers.javaxjson.JavaxJsonDriver;
+ import serializers.json.*;
+ import serializers.msgpack.MsgPack;
+ import serializers.protobuf.ActiveMQProtobuf;
+@@ -71,6 +72,7 @@ protected void addTests(TestGroups groups)
+ // 01-May-2012, tatu: not all that useful (IMO) for general comparisons
+ //        JacksonJsonDatabindWithStrings.register(groups);
+ //        JacksonJsonTreeWithStrings.register(groups);
++        JavaxJsonDriver.register(groups);
+         JsonTwoLattes.register(groups);
+         ProtostuffJson.register(groups);
+ // too slow, why bother:
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -89,7 +89,8 @@ protected void addTests(TestGroups groups)
+         JsonijJpath.register(groups);
+ // JsonijManualTree.register(groups);
+         JsonArgoTree.register(groups);
+-        JsonPathDeserializerOnly.register(groups);
++// 06-May-2013, tatu: Too slow (100x above fastest)
++// JsonPathDeserializerOnly.register(groups);
+ 
+         // Then JSON-like
+         // CKS text is textual JSON-like format
+
+File: tpc/src/serializers/Obser.java
+Patch:
+@@ -14,6 +14,7 @@
+ import net.sockali.obser.ObserEncoding;
+ import net.sockali.obser.ObserFactory;
+ 
++@SuppressWarnings("unchecked")
+ public class Obser {
+ 	public static void register (TestGroups groups) {
+ 		register(groups.media, JavaBuiltIn.mediaTransformer);
+@@ -30,7 +31,6 @@ private static <T, S> void register (TestGroup group, Transformer transformer) {
+ 	// ------------------------------------------------------------
+ 	// Serializers
+ 
+-	/** This is the most basic Kryo usage. Just register the classes and go. */
+ 	public static class BasicSerializer<T> extends Serializer<T> {
+ 		final net.sockali.obser.Obser obser;
+ //		private final byte[] buffer = new byte[1024*1024];
+@@ -53,7 +53,7 @@ public T deserialize (byte[] array) {
+ 			buffer.position(0);
+ 			buffer.put(array);
+ 			
+-			return obser.deserialize(buffer, 0);
++			return (T) obser.deserialize(buffer, 0);
+ 		}
+ 
+ 		public byte[] serialize (Object content) {
+@@ -77,7 +77,6 @@ public String getName () {
+ 		}
+ 	}
+ 
+-	/** This shows how to configure individual Kryo serializersto reduce the serialized bytes. */
+ 	public static class CompactSerializer<T> extends BasicSerializer<T> {
+ 		public CompactSerializer () {
+ 			super();
+
+File: tpc/src/data/media/Media.java
+Patch:
+@@ -113,7 +113,7 @@ public String toString () {
+ 		sb.append(", bitrate=").append(String.valueOf(bitrate));
+ 		sb.append(", persons=").append(repr(persons));
+ 		sb.append(", player=").append(player);
+-		sb.append(", copyright=").append(copyright);
++		sb.append(", copyright=").append(repr(copyright));
+ 		sb.append("]");
+ 		return sb.toString();
+ 	}
+
+File: tpc/src/serializers/jackson/BaseJacksonDataBind.java
+Patch:
+@@ -25,14 +25,14 @@ protected BaseJacksonDataBind(String name, Class<T> clazz, ObjectMapper mapper)
+     }
+     
+     protected final JsonParser constructParser(byte[] data) throws IOException {
+-        return mapper.getJsonFactory().createJsonParser(data, 0, data.length);
++        return mapper.getJsonFactory().createParser(data, 0, data.length);
+     }
+ 
+     protected final JsonParser constructParser(InputStream in) throws IOException {
+-        return mapper.getJsonFactory().createJsonParser(in);
++        return mapper.getJsonFactory().createParser(in);
+     }
+     
+     protected final JsonGenerator constructGenerator(OutputStream out) throws IOException {
+-        return mapper.getJsonFactory().createJsonGenerator(out, JsonEncoding.UTF8);
++        return mapper.getJsonFactory().createGenerator(out, JsonEncoding.UTF8);
+     }
+ }
+
+File: tpc/src/serializers/Serializer.java
+Patch:
+@@ -5,11 +5,11 @@
+ public abstract class Serializer<S>
+ {
+     /**
+-     * Buffer size for serializers.  Defaults to 512 and can be changed 
++     * Buffer size for serializers.  Defaults to 1024 and can be changed 
+      * via system properties.  Minimum set to 256.
+      */
+     public static final int BUFFER_SIZE = Math.max(
+-            Integer.getInteger("buffer_size", 512), 256);
++            Integer.getInteger("buffer_size", 1024), 256);
+     
+ 	public abstract S deserialize(byte[] array) throws Exception;
+ 	public abstract byte[] serialize(S content) throws Exception;
+
+File: tpc/src/serializers/Kryo.java
+Patch:
+@@ -44,8 +44,8 @@ public BasicSerializer (TypeHandler<T> handler) {
+ 			this.kryo = new com.esotericsoftware.kryo.Kryo();
+ 			kryo.setReferences(false);
+ 			kryo.setRegistrationRequired(true);
+-			this.input = new Input(4096);
+-			this.output = new Output(4096);
++			this.input = new Input(8192);
++			this.output = new Output(8192);
+ 			handler.register(this.kryo);
+ 		}
+ 
+@@ -68,6 +68,7 @@ public void serializeItems (T[] items, OutputStream outStream) throws Exception
+ 			output.flush();
+ 		}
+ 
++		@SuppressWarnings("unchecked")
+ 		public T[] deserializeItems (InputStream inStream, int numberOfItems) throws IOException {
+ 			input.setInputStream(inStream);
+ 			MediaContent[] result = new MediaContent[numberOfItems];
+
+File: tpc/src/data/media/Media.java
+Patch:
+@@ -3,7 +3,6 @@
+ import java.util.List;
+ 
+ import org.codehaus.jackson.annotate.JsonIgnore;
+-import org.msgpack.annotation.Optional;
+ import jsonij.json.annotation.JSONIgnore;
+ 
+ import static data.ReprUtil.repr;
+
+File: tpc/src/serializers/json/FastJSONDatabind.java
+Patch:
+@@ -38,6 +38,7 @@ public String getName()
+       return name;
+     }
+ 
++    @SuppressWarnings("unchecked")
+     public T deserialize(byte[] array) throws Exception
+     {
+ 	// fastjson can parse from byte array, yay:
+
+File: tpc/src/serializers/json/FastJSONDatabind.java
+Patch:
+@@ -41,7 +41,7 @@ public String getName()
+     public T deserialize(byte[] array) throws Exception
+     {
+ 	// fastjson can parse from byte array, yay:
+-	return JSON.parseObject(array, type);
++	return (T) JSON.parseObject(array, type);
+     }
+ 
+     public byte[] serialize(T data) throws IOException
+
+File: tpc/src/serializers/MediaStreamBenchmark.java
+Patch:
+@@ -43,8 +43,9 @@ protected void addTests(TestGroups groups)
+         JacksonJsonDatabind.register(groups);
+ 
+         // JSON-like
+-        JacksonSmileManual.register(groups);
+-        JacksonSmileDatabind.register(groups);
++        // share both names & values for data streams:
++        JacksonSmileManual.register(groups, true, true);
++        JacksonSmileDatabind.register(groups, true, true);
+ 
+         // this one needed to read in test data, too:
+         CksText.register(groups);
+
+File: tpc/src/serializers/jackson/JacksonJsonManual.java
+Patch:
+@@ -236,7 +236,7 @@ private Media readMedia(JsonParser parser) throws IOException
+ 
+         // As with above, first fast path
+         if (parser.nextFieldName(FIELD_PLAYER)) {
+-            media.player = Media.Player.valueOf(parser.nextTextValue());
++            media.player = Media.Player.find(parser.nextTextValue());
+             if (parser.nextFieldName(FIELD_URI)) {
+                 media.uri = parser.nextTextValue();
+                 if (parser.nextFieldName(FIELD_TITLE)) {
+
+File: tpc/src/serializers/MediaStreamBenchmark.java
+Patch:
+@@ -40,11 +40,11 @@ protected void addTests(TestGroups groups)
+         // JSON
+         JacksonJsonManual.register(groups);
+ //        JacksonJsonTree.register(groups);
+-//        JacksonJsonDatabind.register(groups);
++        JacksonJsonDatabind.register(groups);
+ 
+         // JSON-like
+         JacksonSmileManual.register(groups);
+-//        JacksonSmileDatabind.register(groups);
++        JacksonSmileDatabind.register(groups);
+ 
+         // this one needed to read in test data, too:
+         CksText.register(groups);
+
+File: tpc/src/serializers/jackson/StdJacksonDataBind.java
+Patch:
+@@ -33,8 +33,7 @@ public T deserialize(byte[] array) throws IOException
+     @Override
+     public void serializeItems(T[] items, OutputStream out) throws IOException
+     {
+-        ByteArrayOutputStream baos = outputStream(items[0]);
+-        JsonGenerator generator = constructGenerator(baos);
++        JsonGenerator generator = constructGenerator(out);
+         // JSON allows simple sequences, so:
+         for (int i = 0, len = items.length; i < len; ++i) {
+             mapper.writeValue(generator, items[i]);
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -48,8 +48,6 @@ public static void main(String[] args) {
+     @Override
+     protected void addTests(TestGroups groups)
+     {
+-        JacksonSmileManual.register(groups);
+-
+         // Binary Formats; language-specific ones
+         JavaBuiltIn.register(groups);
+         JavaManual.register(groups);
+@@ -103,7 +101,7 @@ protected void addTests(TestGroups groups)
+         JacksonBsonManual.register(groups);
+         JacksonBsonDatabind.register(groups);
+         MongoDB.register(groups);
+-//        JacksonSmileManual.register(groups);
++        JacksonSmileManual.register(groups);
+         JacksonSmileDatabind.register(groups);
+         ProtostuffSmile.register(groups);
+ 
+
+File: tpc/src/serializers/AvroGeneric.java
+Patch:
+@@ -72,10 +72,13 @@ public byte[] serialize(GenericRecord data) throws IOException
+ 
+ 	public static final Transformer<MediaContent,GenericRecord> MediaTransformer = new Transformer<MediaContent,GenericRecord>()
+ 	{
++		@SuppressWarnings("unused")
+ 		private final Schema sImage = serializers.avro.media.Image.SCHEMA$;
+ 		private final Schema sMedia = serializers.avro.media.Media.SCHEMA$;
+ 
++                @SuppressWarnings("unused")
+ 		private final Schema sImages = sMediaContent.getField("images").schema();
++                @SuppressWarnings("unused")
+ 		private final Schema sPersons = sMedia.getField("persons").schema();
+ 
+ 		// ----------------------------------------------------------
+
+File: tpc/src/serializers/json/FastJSONDatabind.java
+Patch:
+@@ -6,8 +6,6 @@
+ import serializers.Serializer;
+ import serializers.TestGroups;
+ 
+-import data.media.Image;
+-import data.media.Media;
+ import data.media.MediaContent;
+ 
+ import com.alibaba.fastjson.JSON;
+
+File: tpc/src/serializers/jackson/JacksonBsonDatabind.java
+Patch:
+@@ -20,6 +20,6 @@ public static void register(TestGroups groups)
+ 	    ObjectMapper mapper = new ObjectMapper(new BsonFactory());
+ 	    groups.media.add(JavaBuiltIn.MediaTransformer,
+ 	            new StdJacksonDataBind<MediaContent>(
+-	                    "bson/jackson-databind", MediaContent.class, mapper));
++	                    "bson/jackson/databind", MediaContent.class, mapper));
+ 	}
+ }
+
+File: tpc/src/serializers/jackson/JacksonBsonManual.java
+Patch:
+@@ -10,6 +10,6 @@ public static void register(TestGroups groups)
+ 	{
+ 		BsonFactory factory = new BsonFactory();
+ 		groups.media.add(JavaBuiltIn.MediaTransformer,
+-			new JacksonJsonManual.GenericSerializer("bson/jackson-manual", factory));
++			new JacksonJsonManual.GenericSerializer("bson/jackson/manual", factory));
+ 	}
+ }
+
+File: tpc/src/serializers/jackson/JacksonJsonDatabind.java
+Patch:
+@@ -18,6 +18,6 @@ public static void register(TestGroups groups)
+         ObjectMapper mapper = new ObjectMapper();
+         // note: could also force static typing; left out to keep defaults
+         groups.media.add(JavaBuiltIn.MediaTransformer,
+-                new StdJacksonDataBind<MediaContent>("json/jackson-databind", MediaContent.class, mapper));
++                new StdJacksonDataBind<MediaContent>("json/jackson/databind", MediaContent.class, mapper));
+     }
+ }
+
+File: tpc/src/serializers/jackson/JacksonJsonDatabindWithStrings.java
+Patch:
+@@ -26,7 +26,7 @@ public static void register(TestGroups groups)
+     }
+ 
+     public JacksonJsonDatabindWithStrings(Class<T> clz) {
+-        super("json/jackson-databind-strings", clz, new ObjectMapper());
++        super("json/jackson/databind-strings", clz, new ObjectMapper());
+     }
+ 
+     public byte[] serialize(T data) throws IOException
+
+File: tpc/src/serializers/jackson/JacksonJsonTree.java
+Patch:
+@@ -24,7 +24,7 @@ public class JacksonJsonTree extends Serializer<MediaContent>
+ {
+   public static void register(TestGroups groups)
+   {
+-    groups.media.add(JavaBuiltIn.MediaTransformer, new JacksonJsonTree("json/jackson-manual/tree"));
++    groups.media.add(JavaBuiltIn.MediaTransformer, new JacksonJsonTree("json/jackson/tree"));
+   }
+ 
+   protected static final ObjectMapper mapper = new ObjectMapper();
+@@ -130,7 +130,7 @@ protected static ObjectNode addImage(Image image, ObjectNode node)
+     protected static ArrayNode addImages(List<Image> images, ArrayNode node)
+     {
+       for (Image image : images) {
+-        node.add(addImage(image, node.addObject()));
++        addImage(image, node.addObject());
+       }
+       return node;
+     }
+
+File: tpc/src/serializers/jackson/JacksonJsonTreeWithStrings.java
+Patch:
+@@ -14,7 +14,7 @@ public class JacksonJsonTreeWithStrings extends JacksonJsonTree
+ {
+   public static void register(TestGroups groups)
+   {
+-    groups.media.add(JavaBuiltIn.MediaTransformer, new JacksonJsonTreeWithStrings("json/jackson-manual/tree-strings"));
++    groups.media.add(JavaBuiltIn.MediaTransformer, new JacksonJsonTreeWithStrings("json/jackson/tree-strings"));
+   }
+ 
+     public JacksonJsonTreeWithStrings(String name) {
+
+File: tpc/src/serializers/jackson/JacksonSmileDatabind.java
+Patch:
+@@ -20,7 +20,7 @@ public static void register(TestGroups groups)
+         ObjectMapper mapper = new ObjectMapper(factory);
+         
+         groups.media.add(JavaBuiltIn.MediaTransformer,
+-                new StdJacksonDataBind<MediaContent>("smile/jackson-databind",
++                new StdJacksonDataBind<MediaContent>("smile/jackson/databind",
+                         MediaContent.class, mapper));
+     }
+ 
+
+File: tpc/src/serializers/jackson/JacksonSmileManual.java
+Patch:
+@@ -14,7 +14,7 @@ public static void register(TestGroups groups)
+ 	factory.configure(SmileGenerator.Feature.CHECK_SHARED_NAMES, true);
+ //	factory.configure(SmileGenerator.Feature.CHECK_SHARED_STRING_VALUES, true);
+ 	factory.configure(SmileGenerator.Feature.CHECK_SHARED_STRING_VALUES, false);
+-        groups.media.add(JavaBuiltIn.MediaTransformer, new JacksonJsonManual.GenericSerializer("smile/jackson-manual", factory));
++        groups.media.add(JavaBuiltIn.MediaTransformer, new JacksonJsonManual.GenericSerializer("smile/jackson/manual", factory));
+     }
+ 
+ }
+
+File: tpc/src/serializers/jackson/JacksonXmlDatabind.java
+Patch:
+@@ -23,7 +23,7 @@ public static void register(TestGroups groups)
+         XmlMapper mapper = new XmlMapper(new XmlFactory(null,
+                 new InputFactoryImpl(), new OutputFactoryImpl()));
+         groups.media.add(JavaBuiltIn.MediaTransformer,
+-                new StdJacksonDataBind<MediaContent>("xml/jackson-databind/aalto",
++                new StdJacksonDataBind<MediaContent>("xml/jackson/databind-aalto",
+                         MediaContent.class, mapper));
+     }
+ }
+
+File: tpc/src/serializers/JsonJacksonDatabindWithStrings.java
+Patch:
+@@ -48,11 +48,11 @@ public byte[] serialize(T data) throws IOException
+         }
+ 
+         @SuppressWarnings("unchecked")
+-                public T deserialize(byte[] array) throws Exception
+-                {
++        public T deserialize(byte[] array) throws Exception
++        {
+             // return (T) mapper.readValue(array, 0, array.length, type);
+             String input = new String(array, "UTF-8");
+-            return mapper.readValue(input, type);
++            return (T) mapper.readValue(input, type);
+         }
+     };
+ }
+
+File: tpc/src/serializers/BsonJackson.java
+Patch:
+@@ -1,7 +1,6 @@
+ package serializers;
+ 
+ import de.undercouch.bson4jackson.BsonFactory;
+-import de.undercouch.bson4jackson.BsonGenerator;
+ 
+ public class BsonJackson
+ {
+
+File: tpc/src/com/google/protobuf/JsonFormat.java
+Patch:
+@@ -61,6 +61,7 @@
+  * @author wenboz@google.com Wenbo Zhu
+  * @author kenton@google.com Kenton Varda
+  */
++@SuppressWarnings({"serial", "unchecked"})
+ public final class JsonFormat {
+ 
+     /**
+
+File: tpc/src/data/media/MediaContent.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import java.util.List;
+ 
++@SuppressWarnings("serial")
+ public class MediaContent implements java.io.Serializable
+ {
+ 	public Media media;
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -245,6 +245,9 @@ else if (option.equals("help")) {
+ 		TestGroups groups = new TestGroups();
+ 
+ 		// Binary Formats
++		// start with baseline, Java defaults (to reduce first-run benefit for other impls)
++                JavaBuiltIn.register(groups);
++                JavaManual.register(groups);
+ 		Protobuf.register(groups);
+ 		Thrift.register(groups);
+ 		ActiveMQProtobuf.register(groups);
+@@ -254,8 +257,6 @@ else if (option.equals("help")) {
+ 		AvroGeneric.register(groups);
+ 		CksBinary.register(groups);
+ 		Hessian.register(groups);
+-		JavaBuiltIn.register(groups);
+-		JavaManual.register(groups);
+ 		Scala.register(groups);
+ 
+ 		// JSON-like formats.
+
+File: tpc/src/serializers/Protostuff.java
+Patch:
+@@ -4,7 +4,6 @@
+ import java.util.Collections;
+ import java.util.List;
+ 
+-import com.dyuproject.protostuff.BufferedOutput;
+ import com.dyuproject.protostuff.IOUtil;
+ import com.dyuproject.protostuff.LinkedBuffer;
+ import com.dyuproject.protostuff.Schema;
+
+File: tpc/src/serializers/ProtostuffJson.java
+Patch:
+@@ -5,8 +5,6 @@
+ import com.dyuproject.protostuff.runtime.RuntimeSchema;
+ 
+ import serializers.protostuff.media.MediaContent;
+-import serializers.protostuff.media.Media;
+-import serializers.protostuff.media.Image;
+ 
+ /**
+  * @author David Yu
+
+File: tpc/src/serializers/Cks.java
+Patch:
+@@ -1,6 +1,6 @@
+ package serializers;
+ 
+-import cakoose.util.Maybe;
++import cks.value.data.Maybe;
+ import serializers.cks.media.*;
+ 
+ import java.util.ArrayList;
+
+File: tpc/src/data/media/Media.java
+Patch:
+@@ -3,6 +3,7 @@
+ import java.util.List;
+ import static data.ReprUtil.repr;
+ 
++@SuppressWarnings("serial")
+ public class Media implements java.io.Serializable {
+ 	public enum Player {
+ 		JAVA, FLASH
+
+File: tpc/src/serializers/AvroGeneric.java
+Patch:
+@@ -49,7 +49,7 @@ public GenericRecord deserialize(byte[] array) throws Exception
+ 
+ 		public byte[] serialize(GenericRecord data) throws IOException
+ 		{
+-			ByteArrayOutputStream out = new ByteArrayOutputStream();
++			ByteArrayOutputStream out = outputStream(data);
+ 			WRITER.write(data, new BinaryEncoder(out));
+ 			return out.toByteArray();
+ 		}
+
+File: tpc/src/serializers/AvroSpecific.java
+Patch:
+@@ -46,7 +46,7 @@ public T deserialize(byte[] array) throws Exception {
+ 		}
+ 
+ 		public byte[] serialize(T content) throws Exception {
+-			ByteArrayOutputStream out = new ByteArrayOutputStream();
++			ByteArrayOutputStream out = outputStream(content);
+ 			WRITER.write(content, new BinaryEncoder(out));
+ 			return out.toByteArray();
+ 		}
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -386,7 +386,7 @@ private static byte[] readFile(File file)
+ 	{
+ 		FileInputStream fin = new FileInputStream(file);
+ 		try {
+-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
++			ByteArrayOutputStream baos = new ByteArrayOutputStream(1024);
+ 			byte[] data = new byte[1024];
+ 			while (true) {
+ 				int numBytes = fin.read(data);
+@@ -677,7 +677,7 @@ enum measurements
+ 	private static byte[] compressDeflate(byte[] data)
+ 	{
+ 		try {
+-			ByteArrayOutputStream bout = new ByteArrayOutputStream();
++			ByteArrayOutputStream bout = new ByteArrayOutputStream(500);
+ 			DeflaterOutputStream compresser = new DeflaterOutputStream(bout);
+ 			compresser.write(data, 0, data.length);
+ 			compresser.finish();
+
+File: tpc/src/serializers/CksBinary.java
+Patch:
+@@ -28,7 +28,7 @@ public MediaContent deserialize(byte[] array) throws Exception
+ 
+ 		public byte[] serialize(MediaContent content) throws Exception
+ 		{
+-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
++			ByteArrayOutputStream baos = outputStream(content);
+ 			DataOutputStream dout = new DataOutputStream(baos);
+ 			MediaContent._BinaryWriter.write(dout, content);
+ 			return baos.toByteArray();
+
+File: tpc/src/serializers/CksText.java
+Patch:
+@@ -35,7 +35,7 @@ public MediaContent deserialize(byte[] array) throws Exception
+ 
+ 		public byte[] serialize(MediaContent content) throws Exception
+ 		{
+-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
++			ByteArrayOutputStream baos = outputStream(content);
+ 			OutputStreamWriter out = new OutputStreamWriter(baos);
+ 			MediaContent._TextWriter.write(out, content);
+ 			out.flush();
+
+File: tpc/src/serializers/Gson.java
+Patch:
+@@ -25,7 +25,7 @@ public static <T> Serializer<T> GenericSerializer()
+ 	// ------------------------------------------------------------
+ 	// Serializer (just one)
+ 
+-	public static Serializer<Object> GenericSerializer = new Serializer<Object>()
++	public static Serializer<MediaContent> GenericSerializer = new Serializer<MediaContent>()
+ 	{
+ 		private final com.google.gson.Gson _gson = new com.google.gson.Gson();
+ 
+@@ -37,9 +37,9 @@ public MediaContent deserialize(byte[] array) throws Exception
+ 			return result;
+ 		}
+ 
+-		public byte[] serialize(Object data) throws IOException
++		public byte[] serialize(MediaContent data) throws IOException
+ 		{
+-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
++                        ByteArrayOutputStream baos = outputStream(data);
+ 			OutputStreamWriter w = new OutputStreamWriter(baos, "UTF-8");
+ 			_gson.toJson(data, w);
+ 			w.close();
+
+File: tpc/src/serializers/Hessian.java
+Patch:
+@@ -35,7 +35,7 @@ public Object deserialize(byte[] array) throws Exception
+ 
+ 		public byte[] serialize(Object data) throws java.io.IOException
+ 		{
+-			ByteArrayOutputStream out = new ByteArrayOutputStream();
++			ByteArrayOutputStream out = outputStream(data);
+ 			Hessian2StreamingOutput hout = new Hessian2StreamingOutput(out);
+ 			hout.writeObject(data);
+ 			return out.toByteArray();
+
+File: tpc/src/serializers/JavaBuiltIn.java
+Patch:
+@@ -40,7 +40,7 @@ public T deserialize(byte[] array) throws Exception
+ 
+ 		public byte[] serialize(T data) throws IOException
+ 		{
+-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
++			ByteArrayOutputStream baos = outputStream(data);
+ 			ObjectOutputStream oos = new ObjectOutputStream(baos);
+ 			oos.writeObject(data);
+ 			return baos.toByteArray();
+
+File: tpc/src/serializers/JavaManual.java
+Patch:
+@@ -40,7 +40,7 @@ public MediaContent deserialize(byte[] array)
+ 		public byte[] serialize(MediaContent data)
+ 			throws IOException
+ 		{
+-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
++			ByteArrayOutputStream baos = outputStream(data);
+ 			DataOutputStream oos = new DataOutputStream(baos);
+ 			writeMediaContent(oos, data);
+ 			oos.flush();
+
+File: tpc/src/serializers/JavolutionXml.java
+Patch:
+@@ -48,7 +48,7 @@ public T deserialize(byte[] array)
+ 		public byte[] serialize(T content)
+ 			throws Exception
+ 		{
+-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
++			ByteArrayOutputStream baos = outputStream(content);
+ 			XMLObjectWriter writer = XMLObjectWriter.newInstance(baos).setBinding(binding);
+ 			writer.write(content, "mc", clazz);
+ 			writer.close();
+
+File: tpc/src/serializers/JsonJackson.java
+Patch:
+@@ -28,11 +28,11 @@ public static void register(TestGroups groups)
+ 
+ 	public static final Serializer<MediaContent> MediaSerializer = new Serializer<MediaContent>()
+ 	{
+-		public String getName() { return "json/jackson"; }
++		public String getName() { return "json/jackson-manual"; }
+ 
+ 		public final byte[] serialize(MediaContent content) throws Exception
+ 		{
+-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
++			ByteArrayOutputStream baos = outputStream(content);
+ 			JsonGenerator generator = constructGenerator(baos);
+ 			writeMediaContent(generator, content);
+ 			generator.close();
+@@ -51,7 +51,7 @@ public final MediaContent deserialize(byte[] array) throws Exception
+ 
+ 		protected JsonParser constructParser(byte[] data) throws IOException
+ 		{
+-			return _factory.createJsonParser(data);
++			return _factory.createJsonParser(data, 0, data.length);
+ 		}
+ 
+ 		protected JsonGenerator constructGenerator(ByteArrayOutputStream baos) throws IOException
+
+File: tpc/src/serializers/ProtostuffJson.java
+Patch:
+@@ -50,7 +50,7 @@ public MediaContent deserialize(byte[] array) throws Exception
+ 
+ 		public byte[] serialize(MediaContent content) throws Exception
+ 		{
+-			ByteArrayOutputStream out = new ByteArrayOutputStream(512);
++			ByteArrayOutputStream out = outputStream(content);
+ 			json.writeTo(out, content);
+ 			return out.toByteArray();
+ 		}
+
+File: tpc/src/serializers/Stax.java
+Patch:
+@@ -176,7 +176,7 @@ private void searchTag(XMLStreamReader parser, String string) throws XMLStreamEx
+ 
+ 		public byte[] serialize(MediaContent content) throws Exception
+ 		{
+-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
++			ByteArrayOutputStream baos = outputStream(content);
+ 			XMLStreamWriter writer = handler.outFactory.createXMLStreamWriter(baos, "UTF-8");
+ 			writer.writeStartDocument("UTF-8", "1.0");
+ 			writer.writeStartElement("mc");
+
+File: tpc/src/serializers/XStream.java
+Patch:
+@@ -88,7 +88,7 @@ public T deserialize(byte[] array) throws Exception
+ 
+ 		public byte[] serialize(T content) throws IOException
+ 		{
+-			ByteArrayOutputStream baos = new ByteArrayOutputStream();
++			ByteArrayOutputStream baos = outputStream(content);
+ 			xstream.toXML(content, baos);
+ 			return baos.toByteArray();
+ 		}
+
+File: tpc/src/serializers/Stax.java
+Patch:
+@@ -49,7 +49,7 @@ protected Handler(String name, XMLInputFactory inFactory, XMLOutputFactory outFa
+ 		new Handler("xml/woodstox",
+ 			new com.ctc.wstx.stax.WstxInputFactory(),
+ 			new com.ctc.wstx.stax.WstxOutputFactory()),
+-		new Handler("xml/alto",
++		new Handler("xml/aalto",
+ 			new com.fasterxml.aalto.stax.InputFactoryImpl(),
+ 			new com.fasterxml.aalto.stax.OutputFactoryImpl()),
+ 	};
+
+File: tpc/src/serializers/XStream.java
+Patch:
+@@ -31,15 +31,15 @@ public class XStream
+ 	public static void register(TestGroups groups)
+ 	{
+ 		// The default XStream serializer.
+-		groups.media.add(JavaBuiltIn.MediaTransformer, new ConverterSerializer<MediaContent>("xml/xstrm",
++		groups.media.add(JavaBuiltIn.MediaTransformer, new ConverterSerializer<MediaContent>("xml/xstream",
+ 			new com.thoughtworks.xstream.XStream(new XppDriver() {
+ 				public HierarchicalStreamWriter createWriter(Writer out) {
+ 					//return new PrettyPrintWriter(out, xmlFriendlyReplacer());
+ 					return new CompactWriter(out, xmlFriendlyReplacer());
+ 				}
+ 			}), EmptyConfiguration));
+ 
+-		groups.media.add(JavaBuiltIn.MediaTransformer, new ConverterSerializer<MediaContent>("xml/xstrm+",
++		groups.media.add(JavaBuiltIn.MediaTransformer, new ConverterSerializer<MediaContent>("xml/xstream+c",
+ 			new com.thoughtworks.xstream.XStream(new XppDriver() {
+ 				public HierarchicalStreamWriter createWriter(Writer out) {
+ 					//return new PrettyPrintWriter(out, xmlFriendlyReplacer());
+
+File: tpc/pregen/media.proto/serializers/protobuf/media/MediaContentHolder.java
+Patch:
+@@ -562,15 +562,16 @@ public Media getDefaultInstanceForType() {
+     public enum Player
+         implements com.google.protobuf.ProtocolMessageEnum {
+       JAVA(0, 0),
++      FLASH(1, 1),
+       ;
+       
+-      public static final Player FLASH = JAVA;
+       
+       public final int getNumber() { return value; }
+       
+       public static Player valueOf(int value) {
+         switch (value) {
+           case 0: return JAVA;
++          case 1: return FLASH;
+           default: return null;
+         }
+       }
+@@ -1991,7 +1992,7 @@ public serializers.protobuf.media.MediaContentHolder.MediaContent updateMedia(
+       "\n\007bitrate\030\010 \001(\005\022\016\n\006person\030\t \003(\t\0228\n\006playe" +
+       "r\030\n \001(\0162(.serializers.protobuf.media.Med",
+       "ia.Player\022\021\n\tcopyright\030\013 \001(\t\"\035\n\006Player\022\010" +
+-      "\n\004JAVA\020\000\022\t\n\005FLASH\020\000\"r\n\014MediaContent\0220\n\005i" +
++      "\n\004JAVA\020\000\022\t\n\005FLASH\020\001\"r\n\014MediaContent\0220\n\005i" +
+       "mage\030\001 \003(\0132!.serializers.protobuf.media." +
+       "Image\0220\n\005media\030\002 \001(\0132!.serializers.proto" +
+       "buf.media.Media2p\n\013MediaServer\022a\n\013update" +
+
+File: tpc/pregen/media.activemq.proto/serializers/activemq/media/MediaContentHolder.java
+Patch:
+@@ -1,7 +1,7 @@
+ //
+ // Generated by protoc, do not edit by hand.
+ //
+-package serializers.activemq.protobuf;
++package serializers.activemq.media;
+ 
+ public class MediaContentHolder {
+ 
+
+File: tpc/pregen/media.thrift/gen-javabean/serializers/thrift/media/Image.java
+Patch:
+@@ -3,7 +3,7 @@
+  *
+  * DO NOT EDIT UNLESS YOU ARE SURE THAT YOU KNOW WHAT YOU ARE DOING
+  */
+-package serializers.thrift;
++package serializers.thrift.media;
+ 
+ import org.apache.commons.lang.builder.HashCodeBuilder;
+ import java.util.List;
+
+File: tpc/pregen/media.thrift/gen-javabean/serializers/thrift/media/Media.java
+Patch:
+@@ -3,7 +3,7 @@
+  *
+  * DO NOT EDIT UNLESS YOU ARE SURE THAT YOU KNOW WHAT YOU ARE DOING
+  */
+-package serializers.thrift;
++package serializers.thrift.media;
+ 
+ import org.apache.commons.lang.builder.HashCodeBuilder;
+ import java.util.List;
+
+File: tpc/pregen/media.thrift/gen-javabean/serializers/thrift/media/MediaContent.java
+Patch:
+@@ -3,7 +3,7 @@
+  *
+  * DO NOT EDIT UNLESS YOU ARE SURE THAT YOU KNOW WHAT YOU ARE DOING
+  */
+-package serializers.thrift;
++package serializers.thrift.media;
+ 
+ import org.apache.commons.lang.builder.HashCodeBuilder;
+ import java.util.List;
+
+File: tpc/pregen/media.thrift/gen-javabean/serializers/thrift/media/Player.java
+Patch:
+@@ -3,7 +3,7 @@
+  *
+  * DO NOT EDIT UNLESS YOU ARE SURE THAT YOU KNOW WHAT YOU ARE DOING
+  */
+-package serializers.thrift;
++package serializers.thrift.media;
+ 
+ 
+ import java.util.Map;
+
+File: tpc/pregen/media.thrift/gen-javabean/serializers/thrift/media/Size.java
+Patch:
+@@ -3,7 +3,7 @@
+  *
+  * DO NOT EDIT UNLESS YOU ARE SURE THAT YOU KNOW WHAT YOU ARE DOING
+  */
+-package serializers.thrift;
++package serializers.thrift.media;
+ 
+ 
+ import java.util.Map;
+
+File: tpc/src/serializers/protostuff/MediaContentHolderJSON.java
+Patch:
+@@ -16,9 +16,9 @@
+ import com.dyuproject.protostuff.json.ProtobufConvertor;
+ import com.dyuproject.protostuff.json.ProtobufJSON;
+ 
+-import serializers.protobuf.MediaContentHolder.MediaContent;
+-import serializers.protobuf.MediaContentHolder.Media;
+-import serializers.protobuf.MediaContentHolder.Image;
++import serializers.protobuf.media.MediaContentHolder.MediaContent;
++import serializers.protobuf.media.MediaContentHolder.Media;
++import serializers.protobuf.media.MediaContentHolder.Image;
+ 
+ public final class MediaContentHolderJSON extends ProtobufJSON
+ {
+
+File: tpc/src/serializers/protostuff/MediaContentHolderNumericJSON.java
+Patch:
+@@ -15,9 +15,9 @@
+ import com.dyuproject.protostuff.json.ProtobufConvertor;
+ import com.dyuproject.protostuff.json.ProtobufJSON;
+ 
+-import serializers.protobuf.MediaContentHolder.MediaContent;
+-import serializers.protobuf.MediaContentHolder.Media;
+-import serializers.protobuf.MediaContentHolder.Image;
++import serializers.protobuf.media.MediaContentHolder.MediaContent;
++import serializers.protobuf.media.MediaContentHolder.Media;
++import serializers.protobuf.media.MediaContentHolder.Image;
+ 
+ public final class MediaContentHolderNumericJSON extends ProtobufJSON
+ {
+
+File: tpc/src/serializers/XStreamSerializer.java
+Patch:
+@@ -77,7 +77,7 @@ public void registerConverters() throws Exception
+     xstream.alias("im", Image.class);
+     xstream.registerConverter(new ImageConverter());
+ 
+-    xstream.alias("md", Image.class);
++    xstream.alias("md", Media.class);
+     xstream.registerConverter(new MediaConverter());
+ 
+     xstream.alias("mc", MediaContent.class);
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -280,7 +280,7 @@ private void start() throws Exception
+       
+       
+       byte[] array = serializer.serialize(serializer.create());
+-      double totalTime = timeCreate + timeSerializeDifferentObjects + timeDeserializeNoFieldAccess;
++      double totalTime = timeSerializeDifferentObjects + timeDeserializeNoFieldAccess;
+       System.out.printf("%-24s, %15.5f, %15.5f, %15.5f, %15.5f, %15.5f, %15.5f, %15.5f, %10d\n",
+                         serializer.getName(),
+                         timeCreate,
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -142,7 +142,7 @@ private <T> double serializeSameObject(ObjectSerializer<T> serializer, int itera
+     return iterationTime(delta, iterations);
+   }  
+ 
+-  private <T> double deserializeNoFeildAcess(ObjectSerializer<T> serializer, int iterations) throws Exception
++  private <T> double deserializeNoFieldAccess(ObjectSerializer<T> serializer, int iterations) throws Exception
+   {
+     byte[] array = serializer.serialize(serializer.create());
+     long start = System.nanoTime();
+@@ -258,7 +258,7 @@ private void start() throws Exception
+       doGc();
+       double timeDeserializeNoFieldAccess = Double.MAX_VALUE;
+       for (int i = 0; i < TRIALS; i++)
+-        timeDeserializeNoFieldAccess = Math.min(timeDeserializeNoFieldAccess, deserializeNoFeildAcess(serializer, ITERATIONS));
++        timeDeserializeNoFieldAccess = Math.min(timeDeserializeNoFieldAccess, deserializeNoFieldAccess(serializer, ITERATIONS));
+ 
+       double timeDeserializeAndCheckAllFields = Double.NaN;
+       double timeDeserializeAndCheckMediaField = Double.NaN;
+@@ -417,7 +417,7 @@ private <T> void warmDeserialization(ObjectSerializer<T> serializer) throws Exce
+     long endTime = System.currentTimeMillis() + WARMUP_MSECS;
+     do
+     {
+-      deserializeNoFeildAcess(serializer, 1);
++      deserializeNoFieldAccess(serializer, 1);
+     }
+     while (System.currentTimeMillis() < endTime);
+   }
+
+File: tpc/src/serializers/JsonSerializer.java
+Patch:
+@@ -31,7 +31,7 @@ public byte[] serialize(MediaContent content) throws Exception
+     JsonGenerator generator = _factory.createJsonGenerator(baos, JsonEncoding.UTF8);
+     generator.writeStartObject();
+     writeMedia(generator, content.getMedia());
+-    generator.writeFieldName("im");
++    generator.writeFieldName(FIELD_NAME_IMAGES);
+     generator.writeStartArray();
+     for (int i = 0, len = content.imageCount(); i < len; ++i) {
+         writeImage(generator, content.getImage(i));
+
+File: tpc/src/serializers/StaxSerializer.java
+Patch:
+@@ -140,7 +140,7 @@ private void writeImage (XMLStreamWriter writer, Image image) throws XMLStreamEx
+       writeElement(writer, FIELD_NAME_TITLE, image.getTitle());
+       writeElement(writer, FIELD_NAME_WIDTH, String.valueOf(image.getWidth()));
+       writeElement(writer, FIELD_NAME_HEIGHT, String.valueOf(image.getHeight()));
+-      writeElement(writer, FIELD_NAME_SIZE, String.valueOf(image.getSize()));
++      writeElement(writer, FIELD_NAME_SIZE, image.getSize().name());
+       writer.writeEndElement();
+   }
+ 
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -70,6 +70,7 @@ public static void main(String... args) throws Exception
+     runner.addObjectSerializer(new StaxSerializer("stax/aalto",
+                                                   new com.fasterxml.aalto.stax.InputFactoryImpl(),
+                                                   new com.fasterxml.aalto.stax.OutputFactoryImpl()));
++
+     runner.addObjectSerializer(new StaxSerializer("binaryxml/FI",
+                                                   new com.sun.xml.fastinfoset.stax.factory.StAXInputFactory(),
+                                                   new com.sun.xml.fastinfoset.stax.factory.StAXOutputFactory()));
+@@ -251,11 +252,12 @@ private void checkCorrectness(ObjectSerializer serializer)
+         Object input = serializer.create();
+         byte[] array = serializer.serialize(input);
+         Object output = serializer.deserialize(array);
++
+         if (!input.equals(output)) {
+             /* Should throw an exception; but for now (that we have a few
+              * failures) let's just whine...
+              */
+-            String msg = "serializer '"+serializer.getName()+"' failed round-trip test (ser+deser produces Object different from input)";
++            String msg = "serializer '"+serializer.getName()+"' failed round-trip test (ser+deser produces Object different from input), input="+input+", output="+output;
+             //throw new Exception("Error: "+msg);
+             System.err.println("WARN: "+msg);
+         }
+
+File: tpc/src/serializers/avro/specific/MediaContent.java
+Patch:
+@@ -16,7 +16,7 @@ public class MediaContent implements SpecificRecord {
+   private static final Schema _SCHEMA = Schema.parse("{\"type\": \"record\", \"name\": \"MediaContent\", \"namespace\": \"serializers.avro.specific\", \"fields\": [{\"name\": \"image\", \"type\": {\"type\": \"array\", \"items\": {\"type\": \"record\", \"name\": \"Image\", \"fields\": [{\"name\": \"uri\", \"type\": \"string\"}, {\"name\": \"title\", \"type\": \"string\"}, {\"name\": \"width\", \"type\": \"int\"}, {\"name\": \"height\", \"type\": \"int\"}, {\"name\": \"size\", \"type\": \"int\"}]}}}, {\"name\": \"media\", \"type\": {\"type\": \"record\", \"name\": \"Media\", \"fields\": [{\"name\": \"uri\", \"type\": \"string\"}, {\"name\": \"title\", \"type\": \"string\"}, {\"name\": \"width\", \"type\": \"int\"}, {\"name\": \"height\", \"type\": \"int\"}, {\"name\": \"format\", \"type\": \"string\"}, {\"name\": \"duration\", \"type\": \"long\"}, {\"name\": \"size\", \"type\": \"long\"}, {\"name\": \"bitrate\", \"type\": \"int\"}, {\"name\": \"person\", \"type\": {\"type\": \"array\", \"items\": \"string\"}}, {\"name\": \"player\", \"type\": \"int\"}, {\"name\": \"copyright\", \"type\": \"string\"}]}}]}");
+   public GenericArray<Image> image;
+   public Media media;
+-  public Schema schema() { return _SCHEMA; }
++  public Schema getSchema() { return _SCHEMA; }
+   public Object get(int _field) {
+     switch (_field) {
+     case 0: return image;
+@@ -63,7 +63,7 @@ class Image implements SpecificRecord {
+     public Integer width;
+     public Integer height;
+     public Integer size;
+-    public Schema schema() { return _SCHEMA; }
++    public Schema getSchema() { return _SCHEMA; }
+     public Object get(int _field) {
+       switch (_field) {
+       case 0: return uri;
+@@ -134,7 +134,7 @@ class Media implements SpecificRecord {
+     public GenericArray<Utf8> person;
+     public Integer player;
+     public Utf8 copyright;
+-    public Schema schema() { return _SCHEMA; }
++    public Schema getSchema() { return _SCHEMA; }
+     public Object get(int _field) {
+       switch (_field) {
+       case 0: return uri;
+
+File: tpc/src/serializers/StdMediaSerializer.java
+Patch:
+@@ -71,8 +71,8 @@ public final MediaContent create() throws Exception
+         media.addToPerson("Bill Gates");
+         media.addToPerson("Steve Jobs");
+         MediaContent content = new MediaContent(media);
+-        content.addImage(new Image(0, "Javaone Keynote", "A", 0, Image.Size.LARGE));
+-        content.addImage(new Image(0, "Javaone Keynote", "B", 0, Image.Size.SMALL));
++        content.addImage(new Image(0, "Javaone Keynote", "http://javaone.com/keynote_large.jpg", 0, Image.Size.LARGE));
++        content.addImage(new Image(0, "Javaone Keynote", "http://javaone.com/keynote_thumbnail.jpg", 0, Image.Size.SMALL));
+         return content;
+     }
+ }
+
+File: tpc/src/serializers/ThriftSerializer.java
+Patch:
+@@ -55,7 +55,7 @@ public MediaContent create()
+     image1.setSize(Size.LARGE);
+     image1.setTitle("Javaone Keynote");
+ 
+-    Image image2 = new Image("http://javaone.com/keynote_thumbnail.jpg", "Javaone Keynote", -1, -1, Size.SMALL);
++    Image image2 = new Image("http://javaone.com/keynote_thumbnail.jpg", "Javaone Keynote", 0, 0, Size.SMALL);
+ 
+     MediaContent content = new MediaContent();
+     content.setMedia(media);
+
+File: tpc/src/serializers/java/MediaContent.java
+Patch:
+@@ -23,6 +23,8 @@ public void addImage (Image image)
+     }
+     _images.add(image);
+   }
++
++  public int imageCount() { return _images.size(); }
+   
+   public Image getImage (int i)
+   {
+
+File: tpc/src/serializers/JavaExtSerializer.java
+Patch:
+@@ -42,7 +42,7 @@ public MediaContent create()
+ 
+     public byte[] serialize(MediaContent content) throws IOException,
+          Exception
+-  {
++    {
+     ByteArrayOutputStream baos = new ByteArrayOutputStream(expectedSize);
+     ObjectOutputStream oos = new ObjectOutputStream(baos);
+     oos.writeObject(content);
+
+File: tpc/src/serializers/BenchmarkRunner.java
+Patch:
+@@ -9,8 +9,6 @@ public class BenchmarkRunner
+   public final static int ITERATIONS = 2000;
+   public final static int TRIALS = 20;
+ 
+-    public final static int CREATE_ITERATIONS = ITERATIONS * 10;
+-
+     /**
+      * Number of milliseconds to warm up for each operation type for
+      * each serializer. Let's start with 3 seconds.
+@@ -142,7 +140,7 @@ private void start () throws Exception
+         doGc();
+         double timeCreate = Double.MAX_VALUE;
+         for(int i = 0; i < TRIALS; i++)
+-            timeCreate = Math.min(timeCreate, createObjects(serializer, CREATE_ITERATIONS));
++            timeCreate = Math.min(timeCreate, createObjects(serializer, ITERATIONS));
+ 
+         warmSerialization(serializer);
+         doGc();
+
+File: tpc/src/serializers/extjava/Image.java
+Patch:
+@@ -84,7 +84,6 @@ public void setSize(Size size)
+     this._size = size;
+   }
+ 
+-  @Override
+   public void readExternal(ObjectInput in) throws IOException,
+       ClassNotFoundException
+   {
+@@ -94,7 +93,6 @@ public void readExternal(ObjectInput in) throws IOException,
+     _size = Size.values()[in.readByte()];
+   }
+ 
+-  @Override
+   public void writeExternal(ObjectOutput out) throws IOException
+   {
+     out.writeObject(_title);
+
+File: tpc/src/serializers/extjava/Media.java
+Patch:
+@@ -168,7 +168,6 @@ public void setCopyright(String copyright)
+     _copyright = copyright;
+   }
+ 
+-  @Override
+   public void readExternal(ObjectInput in) throws IOException,
+       ClassNotFoundException
+   {
+@@ -193,7 +192,6 @@ public void readExternal(ObjectInput in) throws IOException,
+     }
+   }
+ 
+-  @Override
+   public void writeExternal(ObjectOutput out) throws IOException
+   {
+     out.writeByte(_player.ordinal());
+
+File: tpc/src/serializers/extjava/MediaContent.java
+Patch:
+@@ -41,7 +41,6 @@ public Media getMedia()
+     return _media;
+   }
+ 
+-  @Override
+   public void readExternal(ObjectInput in) throws IOException,
+       ClassNotFoundException
+   {
+@@ -54,7 +53,6 @@ public void readExternal(ObjectInput in) throws IOException,
+     }
+   }
+ 
+-  @Override
+   public void writeExternal(ObjectOutput out) throws IOException
+   {
+     out.writeObject(_media);
+

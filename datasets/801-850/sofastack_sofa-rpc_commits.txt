@@ -1,0 +1,4395 @@
+File: core/api/src/main/java/com/alipay/sofa/rpc/common/RpcOptions.java
+Patch:
+@@ -419,6 +419,7 @@ public class RpcOptions {
+      * 默认 grpc maxInboundMessageSize大小
+      */
+     public static final String TRANSPORT_GRPC_MAX_INBOUND_MESSAGE_SIZE  = "transport.grpc.maxInboundMessageSize";
++
+     /**
+      * 最大IO的buffer大小
+      */
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/MethodConfig.java
+Patch:
+@@ -137,7 +137,7 @@ public MethodConfig setParameters(Map<String, String> parameters) {
+      * @return the timeout
+      */
+     public Integer getTimeout() {
+-        return timeout;
++        return timeout == null ? 0 : timeout;
+     }
+ 
+     /**
+
+File: core/api/src/test/java/com/alipay/sofa/rpc/filter/FilterChainTest.java
+Patch:
+@@ -25,7 +25,6 @@
+ import org.junit.Test;
+ 
+ import java.util.ArrayList;
+-import java.util.Arrays;
+ 
+ /**
+  *
+@@ -38,12 +37,10 @@ public class FilterChainTest {
+     public void buildProviderChain() {
+ 
+         ProviderConfig providerConfig = new ProviderConfig();
+-        providerConfig.setFilter(Arrays.asList("testChainFilter0", "-testChainFilter8"));
+         providerConfig.setInterfaceId(Serializer.class.getName());
+ 
+         ConsumerConfig consumerConfig = new ConsumerConfig();
+         ArrayList<Filter> list = new ArrayList<Filter>();
+-        consumerConfig.setFilter(Arrays.asList("testChainFilter0", "-testChainFilter8"));
+         list.add(new TestChainFilter1());
+         list.add(new TestChainFilter2());
+         list.add(new TestChainFilter3());
+
+File: remoting/remoting-triple/src/test/java/com/alipay/sofa/rpc/server/triple/GenericServiceImplTest.java
+Patch:
+@@ -27,7 +27,7 @@
+ import com.alipay.sofa.rpc.server.ProviderProxyInvoker;
+ import com.alipay.sofa.rpc.tracer.sofatracer.TracingContextKey;
+ import com.alipay.sofa.rpc.transport.ByteArrayWrapperByteBuf;
+-import com.alipay.sofa.rpc.transport.triple.TripleClientInvoker;
++import com.alipay.sofa.rpc.utils.SofaProtoUtils;
+ import io.grpc.Context;
+ import org.junit.Assert;
+ import org.junit.Test;
+@@ -136,7 +136,8 @@ private Object getReturnValue(Method method) {
+     private Request buildRequest(Method method, Object[] args) {
+         Class<?>[] parameterTypes = method.getParameterTypes();
+         SofaRequest sofaRequest = MessageBuilder.buildSofaRequest(HelloService.class, method, parameterTypes, args);
+-        Request request = TripleClientInvoker.getRequest(sofaRequest, serialization, serializer);
++        Request request = SofaProtoUtils.buildRequest(sofaRequest.getMethodArgSigs(), sofaRequest.getMethodArgs(),
++            serialization, serializer, 0);
+         Context context = Context.current().withValue(TracingContextKey.getKeySofaRequest(), sofaRequest);
+         context.attach();
+         return request;
+
+File: remoting/remoting-bolt/src/main/java/com/alipay/sofa/rpc/codec/bolt/SofaRpcSerialization.java
+Patch:
+@@ -312,6 +312,9 @@ protected void parseRequestHeader(Map<String, String> headerMap, Object sofaRequ
+         if (sofaRequest instanceof SofaRequest) {
+             // 处理 tracer
+             parseRequestHeader(RemotingConstants.RPC_TRACE_NAME, headerMap, (SofaRequest) sofaRequest);
++            if (RpcInvokeContext.isBaggageEnable()) {
++                parseRequestHeader(RemotingConstants.RPC_REQUEST_BAGGAGE, headerMap, (SofaRequest) sofaRequest);
++            }
+             Map<String, Object> requestProps = ((SofaRequest) sofaRequest).getRequestProps();
+             if (requestProps == null) {
+                 for (Map.Entry<String, String> entry : headerMap.entrySet()) {
+
+File: bootstrap/bootstrap-api/src/main/java/com/alipay/sofa/rpc/bootstrap/DefaultClientProxyInvoker.java
+Patch:
+@@ -133,6 +133,7 @@ protected void decorateRequest(SofaRequest request) {
+         // 额外属性通过HEAD传递给服务端
+         request.addRequestProp(RemotingConstants.HEAD_APP_NAME, consumerConfig.getAppName());
+         request.addRequestProp(RemotingConstants.HEAD_PROTOCOL, consumerConfig.getProtocol());
++        request.addRequestProp(RemotingConstants.HEAD_INVOKE_TYPE, request.getInvokeType());
+ 
+         customRequest(request, internalContext);
+ 
+
+File: remoting/remoting-bolt/src/main/java/com/alipay/sofa/rpc/server/bolt/BoltServerProcessor.java
+Patch:
+@@ -332,7 +332,7 @@ public String interest() {
+ 
+     @Override
+     public Executor getExecutor() {
+-        return boltServer.getBizThreadPool();
++        return boltServer.getBizExecutor();
+     }
+ 
+     @Override
+@@ -361,7 +361,7 @@ public Executor select(String requestClass, Object requestHeader) {
+                     if (service != null) {
+                         UserThreadPool threadPool = UserThreadPoolManager.getUserThread(service);
+                         if (threadPool != null) {
+-                            Executor executor = threadPool.getExecutor();
++                            Executor executor = threadPool.getUserExecutor();
+                             if (executor != null) {
+                                 // 存在自定义线程池，且不为空
+                                 return executor;
+
+File: bootstrap/bootstrap-dubbo/src/main/java/com/alipay/sofa/rpc/bootstrap/dubbo/DubboProviderBootstrap.java
+Patch:
+@@ -16,8 +16,8 @@
+  */
+ package com.alipay.sofa.rpc.bootstrap.dubbo;
+ 
+-import com.alibaba.dubbo.config.ProtocolConfig;
+-import com.alibaba.dubbo.config.ServiceConfig;
++import org.apache.dubbo.config.ProtocolConfig;
++import org.apache.dubbo.config.ServiceConfig;
+ import com.alipay.sofa.rpc.bootstrap.ProviderBootstrap;
+ import com.alipay.sofa.rpc.common.RpcConstants;
+ import com.alipay.sofa.rpc.common.Version;
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/common/Version.java
+Patch:
+@@ -37,6 +37,6 @@ public final class Version {
+     /**
+      * 当前Build版本，每次发布修改
+      */
+-    public static final String BUILD_VERSION = "5.11.0_20230720235253";
++    public static final String BUILD_VERSION = "5.11.0_20230828164355";
+ 
+ }
+
+File: log-common-tools/src/main/java/com/alipay/sofa/rpc/log/factory/RpcLoggerFactory.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.alipay.sofa.rpc.log.factory;
+ 
+ import com.alipay.sofa.common.log.LoggerSpaceManager;
+-import com.alipay.sofa.common.log.SpaceId;
++import com.alipay.sofa.common.space.SpaceId;
+ 
+ import java.util.HashMap;
+ import java.util.Map;
+
+File: registry/registry-local/src/main/java/com/alipay/sofa/rpc/registry/local/DomainRegistry.java
+Patch:
+@@ -118,7 +118,7 @@ protected void refreshDomain() {
+         }
+ 
+         for (String directUrl : keySet) {
+-            ProviderInfo providerInfo = ProviderHelper.toProviderInfo(directUrl);
++            ProviderInfo providerInfo = convertToProviderInfo(directUrl);
+             List<ProviderInfo> result = directUrl2IpUrl(providerInfo, domainCache.get(directUrl));
+             domainCache.put(directUrl, result);
+         }
+
+File: registry/registry-nacos/src/test/java/com/alipay/sofa/rpc/registry/nacos/base/BaseNacosTest.java
+Patch:
+@@ -60,7 +60,7 @@ public static void adAfterClass() {
+     @Before
+     public void setup() {
+         //see https://nacos.io/zh-cn/docs/2.0.0-compatibility.html
+-        nacosProcess = NacosStarterBuilder.nacosStarter().withServerPort(8848).withNacosVersion("2.0.3").build()
++        nacosProcess = NacosStarterBuilder.nacosStarter().withServerPort(8848).withNacosVersion("2.2.3").build()
+             .start();
+     }
+ 
+
+File: registry/registry-mesh/src/test/java/com/alipay/sofa/rpc/registry/mesh/MeshApiClientTest.java
+Patch:
+@@ -57,7 +57,7 @@ public void testApplicationInfo() {
+     public void before() {
+ 
+         httpMockServer = new HttpMockServer();
+-        meshApiClient = new MeshApiClient("http://localhost:7654");
++        meshApiClient = new MeshApiClient("http://127.0.0.1:7654");
+ 
+         httpMockServer.initSever(7654);
+         ApplicationInfoResult applicationInfoResult = new ApplicationInfoResult();
+
+File: registry/registry-mesh/src/test/java/com/alipay/sofa/rpc/registry/mesh/MeshRegistryTest.java
+Patch:
+@@ -95,7 +95,7 @@ public void setUp() {
+             .setProtocol("mesh")
+             .setSubscribe(true)
+             .setRegister(true)
+-            .setAddress("http://localhost:7654");
++            .setAddress("http://127.0.0.1:7654");
+ 
+         registry = (MeshRegistry) RegistryFactory.getRegistry(registryConfig);
+         registry.init();
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/baggage/BaggageAsyncChainTest.java
+Patch:
+@@ -71,7 +71,7 @@ public void doTest() throws Exception {
+         referenceBeanC.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanC.setInterfaceId(SampleService.class.getName());
+         referenceBeanC.setUniqueId("C5");
+-        referenceBeanC.setDirectUrl("localhost:12299");
++        referenceBeanC.setDirectUrl("127.0.0.1:12299");
+         referenceBeanC.setTimeout(1000);
+         MethodConfig methodConfigC = new MethodConfig()
+             .setName("hello")
+@@ -84,7 +84,7 @@ public void doTest() throws Exception {
+         referenceBeanD.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanD.setInterfaceId(SampleService.class.getName());
+         referenceBeanD.setUniqueId("D5");
+-        referenceBeanD.setDirectUrl("localhost:12299?p=1&v=4.0");
++        referenceBeanD.setDirectUrl("127.0.0.1:12299?p=1&v=4.0");
+         referenceBeanD.setTimeout(1000);
+         SampleService sampleServiceD = (SampleService) referenceBeanD.refer();
+ 
+@@ -107,7 +107,7 @@ public void doTest() throws Exception {
+         referenceBeanA.setApplication(new ApplicationConfig().setAppName("AAA"));
+         referenceBeanA.setUniqueId("B5");
+         referenceBeanA.setInterfaceId(SampleService.class.getName());
+-        referenceBeanA.setDirectUrl("localhost:12299");
++        referenceBeanA.setDirectUrl("127.0.0.1:12299");
+         referenceBeanA.setTimeout(3000);
+         MethodConfig methodConfigA = new MethodConfig()
+             .setName("hello")
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/baggage/BaggageCallbackTest.java
+Patch:
+@@ -72,7 +72,7 @@ public void doTest() throws Exception {
+         referenceBeanC.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanC.setInterfaceId(SampleService.class.getName());
+         referenceBeanC.setUniqueId("C3");
+-        referenceBeanC.setDirectUrl("localhost:12299");
++        referenceBeanC.setDirectUrl("127.0.0.1:12299");
+         referenceBeanC.setTimeout(1000);
+         MethodConfig methodConfigC = new MethodConfig()
+             .setName("hello")
+@@ -85,7 +85,7 @@ public void doTest() throws Exception {
+         referenceBeanD.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanD.setInterfaceId(SampleService.class.getName());
+         referenceBeanD.setUniqueId("D3");
+-        referenceBeanD.setDirectUrl("localhost:12299?p=1&v=4.0");
++        referenceBeanD.setDirectUrl("127.0.0.1:12299?p=1&v=4.0");
+         referenceBeanD.setTimeout(1000);
+         MethodConfig methodConfigD = new MethodConfig()
+             .setName("hello")
+@@ -112,7 +112,7 @@ public void doTest() throws Exception {
+         referenceBeanA.setApplication(new ApplicationConfig().setAppName("AAA"));
+         referenceBeanA.setUniqueId("B3");
+         referenceBeanA.setInterfaceId(SampleService.class.getName());
+-        referenceBeanA.setDirectUrl("localhost:12299");
++        referenceBeanA.setDirectUrl("127.0.0.1:12299");
+         referenceBeanA.setTimeout(3000);
+         MethodConfig methodConfigA = new MethodConfig()
+             .setName("hello")
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/baggage/BaggageFutureTest.java
+Patch:
+@@ -66,7 +66,7 @@ public void doTest() throws Exception {
+         referenceBeanC.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanC.setInterfaceId(SampleService.class.getName());
+         referenceBeanC.setUniqueId("C2");
+-        referenceBeanC.setDirectUrl("localhost:12299");
++        referenceBeanC.setDirectUrl("127.0.0.1:12299");
+         referenceBeanC.setTimeout(1000);
+         MethodConfig methodConfigC = new MethodConfig()
+             .setName("hello")
+@@ -79,7 +79,7 @@ public void doTest() throws Exception {
+         referenceBeanD.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanD.setInterfaceId(SampleService.class.getName());
+         referenceBeanD.setUniqueId("D2");
+-        referenceBeanD.setDirectUrl("localhost:12299?p=1&v=4.0");
++        referenceBeanD.setDirectUrl("127.0.0.1:12299?p=1&v=4.0");
+         referenceBeanD.setTimeout(1000);
+         MethodConfig methodConfigD = new MethodConfig()
+             .setName("hello")
+@@ -103,7 +103,7 @@ public void doTest() throws Exception {
+         referenceBeanA.setApplication(new ApplicationConfig().setAppName("AAA"));
+         referenceBeanA.setUniqueId("B2");
+         referenceBeanA.setInterfaceId(SampleService.class.getName());
+-        referenceBeanA.setDirectUrl("localhost:12299");
++        referenceBeanA.setDirectUrl("127.0.0.1:12299");
+         referenceBeanA.setTimeout(3000);
+         MethodConfig methodConfigA = new MethodConfig()
+             .setName("hello")
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/baggage/BaggageOnewayTest.java
+Patch:
+@@ -65,7 +65,7 @@ void doTest() {
+         referenceBeanC.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanC.setInterfaceId(SampleService.class.getName());
+         referenceBeanC.setUniqueId("C4");
+-        referenceBeanC.setDirectUrl("localhost:12299");
++        referenceBeanC.setDirectUrl("127.0.0.1:12299");
+         referenceBeanC.setTimeout(1000);
+         SampleService sampleServiceC = (SampleService) referenceBeanC.refer();
+ 
+@@ -74,7 +74,7 @@ void doTest() {
+         referenceBeanD.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanD.setInterfaceId(SampleService.class.getName());
+         referenceBeanD.setUniqueId("D4");
+-        referenceBeanD.setDirectUrl("localhost:12299?p=1&v=4.0");
++        referenceBeanD.setDirectUrl("127.0.0.1:12299?p=1&v=4.0");
+         referenceBeanD.setTimeout(1000);
+         SampleService sampleServiceD = (SampleService) referenceBeanD.refer();
+ 
+@@ -94,7 +94,7 @@ void doTest() {
+         referenceBeanA.setApplication(new ApplicationConfig().setAppName("AAA"));
+         referenceBeanA.setUniqueId("B4");
+         referenceBeanA.setInterfaceId(SampleService.class.getName());
+-        referenceBeanA.setDirectUrl("localhost:12299");
++        referenceBeanA.setDirectUrl("127.0.0.1:12299");
+         referenceBeanA.setTimeout(3000);
+         MethodConfig methodConfigA = new MethodConfig()
+             .setName("hello")
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/baggage/BaggageSyncTest.java
+Patch:
+@@ -62,7 +62,7 @@ void doTest() {
+         referenceBeanC.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanC.setInterfaceId(SampleService.class.getName());
+         referenceBeanC.setUniqueId("C1");
+-        referenceBeanC.setDirectUrl("localhost:12299");
++        referenceBeanC.setDirectUrl("127.0.0.1:12299");
+         referenceBeanC.setTimeout(1000);
+         SampleService sampleServiceC = (SampleService) referenceBeanC.refer();
+ 
+@@ -71,7 +71,7 @@ void doTest() {
+         referenceBeanD.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanD.setInterfaceId(SampleService.class.getName());
+         referenceBeanD.setUniqueId("D1");
+-        referenceBeanD.setDirectUrl("localhost:12299?p=1&v=4.0");
++        referenceBeanD.setDirectUrl("127.0.0.1:12299?p=1&v=4.0");
+         referenceBeanD.setTimeout(1000);
+         SampleService sampleServiceD = (SampleService) referenceBeanD.refer();
+ 
+@@ -91,7 +91,7 @@ void doTest() {
+         referenceBeanA.setApplication(new ApplicationConfig().setAppName("AAA"));
+         referenceBeanA.setUniqueId("B1");
+         referenceBeanA.setInterfaceId(SampleService.class.getName());
+-        referenceBeanA.setDirectUrl("localhost:12299");
++        referenceBeanA.setDirectUrl("127.0.0.1:12299");
+         referenceBeanA.setTimeout(3000);
+ 
+         SampleService service = (SampleService) referenceBeanA.refer();
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/baggage/BoltProtobufBaggageSyncTest.java
+Patch:
+@@ -65,7 +65,7 @@ void doTest() {
+         referenceBeanC.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanC.setInterfaceId(SampleService.class.getName());
+         referenceBeanC.setUniqueId("C1");
+-        referenceBeanC.setDirectUrl("localhost:12299");
++        referenceBeanC.setDirectUrl("127.0.0.1:12299");
+         referenceBeanC.setSerialization("protobuf");
+         referenceBeanC.setTimeout(1000);
+         SampleService sampleServiceC = (SampleService) referenceBeanC.refer();
+@@ -75,7 +75,7 @@ void doTest() {
+         referenceBeanD.setApplication(new ApplicationConfig().setAppName("BBB"));
+         referenceBeanD.setInterfaceId(SampleService.class.getName());
+         referenceBeanD.setUniqueId("D1");
+-        referenceBeanD.setDirectUrl("localhost:12299?p=1&v=4.0");
++        referenceBeanD.setDirectUrl("127.0.0.1:12299?p=1&v=4.0");
+         referenceBeanD.setSerialization("protobuf");
+         referenceBeanD.setTimeout(1000);
+         SampleService sampleServiceD = (SampleService) referenceBeanD.refer();
+@@ -96,7 +96,7 @@ void doTest() {
+         referenceBeanA.setApplication(new ApplicationConfig().setAppName("AAA"));
+         referenceBeanA.setUniqueId("B1");
+         referenceBeanA.setInterfaceId(SampleService.class.getName());
+-        referenceBeanA.setDirectUrl("localhost:12299");
++        referenceBeanA.setDirectUrl("127.0.0.1:12299");
+         referenceBeanA.setSerialization("protobuf");
+         referenceBeanA.setTimeout(3000);
+ 
+
+File: core/common/src/main/java/com/alipay/sofa/rpc/common/json/BeanSerializer.java
+Patch:
+@@ -84,7 +84,7 @@ public static Object serialize(Object bean, boolean addType) throws NullPointerE
+             }
+             return array;
+         } else if (bean instanceof Map) {
+-            Map map = (Map) bean;
++            Map map = new LinkedHashMap<>((Map) bean);
+             Iterator itr = map.entrySet().iterator();
+             Map.Entry entry = null;
+             while (itr.hasNext()) {
+@@ -132,7 +132,7 @@ public static Object serialize(Object bean, boolean addType) throws NullPointerE
+             }
+         }
+         if (addType) {
+-            String typeName = beanClass.getCanonicalName();
++            String typeName = beanClass.getName();
+             if (!typeName.startsWith("java.")
+                 && !typeName.startsWith("javax.")
+                 && !typeName.startsWith("sun.")) {
+
+File: example/src/test/java/com/alipay/sofa/rpc/triple/TripleClientRegistryApplication.java
+Patch:
+@@ -44,7 +44,7 @@ public static void main(String[] args) {
+             .setProtocol(RpcConstants.PROTOCOL_TYPE_TRIPLE)
+             //.setRegistry(registryConfig)
+             .setApplication(clientApp)
+-            .setDirectUrl("tri://10.15.232.18:19544")
++            .setDirectUrl("tri://127.0.0.1:50051")
+             .setRegister(false);
+ 
+         SofaGreeterTriple.IGreeter greeterBlockingStub = consumerConfig.refer();
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/triple/TripleHessianInterface.java
+Patch:
+@@ -26,6 +26,8 @@ public interface TripleHessianInterface {
+ 
+     String call1();
+ 
++    String findFlag();
++
+     Response call2(Request request);
+ 
+     boolean testPressureMark(String name);
+
+File: codec/codec-sofa-hessian/src/test/java/com/alipay/sofa/rpc/codec/sofahessian/GenericMultipleClassLoaderSofaSerializerFactoryTest.java
+Patch:
+@@ -38,6 +38,7 @@
+ import java.io.ByteArrayInputStream;
+ import java.io.ByteArrayOutputStream;
+ 
++import static com.alipay.sofa.rpc.codec.sofahessian.serialize.GenericCustomThrowableDeterminerTest.clearCacheDeserializerMap;
+ import static com.alipay.sofa.rpc.codec.sofahessian.serialize.GenericCustomThrowableDeterminerTest.setGenericThrowException;
+ 
+ /**
+@@ -109,6 +110,7 @@ public void testCustomThrowableDeserializerEnabled() throws Exception {
+             Assert.assertEquals("MockError", ((MockError) result).getMessage());
+         } finally {
+             setGenericThrowException(false);
++            clearCacheDeserializerMap();
+         }
+     }
+ }
+\ No newline at end of file
+
+File: codec/codec-sofa-hessian/src/test/java/com/alipay/sofa/rpc/codec/sofahessian/GenericSingleClassLoaderSofaSerializerFactoryTest.java
+Patch:
+@@ -39,6 +39,7 @@
+ import java.io.ByteArrayInputStream;
+ import java.io.ByteArrayOutputStream;
+ 
++import static com.alipay.sofa.rpc.codec.sofahessian.serialize.GenericCustomThrowableDeterminerTest.clearCacheDeserializerMap;
+ import static com.alipay.sofa.rpc.codec.sofahessian.serialize.GenericCustomThrowableDeterminerTest.setGenericThrowException;
+ 
+ /**
+@@ -116,6 +117,7 @@ public void testCustomThrowableDeserializerEnabled() throws Exception {
+             Assert.assertEquals("MockError", ((MockError) result).getMessage());
+         } finally {
+             setGenericThrowException(false);
++            clearCacheDeserializerMap();
+         }
+     }
+ }
+\ No newline at end of file
+
+File: codec/codec-sofa-hessian/src/test/java/com/alipay/sofa/rpc/codec/sofahessian/serialize/SofaResponseHessianSerializerTest.java
+Patch:
+@@ -30,6 +30,7 @@
+ import java.util.HashMap;
+ import java.util.Map;
+ 
++import static com.alipay.sofa.rpc.codec.sofahessian.serialize.GenericCustomThrowableDeterminerTest.clearCacheDeserializerMap;
+ import static com.alipay.sofa.rpc.codec.sofahessian.serialize.GenericCustomThrowableDeterminerTest.setGenericThrowException;
+ 
+ /**
+@@ -89,6 +90,7 @@ public void testCustomThrowableDeserializerEnabled() throws Exception {
+             Assert.assertEquals("MockError", ((MockError) sofaResponse2.getAppResponse()).getMessage());
+         } finally {
+             setGenericThrowException(false);
++            clearCacheDeserializerMap();
+         }
+     }
+ 
+@@ -117,6 +119,7 @@ public void testCustomThrowableDeserializerEnabledForIncompatible() throws Excep
+                             + "found, error: "));
+         } finally {
+             setGenericThrowException(false);
++            clearCacheDeserializerMap();
+         }
+     }
+ 
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/AbstractCluster.java
+Patch:
+@@ -499,7 +499,7 @@ protected ProviderInfo convertToProviderInfo(String targetIP) {
+      * @return 服务端
+      */
+     protected SofaRouteException noAvailableProviderException(String serviceKey) {
+-        return new SofaRouteException(LogCodes.getLog(LogCodes.ERROR_NO_AVAILBLE_PROVIDER, serviceKey));
++        return new SofaRouteException(LogCodes.getLog(LogCodes.ERROR_NO_AVAILABLE_PROVIDER, serviceKey));
+     }
+ 
+     /**
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/AbstractLoadBalancer.java
+Patch:
+@@ -59,7 +59,7 @@ public ProviderInfo select(SofaRequest request, List<ProviderInfo> providerInfos
+      * @return 服务端
+      */
+     protected SofaRouteException noAvailableProviderException(String serviceKey) {
+-        return new SofaRouteException(LogCodes.getLog(LogCodes.ERROR_NO_AVAILBLE_PROVIDER, serviceKey));
++        return new SofaRouteException(LogCodes.getLog(LogCodes.ERROR_NO_AVAILABLE_PROVIDER, serviceKey));
+     }
+ 
+     /**
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/log/LogCodes.java
+Patch:
+@@ -274,7 +274,7 @@ public class LogCodes {
+     public static final String                 ERROR_UNSUPPORT_TYPE                       = "020050016";
+ 
+     // 02006 addressholder
+-    public static final String                 ERROR_NO_AVAILBLE_PROVIDER                 = "020060001";
++    public static final String                 ERROR_NO_AVAILABLE_PROVIDER                = "020060001";
+     public static final String                 LOCALFILEREGISTRY_FAIL_READURL             = "020060002";
+     public static final String                 ERROR_LOAD_ADDRESS_HOLDER                  = "020060003";
+     // 02007 cache
+
+File: remoting/remoting-bolt/src/main/java/com/alipay/sofa/rpc/transport/bolt/ReuseBoltClientConnectionManager.java
+Patch:
+@@ -97,7 +97,7 @@ public Connection getConnection(RpcClient rpcClient, ClientTransportConfig trans
+             try {
+                 connection = rpcClient.getConnection(url, url.getConnectTimeout());
+             } catch (Exception e) {
+-                LOGGER.warn("get connection failed in url," + url);
++                LOGGER.warn("get connection failed in url," + url, e);
+             }
+             if (connection == null) {
+                 return null;
+
+File: fault/fault-tolerance/src/test/java/com/alipay/sofa/rpc/client/aft/FaultBaseServiceTest.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.alipay.sofa.rpc.client.aft;
+ 
++import com.alipay.sofa.rpc.client.ProviderInfo;
+ import com.alipay.sofa.rpc.client.aft.bean.FaultHelloService;
+ import com.alipay.sofa.rpc.client.aft.bean.HelloServiceTimeOutImpl;
+ import com.alipay.sofa.rpc.context.RpcInternalContext;
+@@ -37,6 +38,8 @@ public void beforeMethod() throws Exception {
+         // test reuse client transport
+         consumerConfigNotUse.refer();
+         helloService = consumerConfig.refer();
++        ProviderInfo providerInfo = getProviderInfoByHost(consumerConfig, "127.0.0.1");
++        providerInfo.setWeight(100);
+     }
+ 
+     @After
+
+File: core/common/src/main/java/com/alipay/sofa/rpc/common/cache/ReflectCache.java
+Patch:
+@@ -195,7 +195,7 @@ public static void putMethodCache(String serviceName, Method method) {
+                 cache = old;
+             }
+         }
+-        cache.putIfAbsent(method.getName(), method);
++        cache.put(method.getName(), method);
+     }
+ 
+     /**
+@@ -236,7 +236,7 @@ public static void putMethodSigsCache(String serviceName, String methodName, Str
+                 cacheSigs = old;
+             }
+         }
+-        cacheSigs.putIfAbsent(methodName, argSigs);
++        cacheSigs.put(methodName, argSigs);
+     }
+ 
+     /**
+@@ -289,7 +289,7 @@ public static void putOverloadMethodCache(String serviceName, Method method) {
+         for (Class<?> paramType : method.getParameterTypes()) {
+             mSigs.append(paramType.getName());
+         }
+-        cache.putIfAbsent(mSigs.toString(), method);
++        cache.put(mSigs.toString(), method);
+     }
+ 
+     /**
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/context/RpcInternalContext.java
+Patch:
+@@ -54,7 +54,7 @@ public class RpcInternalContext implements Cloneable {
+     /**
+      * The constant DEQUE_LOCAL.
+      */
+-    private static final ThreadLocal<Deque<RpcInternalContext>> DEQUE_LOCAL       = new TransmittableThreadLocal<Deque<RpcInternalContext>>();
++    private static final ThreadLocal<Deque<RpcInternalContext>> DEQUE_LOCAL       = new ThreadLocal<Deque<RpcInternalContext>>();
+ 
+     /**
+      * 设置上下文
+
+File: codec/codec-jackson/src/main/java/com/alipay/sofa/rpc/codec/jackson/JacksonHelper.java
+Patch:
+@@ -105,7 +105,7 @@ private void loadClassToCache(String key, Class clazz, String methodName) {
+         Method jsonMethod = null;
+         Method[] methods = clazz.getMethods();
+         for (Method method : methods) {
+-            if (methodName.equals(method.getName())) {
++            if (methodName.equals(method.getName()) && !method.isBridge()) {
+                 jsonMethod = method;
+                 break;
+             }
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/AbstractCluster.java
+Patch:
+@@ -732,7 +732,7 @@ public void destroy(DestroyHook hook) {
+             return;
+         }
+         if (hook != null) {
+-            hook.postDestroy();
++            hook.preDestroy();
+         }
+         if (connectionHolder != null) {
+             connectionHolder.destroy(new GracefulDestroyHook());
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/client/RouterChain.java
+Patch:
+@@ -17,7 +17,6 @@
+ package com.alipay.sofa.rpc.client;
+ 
+ import com.alipay.sofa.rpc.bootstrap.ConsumerBootstrap;
+-import com.alipay.sofa.rpc.common.struct.OrderedComparator;
+ import com.alipay.sofa.rpc.common.utils.CommonUtils;
+ import com.alipay.sofa.rpc.common.utils.StringUtils;
+ import com.alipay.sofa.rpc.config.ConsumerConfig;
+@@ -31,6 +30,7 @@
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+ import java.util.ArrayList;
++import java.util.Comparator;
+ import java.util.LinkedList;
+ import java.util.Collections;
+ import java.util.HashSet;
+@@ -165,7 +165,7 @@ public static RouterChain buildConsumerChain(ConsumerBootstrap consumerBootstrap
+         excludes = null; // 不需要了
+         // 按order从小到大排序
+         if (extensionRouters.size() > 1) {
+-            Collections.sort(extensionRouters, new OrderedComparator<ExtensionClass>());
++            extensionRouters.sort(Comparator.comparingInt(ExtensionClass::getOrder));
+         }
+         List<Router> actualRouters = new ArrayList<Router>();
+         for (ExtensionClass<Router> extensionRouter : extensionRouters) {
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/common/RpcConfigs.java
+Patch:
+@@ -19,7 +19,6 @@
+ import com.alipay.sofa.rpc.base.Sortable;
+ import com.alipay.sofa.rpc.common.annotation.JustForTest;
+ import com.alipay.sofa.rpc.common.json.JSON;
+-import com.alipay.sofa.rpc.common.struct.OrderedComparator;
+ import com.alipay.sofa.rpc.common.utils.ClassLoaderUtils;
+ import com.alipay.sofa.rpc.common.utils.CommonUtils;
+ import com.alipay.sofa.rpc.common.utils.CompatibleTypeUtils;
+@@ -32,7 +31,7 @@
+ import java.io.InputStreamReader;
+ import java.net.URL;
+ import java.util.ArrayList;
+-import java.util.Collections;
++import java.util.Comparator;
+ import java.util.Enumeration;
+ import java.util.HashMap;
+ import java.util.List;
+@@ -116,7 +115,7 @@ private static void loadCustom(String fileName) throws IOException {
+                     }
+                 }
+             }
+-            Collections.sort(allFile, new OrderedComparator<CfgFile>()); // 从小到大排下序
++            allFile.sort(Comparator.comparingInt(CfgFile::getOrder));
+             for (CfgFile file : allFile) {
+                 CFG.putAll(file.getMap()); // 顺序加载，越大越后加载
+             }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/filter/FilterChain.java
+Patch:
+@@ -16,7 +16,6 @@
+  */
+ package com.alipay.sofa.rpc.filter;
+ 
+-import com.alipay.sofa.rpc.common.struct.OrderedComparator;
+ import com.alipay.sofa.rpc.common.utils.CommonUtils;
+ import com.alipay.sofa.rpc.common.utils.StringUtils;
+ import com.alipay.sofa.rpc.config.AbstractInterfaceConfig;
+@@ -36,6 +35,7 @@
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+ import java.util.ArrayList;
++import java.util.Comparator;
+ import java.util.LinkedList;
+ import java.util.Collections;
+ import java.util.HashSet;
+@@ -214,7 +214,7 @@ private static List<Filter> selectActualFilters(AbstractInterfaceConfig config,
+         }
+         // 按order从小到大排序
+         if (extensionFilters.size() > 1) {
+-            Collections.sort(extensionFilters, new OrderedComparator<ExtensionClass<Filter>>());
++            extensionFilters.sort(Comparator.comparingInt(ExtensionClass::getOrder));
+         }
+         List<Filter> actualFilters = new ArrayList<Filter>();
+         for (ExtensionClass<Filter> extensionFilter : extensionFilters) {
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/context/BaggageResolver.java
+Patch:
+@@ -23,6 +23,7 @@
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
++import java.util.HashMap;
+ import java.util.Map;
+ 
+ /**
+@@ -47,7 +48,8 @@ public static void carryWithRequest(RpcInvokeContext context, SofaRequest reques
+         if (context != null) {
+             Map<String, String> requestBaggage = context.getAllRequestBaggage();
+             if (CommonUtils.isNotEmpty(requestBaggage)) { // 需要透传
+-                request.addRequestProp(RemotingConstants.RPC_REQUEST_BAGGAGE, requestBaggage);
++                HashMap<String, String> tmp = new HashMap<>(requestBaggage);
++                request.addRequestProp(RemotingConstants.RPC_REQUEST_BAGGAGE, tmp);
+             }
+         }
+     }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/ConsumerConfig.java
+Patch:
+@@ -477,7 +477,7 @@ public String getAddressHolder() {
+      * @param addressHolder the address holder
+      * @return the address holder
+      */
+-    public ConsumerConfig setAddressHolder(String addressHolder) {
++    public ConsumerConfig<T> setAddressHolder(String addressHolder) {
+         this.addressHolder = addressHolder;
+         return this;
+     }
+@@ -677,7 +677,7 @@ public List<String> getRouter() {
+      * @param router the router
+      * @return the router
+      */
+-    public ConsumerConfig setRouter(List<String> router) {
++    public ConsumerConfig<T> setRouter(List<String> router) {
+         this.router = router;
+         return this;
+     }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/ProviderConfig.java
+Patch:
+@@ -446,7 +446,7 @@ public int getTimeout() {
+      * @param timeout the client timeout
+      * @return the client timeout
+      */
+-    public ProviderConfig setTimeout(int timeout) {
++    public ProviderConfig<T> setTimeout(int timeout) {
+         this.timeout = timeout;
+         return this;
+     }
+
+File: core/api/src/test/java/com/alipay/sofa/rpc/client/RouterChainTest.java
+Patch:
+@@ -43,7 +43,7 @@ public void buildProviderChain() {
+         ConsumerConfig config = new ConsumerConfig();
+         config.setBootstrap("test");
+         ArrayList<Router> list = new ArrayList<Router>();
+-        config.setRouter(Arrays.asList("testChainRouter0", "-testChainRouter8"));
++        config.setRouter(Arrays.asList("testChainRouter0", "-testChainRouter8", "notExistChainRouter"));
+         list.add(new TestChainRouter1());
+         list.add(new TestChainRouter2());
+         list.add(new TestChainRouter3());
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/AbstractIdConfig.java
+Patch:
+@@ -24,10 +24,10 @@
+ /**
+  * 默认配置带ID
+  *
+- * @param <S> the sub class of AbstractIdConfig
++ * @param <S> the subclass of AbstractIdConfig
+  * @author <a href=mailto:zhanggeng.zg@antfin.com>GengZhang</a>
+  */
+-public abstract class AbstractIdConfig<S extends AbstractIdConfig> implements Serializable {
++public abstract class AbstractIdConfig<S extends AbstractIdConfig<S>> implements Serializable {
+ 
+     private static final long          serialVersionUID = -1932911135229369183L;
+ 
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/client/ProviderInfo.java
+Patch:
+@@ -19,6 +19,7 @@
+ import com.alipay.sofa.rpc.common.RpcConfigs;
+ import com.alipay.sofa.rpc.common.RpcOptions;
+ import com.alipay.sofa.rpc.common.utils.CommonUtils;
++import com.alipay.sofa.rpc.common.utils.StringUtils;
+ 
+ import java.io.Serializable;
+ import java.util.Map;
+@@ -504,7 +505,7 @@ public String toString() {
+      * @return 属性值
+      */
+     public String getAttr(String key) {
+-        String val = (String) dynamicAttrs.get(key);
++        String val = StringUtils.toString(dynamicAttrs.get(key));
+         return val == null ? staticAttrs.get(key) : val;
+     }
+ }
+
+File: remoting/remoting-http/src/main/java/com/alipay/sofa/rpc/transport/http/AbstractHttpClientHandler.java
+Patch:
+@@ -103,6 +103,7 @@ protected void pickupBaggage(SofaResponse response) {
+                 invokeCtx = RpcInvokeContext.getContext();
+             } else {
+                 RpcInvokeContext.setContext(invokeCtx);
++                invokeCtx = RpcInvokeContext.getContext();
+             }
+             BaggageResolver.pickupFromResponse(invokeCtx, response);
+         }
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/baggage/BAsyncChainSampleServiceImpl.java
+Patch:
+@@ -83,7 +83,7 @@ public void onAppResponse(Object appResponse, String methodName, RequestBase req
+             LOGGER.info("--b2---:" + RpcInvokeContext.getContext());
+             latch.await(5000, TimeUnit.MILLISECONDS); // 模拟Callback更早回来的行为
+             context.putResponseBaggage("respBaggageB_useless2", "在返A之前写后没用"); // 返回写在这里可能没用
+-            LOGGER.info("--b3---:" + RpcInvokeContext.getContext());
++            LOGGER.info("--b5---:" + RpcInvokeContext.getContext());
+         } catch (Exception e) {
+             e.printStackTrace();
+         }
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/baggage/BaggageCallbackTest.java
+Patch:
+@@ -120,7 +120,7 @@ public void doTest() throws Exception {
+         methodConfigA.setOnReturn(new SofaResponseCallback() {
+             @Override
+             public void onAppResponse(Object appResponse, String methodName, RequestBase request) {
+-                Assert.assertEquals(RpcInvokeContext.getContext(), contexts[0]); // 必须和调用线程一致
++                Assert.assertNotSame(RpcInvokeContext.getContext(), contexts[0]);
+                 str[0] = (String) appResponse;
+                 latch[0].countDown();
+             }
+
+File: metrics/metrics-lookout/src/main/java/com/alipay/sofa/rpc/event/LookoutSubscriber.java
+Patch:
+@@ -83,7 +83,6 @@ public void onEvent(Event event) {
+ 
+         } else if (eventClass == ServerStoppedEvent.class) {
+             ServerStoppedEvent serverStartedEvent = (ServerStoppedEvent) event;
+-
+             rpcMetrics.removeThreadPool(serverStartedEvent.getServerConfig());
+         } else if (eventClass == ProviderPubEvent.class) {
+             ProviderPubEvent providerPubEvent = (ProviderPubEvent) event;
+
+File: metrics/metrics-lookout/src/main/java/com/alipay/sofa/rpc/metrics/lookout/RpcLookout.java
+Patch:
+@@ -220,7 +220,7 @@ private Id createMethodConsumerId(RpcClientLookoutModel model) {
+         tags.put("invoke_type", StringUtils.defaultString(model.getInvokeType()));
+         tags.put("target_app", StringUtils.defaultString(model.getTargetApp()));
+ 
+-        return rpcLookoutId.fetchConsumerStatId().withTags(tags);
++        return rpcLookoutId.fetchConsumerStatId(tags);
+     }
+ 
+     /**
+@@ -231,14 +231,13 @@ private Id createMethodConsumerId(RpcClientLookoutModel model) {
+      */
+     public Id createMethodProviderId(RpcServerLookoutModel model) {
+         Map<String, String> tags = new HashMap<String, String>(5);
+-
+         tags.put("app", StringUtils.defaultString(model.getApp()));
+         tags.put("service", StringUtils.defaultString(model.getService()));
+         tags.put("method", StringUtils.defaultString(model.getMethod()));
+         tags.put("protocol", StringUtils.defaultString(model.getProtocol()));
+         tags.put("caller_app", StringUtils.defaultString(model.getCallerApp()));
+ 
+-        return rpcLookoutId.fetchProviderStatId().withTags(tags);
++        return rpcLookoutId.fetchProviderStatId(tags);
+     }
+ 
+     /**
+
+File: tracer/tracer-opentracing-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/LookoutRequestFilter.java
+Patch:
+@@ -60,10 +60,10 @@ public void filter(ContainerRequestContext requestContext) throws IOException {
+             String methodName = resourceMethodInvoker.getMethod().getName();
+ 
+             RpcInternalContext context = RpcInternalContext.getContext();
+-            context.setAttachment(INTERNAL_KEY_PREFIX + RestConstants.REST_SERVICE_KEY, serviceName);
++            context.setAttachment(INTERNAL_KEY_PREFIX + RestConstants.REST_SERVICE_KEY, serviceName + ":1.0");
+             context.setAttachment(INTERNAL_KEY_PREFIX + RestConstants.REST_METHODNAME_KEY, methodName);
+ 
+-            context.setAttachment(RemotingConstants.HEAD_APP_NAME, appName);
++            context.setAttachment(INTERNAL_KEY_PREFIX + RemotingConstants.HEAD_APP_NAME, appName);
+         } catch (Exception e) {
+             logger.error(LogCodes.getLog(LogCodes.ERROR_LOOKOUT_PROCESS), e);
+         }
+
+File: core-impl/filter/src/main/java/com/alipay/sofa/rpc/filter/ConsumerCustomHeaderFilter.java
+Patch:
+@@ -18,7 +18,7 @@
+ 
+ import com.alipay.sofa.common.utils.Ordered;
+ import com.alipay.sofa.rpc.common.utils.CommonUtils;
+-import com.alipay.sofa.rpc.context.RpcInternalContext;
++import com.alipay.sofa.rpc.context.RpcInvokeContext;
+ import com.alipay.sofa.rpc.core.exception.SofaRpcException;
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
+@@ -43,7 +43,7 @@ public SofaResponse invoke(FilterInvoker invoker, SofaRequest request) throws So
+     }
+ 
+     private void setCustomHeader(SofaRequest sofaRequest) {
+-        RpcInternalContext context = RpcInternalContext.getContext();
++        RpcInvokeContext context = RpcInvokeContext.getContext();
+         Map customHeader = context.getCustomHeader();
+         if (CommonUtils.isNotEmpty(customHeader)) {
+             sofaRequest.addRequestProps(customHeader);
+
+File: core-impl/filter/src/test/java/com/alipay/sofa/rpc/filter/CustomHeaderFilterTest.java
+Patch:
+@@ -17,7 +17,7 @@
+ package com.alipay.sofa.rpc.filter;
+ 
+ import com.alipay.sofa.rpc.config.AbstractInterfaceConfig;
+-import com.alipay.sofa.rpc.context.RpcInternalContext;
++import com.alipay.sofa.rpc.context.RpcInvokeContext;
+ import com.alipay.sofa.rpc.core.exception.SofaRpcException;
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
+@@ -34,11 +34,11 @@ public class CustomHeaderFilterTest {
+ 
+     @Test
+     public void testCustomFilter() {
+-        RpcInternalContext.getContext().addCustomHeader("a", "b");
++        RpcInvokeContext.getContext().addCustomHeader("a", "b");
+         ConsumerCustomHeaderFilter filter = new ConsumerCustomHeaderFilter();
+         SofaRequest request = new SofaRequest();
+         filter.invoke(new EmptyInvoker(null), request);
+-        Assert.assertTrue(RpcInternalContext.getContext().getCustomHeader().isEmpty());
++        Assert.assertTrue(RpcInvokeContext.getContext().getCustomHeader().isEmpty());
+         Assert.assertEquals("b", request.getRequestProp("a"));
+     }
+ 
+
+File: remoting/remoting-triple/src/main/java/com/alipay/sofa/rpc/utils/SofaProtoUtils.java
+Patch:
+@@ -16,7 +16,6 @@
+  */
+ package com.alipay.sofa.rpc.utils;
+ 
+-import com.alipay.sofa.rpc.client.ProviderInfo;
+ import com.alipay.sofa.rpc.common.utils.ClassUtils;
+ import com.alipay.sofa.rpc.config.ConsumerConfig;
+ import io.grpc.BindableService;
+@@ -52,8 +51,7 @@ public static boolean checkIfUseGeneric(ConsumerConfig consumerConfig) {
+         Class enclosingClass = proxyClass.getEnclosingClass();
+         if (enclosingClass != null) {
+             try {
+-                enclosingClass.getDeclaredMethod("getSofaStub", Channel.class, CallOptions.class,
+-                    ProviderInfo.class, ConsumerConfig.class, int.class);
++                enclosingClass.getDeclaredMethod("getSofaStub", Channel.class, CallOptions.class, int.class);
+                 return false;
+             } catch (NoSuchMethodException e) {
+                 //ignore
+
+File: remoting/remoting-triple/src/main/java/com/alipay/sofa/rpc/server/triple/GenericServiceImpl.java
+Patch:
+@@ -67,6 +67,7 @@ public void generic(Request request, StreamObserver<Response> responseObserver)
+             Object result = declaredMethod.invoke(ref, getInvokeArgs(request, argTypes, serializer));
+ 
+             Response.Builder builder = Response.newBuilder();
++            builder.setSerializeType(request.getSerializeType());
+             builder.setType(declaredMethod.getReturnType().getName());
+             builder.setData(ByteString.copyFrom(serializer.encode(result, null).array()));
+             Response build = builder.build();
+@@ -94,9 +95,9 @@ private Object[] getInvokeArgs(Request request, Class[] argTypes, Serializer ser
+         Object[] args = new Object[argsList.size()];
+ 
+         for (int i = 0; i < argsList.size(); i++) {
+-            Object arg = serializer.decode(new ByteArrayWrapperByteBuf(argsList.get(i).toByteArray()), argTypes[i],
++            byte[] data = argsList.get(i).toByteArray();
++            args[i] = serializer.decode(new ByteArrayWrapperByteBuf(data), argTypes[i],
+                 null);
+-            args[i] = arg;
+         }
+         return args;
+     }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/client/ProviderInfo.java
+Patch:
+@@ -375,7 +375,8 @@ public ProviderInfo setRpcVersion(int rpcVersion) {
+      */
+     public ProviderStatus getStatus() {
+         if (status == ProviderStatus.WARMING_UP) {
+-            if (System.currentTimeMillis() > (Long) getDynamicAttr(ProviderInfoAttrs.ATTR_WARM_UP_END_TIME)) {
++            Object dynamicAttr = getDynamicAttr(ProviderInfoAttrs.ATTR_WARM_UP_END_TIME);
++            if (dynamicAttr != null && System.currentTimeMillis() > (Long) dynamicAttr) {
+                 // 如果已经过了预热时间，恢复为正常
+                 status = ProviderStatus.AVAILABLE;
+                 setDynamicAttr(ProviderInfoAttrs.ATTR_WARM_UP_END_TIME, null);
+
+File: registry/registry-consul/src/main/java/com/alipay/sofa/rpc/registry/consul/ConsulRegistry.java
+Patch:
+@@ -140,7 +140,7 @@ public void destroy() {
+ 
+     @Override
+     public void destroy(DestroyHook hook) {
+-        hook.postDestroy();
++        hook.preDestroy();
+         destroy();
+         hook.postDestroy();
+     }
+
+File: remoting/remoting-bolt/src/main/java/com/alipay/sofa/rpc/server/bolt/BoltServerProcessor.java
+Patch:
+@@ -370,6 +370,6 @@ public boolean processInIOThread() {
+             return false;
+         }
+         String processInIOThread = parameters.get(RpcConstants.PROCESS_IN_IOTHREAD);
+-        return Boolean.parseBoolean(parameters.get(processInIOThread));
++        return Boolean.parseBoolean(processInIOThread);
+     }
+ }
+
+File: codec/codec-jackson/src/test/java/com/alipay/sofa/rpc/codec/jackson/model/DemoService.java
+Patch:
+@@ -29,6 +29,6 @@ public interface DemoService {
+ 
+     public DemoResponse say2(DemoRequest demoRequest, Map<String, String> ctx, int id);
+ 
+-    public DemoResponse say3(List<DemoRequest> list);
++    public List<DemoResponse> say3(List<DemoRequest> list);
+ 
+ }
+\ No newline at end of file
+
+File: codec/codec-jackson/src/test/java/com/alipay/sofa/rpc/codec/jackson/model/DemoService.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.alipay.sofa.rpc.codec.jackson.model;
+ 
++import java.util.List;
+ import java.util.Map;
+ 
+ /**
+@@ -28,4 +29,6 @@ public interface DemoService {
+ 
+     public DemoResponse say2(DemoRequest demoRequest, Map<String, String> ctx, int id);
+ 
++    public DemoResponse say3(List<DemoRequest> list);
++
+ }
+\ No newline at end of file
+
+File: remoting/remoting-triple/src/main/java/com/alipay/sofa/rpc/interceptor/ClientHeaderClientInterceptor.java
+Patch:
+@@ -72,7 +72,9 @@ public void start(Listener<RespT> responseListener, Metadata requestHeader) {
+                     @Override
+                     public void onHeaders(Metadata responseHeader) {
+                         // 客户端收到响应Header
+-                        LOGGER.info("[3]response header received from server:{}", responseHeader);
++                        if (RpcRunningState.isDebugMode()) {
++                            LOGGER.info("[3]response header received from server:{}", responseHeader);
++                        }
+                         super.onHeaders(responseHeader);
+                     }
+ 
+
+File: remoting/remoting-triple/src/main/java/com/alipay/sofa/rpc/tracer/sofatracer/TripleTracerAdapter.java
+Patch:
+@@ -128,7 +128,7 @@ public static void beforeSend(SofaRequest sofaRequest, ConsumerConfig consumerCo
+         }
+ 
+         final String target = consumerConfig.getParameter("interworking.target");
+-        if (StringUtils.isNotBlank(source)) {
++        if (StringUtils.isNotBlank(target)) {
+             header.put(TripleHeadKeys.HEAD_KEY_TARGET_TENANTID.name(),
+                     target);
+         }
+
+File: core-impl/transport/src/main/java/com/alipay/sofa/rpc/transport/AbstractProxyClientTransport.java
+Patch:
+@@ -80,6 +80,8 @@ public AbstractProxyClientTransport(ClientTransportConfig transportConfig) {
+         ProviderInfo provider = transportConfig.getProviderInfo();
+         try {
+             proxy = buildProxy(transportConfig);
++        } catch (SofaRpcRuntimeException e) {
++            throw e;
+         } catch (Exception e) {
+             throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_BUILD_PROXY), e);
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/client/AddressHolderFactory.java
+Patch:
+@@ -46,6 +46,8 @@ public static AddressHolder getAddressHolder(ConsumerBootstrap consumerBootstrap
+                 throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_LOAD_ADDRESS_HOLDER, addressHolder));
+             }
+             return ext.getExtInstance(new Class[] { ConsumerBootstrap.class }, new Object[] { consumerBootstrap });
++        } catch (SofaRpcRuntimeException e) {
++            throw e;
+         } catch (Throwable e) {
+             throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_LOAD_ADDRESS_HOLDER, addressHolder), e);
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/client/ClusterFactory.java
+Patch:
+@@ -49,6 +49,8 @@ public static Cluster getCluster(ConsumerBootstrap consumerBootstrap) {
+             }
+             return ext.getExtInstance(new Class[] { ConsumerBootstrap.class },
+                 new Object[] { consumerBootstrap });
++        } catch (SofaRpcRuntimeException e) {
++            throw e;
+         } catch (Throwable e) {
+             throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_LOAD_CLUSTER, cluster), e);
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/client/ConnectionHolderFactory.java
+Patch:
+@@ -46,6 +46,8 @@ public static ConnectionHolder getConnectionHolder(ConsumerBootstrap consumerBoo
+                     connectionHolder));
+             }
+             return ext.getExtInstance(new Class[] { ConsumerBootstrap.class }, new Object[] { consumerBootstrap });
++        } catch (SofaRpcRuntimeException e) {
++            throw e;
+         } catch (Throwable e) {
+             throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_LOAD_CONNECTION_HOLDER, connectionHolder),
+                 e);
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/client/LoadBalancerFactory.java
+Patch:
+@@ -46,6 +46,8 @@ public static LoadBalancer getLoadBalancer(ConsumerBootstrap consumerBootstrap)
+                 throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_LOAD_LOAD_BALANCER, loadBalancer));
+             }
+             return ext.getExtInstance(new Class[] { ConsumerBootstrap.class }, new Object[] { consumerBootstrap });
++        } catch (SofaRpcRuntimeException e) {
++            throw e;
+         } catch (Throwable e) {
+             throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_LOAD_LOAD_BALANCER, loadBalancer), e);
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/ProviderConfig.java
+Patch:
+@@ -173,6 +173,8 @@ public Class<?> getProxyClass() {
+                 throw ExceptionUtils.buildRuntime("service.interfaceId",
+                     "null", "interfaceId must be not null");
+             }
++        } catch (SofaRpcRuntimeException e) {
++            throw e;
+         } catch (Throwable e) {
+             throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_GET_PROXY_CLASS), e);
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/ext/ExtensionClass.java
+Patch:
+@@ -112,6 +112,8 @@ public T getExtInstance(Class[] argTypes, Object[] args) {
+                 } else {
+                     return ClassUtils.newInstanceWithArgs(clazz, argTypes, args);
+                 }
++            } catch (SofaRpcRuntimeException e) {
++                throw e;
+             } catch (Exception e) {
+                 throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_CREATE_EXT_INSTANCE,
+                     clazz.getCanonicalName()), e);
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/filter/FilterChain.java
+Patch:
+@@ -128,6 +128,9 @@ protected FilterChain(List<Filter> filters, FilterInvoker lastInvoker, AbstractI
+                         // cache this for filter when async respond
+                         loadedFilters.add(filter);
+                     }
++                } catch (SofaRpcRuntimeException e) {
++                    LOGGER.error(LogCodes.getLog(LogCodes.ERROR_FILTER_CONSTRUCT), e);
++                    throw e;
+                 } catch (Exception e) {
+                     LOGGER.error(LogCodes.getLog(LogCodes.ERROR_FILTER_CONSTRUCT), e);
+                     throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_FILTER_CONSTRUCT), e);
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/registry/RegistryFactory.java
+Patch:
+@@ -76,6 +76,8 @@ public static synchronized Registry getRegistry(RegistryConfig registryConfig) {
+                 ALL_REGISTRIES.put(registryConfig, registry);
+             }
+             return registry;
++        } catch (SofaRpcRuntimeException e) {
++            throw e;
+         } catch (Throwable e) {
+             throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_LOAD_EXT, "Registry", protocol));
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/server/ServerFactory.java
+Patch:
+@@ -77,6 +77,8 @@ public synchronized static Server getServer(ServerConfig serverConfig) {
+                 SERVER_MAP.put(serverConfig.getPort() + "", server);
+             }
+             return server;
++        } catch (SofaRpcRuntimeException e) {
++            throw e;
+         } catch (Throwable e) {
+             throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_GET_SERVER), e);
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/tracer/TracerFactory.java
+Patch:
+@@ -42,6 +42,8 @@ public synchronized static Tracer getTracer(String tracerName) {
+                 throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_FAIL_LOAD_TRACER_EXT, tracerName));
+             }
+             return ext.getExtInstance();
++        } catch (SofaRpcRuntimeException e) {
++            throw e;
+         } catch (Throwable e) {
+             throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_FAIL_LOAD_TRACER_EXT, tracerName), e);
+         }
+
+File: extension-impl/bootstrap-grpc/src/main/java/com/alipay/sofa/rpc/bootstrap/grpc/GrpcConsumerBootstrap.java
+Patch:
+@@ -206,6 +206,8 @@ public Object invoke(Object self, Method thisMethod, Method proceed, Object[] ar
+                         return sofaResponse.getAppResponse();
+                     }
+                 });
++            } catch (SofaRpcRuntimeException e) {
++                throw e;
+             } catch (Exception e) {
+                 throw new SofaRpcRuntimeException("", e);
+             }
+
+File: extension-impl/remoting-bolt/src/main/java/com/alipay/sofa/rpc/transport/bolt/BoltClientTransport.java
+Patch:
+@@ -156,6 +156,8 @@ public void connect() {
+     public void disconnect() {
+         try {
+             connectionManager.closeConnection(RPC_CLIENT, transportConfig, url);
++        } catch (SofaRpcRuntimeException e) {
++            throw e;
+         } catch (Exception e) {
+             throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_CLOSE_CONNECTION), e);
+         }
+
+File: extension-impl/remoting-grpc/src/main/java/com/alipay/sofa/rpc/server/grpc/GrpcServer.java
+Patch:
+@@ -95,6 +95,8 @@ public void start() {
+                 if (LOGGER.isInfoEnabled()) {
+                     LOGGER.info("Start the grpc server at port {}", serverConfig.getPort());
+                 }
++            } catch (SofaRpcRuntimeException e) {
++                throw e;
+             } catch (Exception e) {
+                 throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_START_SERVER_WITH_PORT, "grpc",
+                     serverConfig.getPort()), e);
+
+File: extension-impl/remoting-http/src/main/java/com/alipay/sofa/rpc/server/http/AbstractHttpServer.java
+Patch:
+@@ -128,6 +128,8 @@ public void start() {
+                         EventBus.post(new ServerStartedEvent(serverConfig, bizThreadPool));
+                     }
+                 }
++            } catch (SofaRpcRuntimeException e) {
++                throw e;
+             } catch (Exception e) {
+                 throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_START_SERVER, "HTTP/2"), e);
+             }
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/hystrix/HystrixServiceFallback.java
+Patch:
+@@ -16,12 +16,10 @@
+  */
+ package com.alipay.sofa.rpc.hystrix;
+ 
+-import com.alipay.sofa.rpc.test.HelloService;
+-
+ /**
+  * @author <a href=mailto:scienjus@gmail.com>ScienJus</a>
+  */
+-public class HelloServiceFallback implements HelloService {
++public class HystrixServiceFallback implements HystrixService {
+     @Override
+     public String sayHello(String name, int age) {
+         return "fallback " + name + " from server! age: " + age;
+
+File: core-impl/proxy/src/main/java/com/alipay/sofa/rpc/proxy/bytebuddy/BytebuddyProxy.java
+Patch:
+@@ -19,6 +19,7 @@
+ import com.alipay.sofa.rpc.core.exception.SofaRpcRuntimeException;
+ import com.alipay.sofa.rpc.ext.Extension;
+ import com.alipay.sofa.rpc.invoke.Invoker;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.proxy.Proxy;
+ import net.bytebuddy.ByteBuddy;
+ import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
+@@ -61,7 +62,7 @@ public <T> T getProxy(Class<T> interfaceClass, Invoker proxyInvoker) {
+         try {
+             return cls.newInstance();
+         } catch (Throwable t) {
+-            throw new SofaRpcRuntimeException("construct proxy with bytebuddy occurs error", t);
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_PROXY_CONSTRUCT, "bytebuddy"), t);
+         }
+ 
+     }
+
+File: core-impl/proxy/src/main/java/com/alipay/sofa/rpc/proxy/javassist/JavassistProxy.java
+Patch:
+@@ -26,6 +26,7 @@
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
+ import com.alipay.sofa.rpc.ext.Extension;
+ import com.alipay.sofa.rpc.invoke.Invoker;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.message.MessageBuilder;
+@@ -127,7 +128,7 @@ public <T> T getProxy(Class<T> interfaceClass, Invoker proxyInvoker) {
+                 LOGGER.debug("javassist proxy of interface: {} \r\n{}", interfaceClass,
+                     debug != null ? debug.toString() : "");
+             }
+-            throw new SofaRpcRuntimeException("", e);
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_PROXY_CONSTRUCT, "javassist"), e);
+         }
+     }
+ 
+
+File: core-impl/transport/src/main/java/com/alipay/sofa/rpc/transport/AbstractProxyClientTransport.java
+Patch:
+@@ -28,6 +28,7 @@
+ import com.alipay.sofa.rpc.event.ClientBeforeSendEvent;
+ import com.alipay.sofa.rpc.event.ClientSyncReceiveEvent;
+ import com.alipay.sofa.rpc.event.EventBus;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.message.ResponseFuture;
+ 
+ import java.lang.reflect.InvocationTargetException;
+@@ -80,7 +81,7 @@ public AbstractProxyClientTransport(ClientTransportConfig transportConfig) {
+         try {
+             proxy = buildProxy(transportConfig);
+         } catch (Exception e) {
+-            throw new SofaRpcRuntimeException("Fail to build proxy client of consumer!", e);
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_BUILD_PROXY), e);
+         }
+         // 能telnet通
+         open = proxy != null && NetUtils.canTelnet(provider.getHost(), provider.getPort(),
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/common/struct/ScheduledService.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.alipay.sofa.rpc.common.struct;
+ 
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+@@ -219,7 +220,7 @@ public static synchronized void reset() {
+                     service.start();
+                 }
+             } catch (Exception e) {
+-                LOGGER.error("Error when restart schedule service", e);
++                LOGGER.error(LogCodes.getLog(LogCodes.ERROR_RESTART_SCHEDULE_SERVICE), e);
+             }
+         }
+         if (LOGGER.isWarnEnabled()) {
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/ProviderConfig.java
+Patch:
+@@ -24,6 +24,7 @@
+ import com.alipay.sofa.rpc.common.utils.ExceptionUtils;
+ import com.alipay.sofa.rpc.common.utils.StringUtils;
+ import com.alipay.sofa.rpc.core.exception.SofaRpcRuntimeException;
++import com.alipay.sofa.rpc.log.LogCodes;
+ 
+ import java.io.Serializable;
+ import java.util.ArrayList;
+@@ -172,10 +173,8 @@ public Class<?> getProxyClass() {
+                 throw ExceptionUtils.buildRuntime("service.interfaceId",
+                     "null", "interfaceId must be not null");
+             }
+-        } catch (SofaRpcRuntimeException e) {
+-            throw e;
+         } catch (Throwable e) {
+-            throw new SofaRpcRuntimeException(e.getMessage(), e);
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_GET_PROXY_CLASS), e);
+         }
+         return proxyClass;
+     }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/ext/ExtensionLoader.java
+Patch:
+@@ -26,6 +26,7 @@
+ import com.alipay.sofa.rpc.common.utils.StringUtils;
+ import com.alipay.sofa.rpc.context.RpcRunningState;
+ import com.alipay.sofa.rpc.core.exception.SofaRpcRuntimeException;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+@@ -425,7 +426,7 @@ public ExtensionClass<T> getExtensionClass(String alias) {
+     public T getExtension(String alias) {
+         ExtensionClass<T> extensionClass = getExtensionClass(alias);
+         if (extensionClass == null) {
+-            throw new SofaRpcRuntimeException("Not found extension of " + interfaceName + " named: \"" + alias + "\"!");
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_EXTENSION_NOT_FOUND, interfaceName, alias));
+         } else {
+             if (extensible.singleton() && factory != null) {
+                 T t = factory.get(alias);
+@@ -456,7 +457,7 @@ public T getExtension(String alias) {
+     public T getExtension(String alias, Class[] argTypes, Object[] args) {
+         ExtensionClass<T> extensionClass = getExtensionClass(alias);
+         if (extensionClass == null) {
+-            throw new SofaRpcRuntimeException("Not found extension of " + interfaceName + " named: \"" + alias + "\"!");
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_EXTENSION_NOT_FOUND, interfaceName, alias));
+         } else {
+             if (extensible.singleton() && factory != null) {
+                 T t = factory.get(alias);
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/protocol/ProtocolFactory.java
+Patch:
+@@ -89,7 +89,7 @@ public static Protocol getProtocol(String alias) {
+     public static Protocol getProtocol(byte code) {
+         Protocol protocol = TYPE_PROTOCOL_MAP.get(code);
+         if (protocol == null) {
+-            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_EXTENSION_NOT_FOUND, code));
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_PROTOCOL_NOT_FOUND, code));
+         }
+         return protocol;
+     }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/transport/ClientTransportFactory.java
+Patch:
+@@ -21,6 +21,7 @@
+ import com.alipay.sofa.rpc.common.utils.NetUtils;
+ import com.alipay.sofa.rpc.context.RpcRuntimeContext;
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderFactory;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+@@ -110,7 +111,7 @@ public static void closeAll() {
+         try {
+             CLIENT_TRANSPORT_HOLDER.destroy();
+         } catch (Exception e) {
+-            LOGGER.error(e.getMessage(), e);
++            LOGGER.error(LogCodes.getLog(LogCodes.ERROR_DESTORY_ALL_TRANSPORT), e);
+         }
+     }
+ 
+
+File: extension-impl/bootstrap-grpc/src/main/java/com/alipay/sofa/rpc/bootstrap/grpc/GrpcProviderBootstrap.java
+Patch:
+@@ -29,6 +29,7 @@
+ import com.alipay.sofa.rpc.ext.Extension;
+ import com.alipay.sofa.rpc.invoke.Invoker;
+ import com.alipay.sofa.rpc.listener.ConfigListener;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.registry.Registry;
+@@ -363,7 +364,7 @@ public synchronized void attrUpdated(Map newValueMap) {
+                     }
+                     export();
+                 } catch (Exception e) {
+-                    LOGGER.errorWithApp(appName, "Catch exception when provider attribute changed", e);
++                    LOGGER.errorWithApp(appName, LogCodes.getLog(LogCodes.ERROR_PROVIDER_ATTRIBUTE_CHANGE), e);
+                     //rollback old attrs
+                     for (Map.Entry<String, String> entry : oldValues.entrySet()) {
+                         providerConfig.updateAttribute(entry.getKey(), entry.getValue(), true);
+
+File: extension-impl/extension-common/src/main/java/com/alipay/sofa/rpc/bootstrap/DefaultClientProxyInvoker.java
+Patch:
+@@ -29,6 +29,7 @@
+ import com.alipay.sofa.rpc.core.invoke.SofaResponseCallback;
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.message.ResponseFuture;
+ 
+ import static com.alipay.sofa.rpc.common.RpcConstants.HIDDEN_KEY_INVOKE_CONTEXT;
+@@ -73,7 +74,7 @@ protected void cacheCommonData() {
+     protected Byte parseSerializeType(String serialization) {
+         Byte serializeType = SerializerFactory.getCodeByAlias(serialization);
+         if (serializeType == null) {
+-            throw new SofaRpcRuntimeException("Unsupported serialization type: " + serialization);
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_UNSUPPORT_TYPE, serialization));
+         }
+         return serializeType;
+     }
+
+File: extension-impl/fault-hystrix/src/main/java/com/alipay/sofa/rpc/hystrix/SofaAsyncHystrixCommand.java
+Patch:
+@@ -25,6 +25,7 @@
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
+ import com.alipay.sofa.rpc.filter.FilterInvoker;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.message.ResponseFuture;
+@@ -136,9 +137,9 @@ protected Object getFallback() {
+         try {
+             return request.getMethod().invoke(fallback, request.getMethodArgs());
+         } catch (IllegalAccessException e) {
+-            throw new SofaRpcRuntimeException("Hystrix fallback method failed to execute.", e);
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_HYSTRIX_FALLBACK_FAIL), e);
+         } catch (InvocationTargetException e) {
+-            throw new SofaRpcRuntimeException("Hystrix fallback method failed to execute.",
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_HYSTRIX_FALLBACK_FAIL),
+                 e.getTargetException());
+         } finally {
+             events.add(SofaAsyncHystrixEvent.FALLBACK_SUCCESS);
+
+File: extension-impl/fault-hystrix/src/main/java/com/alipay/sofa/rpc/hystrix/SofaHystrixCommand.java
+Patch:
+@@ -23,6 +23,7 @@
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
+ import com.alipay.sofa.rpc.filter.FilterInvoker;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.netflix.hystrix.HystrixCommand;
+@@ -94,9 +95,9 @@ protected SofaResponse getFallback(SofaResponse response, Throwable t) {
+             actualResponse.setAppResponse(fallbackResult);
+             return actualResponse;
+         } catch (IllegalAccessException e) {
+-            throw new SofaRpcRuntimeException("Hystrix fallback method failed to execute.", e);
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_HYSTRIX_FALLBACK_FAIL), e);
+         } catch (InvocationTargetException e) {
+-            throw new SofaRpcRuntimeException("Hystrix fallback method failed to execute.",
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_HYSTRIX_FALLBACK_FAIL),
+                 e.getTargetException());
+         }
+     }
+
+File: extension-impl/registry-consul/src/main/java/com/alipay/sofa/rpc/registry/consul/HealthServiceInformer.java
+Patch:
+@@ -20,6 +20,7 @@
+ import com.alipay.sofa.rpc.client.ProviderHelper;
+ import com.alipay.sofa.rpc.client.ProviderInfo;
+ import com.alipay.sofa.rpc.listener.ProviderInfoListener;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.ecwid.consul.v1.ConsulClient;
+@@ -85,7 +86,7 @@ private void watchHealthService() {
+             ProviderGroup providerGroup = new ProviderGroup(currentProviders());
+             listeners.stream().filter(Objects::nonNull).forEach(l -> l.updateProviders(providerGroup));
+         } catch (Exception e) {
+-            LOGGER.error("Consul watch health service failed.", e);
++            LOGGER.error(LogCodes.getLog(LogCodes.ERROR_WATCH_HEALTH ,"Consul"), e);
+         }
+     }
+ 
+
+File: extension-impl/registry-local/src/main/java/com/alipay/sofa/rpc/registry/local/LocalRegistry.java
+Patch:
+@@ -116,7 +116,7 @@ public void init() {
+ 
+         this.regFile = registryConfig.getFile();
+         if (regFile == null) {
+-            throw new SofaRpcRuntimeException("File of LocalRegistry is null");
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_LOCAL_FILE_NULL));
+         }
+         // 先加载一些
+         if (subscribe) {
+
+File: extension-impl/registry-local/src/main/java/com/alipay/sofa/rpc/registry/local/LocalRegistryHelper.java
+Patch:
+@@ -32,6 +32,7 @@
+ import com.alipay.sofa.rpc.config.ServerConfig;
+ import com.alipay.sofa.rpc.context.RpcRuntimeContext;
+ import com.alipay.sofa.rpc.core.exception.SofaRpcRuntimeException;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+@@ -119,7 +120,8 @@ static Map<String, ProviderGroup> loadBackupFileToCache(String address) {
+                     memoryCache.putAll(tmp);
+                 }
+             } catch (IOException e) {
+-                throw new SofaRpcRuntimeException("Error when read backup file: " + regFile.getAbsolutePath(), e);
++                throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_READ_BACKUP_FILE,
++                    regFile.getAbsolutePath()), e);
+             }
+         }
+         return memoryCache;
+
+File: extension-impl/remoting-bolt/src/main/java/com/alipay/sofa/rpc/server/bolt/BoltServer.java
+Patch:
+@@ -30,6 +30,7 @@
+ import com.alipay.sofa.rpc.event.ServerStoppedEvent;
+ import com.alipay.sofa.rpc.ext.Extension;
+ import com.alipay.sofa.rpc.invoke.Invoker;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.server.BusinessPool;
+@@ -118,7 +119,7 @@ public void start() {
+                             serverConfig.getPort());
+                     }
+                 } else {
+-                    throw new SofaRpcRuntimeException("Failed to start bolt server, see more detail from bolt log.");
++                    throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_START_BOLT_SERVER));
+                 }
+                 started = true;
+ 
+@@ -129,7 +130,7 @@ public void start() {
+             } catch (SofaRpcRuntimeException e) {
+                 throw e;
+             } catch (Exception e) {
+-                throw new SofaRpcRuntimeException("Failed to start bolt server!", e);
++                throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_START_BOLT_SERVER), e);
+             }
+         }
+     }
+
+File: extension-impl/remoting-bolt/src/main/java/com/alipay/sofa/rpc/transport/bolt/BoltClientTransport.java
+Patch:
+@@ -49,6 +49,7 @@
+ import com.alipay.sofa.rpc.event.ClientSyncReceiveEvent;
+ import com.alipay.sofa.rpc.event.EventBus;
+ import com.alipay.sofa.rpc.ext.Extension;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.message.ResponseFuture;
+@@ -60,6 +61,7 @@
+ import com.alipay.sofa.rpc.transport.ClientTransportConfig;
+ 
+ import java.net.InetSocketAddress;
++import java.security.AlgorithmConstraints;
+ import java.util.concurrent.atomic.AtomicInteger;
+ 
+ /**
+@@ -155,7 +157,7 @@ public void disconnect() {
+         try {
+             connectionManager.closeConnection(RPC_CLIENT, transportConfig, url);
+         } catch (Exception e) {
+-            throw new SofaRpcRuntimeException("", e);
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_CLOSE_CONNECTION), e);
+         }
+     }
+ 
+
+File: extension-impl/remoting-grpc/src/main/java/com/alipay/sofa/rpc/server/grpc/GrpcServer.java
+Patch:
+@@ -21,6 +21,7 @@
+ import com.alipay.sofa.rpc.core.exception.SofaRpcRuntimeException;
+ import com.alipay.sofa.rpc.ext.Extension;
+ import com.alipay.sofa.rpc.invoke.Invoker;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.server.Server;
+@@ -95,8 +96,8 @@ public void start() {
+                     LOGGER.info("Start the grpc server at port {}", serverConfig.getPort());
+                 }
+             } catch (Exception e) {
+-                throw new SofaRpcRuntimeException(
+-                    "Failed to start grpc server at port " + serverConfig.getPort() + ", cause: " + e.getMessage(), e);
++                throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_START_SERVER_WITH_PORT, "grpc",
++                    serverConfig.getPort()), e);
+             }
+             started = true;
+         }
+
+File: extension-impl/remoting-http/src/main/java/com/alipay/sofa/rpc/transport/http/Http1ServerChannelHandler.java
+Patch:
+@@ -25,6 +25,7 @@
+ import com.alipay.sofa.rpc.core.exception.RpcErrorType;
+ import com.alipay.sofa.rpc.core.exception.SofaRpcException;
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.server.http.HttpServerHandler;
+@@ -250,7 +251,7 @@ public void channelReadComplete(ChannelHandlerContext ctx) throws Exception {
+ 
+     @Override
+     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+-        LOGGER.error("", cause);
++        LOGGER.error(LogCodes.getLog(LogCodes.ERROR_CATCH_EXCEPTION), cause);
+         ctx.close();
+     }
+ }
+
+File: extension-impl/remoting-http/src/main/java/com/alipay/sofa/rpc/transport/http/Http2ClientChannelHandler.java
+Patch:
+@@ -19,6 +19,7 @@
+ import com.alipay.sofa.rpc.common.utils.NetUtils;
+ import com.alipay.sofa.rpc.core.exception.RpcErrorType;
+ import com.alipay.sofa.rpc.core.exception.SofaRpcException;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.transport.netty.NettyHelper;
+@@ -125,6 +126,6 @@ public Entry<ChannelFuture, AbstractHttpClientHandler> removePromise(int streamI
+ 
+     @Override
+     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+-        LOGGER.error("Client channel handler get exception!", cause);
++        LOGGER.error(LogCodes.getLog(LogCodes.ERROR_CATCH_EXCEPTION), cause);
+     }
+ }
+
+File: extension-impl/remoting-http/src/main/java/com/alipay/sofa/rpc/transport/http/SslContextBuilder.java
+Patch:
+@@ -18,6 +18,7 @@
+ 
+ import com.alipay.sofa.rpc.common.annotation.Unstable;
+ import com.alipay.sofa.rpc.core.exception.SofaRpcRuntimeException;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import io.netty.handler.codec.http2.Http2SecurityUtil;
+ import io.netty.handler.ssl.ApplicationProtocolConfig;
+ import io.netty.handler.ssl.ApplicationProtocolNames;
+@@ -66,7 +67,7 @@ public static SslContext build() {
+                 sslCtx = null;
+             }
+         } catch (Exception e) {
+-            throw new SofaRpcRuntimeException("Failed to start http/2 server!", e);
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_START_SERVER, "HTTP/2"), e);
+         }
+         return sslCtx;
+     }
+@@ -98,7 +99,7 @@ public static SslContext buildForClient() {
+                 sslCtx = null;
+             }
+         } catch (Exception e) {
+-            throw new SofaRpcRuntimeException("Failed to start http/2 client!", e);
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_START_CLIENT, "HTTP/2"), e);
+         }
+         return sslCtx;
+     }
+
+File: extension-impl/tracer-opentracing-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/LookoutRequestFilter.java
+Patch:
+@@ -65,7 +65,7 @@ public void filter(ContainerRequestContext requestContext) throws IOException {
+ 
+             context.setAttachment(RemotingConstants.HEAD_APP_NAME, appName);
+         } catch (Exception e) {
+-            logger.error("the process of lookout server request occur error ", e);
++            logger.error(LogCodes.getLog(LogCodes.ERROR_LOOKOUT_PROCESS), e);
+         }
+ 
+     }
+
+File: extension-impl/remoting-grpc/src/main/java/com/alipay/sofa/rpc/transport/grpc/GrpcClientTransport.java
+Patch:
+@@ -85,7 +85,6 @@ public void disconnect() {
+                 channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);
+             } catch (InterruptedException e) {
+                 LOGGER.warn("GRPC channel shut down interrupted.");
+-                e.printStackTrace();
+             }
+             channel = null;
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/client/ProviderHelper.java
+Patch:
+@@ -18,6 +18,7 @@
+ 
+ import com.alipay.sofa.rpc.common.utils.CommonUtils;
+ import com.alipay.sofa.rpc.common.utils.StringUtils;
++import com.alipay.sofa.rpc.log.LogCodes;
+ 
+ import java.util.ArrayList;
+ import java.util.HashMap;
+@@ -260,7 +261,7 @@ public static ProviderInfo toProviderInfo(String url) {
+                 providerInfo.setPath(StringUtils.EMPTY);
+             }
+         } catch (Exception e) {
+-            throw new IllegalArgumentException("Failed to convert url to provider, the wrong url is:" + url, e);
++            throw new IllegalArgumentException(LogCodes.getLog(LogCodes.ERROR_CONVERT_URL, url), e);
+         }
+         return providerInfo;
+     }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/codec/CompressorFactory.java
+Patch:
+@@ -21,6 +21,7 @@
+ import com.alipay.sofa.rpc.ext.ExtensionLoader;
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderFactory;
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderListener;
++import com.alipay.sofa.rpc.log.LogCodes;
+ 
+ import java.util.concurrent.ConcurrentHashMap;
+ import java.util.concurrent.ConcurrentMap;
+@@ -79,7 +80,7 @@ public static Compressor getCompressor(String alias) {
+     public static Compressor getCompressor(byte code) {
+         Compressor compressor = TYPE_COMPRESSOR_MAP.get(code);
+         if (compressor == null) {
+-            throw new SofaRpcRuntimeException("Compressor Not Found :\"" + code + "\"!");
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_COMPRESSOR_NOT_FOUND, code));
+         }
+         return compressor;
+     }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/codec/SerializerFactory.java
+Patch:
+@@ -22,6 +22,7 @@
+ import com.alipay.sofa.rpc.ext.ExtensionLoader;
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderFactory;
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderListener;
++import com.alipay.sofa.rpc.log.LogCodes;
+ 
+ import java.util.concurrent.ConcurrentHashMap;
+ import java.util.concurrent.ConcurrentMap;
+@@ -81,7 +82,7 @@ public static Serializer getSerializer(String alias) {
+     public static Serializer getSerializer(byte type) {
+         Serializer serializer = TYPE_SERIALIZER_MAP.get(type);
+         if (serializer == null) {
+-            throw new SofaRpcRuntimeException("Serializer Not Found :\"" + type + "\"!");
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_SERIALIZER_NOT_FOUND, type));
+         }
+         return serializer;
+     }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/context/AsyncRuntime.java
+Patch:
+@@ -20,6 +20,7 @@
+ import com.alipay.sofa.rpc.common.RpcOptions;
+ import com.alipay.sofa.rpc.common.struct.NamedThreadFactory;
+ import com.alipay.sofa.rpc.common.utils.ThreadPoolUtils;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+@@ -89,7 +90,8 @@ public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+                                         executor.getTaskCount());
+                                 }
+                             }
+-                            throw new RejectedExecutionException("Callback handler thread pool has bean exhausted");
++                            throw new RejectedExecutionException(
++                                LogCodes.getLog(LogCodes.ERROR_ASYNC_THREAD_POOL_REJECT));
+                         }
+                     };
+                     asyncThreadPool = ThreadPoolUtils.newCachedThreadPool(
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/context/RpcInternalContext.java
+Patch:
+@@ -22,6 +22,7 @@
+ import com.alipay.sofa.rpc.common.RpcOptions;
+ import com.alipay.sofa.rpc.common.struct.StopWatch;
+ import com.alipay.sofa.rpc.common.utils.NetUtils;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.message.ResponseFuture;
+ 
+ import java.net.InetSocketAddress;
+@@ -350,8 +351,8 @@ public RpcInternalContext setAttachment(String key, Object value) {
+             }
+         } else {
+             if (!isValidInternalParamKey(key)) { // 打开附件传递功能，只能传 "_" 和 "." 开头的Key
+-                throw new IllegalArgumentException("key must start with" + RpcConstants.INTERNAL_KEY_PREFIX
+-                    + " or " + RpcConstants.HIDE_KEY_PREFIX);
++                throw new IllegalArgumentException(LogCodes.getLog(LogCodes.ERROR_ATTACHMENT_KEY,
++                    RpcConstants.INTERNAL_KEY_PREFIX, RpcConstants.HIDE_KEY_PREFIX));
+             }
+         }
+         if (value == null) {
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/filter/FilterInvoker.java
+Patch:
+@@ -25,6 +25,7 @@
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
+ import com.alipay.sofa.rpc.invoke.Invoker;
++import com.alipay.sofa.rpc.log.LogCodes;
+ 
+ import javax.annotation.concurrent.ThreadSafe;
+ import java.util.Map;
+@@ -91,7 +92,8 @@ public FilterInvoker(Filter nextFilter, FilterInvoker invoker, AbstractInterface
+     @Override
+     public SofaResponse invoke(SofaRequest request) throws SofaRpcException {
+         if (nextFilter == null && invoker == null) {
+-            throw new SofaRpcException(RpcErrorType.SERVER_FILTER, "Next filter and invoker is null!");
++            throw new SofaRpcException(RpcErrorType.SERVER_FILTER,
++                LogCodes.getLog(LogCodes.ERROR_NEXT_FILTER_AND_INVOKER_NULL));
+         }
+         return nextFilter == null ?
+             invoker.invoke(request) :
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/filter/ProviderInvoker.java
+Patch:
+@@ -94,7 +94,8 @@ public SofaResponse invoke(SofaRequest request) throws SofaRpcException {
+             // 反射 真正调用业务代码
+             Method method = request.getMethod();
+             if (method == null) {
+-                throw new SofaRpcException(RpcErrorType.SERVER_FILTER, "Need decode method first!");
++                throw new SofaRpcException(RpcErrorType.SERVER_FILTER,
++                    LogCodes.getLog(LogCodes.ERROR_NEED_DECODE_METHOD));
+             }
+             Object result = method.invoke(providerConfig.getRef(), request.getMethodArgs());
+ 
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/protocol/ProtocolFactory.java
+Patch:
+@@ -23,6 +23,7 @@
+ import com.alipay.sofa.rpc.ext.ExtensionLoader;
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderFactory;
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderListener;
++import com.alipay.sofa.rpc.log.LogCodes;
+ 
+ import java.util.concurrent.ConcurrentHashMap;
+ import java.util.concurrent.ConcurrentMap;
+@@ -88,7 +89,7 @@ public static Protocol getProtocol(String alias) {
+     public static Protocol getProtocol(byte code) {
+         Protocol protocol = TYPE_PROTOCOL_MAP.get(code);
+         if (protocol == null) {
+-            throw new SofaRpcRuntimeException("Extension Not Found :\"" + code + "\"!");
++            throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_EXTENSION_NOT_FOUND, code));
+         }
+         return protocol;
+     }
+
+File: extension-impl/fault-tolerance/src/main/java/com/alipay/sofa/rpc/client/aft/impl/ServiceHorizontalMeasureStrategy.java
+Patch:
+@@ -29,6 +29,7 @@
+ import com.alipay.sofa.rpc.common.utils.CalculateUtils;
+ import com.alipay.sofa.rpc.common.utils.CommonUtils;
+ import com.alipay.sofa.rpc.ext.Extension;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+@@ -295,9 +296,8 @@ private long getInvocationLeastWindowCount(InvocationStat invocationStat, Intege
+         InvocationStatDimension statDimension = invocationStat.getDimension();
+         Integer originWeight = statDimension.getOriginWeight();
+         if (originWeight == 0) {
+-            LOGGER.errorWithApp(statDimension.getAppName(), "originWeight is 0,but is invoked. service["
+-                + statDimension.getService() + "];ip["
+-                + statDimension.getIp() + "].");
++            LOGGER.errorWithApp(statDimension.getAppName(),
++                LogCodes.getLog(LogCodes.ERROR_ORIGIN_WEIGHT_ZERO, statDimension.getService(), statDimension.getIp()));
+             return -1;
+         } else if (weight == null) { //如果地址还未被调控过或者已经恢复。
+             return leastWindowCount;
+
+File: extension-impl/fault-tolerance/src/main/java/com/alipay/sofa/rpc/client/aft/impl/TimeWindowRegulator.java
+Patch:
+@@ -182,7 +182,8 @@ public void run() {
+                         regulationExecutor.submit(new RegulationRunnable(measureResult));
+                     }
+                 } catch (Exception e) {
+-                    LOGGER.errorWithApp(measureModel.getAppName(), "Error when doMeasure: " + e.getMessage(), e);
++                    LOGGER.errorWithApp(measureModel.getAppName(),
++                        LogCodes.getLog(LogCodes.ERROR_WHEN_DO_MEASURE, e.getMessage()), e);
+                 }
+             }
+         }
+@@ -217,7 +218,7 @@ public void run() {
+                     doRegulate(measureResultDetail);
+                 } catch (Exception e) {
+                     LOGGER.errorWithApp(measureResult.getMeasureModel().getAppName(),
+-                        "Error when doRegulate: " + e.getMessage(), e);
++                        LogCodes.getLog(LogCodes.ERROR_WHEN_DO_REGULATE, e.getMessage()), e);
+                 }
+             }
+         }
+
+File: extension-impl/tracer-opentracing/src/main/java/com/alipay/sofa/rpc/tracer/sofatracer/RpcSofaTracer.java
+Patch:
+@@ -40,6 +40,7 @@
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
+ import com.alipay.sofa.rpc.ext.Extension;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.tracer.Tracer;
+ import com.alipay.sofa.rpc.tracer.sofatracer.code.TracerResultCode;
+ import com.alipay.sofa.rpc.tracer.sofatracer.factory.ReporterFactory;
+@@ -605,13 +606,13 @@ public void checkState() {
+         if (rpcInternalContext.isConsumerSide()) {
+             //客户端 tracer 堆栈中最多有 1 个(客户端 span 完毕,服务端 span 压栈所以最多一个)
+             if (sofaTraceContext.getThreadLocalSpanSize() > 1) {
+-                SelfLog.error("Pay attention,stack size error.Tracer consumer stack size more than one.");
++                SelfLog.error(LogCodes.getLog(LogCodes.ERROR_TRACER_CONSUMER_STACK));
+                 SelfLog.flush();
+             }
+         } else if (rpcInternalContext.isProviderSide()) {
+             //服务端 tracer 堆栈中应该为 0 个
+             if (sofaTraceContext.getThreadLocalSpanSize() > 0) {
+-                SelfLog.error("Pay attention,stack size error.Tracer provider stack size more than zero.");
++                SelfLog.error(LogCodes.getLog(LogCodes.ERROR_TRACER_PROVIDER_STACK));
+                 SelfLog.flush();
+             }
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/filter/FilterChain.java
+Patch:
+@@ -31,6 +31,7 @@
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderFactory;
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderListener;
+ import com.alipay.sofa.rpc.invoke.Invoker;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+@@ -128,8 +129,8 @@ protected FilterChain(List<Filter> filters, FilterInvoker lastInvoker, AbstractI
+                         loadedFilters.add(filter);
+                     }
+                 } catch (Exception e) {
+-                    LOGGER.error("Error when build filter chain", e);
+-                    throw new SofaRpcRuntimeException("Error when build filter chain", e);
++                    LOGGER.error(LogCodes.getLog(LogCodes.ERROR_FILTER_CONSTRUCT), e);
++                    throw new SofaRpcRuntimeException(LogCodes.getLog(LogCodes.ERROR_FILTER_CONSTRUCT), e);
+                 }
+             }
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/registry/RegistryFactory.java
+Patch:
+@@ -21,6 +21,7 @@
+ import com.alipay.sofa.rpc.core.exception.SofaRpcRuntimeException;
+ import com.alipay.sofa.rpc.ext.ExtensionClass;
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderFactory;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+@@ -110,8 +111,7 @@ public static void destroyAll() {
+                 registry.destroy();
+                 ALL_REGISTRIES.remove(config);
+             } catch (Exception e) {
+-                LOGGER.error("Error when destroy registry :" + config
+-                    + ", but you can ignore if it's called by JVM shutdown hook", e);
++                LOGGER.error(LogCodes.getLog(LogCodes.ERROR_DESTRORY_REGISTRY, config), e);
+             }
+         }
+     }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/server/ServerFactory.java
+Patch:
+@@ -27,6 +27,7 @@
+ import com.alipay.sofa.rpc.core.exception.SofaRpcRuntimeException;
+ import com.alipay.sofa.rpc.ext.ExtensionClass;
+ import com.alipay.sofa.rpc.ext.ExtensionLoaderFactory;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+@@ -144,7 +145,7 @@ public static void destroyAll() {
+             try {
+                 server.destroy();
+             } catch (Exception e) {
+-                LOGGER.error("Error when destroy server with key:" + key, e);
++                LOGGER.error(LogCodes.getLog(LogCodes.ERROR_SERVER_DESTROY, key), e);
+             }
+         }
+         SERVER_MAP.clear();
+@@ -159,7 +160,7 @@ public static void destroyServer(ServerConfig serverConfig) {
+                 server.destroy();
+             }
+         } catch (Exception e) {
+-            LOGGER.error("Error when destroy server with key:" + serverConfig.getPort(), e);
++            LOGGER.error(LogCodes.getLog(LogCodes.ERROR_SERVER_DESTROY, serverConfig.getPort()), e);
+         }
+     }
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/tracer/Tracers.java
+Patch:
+@@ -21,6 +21,7 @@
+ import com.alipay.sofa.rpc.common.utils.StringUtils;
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ 
+@@ -74,7 +75,7 @@ public final class Tracers {
+                 }
+             }
+         } catch (Exception e) {
+-            LOGGER.error("Failed to init Tracers", e);
++            LOGGER.error(LogCodes.getLog(LogCodes.ERROR_TRACER_INIT), e);
+         }
+     }
+ 
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/SofaRestRequestHandler.java
+Patch:
+@@ -23,6 +23,7 @@
+ import com.alipay.sofa.rpc.event.ServerEndHandleEvent;
+ import com.alipay.sofa.rpc.event.rest.RestServerReceiveEvent;
+ import com.alipay.sofa.rpc.event.rest.RestServerSendEvent;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.lookout.RestLookoutAdapter;
+@@ -36,6 +37,7 @@
+ import org.jboss.resteasy.plugins.server.netty.NettyHttpResponse;
+ import org.jboss.resteasy.plugins.server.netty.RequestDispatcher;
+ import org.jboss.resteasy.spi.Failure;
++import sun.rmi.runtime.Log;
+ 
+ import javax.ws.rs.core.HttpHeaders;
+ import java.net.InetSocketAddress;
+@@ -107,7 +109,7 @@ protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Except
+                 } catch (Exception ex) {
+                     response.reset();
+                     response.setStatus(500);
+-                    logger.error("Unexpected", ex); // todo 异常带给用户?
++                    logger.error(LogCodes.getLog(LogCodes.ERROR_PROCESS_UNKNOWN), ex); // todo 异常带给用户?
+                     exception = ex;
+                 } finally {
+                     if (EventBus.isEnable(RestServerSendEvent.class)) {
+
+File: extension-impl/tracer-opentracing-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/LookoutRequestFilter.java
+Patch:
+@@ -18,6 +18,7 @@
+ 
+ import com.alipay.sofa.rpc.common.RemotingConstants;
+ import com.alipay.sofa.rpc.context.RpcInternalContext;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.lookout.RestConstants;
+@@ -64,7 +65,7 @@ public void filter(ContainerRequestContext requestContext) throws IOException {
+ 
+             context.setAttachment(RemotingConstants.HEAD_APP_NAME, appName);
+         } catch (Exception e) {
+-            logger.error("the process of rest tracer server request occur error ", e);
++            logger.error("the process of lookout server request occur error ", e);
+         }
+ 
+     }
+
+File: extension-impl/tracer-opentracing-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/TraceRequestFilter.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.alipay.sofa.rpc.server.rest;
+ 
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.tracer.sofatracer.RestTracerAdapter;
+@@ -42,7 +43,7 @@ public void filter(ContainerRequestContext requestContext) throws IOException {
+         try {
+             RestTracerAdapter.serverFilter(requestContext);
+         } catch (Exception e) {
+-            logger.error("the process of rest tracer server request occur error ", e);
++            logger.error(LogCodes.getLog(LogCodes.ERROR_TRACER_UNKNOWN_EXP, "filter", "rest", "server"), e);
+         }
+ 
+     }
+
+File: extension-impl/tracer-opentracing-resteasy/src/main/java/com/alipay/sofa/rpc/tracer/sofatracer/RestTracerAdapter.java
+Patch:
+@@ -28,6 +28,7 @@
+ import com.alipay.sofa.rpc.context.RpcRuntimeContext;
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.server.rest.SofaResourceFactory;
+@@ -127,7 +128,7 @@ public static void serverReceived(NettyHttpRequest request) {
+             RestBaggageItemsHandler.decodeBaggageItemsFromRequest(request, sofaRequest);
+         } catch (Throwable t) {
+             if (LOGGER.isWarnEnabled()) {
+-                LOGGER.warn("the process of rest tracer server receive occur error ", t);
++                LOGGER.warn(LogCodes.getLog(LogCodes.ERROR_TRACER_UNKNOWN_EXP, "receive", "rest", "server"), t);
+             }
+         }
+     }
+
+File: extension-impl/tracer-opentracing-resteasy/src/main/java/com/alipay/sofa/rpc/transport/rest/TraceClientRequestFilter.java
+Patch:
+@@ -18,6 +18,7 @@
+ 
+ import com.alipay.sofa.rpc.common.RpcConstants;
+ import com.alipay.sofa.rpc.context.RpcInternalContext;
++import com.alipay.sofa.rpc.log.LogCodes;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.tracer.sofatracer.RestTracerAdapter;
+@@ -53,7 +54,7 @@ public void filter(ClientRequestContext requestContext) throws IOException {
+ 
+             RestTracerAdapter.beforeSend(requestContext);
+         } catch (Exception e) {
+-            logger.error("the process of rest tracer client request occur error ", e);
++            logger.error(LogCodes.getLog(LogCodes.ERROR_TRACER_UNKNOWN_EXP, "filter", "rest", "client"), e);
+         }
+     }
+ }
+
+File: extension-impl/tracer-opentracing/src/main/java/com/alipay/sofa/rpc/tracer/sofatracer/RpcSofaTracer.java
+Patch:
+@@ -389,7 +389,7 @@ public void serverReceived(SofaRequest request) {
+         }
+         if (spanContext == null) {
+             SelfLog.error("SpanContext created error when server received and root SpanContext created.");
+-            spanContext = SofaTracerSpanContext.rootStart();
++            spanContext = SofaTracerSpanContext.rootStart(true);
+         }
+ 
+         SofaTracerSpan serverSpan = new SofaTracerSpan(this.sofaTracer, System.currentTimeMillis(),
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/ProviderConfig.java
+Patch:
+@@ -18,6 +18,7 @@
+ 
+ import com.alipay.sofa.rpc.bootstrap.Bootstraps;
+ import com.alipay.sofa.rpc.bootstrap.ProviderBootstrap;
++import com.alipay.sofa.rpc.common.RpcConstants;
+ import com.alipay.sofa.rpc.common.utils.ClassUtils;
+ import com.alipay.sofa.rpc.common.utils.CommonUtils;
+ import com.alipay.sofa.rpc.common.utils.ExceptionUtils;
+@@ -160,7 +161,7 @@ public Class<?> getProxyClass() {
+                 if (!proxyClass.isInterface()) {
+                     if ((getServer() != null) && getServer().size() != 0) {
+                         for (int i = 0; i < getServer().size(); i++) {
+-                            if (!"grpc".equals(getServer().get(i).getProtocol())) {
++                            if (!RpcConstants.PROTOCOL_TYPE_GRPC.equals(getServer().get(i).getProtocol())) {
+                                 throw ExceptionUtils.buildRuntime("service.interfaceId",
+                                     interfaceId, "interfaceId must set interface class, not implement class");
+                             }
+
+File: example/src/test/java/com/alipay/sofa/rpc/grpc/GreeterImpl.java
+Patch:
+@@ -14,7 +14,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.alipay.sofa.rpc.grpc.registry;
++package com.alipay.sofa.rpc.grpc;
+ 
+ import java.time.format.DateTimeFormatter;
+ import java.time.LocalDateTime;
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/AbstractCluster.java
+Patch:
+@@ -355,10 +355,12 @@ protected ProviderInfo select(SofaRequest message, List<ProviderInfo> invokedPro
+         List<ProviderInfo> providerInfos = routerChain.route(message, null);
+ 
+         //保存一下原始地址,为了打印
+-        List<ProviderInfo> orginalProviderInfos = new ArrayList<ProviderInfo>(providerInfos);
++        List<ProviderInfo> orginalProviderInfos;
+ 
+         if (CommonUtils.isEmpty(providerInfos)) {
+             throw noAvailableProviderException(message.getTargetServiceUniqueName());
++        } else {
++            orginalProviderInfos = new ArrayList<ProviderInfo>(providerInfos);
+         }
+         if (CommonUtils.isNotEmpty(invokedProviderInfos) && providerInfos.size() > invokedProviderInfos.size()) { // 总数大于已调用数
+             providerInfos.removeAll(invokedProviderInfos);// 已经调用异常的本次不再重试
+
+File: extension-impl/remoting-bolt/src/main/java/com/alipay/sofa/rpc/transport/bolt/BoltClientTransport.java
+Patch:
+@@ -424,7 +424,7 @@ public InetSocketAddress remoteAddress() {
+     @Override
+     public InetSocketAddress localAddress() {
+         Connection connection = fetchConnection();
+-        return connection == null ? null : connection.getRemoteAddress();
++        return connection == null ? null : connection.getLocalAddress();
+     }
+ 
+     protected void checkConnection() throws SofaRpcException {
+
+File: extension-impl/tracer-opentracing/src/main/java/com/alipay/sofa/rpc/tracer/sofatracer/RpcSofaTracer.java
+Patch:
+@@ -268,6 +268,9 @@ public void clientReceived(SofaRequest request, SofaResponse response, Throwable
+                 clientSpan.setTag(RpcSpanTags.LOCAL_IP, NetUtils.toIpString(address));
+                 clientSpan.setTag(RpcSpanTags.LOCAL_PORT, address.getPort());
+             }
++
++            //adjust for generic invoke
++            clientSpan.setTag(RpcSpanTags.METHOD, request.getMethodName());
+         }
+ 
+         Throwable throwableShow = exceptionThrow;
+
+File: extension-impl/remoting-bolt/src/main/java/com/alipay/sofa/rpc/filter/ConsumerGenericFilter.java
+Patch:
+@@ -74,7 +74,7 @@ public SofaResponse invoke(FilterInvoker invoker, SofaRequest request) throws So
+             // 修正超时时间
+             Long clientTimeout = getClientTimeoutFromGenericContext(request.getMethodName(),
+                 request.getMethodArgs());
+-            if (clientTimeout != null) {
++            if (clientTimeout != null && clientTimeout != 0) {
+                 request.setTimeout(clientTimeout.intValue());
+             }
+ 
+
+File: extension-impl/registry-mesh/src/main/java/com/alipay/sofa/rpc/registry/mesh/MeshRegistry.java
+Patch:
+@@ -17,7 +17,6 @@
+ package com.alipay.sofa.rpc.registry.mesh;
+ 
+ import com.alipay.sofa.rpc.client.ProviderGroup;
+-import com.alipay.sofa.rpc.client.ProviderHelper;
+ import com.alipay.sofa.rpc.client.ProviderInfo;
+ import com.alipay.sofa.rpc.common.struct.NamedThreadFactory;
+ import com.alipay.sofa.rpc.common.utils.CommonUtils;
+@@ -248,6 +247,8 @@ public void batchUnRegister(List<ProviderConfig> configs) {
+     @Override
+     public List<ProviderGroup> subscribe(final ConsumerConfig config) {
+ 
++        final ProviderInfoListener providerInfoListener = config.getProviderInfoListener();
++
+         asyncCreateConnectionExecutor.execute(new Runnable() {
+             @Override
+             public void run() {
+@@ -271,7 +272,7 @@ public void run() {
+ 
+                 String url = fillProtocolAndVersion(subscribeServiceResult, client.getHost(), "", config.getProtocol());
+ 
+-                ProviderInfo providerInfo = ProviderHelper.toProviderInfo(url);
++                ProviderInfo providerInfo = SofaRegistryHelper.parseProviderInfo(url);
+                 providerInfos.add(providerInfo);
+                 providerGroup.setProviderInfos(providerInfos);
+ 
+@@ -282,7 +283,6 @@ public void run() {
+                     EventBus.post(event);
+                 }
+ 
+-                final ProviderInfoListener providerInfoListener = config.getProviderInfoListener();
+                 if (providerInfoListener != null) {
+                     providerInfoListener.updateAllProviders(providerGroups);
+                 }
+
+File: extension-impl/registry-mesh/src/main/java/com/alipay/sofa/rpc/registry/mesh/MeshRegistryHelper.java
+Patch:
+@@ -64,4 +64,5 @@ public static ProviderInfo convertProviderToProviderInfo(ProviderConfig config,
+     public static String buildMeshKey(AbstractInterfaceConfig config, String protocol) {
+         return ConfigUniqueNameGenerator.getUniqueName(config);
+     }
++
+ }
+
+File: extension-impl/registry-mesh/src/main/java/com/alipay/sofa/rpc/registry/mesh/MeshRegistryHelper.java
+Patch:
+@@ -44,7 +44,8 @@ public static ProviderInfo convertProviderToProviderInfo(ProviderConfig config,
+             .setWeight(config.getWeight())
+             .setSerializationType(config.getSerialization())
+             .setProtocolType(server.getProtocol())
+-            .setPath(server.getContextPath());
++            .setPath(server.getContextPath())
++            .setStaticAttrs(config.getParameters());
+         String host = server.getHost();
+         if (NetUtils.isLocalHost(host) || NetUtils.isAnyHost(host)) {
+             host = SystemInfo.getLocalHost();
+
+File: extension-impl/registry-mesh/src/main/java/com/alipay/sofa/rpc/registry/mesh/model/SubscribeServiceResult.java
+Patch:
+@@ -20,7 +20,8 @@
+ import java.util.List;
+ 
+ /**
+- * @author <a href=mailto:leizhiyuan@gmail.com>leizhiyuan</a>
++ * @author bystander
++ * @version $Id: PublishServiceRequest.java, v 0.1 2018年04月03日 11:27 AM bystander Exp $
+  */
+ public class SubscribeServiceResult {
+ 
+@@ -74,4 +75,4 @@ public String toString() {
+         sb.append('}');
+         return sb.toString();
+     }
+-}
+\ No newline at end of file
++}
+
+File: extension-impl/registry-mesh/src/main/java/com/alipay/sofa/rpc/registry/mesh/model/UnSubscribeServiceResult.java
+Patch:
+@@ -17,7 +17,8 @@
+ package com.alipay.sofa.rpc.registry.mesh.model;
+ 
+ /**
+- * @author <a href=mailto:leizhiyuan@gmail.com>leizhiyuan</a>
++ * @author bystander
++ * @version $Id: PublishServiceRequest.java, v 0.1 2018年04月03日 11:27 AM bystander Exp $
+  */
+ public class UnSubscribeServiceResult {
+ 
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/protocol/telnet/HelpTelnetHandler.java
+Patch:
+@@ -51,7 +51,7 @@ public String telnet(AbstractChannel channel, String message) {
+             result.append("The supported command include:").append(LINE);
+             for (Map.Entry<String, TelnetHandler> entry : TelnetHandlerFactory.getAllHandlers().entrySet()) {
+                 result.append(entry.getKey()).append(" ");
+-                //result.append(entry.getKey() + "\t : " + entry.getValue().getDescription() + "\r\n");
++                //result.append(entry.fetchKey() + "\t : " + entry.getValue().getDescription() + "\r\n");
+             }
+             result.append(LINE);
+         }
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/FailoverCluster.java
+Patch:
+@@ -78,6 +78,7 @@ public SofaResponse doInvoke(SofaRequest request) throws SofaRpcException {
+                     throwable = new SofaRpcException(RpcErrorType.CLIENT_UNDECLARED_ERROR,
+                         "Failed to call " + request.getInterfaceName() + "." + methodName
+                             + " on remote server " + providerInfo + ", return null");
++                    time++;
+                 }
+             } catch (SofaRpcException e) { // 服务端异常+ 超时异常 才发起rpc异常重试
+                 if (e.getErrorType() == RpcErrorType.SERVER_BUSY
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/AllConnectConnectionHolder.java
+Patch:
+@@ -631,6 +631,7 @@ protected Map<ProviderInfo, ClientTransport> clearProviders() {
+             aliveConnections.clear();
+             retryConnections.clear();
+             uninitializedConnections.clear();
++            lastAddresses.clear();
+             return all;
+         } finally {
+             providerLock.unlock();
+
+File: extension-impl/tracer-opentracing-resteasy/src/main/java/com/alipay/sofa/rpc/tracer/sofatracer/RestTracerAdapter.java
+Patch:
+@@ -46,8 +46,8 @@
+ import static com.alipay.sofa.rpc.common.RpcConstants.INTERNAL_KEY_APP_NAME;
+ 
+ /**
+- * 客户端：startRpc ——> filter --> beforeSend --> 存入tracer信息 --> clientReceived
+- * 服务端：serverReceived --> filter --> serverSend
++ * 客户端：startRpc ——&gt; filter --&gt; beforeSend --&gt; 存入tracer信息 --&gt; clientReceived
++ * 服务端：serverReceived --&gt; filter --&gt; serverSend
+  *
+  * @author <a href="mailto:lw111072@antfin.com">LiWei.Liangen</a>
+  */
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/SofaRestRequestHandler.java
+Patch:
+@@ -23,14 +23,15 @@
+ import com.alipay.sofa.rpc.event.ServerEndHandleEvent;
+ import com.alipay.sofa.rpc.event.rest.RestServerReceiveEvent;
+ import com.alipay.sofa.rpc.event.rest.RestServerSendEvent;
++import com.alipay.sofa.rpc.log.Logger;
++import com.alipay.sofa.rpc.log.LoggerFactory;
+ import com.alipay.sofa.rpc.lookout.RestLookoutAdapter;
+ import io.netty.channel.ChannelFutureListener;
+ import io.netty.channel.ChannelHandlerContext;
+ import io.netty.channel.SimpleChannelInboundHandler;
+ import io.netty.handler.codec.TooLongFrameException;
+ import io.netty.handler.codec.http.DefaultHttpResponse;
+ import io.netty.handler.codec.http.HttpResponse;
+-import org.jboss.resteasy.logging.Logger;
+ import org.jboss.resteasy.plugins.server.netty.NettyHttpRequest;
+ import org.jboss.resteasy.plugins.server.netty.NettyHttpResponse;
+ import org.jboss.resteasy.plugins.server.netty.RequestDispatcher;
+@@ -52,7 +53,7 @@
+  */
+ public class SofaRestRequestHandler extends SimpleChannelInboundHandler {
+     protected final RequestDispatcher dispatcher;
+-    private final static Logger       logger = Logger.getLogger(SofaRestRequestHandler.class);
++    private final static Logger       logger = LoggerFactory.getLogger(SofaRestRequestHandler.class);
+ 
+     public SofaRestRequestHandler(RequestDispatcher dispatcher) {
+         this.dispatcher = dispatcher;
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/ElasticConnectionHolder.java
+Patch:
+@@ -36,7 +36,7 @@
+ 
+ import static com.alipay.sofa.rpc.common.RpcConfigs.getIntValue;
+ import static com.alipay.sofa.rpc.common.RpcOptions.CONCUMER_CONNECT_ELASTIC_SIZE;
+-import static com.alipay.sofa.rpc.common.RpcOptions.CONSUMER_CONNECT_ELASTIC_PRECENT;
++import static com.alipay.sofa.rpc.common.RpcOptions.CONSUMER_CONNECT_ELASTIC_PERCENT;
+ 
+ /**
+  * 弹性长连接，可按百分比配置以及按个数配置
+@@ -56,7 +56,7 @@ public class ElasticConnectionHolder extends AllConnectConnectionHolder {
+     /**
+      * 弹性连接，初始化连接百分比数
+      */
+-    protected int               elasticConnectPercent = getIntValue(CONSUMER_CONNECT_ELASTIC_PRECENT);
++    protected int               elasticConnectPercent = getIntValue(CONSUMER_CONNECT_ELASTIC_PERCENT);
+ 
+     /**
+      * 弹性连接，初始化连接数
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/common/RpcOptions.java
+Patch:
+@@ -362,7 +362,7 @@ public class RpcOptions {
+      *
+      * @since 5.5.0
+      */
+-    public static final String CONSUMER_CONNECT_ELASTIC_PRECENT         = "consumer.connect.elastic.precent";
++    public static final String CONSUMER_CONNECT_ELASTIC_PERCENT         = "consumer.connect.elastic.percent";
+     /**
+      * 初始化连接时建立连接的个数
+      *
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/ext/Extension.java
+Patch:
+@@ -48,7 +48,7 @@
+     byte code() default -1;
+ 
+     /**
+-     * 优先级排序，默认不需要，大的优先级高
++     * 优先级排序，默认不需要
+      *
+      * @return 排序
+      */
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/AbstractLoadBalancer.java
+Patch:
+@@ -69,7 +69,7 @@ protected SofaRouteException noAvailableProviderException(String serviceKey) {
+      * @param providerInfos 全部服务端连接
+      * @return 服务端连接 provider
+      */
+-    public abstract ProviderInfo doSelect(SofaRequest invocation, List<ProviderInfo> providerInfos);
++    protected abstract ProviderInfo doSelect(SofaRequest invocation, List<ProviderInfo> providerInfos);
+ 
+     /**
+      * Gets weight.
+
+File: extension-impl/extension-common/src/main/java/com/alipay/sofa/rpc/bootstrap/DefaultProviderBootstrap.java
+Patch:
+@@ -266,8 +266,8 @@ protected void checkMethods(Class<?> itfClass) {
+                 include = inList(providerConfig.getInclude(), providerConfig.getExclude(), methodName); // 检查是否在黑白名单中
+                 methodsLimit.putIfAbsent(methodName, include);
+             }
+-            providerConfig.setMethodsLimit(methodsLimit);
+         }
++        providerConfig.setMethodsLimit(methodsLimit);
+     }
+ 
+     @Override
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/event/EventBus.java
+Patch:
+@@ -132,7 +132,7 @@ public void run() {
+                                     try {
+                                         RpcInternalContext.setContext(context);
+                                         handleEvent(subscriber, event);
+-                                    } catch (Exception e) {
++                                    } finally {
+                                         RpcInternalContext.removeContext();
+                                     }
+                                 }
+
+File: core/api/src/test/java/com/alipay/sofa/rpc/ext/TestRejectionOrder.java
+Patch:
+@@ -21,7 +21,7 @@
+ import org.junit.Test;
+ 
+ /**
+- * 测试 https://github.com/alipay/sofa-rpc/issues/367
++ * 测试 https://github.com/sofastack/sofa-rpc/issues/367
+  */
+ public class TestRejectionOrder {
+ 
+
+File: core/api/src/test/java/com/alipay/sofa/rpc/filter/FilterChainTest.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package com.alipay.sofa.rpc.filter;
+ 
++import com.alipay.sofa.rpc.codec.Serializer;
+ import com.alipay.sofa.rpc.config.ConsumerConfig;
+ import com.alipay.sofa.rpc.config.ProviderConfig;
+ import com.alipay.sofa.rpc.core.request.SofaRequest;
+@@ -38,6 +39,7 @@ public void buildProviderChain() {
+ 
+         ProviderConfig providerConfig = new ProviderConfig();
+         providerConfig.setFilter(Arrays.asList("testChainFilter0", "-testChainFilter8"));
++        providerConfig.setInterfaceId(Serializer.class.getName());
+ 
+         ConsumerConfig consumerConfig = new ConsumerConfig();
+         ArrayList<Filter> list = new ArrayList<Filter>();
+@@ -48,6 +50,7 @@ public void buildProviderChain() {
+         list.add(new TestChainFilter4());
+         list.add(new ExcludeFilter("-testChainFilter5"));
+         consumerConfig.setFilterRef(list);
++        consumerConfig.setInterfaceId(Serializer.class.getName());
+ 
+         // mock provider chain (0,6,7）
+         FilterChain providerChain = FilterChain.buildProviderChain(providerConfig,
+
+File: extension-impl/registry-sofa/src/main/java/com/alipay/sofa/rpc/registry/sofa/SofaRegistryClient.java
+Patch:
+@@ -25,9 +25,9 @@
+ 
+ /**
+  * @author bystander
+- * @version $Id: SofaRegsitryClient.java, v 0.1 2018年03月13日 10:20 AM bystander Exp $
++ * @version $Id: SofaRegistryClient.java, v 0.1 2018年03月13日 10:20 AM bystander Exp $
+  */
+-public class SofaRegsitryClient {
++public class SofaRegistryClient {
+ 
+     public static final String    LOCAL_DATACENTER = "DefaultDataCenter";
+     public static final String    LOCAL_REGION     = "DEFAULT_ZONE";
+
+File: extension-impl/tracer-opentracing/src/main/java/com/alipay/sofa/rpc/tracer/sofatracer/RpcSofaTracer.java
+Patch:
+@@ -345,8 +345,9 @@ public void clientReceived(SofaRequest request, SofaResponse response, Throwable
+                 throwableShow = new SofaRpcException(RpcErrorType.SERVER_UNDECLARED_ERROR, response.getErrorMsg());
+             } else {
+                 Object ret = response.getAppResponse();
+-                if (ret instanceof Throwable) {
+-                    throwableShow = (Throwable) ret;
++                //for server throw exception ,but this class can not be found in current
++                if (ret instanceof Throwable ||
++                    "true".equals(response.getResponseProp(RemotingConstants.HEAD_RESPONSE_ERROR))) {
+                     errorSourceApp = clientSpan.getTagsWithStr().get(RpcSpanTags.REMOTE_APP);
+                     // 业务异常
+                     resultCode = TracerResultCode.RPC_RESULT_BIZ_FAILED;
+
+File: extension-impl/fault-hystrix/src/main/java/com/alipay/sofa/rpc/hystrix/HystrixFilter.java
+Patch:
+@@ -73,7 +73,7 @@ public SofaResponse invoke(FilterInvoker invoker, SofaRequest request) throws So
+         if (RpcConstants.INVOKER_TYPE_SYNC.equals(request.getInvokeType())) {
+             command = new SofaHystrixCommand(invoker, request);
+         } else if (RpcConstants.INVOKER_TYPE_FUTURE.equals(request.getInvokeType())) {
+-            command = new SofaHystrixObservableCommand(invoker, request);
++            command = new SofaAsyncHystrixCommand(invoker, request);
+         } else {
+             return invoker.invoke(request);
+         }
+
+File: extension-impl/fault-hystrix/src/main/java/com/alipay/sofa/rpc/hystrix/SofaHystrixInvokable.java
+Patch:
+@@ -19,7 +19,7 @@
+ import com.alipay.sofa.rpc.core.response.SofaResponse;
+ 
+ /**
+- * Basic interface for {@link SofaHystrixCommand} and {@link SofaHystrixObservableCommand}
++ * Basic interface for {@link SofaHystrixCommand} and {@link SofaAsyncHystrixCommand}
+  *
+  * @author <a href=mailto:scienjus@gmail.com>ScienJus</a>
+  */
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/RestServer.java
+Patch:
+@@ -77,7 +77,7 @@ public void init(ServerConfig serverConfig) {
+         httpServer = buildServer();
+     }
+ 
+-    private SofaNettyJaxrsServer buildServer() {
++    protected SofaNettyJaxrsServer buildServer() {
+         // 生成Server对象
+         SofaNettyJaxrsServer httpServer = new SofaNettyJaxrsServer(serverConfig);
+ 
+@@ -99,7 +99,7 @@ private SofaNettyJaxrsServer buildServer() {
+         return httpServer;
+     }
+ 
+-    private void registerProvider(ResteasyProviderFactory providerFactory) {
++    protected void registerProvider(ResteasyProviderFactory providerFactory) {
+         // 注册内置
+         Set<Class> internalProviderClasses = JAXRSProviderManager.getInternalProviderClasses();
+         if (CommonUtils.isNotEmpty(internalProviderClasses)) {
+
+File: extension-impl/fault-tolerance/src/main/java/com/alipay/sofa/rpc/client/aft/DegradeStrategy.java
+Patch:
+@@ -23,7 +23,7 @@
+  * 
+  * @author <a href="mailto:lw111072@antfin.com">liangen</a>
+  */
+-@Extensible
++@Extensible(singleton = false)
+ public interface DegradeStrategy {
+ 
+     /**
+
+File: extension-impl/fault-tolerance/src/main/java/com/alipay/sofa/rpc/client/aft/MeasureStrategy.java
+Patch:
+@@ -24,7 +24,7 @@
+  * @author <a href="mailto:lw111072@antfin.com">liangen</a>
+  * @author <a href="mailto:zhanggeng.zg@antfin.com">GengZhang</a>
+  */
+-@Extensible
++@Extensible(singleton = false)
+ public interface MeasureStrategy {
+ 
+     /**
+
+File: extension-impl/fault-tolerance/src/main/java/com/alipay/sofa/rpc/client/aft/RecoverStrategy.java
+Patch:
+@@ -23,7 +23,7 @@
+  * 
+  * @author <a href="mailto:lw111072@antfin.com">liangen</a>
+  */
+-@Extensible
++@Extensible(singleton = false)
+ public interface RecoverStrategy {
+ 
+     /**
+
+File: extension-impl/fault-tolerance/src/main/java/com/alipay/sofa/rpc/client/aft/RegulationStrategy.java
+Patch:
+@@ -23,7 +23,7 @@
+  *
+  * @author <a href="mailto:lw111072@antfin.com">liangen</a>
+  */
+-@Extensible
++@Extensible(singleton = false)
+ public interface RegulationStrategy {
+ 
+     /**
+
+File: extension-impl/fault-tolerance/src/main/java/com/alipay/sofa/rpc/client/aft/Regulator.java
+Patch:
+@@ -16,11 +16,14 @@
+  */
+ package com.alipay.sofa.rpc.client.aft;
+ 
++import com.alipay.sofa.rpc.ext.Extensible;
++
+ /**
+  * Regulator of adaptive fault tolerance
+  *
+  * @author <a href="mailto:zhanggeng.zg@antfin.com">GengZhang</a>
+  */
++@Extensible(singleton = false)
+ public interface Regulator {
+ 
+     /**
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/RestServer.java
+Patch:
+@@ -206,14 +206,16 @@ public void registerProcessor(ProviderConfig providerConfig, Invoker instance) {
+             LOGGER.info("Register jaxrs service to base url http://" + serverConfig.getHost() + ":"
+                 + serverConfig.getPort() + serverConfig.getContextPath());
+         }
++        Object obj = null;
+         try {
+-            Object obj = ProxyFactory.buildProxy(providerConfig.getProxy(), providerConfig.getProxyClass(), instance);
++            obj = ProxyFactory.buildProxy(providerConfig.getProxy(), providerConfig.getProxyClass(), instance);
+             httpServer.getDeployment().getRegistry()
+                 .addResourceFactory(new SofaResourceFactory(providerConfig, obj), serverConfig.getContextPath());
+ 
+             invokerCnt.incrementAndGet();
+         } catch (Exception e) {
+             LOGGER.error("Register jaxrs service error", e);
++            throw new SofaRpcRuntimeException("Register jaxrs service error", e);
+         }
+     }
+ 
+
+File: extension-impl/bootstrap-bolt/src/main/java/com/alipay/sofa/rpc/bootstrap/bolt/BoltClientProxyInvoker.java
+Patch:
+@@ -58,7 +58,7 @@ protected Byte parseSerializeType(String serialization) {
+         } else if (SERIALIZE_JAVA.equals(serialization)) {
+             serializeType = RemotingConstants.SERIALIZE_CODE_JAVA;
+         } else {
+-            throw new SofaRpcRuntimeException("Unsupported serialization type");
++            serializeType = super.parseSerializeType(serialization);
+         }
+         return serializeType;
+     }
+
+File: core-impl/filter/src/main/java/com/alipay/sofa/rpc/filter/BeanIdMatchFilter.java
+Patch:
+@@ -48,8 +48,8 @@ public abstract class BeanIdMatchFilter extends Filter {
+     private List<String>        effectiveId;
+     private List<String>        excludeId;
+ 
+-    private boolean             formatComplete;
+-    private Object              formatLock   = new Object();
++    private volatile boolean    formatComplete;
++    private final Object        formatLock   = new Object();
+ 
+     @Override
+     public boolean needToLoad(FilterInvoker invoker) {
+@@ -122,4 +122,4 @@ public String getIdRule() {
+     public void setIdRule(String idRule) {
+         this.idRule = idRule;
+     }
+-}
+\ No newline at end of file
++}
+
+File: extension-impl/remoting-http/src/main/java/com/alipay/sofa/rpc/transport/http/AbstractHttp2ServerTransport.java
+Patch:
+@@ -62,12 +62,12 @@ protected AbstractHttp2ServerTransport(ServerTransportConfig transportConfig) {
+     /**
+      * ServerBootstrap
+      */
+-    private ServerBootstrap serverBootstrap;
++    private volatile ServerBootstrap serverBootstrap;
+ 
+     /**
+      * 业务线程池
+      */
+-    private EventLoopGroup  bizGroup;
++    private EventLoopGroup           bizGroup;
+ 
+     @Override
+     public boolean start() {
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/RestServer.java
+Patch:
+@@ -27,6 +27,7 @@
+ import com.alipay.sofa.rpc.invoke.Invoker;
+ import com.alipay.sofa.rpc.log.Logger;
+ import com.alipay.sofa.rpc.log.LoggerFactory;
++import com.alipay.sofa.rpc.proxy.ProxyFactory;
+ import com.alipay.sofa.rpc.server.Server;
+ import org.jboss.resteasy.plugins.interceptors.CorsFilter;
+ import org.jboss.resteasy.spi.PropertyInjector;
+@@ -204,8 +205,9 @@ public void registerProcessor(ProviderConfig providerConfig, Invoker instance) {
+                 + serverConfig.getPort() + serverConfig.getContextPath());
+         }
+         try {
++            Object obj = ProxyFactory.buildProxy(providerConfig.getProxy(), providerConfig.getProxyClass(), instance);
+             httpServer.getDeployment().getRegistry()
+-                .addResourceFactory(new SofaResourceFactory(providerConfig), serverConfig.getContextPath());
++                .addResourceFactory(new SofaResourceFactory(providerConfig, obj), serverConfig.getContextPath());
+ 
+             invokerCnt.incrementAndGet();
+         } catch (Exception e) {
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/SofaResourceFactory.java
+Patch:
+@@ -31,8 +31,8 @@ public class SofaResourceFactory extends SingletonResource {
+     private final String         serviceName;
+     private final String         appName;
+ 
+-    public SofaResourceFactory(ProviderConfig providerConfig) {
+-        super(providerConfig.getRef());
++    public SofaResourceFactory(ProviderConfig providerConfig, Object object) {
++        super(object);
+         this.providerConfig = providerConfig;
+         // 缓存服务名计算和应用名计算
+         this.serviceName = ConfigUniqueNameGenerator.getServiceName(providerConfig);
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/server/rest/ClientRequestTestFilter.java
+Patch:
+@@ -45,13 +45,13 @@ public class ClientRequestTestFilter implements ClientRequestFilter {
+     public void filter(ClientRequestContext requestContext) throws IOException {
+         LOGGER.info("客户端request filter生效");
+         name = "A";
+-        LOGGER.info("客户端customerAnnotion  code:" + code);
++        LOGGER.info("客户端customerAnnotation  code:" + code);
+     }
+ 
+     @CustomerAnnotation()
+     public void setCode(String code2) {
+         this.code2 = code2;
+-        LOGGER.info("客户端customerAnnotion  code2:" + this.code2);
++        LOGGER.info("客户端customerAnnotation  code2:" + this.code2);
+ 
+     }
+ 
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/server/rest/RestTracerTest.java
+Patch:
+@@ -32,7 +32,7 @@
+ import com.alipay.sofa.rpc.tracer.Tracers;
+ import com.alipay.sofa.rpc.tracer.sofatracer.RpcSofaTracer;
+ import com.alipay.sofa.rpc.tracer.sofatracer.factory.MemoryReporterImpl;
+-import junit.framework.Assert;
++import org.junit.Assert;
+ import org.junit.After;
+ import org.junit.Before;
+ import org.junit.Test;
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/common/RpcConfigs.java
+Patch:
+@@ -182,7 +182,7 @@ public static int getIntValue(String primaryKey) {
+         if (val == null) {
+             throw new SofaRpcRuntimeException("Not found key: " + primaryKey);
+         } else {
+-            return Integer.valueOf(val.toString());
++            return Integer.parseInt(val.toString());
+         }
+     }
+ 
+@@ -201,7 +201,7 @@ public static int getIntValue(String primaryKey, String secondaryKey) {
+                 throw new SofaRpcRuntimeException("Not found key: " + primaryKey + "/" + secondaryKey);
+             }
+         }
+-        return Integer.valueOf(val.toString());
++        return Integer.parseInt(val.toString());
+     }
+ 
+     /**
+
+File: core/common/src/main/java/com/alipay/sofa/rpc/common/json/JSONSerializer.java
+Patch:
+@@ -277,7 +277,7 @@ protected Object nextValue() throws ParseException {
+             char b = "-+".indexOf(substr.charAt(0)) < 0 ? substr.charAt(0) : substr.charAt(1);
+             if (b >= '0' && b <= '9') {
+                 try {
+-                    Long l = new Long(substr.trim());
++                    Long l = Long.valueOf(substr.trim());
+                     if (l.intValue() == l) {
+                         return l.intValue();
+                     }
+
+File: extension-impl/registry-consul/src/main/java/com/alipay/sofa/rpc/registry/consul/ConsulRegistry.java
+Patch:
+@@ -152,11 +152,11 @@ public String[] validateIp(RegistryConfig registryConfig) {
+     private ConsulService buildConsulHealthService(ConsulURL url) {
+         return ConsulService.newService()//
+             .withAddress(url.getHost())//
+-            .withPort(Integer.valueOf(url.getPort()).toString())//
++            .withPort(Integer.toString(url.getPort()))//
+             .withName(ConsulURLUtils.toServiceName(url.getGroup()))//
+             .withTag(ConsulURLUtils.healthServicePath(url, ThrallRoleType.PROVIDER))//
+             .withId(url.getHost() + ":" + url.getPort() + "-" + url.getPath() + "-" + url.getVersion())//
+-            .withCheckInterval(Integer.valueOf(ConsulConstants.TTL).toString()).build();
++            .withCheckInterval(Integer.toString(ConsulConstants.TTL)).build();
+     }
+ 
+     private ConsulEphemeralNode buildEphemralNode(ConsulURL url, ThrallRoleType roleType) {
+@@ -448,7 +448,7 @@ public void run() {
+ 
+     private Map<String, List<ConsulURL>> lookupServiceUpdate(String group) {
+         Long lastConsulIndexId =
+-                lookupGroupServices.get(group) == null ? 0L : lookupGroupServices.get(group);
++                lookupGroupServices.get(group) == null ? Long.valueOf(0L) : lookupGroupServices.get(group);
+         String serviceName = ConsulURLUtils.toServiceName(group);
+         ConsulServiceResp consulResp = consulManager.lookupHealthService(serviceName, lastConsulIndexId);
+         if (consulResp != null) {
+
+File: extension-impl/registry-consul/src/main/java/com/alipay/sofa/rpc/registry/consul/ConsulRegistry.java
+Patch:
+@@ -41,7 +41,7 @@
+ import com.alipay.sofa.rpc.registry.consul.model.ConsulEphemeralNode;
+ import com.alipay.sofa.rpc.registry.consul.model.ConsulService;
+ import com.alipay.sofa.rpc.registry.consul.model.ConsulServiceResp;
+-import com.alipay.sofa.rpc.registry.consul.model.NotifyConsumerListner;
++import com.alipay.sofa.rpc.registry.consul.model.NotifyConsumerListener;
+ import com.alipay.sofa.rpc.registry.consul.model.NotifyListener;
+ import com.alipay.sofa.rpc.registry.consul.model.ThrallRoleType;
+ import com.google.common.cache.Cache;
+@@ -334,7 +334,7 @@ public List<ProviderGroup> subscribe(ConsumerConfig config) {
+                     result.addAll(ConsulRegistryHelper.matchProviderInfos(config, matchProviders));
+                 }
+ 
+-                NotifyConsumerListner listener = new NotifyConsumerListner(consulURL, matchConsulUrls);
++                NotifyConsumerListener listener = new NotifyConsumerListener(consulURL, matchConsulUrls);
+ 
+                 consumerUrls.put(config, url);
+ 
+
+File: extension-impl/registry-consul/src/main/java/com/alipay/sofa/rpc/registry/consul/model/NotifyConsumerListener.java
+Patch:
+@@ -26,13 +26,13 @@
+  *
+  * @author <a href=mailto:preciousdp11@gmail.com>dingpeng</a>
+  */
+-public class NotifyConsumerListner implements NotifyListener {
++public class NotifyConsumerListener implements NotifyListener {
+ 
+     private ConsulURL                        subscribeUrl;
+ 
+     private AtomicReference<List<ConsulURL>> providerUrls;
+ 
+-    public NotifyConsumerListner(ConsulURL subscribeUrl, List<ConsulURL> urls) {
++    public NotifyConsumerListener(ConsulURL subscribeUrl, List<ConsulURL> urls) {
+ 
+         this.subscribeUrl = subscribeUrl;
+         this.providerUrls = new AtomicReference<List<ConsulURL>>(urls);
+
+File: extension-impl/registry-local/src/main/java/com/alipay/sofa/rpc/registry/local/LocalRegistryHelper.java
+Patch:
+@@ -72,7 +72,7 @@ public class LocalRegistryHelper {
+     public static boolean checkModified(String address, String lastDigest) {
+         // 检查文件是否被修改了
+         String newDigest = calMD5Checksum(address);
+-        return StringUtils.equals(newDigest, lastDigest);
++        return !StringUtils.equals(newDigest, lastDigest);
+     }
+ 
+     /**
+
+File: extension-impl/registry-local/src/test/java/com/alipay/sofa/rpc/registry/local/LocalRegistryHelperTest.java
+Patch:
+@@ -56,6 +56,8 @@ public void testModify() {
+         String newDigest = LocalRegistryHelper.calMD5Checksum(filePath);
+ 
+         Assert.assertNotSame("digest不能一样", oldDigest, newDigest);
++        Assert.assertTrue(LocalRegistryHelper.checkModified(filePath, oldDigest));
++        Assert.assertFalse(LocalRegistryHelper.checkModified(filePath, newDigest));
+     }
+ 
+     @Test
+@@ -75,5 +77,6 @@ public void testNotModify() {
+         String newDigest = LocalRegistryHelper.calMD5Checksum(filePath);
+ 
+         Assert.assertEquals("digest不一样", oldDigest, newDigest);
++        Assert.assertFalse(LocalRegistryHelper.checkModified(filePath, oldDigest));
+     }
+ }
+\ No newline at end of file
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/filter/FilterInvoker.java
+Patch:
+@@ -91,7 +91,7 @@ public FilterInvoker(Filter nextFilter, FilterInvoker invoker, AbstractInterface
+     @Override
+     public SofaResponse invoke(SofaRequest request) throws SofaRpcException {
+         if (nextFilter == null && invoker == null) {
+-            throw new SofaRpcException(RpcErrorType.SERVER_FILTER, "Next filter or invoker is null!");
++            throw new SofaRpcException(RpcErrorType.SERVER_FILTER, "Next filter and invoker is null!");
+         }
+         return nextFilter == null ?
+             invoker.invoke(request) :
+
+File: core-impl/client/src/test/java/com/alipay/sofa/rpc/client/lb/WeightRoundRobinLoadBalancerV2Test.java
+Patch:
+@@ -24,7 +24,7 @@
+  *
+  * @author <a href="mailto:zhanggeng.zg@antfin.com">GengZhang</a>
+  */
+-public class WeightRoundRobinLoadBalancerV2Test {
++public class WeightRoundRobinLoadBalancerV2Test extends BaseLoadBalancerTest {
+ 
+     /**
+      * 上次选择的服务器
+@@ -131,7 +131,7 @@ public static void main(String args[]) {
+ 
+         for (int i = 0; i < 15; i++) {
+             Server server = weightRoundRobin.getServer();
+-            System.out.println("server " + server.getIp() + " weight=" + server.getWeight());
++            LOGGER.info("server " + server.getIp() + " weight=" + server.getWeight());
+         }
+     }
+ 
+
+File: extension-impl/fault-tolerance/src/test/java/com/alipay/sofa/rpc/client/aft/FaultBaseServiceTest.java
+Patch:
+@@ -20,6 +20,8 @@
+ import com.alipay.sofa.rpc.client.aft.bean.HelloServiceTimeOutImpl;
+ import com.alipay.sofa.rpc.context.RpcInternalContext;
+ import com.alipay.sofa.rpc.context.RpcInvokeContext;
++import com.alipay.sofa.rpc.log.Logger;
++import com.alipay.sofa.rpc.log.LoggerFactory;
+ import org.junit.After;
+ import org.junit.Before;
+ 
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/bootstrap/ProviderBootstrap.java
+Patch:
+@@ -56,7 +56,7 @@ public ProviderConfig<T> getProviderConfig() {
+     public abstract void export();
+ 
+     /**
+-     * 反引用一个服务
++     * 取消发布一个服务
+      */
+     public abstract void unExport();
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/ServerConfig.java
+Patch:
+@@ -119,7 +119,7 @@ public class ServerConfig extends AbstractIdConfig implements Serializable {
+     protected String                          queueType        = getStringValue(SERVER_POOL_QUEUE_TYPE);
+ 
+     /**
+-     * 业务线程池回收时间
++     * 业务线程池队列大小
+      */
+     protected int                             queues           = getIntValue(SERVER_POOL_QUEUE);
+ 
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/codec/Compressor.java
+Patch:
+@@ -31,13 +31,13 @@ public interface Compressor {
+      * @param src 未压缩的字节数组
+      * @return 压缩后的字节数组
+      */
+-    public byte[] compress(byte[] src);
++    byte[] compress(byte[] src);
+ 
+     /**
+      * 字节数组解压缩
+      *
+      * @param src 压缩后的源字节数组
+      * @return 解压缩后的字节数组
+      */
+-    public byte[] deCompress(byte[] src);
++    byte[] deCompress(byte[] src);
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/codec/Serializer.java
+Patch:
+@@ -40,7 +40,7 @@ public interface Serializer {
+      * @return 序列化后的对象
+      * @throws SofaRpcException 序列化异常
+      */
+-    public AbstractByteBuf encode(Object object, Map<String, String> context) throws SofaRpcException;
++    AbstractByteBuf encode(Object object, Map<String, String> context) throws SofaRpcException;
+ 
+     /**
+      * 反序列化，只有类型，返回对象
+@@ -51,7 +51,7 @@ public interface Serializer {
+      * @return 反序列化后的对象
+      * @throws SofaRpcException 序列化异常
+      */
+-    public Object decode(AbstractByteBuf data, Class clazz, Map<String, String> context) throws SofaRpcException;
++    Object decode(AbstractByteBuf data, Class clazz, Map<String, String> context) throws SofaRpcException;
+ 
+     /**
+      * 反序列化，已有数据，填充字段
+@@ -61,5 +61,5 @@ public interface Serializer {
+      * @param context  上下文
+      * @throws SofaRpcException 序列化异常
+      */
+-    public void decode(AbstractByteBuf data, Object template, Map<String, String> context) throws SofaRpcException;
++    void decode(AbstractByteBuf data, Object template, Map<String, String> context) throws SofaRpcException;
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/common/struct/Cache.java
+Patch:
+@@ -29,21 +29,21 @@ public interface Cache {
+      * @param args        方法参数
+      * @return 关键字，可以返回null
+      */
+-    public Object buildKey(String interfaceId, String methodName, Object[] args);
++    Object buildKey(String interfaceId, String methodName, Object[] args);
+ 
+     /**
+      * 放入缓存
+      *
+      * @param key    方法参数得到的关键字
+      * @param result 缓存的调用结果
+      */
+-    public void put(Object key, Object result);
++    void put(Object key, Object result);
+ 
+     /**
+      * 拿出缓存
+      *
+      * @param key 方法参数得到的关键字
+      * @return 缓存的调用结果
+      */
+-    public Object get(Object key);
++    Object get(Object key);
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/core/invoke/SendableResponseCallback.java
+Patch:
+@@ -31,19 +31,19 @@ public interface SendableResponseCallback<T> extends SofaResponseCallback<T> {
+      *
+      * @param appResponse 返回给A的值
+      */
+-    public void sendAppResponse(Object appResponse);
++    void sendAppResponse(Object appResponse);
+ 
+     /**
+      * A-&gt;B(当前)-&gt;C的场景下，B将异常异步返回给调用者A
+      *
+      * @param throwable 返回给A的异常
+      */
+-    public void sendAppException(Throwable throwable);
++    void sendAppException(Throwable throwable);
+ 
+     /**
+      * A-&gt;B(当前)-&gt;C的场景下，B将异常异步返回给调用者A
+      *
+      * @param exception 返回给A的异常
+      */
+-    public void sendSofaException(SofaRpcException exception);
++    void sendSofaException(SofaRpcException exception);
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/core/invoke/SofaResponseCallback.java
+Patch:
+@@ -32,7 +32,7 @@ public interface SofaResponseCallback<T> {
+      * @param methodName the invoked method
+      * @param request the invoked request object
+      */
+-    public void onAppResponse(Object appResponse, String methodName, RequestBase request);
++    void onAppResponse(Object appResponse, String methodName, RequestBase request);
+ 
+     /**
+      * SOFA RPC will callback this method when server meet exception
+@@ -41,7 +41,7 @@ public interface SofaResponseCallback<T> {
+      * @param methodName the invoked method
+      * @param request the invoked request
+      */
+-    public void onAppException(Throwable throwable, String methodName, RequestBase request);
++    void onAppException(Throwable throwable, String methodName, RequestBase request);
+ 
+     /**
+      * SOFA RPC will callback this method when framework meet exception
+@@ -50,5 +50,5 @@ public interface SofaResponseCallback<T> {
+      * @param methodName the invoked method
+      * @param request the invoked request object
+      */
+-    public void onSofaException(SofaRpcException sofaException, String methodName, RequestBase request);
++    void onSofaException(SofaRpcException sofaException, String methodName, RequestBase request);
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/ext/ExtensionLoaderListener.java
+Patch:
+@@ -28,5 +28,5 @@ public interface ExtensionLoaderListener<T> {
+      *
+      * @param extensionClass 扩展点类对象
+      */
+-    public void onLoad(ExtensionClass<T> extensionClass);
++    void onLoad(ExtensionClass<T> extensionClass);
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/transport/ClientHandler.java
+Patch:
+@@ -31,19 +31,19 @@ public interface ClientHandler {
+      *
+      * @param result response
+      */
+-    public void onResponse(final Object result);
++    void onResponse(final Object result);
+ 
+     /**
+      * On exception caught.
+      *
+      * @param e exception
+      */
+-    public void onException(final Throwable e);
++    void onException(final Throwable e);
+ 
+     /**
+      * User defined executor.
+      *
+      * @return executor
+      */
+-    public Executor getExecutor();
++    Executor getExecutor();
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/ext/ExtensionLoaderFactory.java
+Patch:
+@@ -25,11 +25,13 @@
+  * @author <a href=mailto:zhanggeng.zg@antfin.com>GengZhang</a>
+  */
+ public class ExtensionLoaderFactory {
++    private ExtensionLoaderFactory() {
++    }
+ 
+     /**
+      * All extension loader {Class : ExtensionLoader}
+      */
+-    public static final ConcurrentMap<Class, ExtensionLoader> LOADER_MAP = new ConcurrentHashMap<Class, ExtensionLoader>();
++    private static final ConcurrentMap<Class, ExtensionLoader> LOADER_MAP = new ConcurrentHashMap<Class, ExtensionLoader>();
+ 
+     /**
+      * Get extension loader by extensible class with listener
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/RestServer.java
+Patch:
+@@ -52,7 +52,7 @@ public class RestServer implements Server {
+     protected volatile boolean     started;
+ 
+     /**
+-     * Bolt服务端
++     * Rest服务端
+      */
+     protected SofaNettyJaxrsServer httpServer;
+ 
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/filter/FilterChain.java
+Patch:
+@@ -82,7 +82,8 @@ public void onLoad(ExtensionClass<Filter> extensionClass) {
+                     String alias = extensionClass.getAlias();
+                     if (autoActive.providerSide()) {
+                         PROVIDER_AUTO_ACTIVES.put(alias, extensionClass);
+-                    } else if (autoActive.consumerSide()) {
++                    }
++                    if (autoActive.consumerSide()) {
+                         CONSUMER_AUTO_ACTIVES.put(alias, extensionClass);
+                     }
+                     if (LOGGER.isDebugEnabled()) {
+
+File: extension-impl/extension-common/src/main/java/com/alipay/sofa/rpc/common/SofaOptions.java
+Patch:
+@@ -65,11 +65,11 @@ public class SofaOptions {
+      */
+     public static final String CONFIG_NI_BIND                      = "rpc_bind_network_interface";
+     /**
+-     * 是否将服务提供者注册到配置中心（全局开关）
++     * 是否将服务提供者注册到服务注册中心（全局开关）
+      *
+      * @since 4.10.0
+      */
+-    public static final String CONFIG_RPC_REGISTER_CONFREG_IGNORE  = "rpc_register_confreg_ignore";
++    public static final String CONFIG_RPC_REGISTER_REGISTRY_IGNORE = "rpc_register_registry_ignore";
+     /**
+      * 虚拟主机地址，通过配置指定<br>
+      * 例如宿主机地址(10.1.1.1)上有一个虚拟主机(192.2.2.2)，服务启动后监听的地址是192.2.2.2:1234，<br>
+@@ -181,7 +181,7 @@ public class SofaOptions {
+ 
+     // ========== 只能通过System.setProperty()设置，无法在文件中配置 ===========
+     /**
+-     * 获取配置中心返回地址的最大等待时间  只能通过 -D 生效
++     * 获取服务注册中心返回地址的最大等待时间  只能通过 -D 生效
+      */
+     public static final String CONFIG_MAX_ADDRESS_WAIT_TIME        = "rpc_max_address_wait_time";
+     /**
+
+File: extension-impl/registry-local/src/main/java/com/alipay/sofa/rpc/registry/local/LocalRegistryHelper.java
+Patch:
+@@ -254,7 +254,7 @@ private static Map<String, ProviderGroup> unMarshal(String context) {
+     }
+ 
+     /**
+-     * 配置中心的Key
++     * 服务注册中心的Key
+      *
+      * @param config   配置
+      * @param protocol 协议
+
+File: test/test-integration-3rd/src/test/java/com/alipay/sofa/rpc/bootstrap/dubbo/DubboServerTest.java
+Patch:
+@@ -39,7 +39,7 @@
+ public class DubboServerTest extends BaseZkTest {
+ 
+     @Test
+-    //同步调用,走配置中心
++    //同步调用,走服务注册中心
+     public void testRegistrySync() {
+         // 只有1个线程 执行
+         ServerConfig serverConfig = new ServerConfig()
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/log/LogCodes.java
+Patch:
+@@ -156,7 +156,7 @@ public class LogCodes {
+     public static final String                 INFO_ROUTE_REGISTRY_PUB_START              = "00205";
+     public static final String                 INFO_ROUTE_REGISTRY_PUB_OVER               = "00206";
+     public static final String                 LOCALFILEREGISTRY_WRITE_FILEOVER           = "00207";
+-    public static final String                 INFO_CONFREG_IGNORE                        = "00208";
++    public static final String                 INFO_REGISTRY_IGNORE                       = "00208";
+     public static final String                 INFO_CONNECT_PUT_TO_ALIVE                  = "00209";
+     public static final String                 INFO_CONNECT_PUT_TO_RETRY                  = "00210";
+     public static final String                 INFO_CONNECT_RETRY_START                   = "00211";
+
+File: extension-impl/registry-local/src/main/java/com/alipay/sofa/rpc/registry/local/LocalRegistry.java
+Patch:
+@@ -172,7 +172,7 @@ public void register(ProviderConfig config) {
+         String appName = config.getAppName();
+         if (!registryConfig.isRegister()) {
+             if (LOGGER.isInfoEnabled(appName)) {
+-                LOGGER.infoWithApp(appName, LogCodes.getLog(LogCodes.INFO_CONFREG_IGNORE));
++                LOGGER.infoWithApp(appName, LogCodes.getLog(LogCodes.INFO_REGISTRY_IGNORE));
+             }
+             return;
+         }
+@@ -230,7 +230,7 @@ public void unRegister(ProviderConfig config) {
+         String appName = config.getAppName();
+         if (!registryConfig.isRegister()) { // 注册中心不注册
+             if (LOGGER.isInfoEnabled(appName)) {
+-                LOGGER.infoWithApp(appName, LogCodes.getLog(LogCodes.INFO_CONFREG_IGNORE));
++                LOGGER.infoWithApp(appName, LogCodes.getLog(LogCodes.INFO_REGISTRY_IGNORE));
+             }
+             return;
+         }
+
+File: extension-impl/registry-zk/src/main/java/com/alipay/sofa/rpc/registry/zk/ZookeeperRegistry.java
+Patch:
+@@ -262,7 +262,7 @@ public void register(ProviderConfig config) {
+         String appName = config.getAppName();
+         if (!registryConfig.isRegister()) {
+             if (LOGGER.isInfoEnabled(appName)) {
+-                LOGGER.infoWithApp(appName, LogCodes.getLog(LogCodes.INFO_CONFREG_IGNORE));
++                LOGGER.infoWithApp(appName, LogCodes.getLog(LogCodes.INFO_REGISTRY_IGNORE));
+             }
+             return;
+         }
+@@ -401,7 +401,7 @@ public void unRegister(ProviderConfig config) {
+         if (!registryConfig.isRegister()) {
+             // 注册中心不注册
+             if (LOGGER.isInfoEnabled(appName)) {
+-                LOGGER.infoWithApp(appName, LogCodes.getLog(LogCodes.INFO_CONFREG_IGNORE));
++                LOGGER.infoWithApp(appName, LogCodes.getLog(LogCodes.INFO_REGISTRY_IGNORE));
+             }
+             return;
+         }
+@@ -458,7 +458,7 @@ public List<ProviderGroup> subscribe(final ConsumerConfig config) {
+         if (!registryConfig.isSubscribe()) {
+             // 注册中心不订阅
+             if (LOGGER.isInfoEnabled(appName)) {
+-                LOGGER.infoWithApp(appName, LogCodes.getLog(LogCodes.INFO_CONFREG_IGNORE));
++                LOGGER.infoWithApp(appName, LogCodes.getLog(LogCodes.INFO_REGISTRY_IGNORE));
+             }
+             return null;
+         }
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/AllConnectConnectionHolder.java
+Patch:
+@@ -763,6 +763,7 @@ protected boolean doubleCheck(String interfaceId, ProviderInfo providerInfo, Cli
+             try { // 睡一下下 防止被连上又被服务端踢下线
+                 Thread.sleep(100);
+             } catch (InterruptedException e) {
++                // ignore
+             }
+             if (transport.isAvailable()) { // double check
+                 return true;
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/SingleGroupAddressHolder.java
+Patch:
+@@ -139,7 +139,7 @@ public void updateProviders(ProviderGroup providerGroup) {
+         wLock.lock();
+         try {
+             getProviderGroup(providerGroup.getName())
+-                .setProviderInfos(new ArrayList(providerGroup.getProviderInfos()));
++                .setProviderInfos(new ArrayList<ProviderInfo>(providerGroup.getProviderInfos()));
+         } finally {
+             wLock.unlock();
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/listener/ChannelListener.java
+Patch:
+@@ -32,12 +32,12 @@ public interface ChannelListener {
+      *
+      * @param channel Channel
+      */
+-    public void onConnected(AbstractChannel channel);
++    void onConnected(AbstractChannel channel);
+ 
+     /**
+      * Handle disconnect event on channel closed
+      *
+      * @param channel Channel
+      */
+-    public void onDisconnected(AbstractChannel channel);
++    void onDisconnected(AbstractChannel channel);
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/listener/ConsumerStateListener.java
+Patch:
+@@ -29,12 +29,12 @@ public interface ConsumerStateListener<T> {
+      *
+      * @param proxy 接口实现代理类
+      */
+-    public void onAvailable(T proxy);
++    void onAvailable(T proxy);
+ 
+     /**
+      * 状态变成不可用（无可用长连接）的时候
+      *
+      * @param proxy 接口实现代理类
+      */
+-    public void onUnavailable(T proxy);
++    void onUnavailable(T proxy);
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/module/Module.java
+Patch:
+@@ -32,15 +32,15 @@ public interface Module {
+      *
+      * @return 是否
+      */
+-    public boolean needLoad();
++    boolean needLoad();
+ 
+     /**
+      * 安装模板
+      */
+-    public void install();
++    void install();
+ 
+     /**
+      * 卸载模块
+      */
+-    public void uninstall();
++    void uninstall();
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/protocol/ProtocolNegotiator.java
+Patch:
+@@ -37,6 +37,6 @@ public interface ProtocolNegotiator {
+      * @param clientTransport 和服务提供者的长连接
+      * @return 握手言和
+      */
+-    public boolean handshake(ProviderInfo providerInfo, ClientTransport clientTransport);
++    boolean handshake(ProviderInfo providerInfo, ClientTransport clientTransport);
+ 
+ }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/proxy/Proxy.java
+Patch:
+@@ -35,13 +35,13 @@ public interface Proxy {
+      * @param <T>            类型
+      * @return 代理对象
+      */
+-    public <T> T getProxy(Class<T> interfaceClass, Invoker proxyInvoker);
++    <T> T getProxy(Class<T> interfaceClass, Invoker proxyInvoker);
+ 
+     /**
+      * 从代理对象里解析Invoker
+      *
+      * @param proxyObject 代理对象
+      * @return Invoker
+      */
+-    public Invoker getInvoker(Object proxyObject);
++    Invoker getInvoker(Object proxyObject);
+ }
+
+File: extension-impl/remoting-bolt/src/main/java/com/alipay/sofa/rpc/server/bolt/BoltServerProcessor.java
+Patch:
+@@ -261,7 +261,7 @@ private SofaRpcException cannotFoundService(String appName, String serviceName)
+      */
+     private SofaRpcException cannotFoundServiceMethod(String appName, String serviceName, String methodName) {
+         String errorMsg = LogCodes.getLog(
+-            LogCodes.ERROR_PROVIDER_SERVICE_METHOD_CANNOT_FOUND, methodName, serviceName);
++            LogCodes.ERROR_PROVIDER_SERVICE_METHOD_CANNOT_FOUND, serviceName, methodName);
+         LOGGER.errorWithApp(appName, errorMsg);
+         return new SofaRpcException(RpcErrorType.SERVER_NOT_FOUND_INVOKER, errorMsg);
+     }
+
+File: extension-impl/registry-zk/src/main/java/com/alipay/sofa/rpc/registry/zk/ZookeeperRegistry.java
+Patch:
+@@ -240,7 +240,7 @@ public void destroy() {
+ 
+     @Override
+     public void destroy(DestroyHook hook) {
+-        hook.postDestroy();
++        hook.preDestroy();
+         destroy();
+         hook.postDestroy();
+     }
+
+File: extension-impl/registry-zk/src/test/java/com/alipay/sofa/rpc/registry/zk/ZookeeperRegistryTest.java
+Patch:
+@@ -390,4 +390,5 @@ public Map<String, String> getData() {
+             return concurrentHashMap;
+         }
+     }
++
+ }
+\ No newline at end of file
+
+File: core/common/src/main/java/com/alipay/sofa/rpc/common/cache/ReflectCache.java
+Patch:
+@@ -102,7 +102,7 @@ public static ClassLoader getServiceClassLoader(String serviceUniqueName) {
+     static final ConcurrentHashMap<String, Class> CLASS_CACHE    = new ConcurrentHashMap<String, Class>();
+ 
+     /**
+-     * String-->Class 缓存
++     * Class-->String 缓存
+      */
+     @VisibleForTesting
+     static final ConcurrentHashMap<Class, String> TYPE_STR_CACHE = new ConcurrentHashMap<Class, String>();
+@@ -317,4 +317,4 @@ static void clearAll() {
+         OVERLOAD_METHOD_CACHE.clear();
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: extension-impl/registry-local/src/main/java/com/alipay/sofa/rpc/registry/local/LocalRegistry.java
+Patch:
+@@ -356,7 +356,7 @@ public void destroy() {
+      *
+      * @param newCache the new cache
+      */
+-    private void notifyConsumer(Map<String, ProviderGroup> newCache) {
++    void notifyConsumer(Map<String, ProviderGroup> newCache) {
+         Map<String, ProviderGroup> oldCache = memoryCache;
+         // 比较两个map的差异
+         MapDifference<String, ProviderGroup> difference =
+@@ -379,7 +379,7 @@ private void notifyConsumer(Map<String, ProviderGroup> newCache) {
+                 LOGGER.debug("{} has differente", entry.getKey());
+             }
+             ValueDifference<ProviderGroup> differentValue = entry.getValue();
+-            ProviderGroup innew = differentValue.rightValue();
++            ProviderGroup innew = differentValue.leftValue();
+             if (LOGGER.isDebugEnabled()) {
+                 LOGGER.debug("new(right) is {}", innew);
+             }
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/exception/TestExceptionService.java
+Patch:
+@@ -32,4 +32,6 @@ public interface TestExceptionService {
+     public String throwSofaException() throws SofaRpcException;
+ 
+     public String throwDeclaredException() throws TestException;
++
++    public void throwDeclaredExceptionWithoutReturn() throws TestException;
+ }
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/RestServer.java
+Patch:
+@@ -69,6 +69,7 @@ public class RestServer implements Server {
+     @Override
+     public void init(ServerConfig serverConfig) {
+         this.serverConfig = serverConfig;
++        httpServer = buildServer();
+     }
+ 
+     private SofaNettyJaxrsServer buildServer() {
+@@ -136,7 +137,6 @@ public void start() {
+             }
+             // 绑定到端口
+             try {
+-                httpServer = buildServer();
+                 httpServer.start();
+                 if (LOGGER.isInfoEnabled()) {
+                     LOGGER.info("Start the http rest server at port {}", serverConfig.getPort());
+@@ -170,7 +170,6 @@ public void stop() {
+                 LOGGER.info("Stop the http rest server at port {}", serverConfig.getPort());
+             }
+             httpServer.stop();
+-            httpServer = null;
+         } catch (Exception e) {
+             LOGGER.error("Stop the http rest server at port " + serverConfig.getPort() + " error !", e);
+         }
+@@ -222,6 +221,7 @@ public void unRegisterProcessor(ProviderConfig providerConfig, boolean closeIfNo
+     @Override
+     public void destroy() {
+         stop();
++        httpServer = null;
+     }
+ 
+     @Override
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/SofaNettyJaxrsServer.java
+Patch:
+@@ -20,7 +20,6 @@
+ import com.alipay.sofa.rpc.common.struct.NamedThreadFactory;
+ import com.alipay.sofa.rpc.common.utils.StringUtils;
+ import com.alipay.sofa.rpc.config.ServerConfig;
+-
+ import io.netty.bootstrap.ServerBootstrap;
+ import io.netty.channel.ChannelHandler;
+ import io.netty.channel.ChannelInitializer;
+@@ -64,7 +63,7 @@
+ public class SofaNettyJaxrsServer implements EmbeddedJaxrsServer {
+ 
+     private final ServerConfig         serverConfig;
+-    protected ServerBootstrap          bootstrap           = new ServerBootstrap();
++    protected ServerBootstrap          bootstrap           = null;
+     protected String                   hostname            = null;
+     protected int                      port                = 8080;
+     protected ResteasyDeployment       deployment          = new SofaResteasyDeployment(); // CHANGE: 使用sofa的类
+@@ -224,7 +223,7 @@ public void start() {
+                 serverConfig.isDaemon()));
+         }
+         // Configure the server.
+-        bootstrap
++        bootstrap = new ServerBootstrap()
+             .group(eventLoopGroup)
+             .channel(
+                 (serverConfig != null && serverConfig.isEpoll()) ? EpollServerSocketChannel.class
+@@ -293,5 +292,6 @@ public void stop() {
+             eventExecutor.shutdownGracefully().sync();
+         } catch (Exception ignore) { // NOPMD
+         }
++        bootstrap = null;
+     }
+ }
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/client/AllConnectConnectionHolderTest.java
+Patch:
+@@ -121,9 +121,9 @@ public void getAvailableClientTransport2() throws Exception {
+ 
+         Assert.assertTrue(holder.isAvailableEmpty());
+         Assert.assertNotNull(holder.getAvailableClientTransport(
+-            ProviderHelper.toProviderInfo("bolt://127.0.0.1:22223?serialization=hessian2")));
++            ProviderHelper.toProviderInfo("bolt://127.0.0.1:22223")));
+         Assert.assertNotNull(holder.getAvailableClientTransport(
+-            ProviderHelper.toProviderInfo("bolt://127.0.0.1:22224?serialization=hessian2")));
++            ProviderHelper.toProviderInfo("bolt://127.0.0.1:22224")));
+         consumerConfig.unRefer();
+     }
+ }
+\ No newline at end of file
+
+File: test/test-integration-3rd/src/test/java/com/alipay/sofa/rpc/bootstrap/dubbo/DubboServerTest.java
+Patch:
+@@ -29,9 +29,8 @@
+ 
+ /**
+  * @author bystander
+- * @version $Id: DubooServerTest.java, v 0.1 2017年10月30日 下午9:23 bystander Exp $
+  */
+-public class DubooServerTest extends BaseZkTest {
++public class DubboServerTest extends BaseZkTest {
+ 
+     @Test
+     //同步调用,走配置中心
+
+File: test/test-integration-3rd/src/test/java/com/alipay/sofa/rpc/registry/zk/WarmUpTest.java
+Patch:
+@@ -23,7 +23,6 @@
+ import com.alipay.sofa.rpc.config.ProviderConfig;
+ import com.alipay.sofa.rpc.config.RegistryConfig;
+ import com.alipay.sofa.rpc.config.ServerConfig;
+-import com.alipay.sofa.rpc.test.ActivelyDestroyTest;
+ import org.junit.Assert;
+ import org.junit.Test;
+ 
+@@ -60,6 +59,7 @@ public void testWarmUp() throws InterruptedException {
+             .setRef(new WarmUpServiceImpl(22111))
+             .setServer(serverConfig2)
+             .setRegistry(registryConfig)
++            .setRepeatedExportLimit(-1)
+             .setWeight(0);
+ 
+         providerConfig.export();
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/test/bootstrap/bolt/BoltConsumerBootstrapTest.java
+Patch:
+@@ -67,6 +67,7 @@ public void refer() throws Exception {
+             .setTimeout(3000);
+         try {
+             consumerConfig3.refer();
++            Assert.fail();
+         } catch (Exception e) {
+             Assert.assertTrue(e instanceof SofaRpcRuntimeException);
+         }
+@@ -85,6 +86,7 @@ public void refer() throws Exception {
+             .setTimeout(3000);
+         try {
+             consumerConfig5.refer();
++            Assert.fail();
+         } catch (Exception e) {
+             Assert.assertTrue(e instanceof SofaRpcRuntimeException);
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/codec/Serializer.java
+Patch:
+@@ -59,8 +59,7 @@ public interface Serializer {
+      * @param data     原始字节数组
+      * @param template 模板对象
+      * @param context  上下文
+-     * @return 反序列化后的对象
+      * @throws SofaRpcException 序列化异常
+      */
+-    public Object decode(AbstractByteBuf data, Object template, Map<String, String> context) throws SofaRpcException;
++    public void decode(AbstractByteBuf data, Object template, Map<String, String> context) throws SofaRpcException;
+ }
+
+File: core/api/src/test/java/com/alipay/sofa/rpc/codec/AbstractSerializerTest.java
+Patch:
+@@ -43,8 +43,7 @@ public Object decode(AbstractByteBuf data, Class clazz, Map<String, String> cont
+     }
+ 
+     @Override
+-    public Object decode(AbstractByteBuf data, Object template, Map<String, String> context) throws SofaRpcException {
+-        return null;
++    public void decode(AbstractByteBuf data, Object template, Map<String, String> context) throws SofaRpcException {
+     }
+ 
+     @Test
+
+File: core/api/src/test/java/com/alipay/sofa/rpc/codec/TestSerializer.java
+Patch:
+@@ -41,7 +41,7 @@ public Object decode(AbstractByteBuf data, Class clazz, Map<String, String> cont
+     }
+ 
+     @Override
+-    public Object decode(AbstractByteBuf data, Object template, Map<String, String> context) throws SofaRpcException {
+-        return null;
++    public void decode(AbstractByteBuf data, Object template, Map<String, String> context) throws SofaRpcException {
++
+     }
+ }
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/server/bolt/BoltServerTest.java
+Patch:
+@@ -14,7 +14,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.alipay.sofa.rpc.test.server;
++package com.alipay.sofa.rpc.server.bolt;
+ 
+ import com.alipay.sofa.rpc.common.RpcConstants;
+ import com.alipay.sofa.rpc.config.ConsumerConfig;
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/server/bolt/DiscardTimeoutTest.java
+Patch:
+@@ -14,7 +14,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.alipay.sofa.rpc.test.server;
++package com.alipay.sofa.rpc.server.bolt;
+ 
+ import com.alipay.sofa.rpc.config.ConsumerConfig;
+ import com.alipay.sofa.rpc.config.ProviderConfig;
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/server/bolt/NotFoundInvokerTest.java
+Patch:
+@@ -14,7 +14,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.alipay.sofa.rpc.test.server;
++package com.alipay.sofa.rpc.server.bolt;
+ 
+ import com.alipay.sofa.rpc.config.ConsumerConfig;
+ import com.alipay.sofa.rpc.config.ProviderConfig;
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/server/bolt/RejectedTest.java
+Patch:
+@@ -14,7 +14,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.alipay.sofa.rpc.test.server;
++package com.alipay.sofa.rpc.server.bolt;
+ 
+ import com.alipay.sofa.rpc.config.ConsumerConfig;
+ import com.alipay.sofa.rpc.config.ProviderConfig;
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/AbstractCluster.java
+Patch:
+@@ -471,7 +471,9 @@ protected void checkAlias(ProviderInfo providerInfo, SofaRequest message) {
+      * @throws SofaRpcException 请求RPC异常
+      */
+     protected SofaResponse filterChain(ProviderInfo providerInfo, SofaRequest request) throws SofaRpcException {
+-        RpcInternalContext.getContext().setProviderInfo(providerInfo);
++        RpcInternalContext context = RpcInternalContext.getContext();
++        context.setInterfaceConfig(consumerConfig);
++        context.setProviderInfo(providerInfo);
+         return filterChain.invoke(request);
+     }
+ 
+
+File: extension-impl/fault-tolerance/src/test/java/com/alipay/sofa/rpc/client/aft/FaultBaseServiceTest.java
+Patch:
+@@ -35,12 +35,15 @@ public abstract class FaultBaseServiceTest extends FaultBaseTest {
+     public void beforeClass() throws Exception {
+         providerConfig.setRef(new HelloServiceTimeOutImpl());
+         providerConfig.export();
++        // test reuse client transport
++        consumerConfigNotUse.refer();
+         helloService = consumerConfig.refer();
+     }
+ 
+     @After
+     public void afterClass() {
+         providerConfig.unExport();
++        consumerConfigNotUse.unRefer();
+         consumerConfig.unRefer();
+         consumerConfig = null;
+         consumerConfig2 = null;
+
+File: extension-impl/remoting-bolt/src/main/java/com/alipay/sofa/rpc/server/bolt/BoltServerProcessor.java
+Patch:
+@@ -148,6 +148,7 @@ public void handleRequest(BizContext bizCtx, AsyncContext asyncCtx, SofaRequest
+                     }
+                     if (invoker instanceof ProviderProxyInvoker) {
+                         providerConfig = ((ProviderProxyInvoker) invoker).getProviderConfig();
++                        context.setInterfaceConfig(providerConfig);
+                         // 找到服务后，打印服务的appName
+                         appName = providerConfig != null ? providerConfig.getAppName() : null;
+                     }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/bootstrap/ConsumerBootstrap.java
+Patch:
+@@ -24,7 +24,7 @@
+ import java.util.List;
+ 
+ /**
+- * <p>引用服务的包装类，包括具体的启动后的对象</p>
++ * 引用服务的包装类，包括具体的启动后的对象
+  *
+  * @author <a href=mailto:zhanggeng.zg@antfin.com>GengZhang</a>
+  */
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/codec/SerializerFactory.java
+Patch:
+@@ -86,7 +86,7 @@ public static Serializer getSerializer(byte type) {
+      * @param serializer 序列化的名字
+      * @return 序列化编码
+      */
+-    public static byte getCodeByAlias(String serializer) {
++    public static Byte getCodeByAlias(String serializer) {
+         return TYPE_CODE_MAP.get(serializer);
+     }
+ 
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/ConsumerConfig.java
+Patch:
+@@ -56,7 +56,6 @@
+ import static com.alipay.sofa.rpc.common.RpcOptions.CONSUMER_REPEATED_REFERENCE_LIMIT;
+ import static com.alipay.sofa.rpc.common.RpcOptions.CONSUMER_RETRIES;
+ import static com.alipay.sofa.rpc.common.RpcOptions.CONSUMER_STICKY;
+-import static com.alipay.sofa.rpc.common.RpcOptions.DEFAULT_CONSUMER_BOOTSTRAP;
+ import static com.alipay.sofa.rpc.common.RpcOptions.DEFAULT_PROTOCOL;
+ 
+ /**
+@@ -192,7 +191,7 @@ public class ConsumerConfig<T> extends AbstractInterfaceConfig<T, ConsumerConfig
+     /**
+      * 启动器
+      */
+-    protected String                                bootstrap          = getStringValue(DEFAULT_CONSUMER_BOOTSTRAP);
++    protected String                                bootstrap;
+ 
+     /**
+      * 等待地址获取时间(毫秒)，-1表示等到拿到地址位置
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/ProviderConfig.java
+Patch:
+@@ -34,7 +34,6 @@
+ import static com.alipay.sofa.rpc.common.RpcConfigs.getBooleanValue;
+ import static com.alipay.sofa.rpc.common.RpcConfigs.getIntValue;
+ import static com.alipay.sofa.rpc.common.RpcConfigs.getStringValue;
+-import static com.alipay.sofa.rpc.common.RpcOptions.DEFAULT_PROVIDER_BOOTSTRAP;
+ import static com.alipay.sofa.rpc.common.RpcOptions.PROVIDER_CONCURRENTS;
+ import static com.alipay.sofa.rpc.common.RpcOptions.PROVIDER_DELAY;
+ import static com.alipay.sofa.rpc.common.RpcOptions.PROVIDER_DYNAMIC;
+@@ -103,7 +102,7 @@ public class ProviderConfig<T> extends AbstractInterfaceConfig<T, ProviderConfig
+     /**
+      * 启动器
+      */
+-    protected String                                                bootstrap           = getStringValue(DEFAULT_PROVIDER_BOOTSTRAP);
++    protected String                                                bootstrap;
+ 
+     /**
+      * 自定义线程池
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/protocol/ProtocolFactory.java
+Patch:
+@@ -98,7 +98,7 @@ public static Protocol getProtocol(byte code) {
+      * @param protocol 协议的名字
+      * @return 协议编码
+      */
+-    public static byte getCodeByAlias(String protocol) {
++    public static Byte getCodeByAlias(String protocol) {
+         return TYPE_CODE_MAP.get(protocol);
+     }
+ 
+
+File: core/api/src/test/java/com/alipay/sofa/rpc/codec/SerializerFactoryTest.java
+Patch:
+@@ -41,7 +41,7 @@ public void getSerializer1() throws Exception {
+ 
+     @Test
+     public void getCodeByAlias() throws Exception {
+-        Assert.assertEquals(SerializerFactory.getCodeByAlias("test"), (byte) 117);
++        Assert.assertTrue(SerializerFactory.getCodeByAlias("test") == 117);
+     }
+ 
+ }
+\ No newline at end of file
+
+File: core/api/src/test/java/com/alipay/sofa/rpc/protocol/ProtocolFactoryTest.java
+Patch:
+@@ -41,7 +41,7 @@ public void getProtocol1() throws Exception {
+ 
+     @Test
+     public void getCodeByAlias() throws Exception {
+-        Assert.assertEquals(ProtocolFactory.getCodeByAlias("xx"), (byte) 121);
++        Assert.assertTrue(ProtocolFactory.getCodeByAlias("xx") == 121);
+     }
+ 
+     @Test
+
+File: extension-impl/extension-common/src/main/java/com/alipay/sofa/rpc/bootstrap/DefaultConsumerBootstrap.java
+Patch:
+@@ -32,6 +32,7 @@
+ import com.alipay.sofa.rpc.config.RegistryConfig;
+ import com.alipay.sofa.rpc.context.RpcRuntimeContext;
+ import com.alipay.sofa.rpc.core.exception.SofaRpcRuntimeException;
++import com.alipay.sofa.rpc.ext.Extension;
+ import com.alipay.sofa.rpc.invoke.Invoker;
+ import com.alipay.sofa.rpc.listener.ConfigListener;
+ import com.alipay.sofa.rpc.listener.ProviderInfoListener;
+@@ -56,7 +57,7 @@
+  *
+  * @author <a href="mailto:zhanggeng.zg@antfin.com">GengZhang</a>
+  */
+-
++@Extension("sofa")
+ public class DefaultConsumerBootstrap<T> extends ConsumerBootstrap<T> {
+ 
+     /**
+@@ -402,7 +403,7 @@ public void unSubscribe() {
+     }
+ 
+     /**
+-     * Wapper provider info listener to record the respond status of registry.
++     * Wrapper provider info listener to record the respond status of registry.
+      */
+     class WrapperClusterProviderInfoListener implements ProviderInfoListener {
+ 
+
+File: extension-impl/extension-common/src/main/java/com/alipay/sofa/rpc/bootstrap/DefaultProviderBootstrap.java
+Patch:
+@@ -25,6 +25,7 @@
+ import com.alipay.sofa.rpc.config.ServerConfig;
+ import com.alipay.sofa.rpc.context.RpcRuntimeContext;
+ import com.alipay.sofa.rpc.core.exception.SofaRpcRuntimeException;
++import com.alipay.sofa.rpc.ext.Extension;
+ import com.alipay.sofa.rpc.invoke.Invoker;
+ import com.alipay.sofa.rpc.listener.ConfigListener;
+ import com.alipay.sofa.rpc.log.Logger;
+@@ -47,6 +48,7 @@
+  *
+  * @author <a href=mailto:zhanggeng.zg@antfin.com>GengZhang</a>
+  */
++@Extension("sofa")
+ public class DefaultProviderBootstrap<T> extends ProviderBootstrap<T> {
+ 
+     /**
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/context/AsyncRuntime.java
+Patch:
+@@ -71,7 +71,7 @@ public static ThreadPoolExecutor getAsyncThreadPool(boolean build) {
+                     int keepAliveTime = RpcConfigs.getIntValue(RpcOptions.ASYNC_POOL_TIME);
+ 
+                     BlockingQueue<Runnable> queue = ThreadPoolUtils.buildQueue(queuesize);
+-                    NamedThreadFactory threadFactory = new NamedThreadFactory("SOFA-RPC-CB", true);
++                    NamedThreadFactory threadFactory = new NamedThreadFactory("RPC-CB", true);
+ 
+                     RejectedExecutionHandler handler = new RejectedExecutionHandler() {
+                         private int i = 1;
+
+File: extension-impl/fault-tolerance/src/main/java/com/alipay/sofa/rpc/client/aft/impl/TimeWindowRegulator.java
+Patch:
+@@ -63,7 +63,7 @@ public class TimeWindowRegulator implements Regulator {
+     /**
+      * 度量线程池
+      */
+-    private final ScheduledService                   measureScheduler   = new ScheduledService("SOFA-AFT-MEASURE",
++    private final ScheduledService                   measureScheduler   = new ScheduledService("AFT-MEASURE",
+                                                                             ScheduledService.MODE_FIXEDRATE,
+                                                                             new MeasureRunnable(), 1, 1,
+                                                                             TimeUnit.SECONDS);
+@@ -78,7 +78,7 @@ public class TimeWindowRegulator implements Regulator {
+     private final ExecutorService                    regulationExecutor = ThreadPoolUtils.newFixedThreadPool(2,
+                                                                             new LinkedBlockingQueue<Runnable>(16),
+                                                                             new NamedThreadFactory(
+-                                                                                "SOFA-AFT-REGULATION"));
++                                                                                "AFT-REGULATION"));
+ 
+     /**
+      * 度量模型
+
+File: extension-impl/remoting-bolt/src/main/java/com/alipay/sofa/rpc/server/bolt/BoltServer.java
+Patch:
+@@ -87,7 +87,7 @@ public void init(ServerConfig serverConfig) {
+     protected ThreadPoolExecutor initThreadPool(ServerConfig serverConfig) {
+         ThreadPoolExecutor threadPool = BusinessPool.initPool(serverConfig);
+         threadPool.setThreadFactory(new NamedThreadFactory(
+-            "SofaBizProcessor-" + serverConfig.getPort(), serverConfig.isDaemon()));
++            "BOLT-BIZ-" + serverConfig.getPort(), serverConfig.isDaemon()));
+         threadPool.setRejectedExecutionHandler(new SofaRejectedExecutionHandler());
+         if (serverConfig.isPreStartCore()) { // 初始化核心线程池
+             threadPool.prestartAllCoreThreads();
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/SofaNettyJaxrsServer.java
+Patch:
+@@ -206,8 +206,8 @@ protected RequestDispatcher createRequestDispatcher() {
+     @Override
+     public void start() {
+         // CHANGE: 增加线程名字
+-        eventLoopGroup = new NioEventLoopGroup(ioWorkerCount, new NamedThreadFactory("SOFA-REST-IO-" + port, daemon));
+-        eventExecutor = new NioEventLoopGroup(executorThreadCount, new NamedThreadFactory("SOFA-REST-BIZ-" + port,
++        eventLoopGroup = new NioEventLoopGroup(ioWorkerCount, new NamedThreadFactory("REST-IO-" + port, daemon));
++        eventExecutor = new NioEventLoopGroup(executorThreadCount, new NamedThreadFactory("REST-BIZ-" + port,
+             daemon));
+         // Configure the server.
+         bootstrap.group(eventLoopGroup)
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/message/MessageBuilder.java
+Patch:
+@@ -37,7 +37,9 @@ public class MessageBuilder {
+      * @param argTypes 方法参数类型
+      * @param args     方法参数值
+      * @return 远程调用请求
++     * @deprecated use {@link #buildSofaRequest(Class, Method, Class[], Object[])}
+      */
++    @Deprecated
+     public static SofaRequest buildSofaRequest(Class<?> clazz, String method, Class[] argTypes, Object[] args) {
+         SofaRequest request = new SofaRequest();
+         request.setInterfaceName(clazz.getName());
+
+File: extension-impl/extension-common/src/main/java/com/alipay/sofa/rpc/bootstrap/DefaultProviderBootstrap.java
+Patch:
+@@ -18,7 +18,6 @@
+ 
+ import com.alipay.sofa.rpc.common.utils.CommonUtils;
+ import com.alipay.sofa.rpc.common.utils.ExceptionUtils;
+-import com.alipay.sofa.rpc.common.utils.ReflectUtils;
+ import com.alipay.sofa.rpc.common.utils.StringUtils;
+ import com.alipay.sofa.rpc.config.ProviderConfig;
+ import com.alipay.sofa.rpc.config.RegistryConfig;
+@@ -225,7 +224,6 @@ protected void checkMethods(Class<?> itfClass) {
+                 include = inList(providerConfig.getInclude(), providerConfig.getExclude(), methodName); // 检查是否在黑白名单中
+                 methodsLimit.putIfAbsent(methodName, include);
+             }
+-            ReflectUtils.cacheMethodArgsType(providerConfig.getInterfaceId(), methodName, method.getParameterTypes());
+             providerConfig.setMethodsLimit(methodsLimit);
+         }
+     }
+
+File: core-impl/client/src/main/java/com/alipay/sofa/rpc/client/lb/ConsistentHashLoadBalancer.java
+Patch:
+@@ -142,7 +142,7 @@ public Selector(String interfaceId, String method, List<ProviderInfo> actualNode
+         public ProviderInfo select(SofaRequest request) {
+             String key = buildKeyOfHash(request.getMethodArgs());
+             byte[] digest = messageDigest(key);
+-            return sekectForKey(hash(digest, 0));
++            return selectForKey(hash(digest, 0));
+         }
+ 
+         /**
+@@ -160,12 +160,12 @@ private String buildKeyOfHash(Object[] args) {
+         }
+ 
+         /**
+-         * Sekect for key.
++         * Select for key.
+          *
+          * @param hash the hash
+          * @return the provider
+          */
+-        private ProviderInfo sekectForKey(long hash) {
++        private ProviderInfo selectForKey(long hash) {
+             ProviderInfo providerInfo = virtualNodes.get(hash);
+             if (providerInfo == null) {
+                 SortedMap<Long, ProviderInfo> tailMap = virtualNodes.tailMap(hash);
+
+File: example/src/test/java/com/alipay/sofa/rpc/bolt/start/BoltServerMain.java
+Patch:
+@@ -43,8 +43,7 @@ public static void main(String[] args) {
+         ApplicationConfig application = new ApplicationConfig().setAppName("test-server");
+ 
+         ServerConfig serverConfig = new ServerConfig()
+-            //        .setHost("0.0.0.0")
+-            //        .setPort(22222)
++            .setPort(22000)
+             .setDaemon(false);
+ 
+         ProviderConfig<HelloService> providerConfig = new ProviderConfig<HelloService>()
+
+File: example/src/test/java/com/alipay/sofa/rpc/customfilter/CustomFilterServerMain.java
+Patch:
+@@ -47,6 +47,7 @@ public static void main(String[] args) {
+         ApplicationConfig application = new ApplicationConfig().setAppName("test-server");
+ 
+         ServerConfig serverConfig = new ServerConfig()
++            .setPort(22000)
+             .setDaemon(false);
+ 
+         ProviderConfig<HelloService> providerConfig = new ProviderConfig<HelloService>()
+
+File: example/src/test/java/com/alipay/sofa/rpc/local/start/LocalBoltServerMain.java
+Patch:
+@@ -51,12 +51,10 @@ public static void main(String[] args) {
+             .setFile(file);
+ 
+         ServerConfig serverConfig = new ServerConfig()
+-            //        .setHost("0.0.0.0")
+             .setPort(22222)
+             .setDaemon(false);
+ 
+         ServerConfig serverConfig2 = new ServerConfig()
+-            //        .setHost("0.0.0.0")
+             .setPort(22200)
+             .setProtocol(RpcConstants.PROTOCOL_TYPE_BOLT)
+             .setDaemon(false);
+
+File: example/src/test/java/com/alipay/sofa/rpc/quickstart/QuickStartClient.java
+Patch:
+@@ -28,7 +28,7 @@ public static void main(String[] args) {
+         ConsumerConfig<HelloService> consumerConfig = new ConsumerConfig<HelloService>()
+             .setInterfaceId(HelloService.class.getName()) // 指定接口
+             .setProtocol("bolt") // 指定协议
+-            .setDirectUrl("bolt://127.0.0.1:9696"); // 指定直连地址
++            .setDirectUrl("bolt://127.0.0.1:12200"); // 指定直连地址
+ 
+         HelloService helloService = consumerConfig.refer();
+ 
+
+File: example/src/test/java/com/alipay/sofa/rpc/quickstart/QuickStartServer.java
+Patch:
+@@ -27,7 +27,7 @@ public class QuickStartServer {
+     public static void main(String[] args) {
+         ServerConfig serverConfig = new ServerConfig()
+             .setProtocol("bolt") // 设置一个协议，默认bolt
+-            .setPort(9696) // 设置一个端口，默认12200
++            .setPort(12200) // 设置一个端口，默认12200
+             .setDaemon(false); // 非守护线程
+ 
+         ProviderConfig<HelloService> providerConfig = new ProviderConfig<HelloService>()
+
+File: example/src/test/java/com/alipay/sofa/rpc/rest/start/RestServerMain.java
+Patch:
+@@ -51,8 +51,6 @@ public static void main(String[] args) {
+          */
+ 
+         ServerConfig serverConfig = new ServerConfig()
+-            //        .setHost("0.0.0.0")
+-            //        .setPort(22222)
+             .setProtocol("rest")
+             .setPort(8888)
+             .setDaemon(false);
+
+File: extension-impl/extension-common/src/main/java/com/alipay/sofa/rpc/common/RemotingConstants.java
+Patch:
+@@ -30,7 +30,7 @@ public class RemotingConstants {
+      * 协议：tr，老协议
+      * // com.taobao.remoting.TRConstants#PROCOCOL_VERSION;
+      */
+-    public static final byte   PROTOCOL_TR                       = 13;                        // 
++    public static final byte   PROTOCOL_TR                       = 13;
+     /**
+      * 协议：bolt
+      * // RpcProtocol.PROTOCOL_CODE;
+
+File: test/test-integration-3rd/src/test/java/com/alipay/sofa/rpc/registry/zk/WarmUpService.java
+Patch:
+@@ -14,7 +14,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.alipay.sofa.rpc.warmup;
++package com.alipay.sofa.rpc.registry.zk;
+ 
+ /**
+  *
+
+File: test/test-integration-3rd/src/test/java/com/alipay/sofa/rpc/registry/zk/WarmUpServiceImpl.java
+Patch:
+@@ -14,7 +14,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.alipay.sofa.rpc.warmup;
++package com.alipay.sofa.rpc.registry.zk;
+ 
+ /**
+  *
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/client/RouterChain.java
+Patch:
+@@ -146,7 +146,7 @@ public static RouterChain buildConsumerChain(ConsumerBootstrap consumerBootstrap
+             }
+         }
+         // 解析自动加载的router
+-        if (!excludes.contains("*") && !excludes.contains("default")) { // 配了-*和-default表示不加载内置
++        if (!excludes.contains(StringUtils.ALL) && !excludes.contains(StringUtils.DEFAULT)) { // 配了-*和-default表示不加载内置
+             for (Map.Entry<String, ExtensionClass<Router>> entry : CONSUMER_AUTO_ACTIVES.entrySet()) {
+                 if (!excludes.contains(entry.getKey())) {
+                     extensionRouters.add(entry.getValue());
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/common/utils/NetUtils.java
+Patch:
+@@ -417,12 +417,12 @@ public static List<InetSocketAddress> getIpListByRegistry(String registryIp) {
+      */
+     public static boolean isMatchIPByPattern(String whiteList, String localIP) {
+         if (StringUtils.isNotBlank(whiteList)) {
+-            if ("*".equals(whiteList)) {
++            if (StringUtils.ALL.equals(whiteList)) {
+                 return true;
+             }
+             for (String ips : whiteList.replace(',', ';').split(";", -1)) {
+                 try {
+-                    if (ips.contains("*")) { // 带通配符
++                    if (ips.contains(StringUtils.ALL)) { // 带通配符
+                         String regex = ips.trim().replace(".", "\\.").replace("*", ".*");
+                         Pattern pattern = Pattern.compile(regex);
+                         if (pattern.matcher(localIP).find()) {
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/config/AbstractInterfaceConfig.java
+Patch:
+@@ -783,7 +783,7 @@ public synchronized Map<String, Object> getConfigValueCache(boolean rebuild) {
+         if (configValueCache != null && !rebuild) {
+             return configValueCache;
+         }
+-        Map<String, Object> context = new HashMap<String, Object>();
++        Map<String, Object> context = new HashMap<String, Object>(32);
+         Map<String, String> providerParams = getParameters();
+         if (providerParams != null) {
+             context.putAll(providerParams); // 复制接口的自定义参数
+@@ -892,7 +892,7 @@ public boolean updateAttribute(String property, String newValueStr, boolean over
+                 }
+                 if (changed && overwrite) {
+                     BeanUtils.setProperty(methodConfig, methodProperty, propertyClazz, newValue);// 覆盖属性
+-                    if (LOGGER.isWarnEnabled()) {
++                    if (LOGGER.isInfoEnabled()) {
+                         LOGGER.info("Property \"" + methodName + "." + methodProperty + "\" changed from {} to {}",
+                             oldValue, newValueStr);
+                     }
+@@ -913,7 +913,7 @@ public boolean updateAttribute(String property, String newValueStr, boolean over
+                 }
+                 if (changed && overwrite) {
+                     BeanUtils.setProperty(this, property, propertyClazz, newValue);// 覆盖属性
+-                    if (LOGGER.isWarnEnabled()) {
++                    if (LOGGER.isInfoEnabled()) {
+                         LOGGER.info("Property \"" + property + "\" changed from {} to {}", oldValue, newValueStr);
+                     }
+                 }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/ext/ExtensionLoader.java
+Patch:
+@@ -250,7 +250,7 @@ protected void readLine(URL url, String line) throws Throwable {
+             }
+         }
+         // 不可以是default和*
+-        if ("default".equals(alias) || "*".equals(alias)) {
++        if (StringUtils.DEFAULT.equals(alias) || StringUtils.ALL.equals(alias)) {
+             throw new IllegalArgumentException("Error when load extension of extensible " + interfaceName +
+                 " from file:" + url + ", alias of @Extension must not \"default\" and \"*\" at " + className + ".");
+         }
+
+File: core/api/src/main/java/com/alipay/sofa/rpc/filter/FilterChain.java
+Patch:
+@@ -172,7 +172,7 @@ public static FilterChain buildProviderChain(ProviderConfig<?> providerConfig, F
+             }
+         }
+         // 解析自动加载的过滤器
+-        if (!excludes.contains("*") && !excludes.contains("default")) { // 配了-*和-default表示不加载内置
++        if (!excludes.contains(StringUtils.ALL) && !excludes.contains(StringUtils.DEFAULT)) { // 配了-*和-default表示不加载内置
+             for (Map.Entry<String, ExtensionClass<Filter>> entry : PROVIDER_AUTO_ACTIVES.entrySet()) {
+                 if (!excludes.contains(entry.getKey())) {
+                     extensionFilters.add(entry.getValue());
+@@ -234,7 +234,7 @@ public static FilterChain buildConsumerChain(ConsumerConfig<?> consumerConfig, F
+             }
+         }
+         // 解析自动加载的过滤器
+-        if (!excludes.contains("*") && !excludes.contains("default")) { // 配了-*和-default表示不加载内置
++        if (!excludes.contains(StringUtils.ALL) && !excludes.contains(StringUtils.DEFAULT)) { // 配了-*和-default表示不加载内置
+             for (Map.Entry<String, ExtensionClass<Filter>> entry : CONSUMER_AUTO_ACTIVES.entrySet()) {
+                 if (!excludes.contains(entry.getKey())) {
+                     extensionFilters.add(entry.getValue());
+
+File: example/src/test/java/com/alipay/sofa/rpc/dubbo/start/DubboServerMain.java
+Patch:
+@@ -43,8 +43,6 @@ public static void main(String[] args) {
+         ApplicationConfig applicationConfig = new ApplicationConfig().setAppName("dubbo-server");
+ 
+         ServerConfig serverConfig = new ServerConfig()
+-            //        .setHost("0.0.0.0")
+-            //        .setPort(22222)
+             .setProtocol("dubbo")
+             .setHost("127.0.0.1")
+             .setPort(20080)
+
+File: extension-impl/extension-common/src/main/java/com/alipay/sofa/rpc/bootstrap/DefaultProviderBootstrap.java
+Patch:
+@@ -403,7 +403,7 @@ public synchronized void attrUpdated(Map newValueMap) {
+      */
+     protected boolean inList(String includeMethods, String excludeMethods, String methodName) {
+         //判断是否在白名单中
+-        if (includeMethods != null && !"*".equals(includeMethods)) {
++        if (includeMethods != null && !StringUtils.ALL.equals(includeMethods)) {
+             includeMethods = includeMethods + ",";
+             boolean inWhite = includeMethods.contains(methodName + ",");
+             if (!inWhite) {
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/SofaNettyJaxrsServer.java
+Patch:
+@@ -18,6 +18,7 @@
+ 
+ import com.alipay.sofa.rpc.common.SystemInfo;
+ import com.alipay.sofa.rpc.common.struct.NamedThreadFactory;
++import com.alipay.sofa.rpc.common.utils.StringUtils;
+ import io.netty.bootstrap.ServerBootstrap;
+ import io.netty.channel.ChannelHandler;
+ import io.netty.channel.ChannelInitializer;
+@@ -182,7 +183,7 @@ public void setDeployment(ResteasyDeployment deployment) {
+     @Override
+     public void setRootResourcePath(String rootResourcePath) {
+         root = rootResourcePath;
+-        if (root != null && "/".equals(root)) {
++        if (root != null && StringUtils.CONTEXT_SEP.equals(root)) {
+             root = "";
+         }
+     }
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/server/rest/SofaResteasyDeployment.java
+Patch:
+@@ -153,7 +153,9 @@ public void start()
+                         throw new RuntimeException("Unable to instantiate context object " + entry.getKey(), e);
+                     }
+                     Object obj = createFromInjectorFactory(entry.getValue(), providerFactory);
+-                    LOGGER.debug("Creating context object <" + entry.getKey() + " : " + entry.getValue() + ">");
++                    if (LOGGER.isDebugEnabled()) {
++                        LOGGER.debug("Creating context object <" + entry.getKey() + " : " + entry.getValue() + ">");
++                    }
+                     defaultContextObjects.put(key, obj);
+                     dispatcher.getDefaultContextObjects().put(key, obj);
+                     contextDataMap.put(key, obj);
+
+File: extension-impl/remoting-resteasy/src/main/java/com/alipay/sofa/rpc/transport/rest/RestClientTransport.java
+Patch:
+@@ -58,7 +58,7 @@ protected Object buildProxy(ClientTransportConfig transportConfig) throws SofaRp
+ 
+         ProviderInfo provider = transportConfig.getProviderInfo();
+         String url = "http://" + provider.getHost() + ":" + provider.getPort()
+-            + "/" + StringUtils.trimToEmpty(provider.getPath());
++            + StringUtils.CONTEXT_SEP + StringUtils.trimToEmpty(provider.getPath());
+         ResteasyWebTarget target = client.target(url);
+         return target.proxy(ClassUtils.forName(transportConfig.getConsumerConfig().getInterfaceId()));
+     }
+
+File: test/test-integration/src/test/java/com/alipay/sofa/rpc/server/rest/CustomerInjectorFactory.java
+Patch:
+@@ -39,8 +39,7 @@ public ValueInjector createParameterExtractor(Class injectTargetClass, Accessibl
+                                                   Type genericType,
+                                                   Annotation[] annotations, boolean useDefault,
+                                                   ResteasyProviderFactory providerFactory) {
+-        CustomerAnnotation customerAnnotation;
+-        if ((customerAnnotation = findAnnotation(annotations, CustomerAnnotation.class)) != null) {
++        if (findAnnotation(annotations, CustomerAnnotation.class) != null) {
+             return new CustomerInject();
+         }
+ 
+

@@ -1,0 +1,975 @@
+File: jetlinks-components/tdengine-component/src/main/java/org/jetlinks/community/tdengine/things/TDengineColumnModeQueryOperations.java
+Patch:
+@@ -79,7 +79,7 @@ protected Flux<AggregationData> doAggregation(String metric,
+             joiner.add(" ")
+                   .add(TDengineThingDataHelper.getGroupByTime(request.getInterval()));
+         }
+-        joiner.add(TDengineThingDataHelper.buildOrderBy(request.getFilter()));
++        joiner.add(helper.buildOrderBy(metric, request.getFilter()));
+ 
+         String format = request.getFormat();
+         DateTimeFormatter formatter = DateTimeFormatter.ofPattern(format);
+
+File: jetlinks-components/things-component/src/main/java/org/jetlinks/community/things/data/operations/DataSettings.java
+Patch:
+@@ -19,7 +19,8 @@ public class DataSettings {
+     @Getter
+     @Setter
+     public static class Log extends MessageTypeMatcher {
+-
++        //使用同一个表来存储所有的日志数据
++        private boolean allInOne = false;
+     }
+ 
+     @Getter
+
+File: jetlinks-components/things-component/src/main/java/org/jetlinks/community/things/data/operations/DataSettings.java
+Patch:
+@@ -19,7 +19,8 @@ public class DataSettings {
+     @Getter
+     @Setter
+     public static class Log extends MessageTypeMatcher {
+-
++        //使用同一个表来存储所有的日志数据
++        private boolean allInOne = false;
+     }
+ 
+     @Getter
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/service/LocalDeviceProductService.java
+Patch:
+@@ -3,6 +3,7 @@
+ import lombok.extern.slf4j.Slf4j;
+ import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
+ import org.hswebframework.web.bean.FastBeanCopier;
++import org.hswebframework.web.crud.events.EntityEventHelper;
+ import org.hswebframework.web.crud.service.GenericReactiveCrudService;
+ import org.hswebframework.web.exception.BusinessException;
+ import org.jetlinks.community.device.entity.DeviceInstanceEntity;
+@@ -43,6 +44,7 @@ public Mono<Integer> deploy(String id) {
+                         .set(DeviceProductEntity::getState, DeviceProductState.registered.getValue())
+                         .where(DeviceProductEntity::getId, id)
+                         .execute()
++                        .as(EntityEventHelper::setDoNotFireEvent)
+                 )
+                 .flatMap(i -> FastBeanCopier
+                     .copy(product, new DeviceProductDeployEvent())
+
+File: jetlinks-components/things-component/src/main/java/org/jetlinks/community/things/metric/AbstractPropertyMetricManager.java
+Patch:
+@@ -36,8 +36,7 @@ public Mono<PropertyMetric> getPropertyMetric(ThingId thingId, String property,
+     private Mono<PropertyMetric> loadFromTemplate(ThingId thingId, String property, String metric) {
+         return registry
+             .getThing(thingId.getType(), thingId.getId())
+-            .flatMap(Thing::getTemplate)
+-            .flatMap(ThingTemplate::getMetadata)
++            .flatMap(Thing::getMetadata)
+             .flatMap(metadata -> Mono
+                 .justOrEmpty(
+                     metadata
+
+File: jetlinks-manager/rule-engine-manager/src/main/java/org/jetlinks/community/rule/engine/scene/SceneAction.java
+Patch:
+@@ -59,6 +59,9 @@ public class SceneAction implements Serializable {
+     @Schema(description = "拓展信息")
+     private Map<String, Object> options;
+ 
++    @Schema(description = "执行动作ID")
++    private Integer actionId;
++
+     /**
+      * 从拓展信息中获取需要查询的列,用于在设备触发等场景需要在sql中获取对应的数据.
+      *
+
+File: jetlinks-manager/notify-manager/src/main/java/org/jetlinks/community/notify/manager/subscriber/providers/AlarmProvider.java
+Patch:
+@@ -122,7 +122,7 @@ public Flux<PropertyMetadata> getDetailProperties(Map<String, Object> config) {
+         //todo 根据配置来获取输出数据
+         return Flux.just(
+             SimplePropertyMetadata.of("targetType", "告警类型", StringType.GLOBAL),
+-            SimplePropertyMetadata.of("alarmName", "告警名称", StringType.GLOBAL),
++            SimplePropertyMetadata.of("alarmConfigName", "告警名称", StringType.GLOBAL),
+             SimplePropertyMetadata.of("targetName", "目标名称", StringType.GLOBAL)
+         );
+     }
+
+File: jetlinks-manager/rule-engine-manager/src/main/java/org/jetlinks/community/rule/engine/service/terms/RuleBindAlarmTerm.java
+Patch:
+@@ -69,7 +69,7 @@ public SqlFragments createFragments(String columnFullName,
+         sqlFragments
+             .addSql(
+                 "and _bind.rule_id in (",
+-                String.join("?", bindTerm.ruleId),
++                bindTerm.ruleId.stream().map(r -> "?").collect(Collectors.joining(",")),
+                 ")")
+             .addParameter(bindTerm.ruleId);
+ 
+
+File: jetlinks-components/tdengine-component/src/main/java/org/jetlinks/community/tdengine/term/TDengineTermType.java
+Patch:
+@@ -28,7 +28,7 @@ protected void doBuild(String column, Object value, StringJoiner sql) {
+         protected void doBuild(String column, Object value, StringJoiner sql) {
+             String val = String.valueOf(value);
+             sql.add(escapeColumn(column))
+-                .add(" like ").add(val);
++                .add(" like ").add(createValue(val));
+         }
+     },
+     btw(true, "btw") {
+
+File: jetlinks-components/network-component/mqtt-component/src/main/java/org/jetlinks/community/network/mqtt/client/VertxMqttClient.java
+Patch:
+@@ -116,7 +116,7 @@ public void setClient(io.vertx.mqtt.MqttClient client) {
+     private void reSubscribe() {
+         subscriber
+             .getAllSubscriber()
+-            .filter(topic -> topic.getSubscribers().size() > 0)
++            .filter(topic -> !topic.getSubscribers().isEmpty())
+             .collectMap(topic -> getCompleteTopic(convertMqttTopic(topic.getSubscribers().iterator().next().getT1())),
+                         topic -> topic.getSubscribers().iterator().next().getT3())
+             .filter(MapUtils::isNotEmpty)
+@@ -170,10 +170,10 @@ public Flux<MqttMessage> subscribe(List<String> topics, int qos) {
+ 
+                 Tuple3<String, FluxSink<MqttMessage>, Integer> topicQos = Tuples.of(topic, sink, qos);
+ 
+-                boolean first = sinkTopic.getSubscribers().size() == 0;
++                boolean first = sinkTopic.getSubscribers().isEmpty();
+                 sinkTopic.subscribe(topicQos);
+                 composite.add(() -> {
+-                    if (sinkTopic.unsubscribe(topicQos).size() > 0 && isAlive()) {
++                    if (!sinkTopic.unsubscribe(topicQos).isEmpty() && isAlive() && sinkTopic.getSubscribers().isEmpty()) {
+                         client.unsubscribe(convertMqttTopic(completeTopic), result -> {
+                             if (result.succeeded()) {
+                                 log.debug("unsubscribe mqtt topic {}", completeTopic);
+
+File: jetlinks-manager/rule-engine-manager/src/main/java/org/jetlinks/community/rule/engine/scene/DeviceOperation.java
+Patch:
+@@ -205,6 +205,8 @@ private List<TermColumn> createTermColumn(String prefix, PropertyMetadata proper
+                         TermColumn term = createTermColumn(_prefix, prop, false, valueTypes).get(0);
+                         column.setColumn(term.getColumn());
+                         column.setName(term.getName());
++                        column.setOptions(term.getOptions());
++                        column.withOthers(term.getOthers());
+                     } else {
+                         column.setChildren(createTermColumn(_prefix, prop, last, valueTypes));
+                     }
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/message/DeviceMessageConnector.java
+Patch:
+@@ -38,6 +38,7 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
+     //将设备注册中心的配置追加到消息header中,下游订阅者可直接使用.
+     private final static String[] allConfigHeader = {
+         PropertyConstants.productId.getKey(),
++        PropertyConstants.productName.getKey(),
+         PropertyConstants.deviceName.getKey(),
+         PropertyConstants.orgId.getKey()
+     };
+
+File: jetlinks-components/io-component/src/main/java/org/jetlinks/community/io/file/web/FileManagerController.java
+Patch:
+@@ -44,7 +44,9 @@ public Mono<FileInfo> upload(@RequestPart("file") Mono<FilePart> partMono) {
+     @Operation(summary = "获取文件")
+     public Mono<Void> read(@PathVariable String fileId,
+                            ServerWebExchange exchange) {
+-
++        if (fileId.contains(".")) {
++            fileId = fileId.substring(0, fileId.indexOf("."));
++        }
+         return exchange
+             .getResponse()
+             .writeWith(fileManager
+
+File: jetlinks-components/network-component/tcp-component/src/main/java/org/jetlinks/community/network/tcp/parser/LengthFieldPayloadParserBuilder.java
+Patch:
+@@ -46,7 +46,7 @@ public Supplier<PayloadParser> buildLazy(ValueObject config) {
+                 break;
+             case 2:
+                 lengthParser =
+-                    le ? buffer -> buffer.getUnsignedShort(offset)
++                    le ? buffer -> buffer.getUnsignedShortLE(offset)
+                         : buffer -> buffer.getUnsignedShort(offset);
+                 break;
+             case 3:
+
+File: jetlinks-components/common-component/src/main/java/org/jetlinks/community/utils/ReactorUtils.java
+Patch:
+@@ -36,10 +36,10 @@
+ public class ReactorUtils {
+ 
+     public static <T> Function<Flux<T>, Flux<T>> limit(Long pageIndex, Long pageSize) {
+-        if (pageIndex == null || pageSize == null) {
++        if (pageIndex == null || pageSize == null || pageIndex < 0 || pageSize <= 0) {
+             return Function.identity();
+         }
+-        return flux -> flux.skip(pageIndex & pageSize).take(pageSize);
++        return flux -> flux.skip(pageIndex * pageSize).take(pageSize);
+     }
+ 
+     /**
+@@ -222,4 +222,4 @@ protected SqlFragments createTermFragments(Object trigger, Term term) {
+         }
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/measurements/DeviceDynamicDashboard.java
+Patch:
+@@ -53,6 +53,6 @@ public Mono<DashboardObject> getObject(String id) {
+ 
+     protected Mono<DeviceDashboardObject> convertObject(DeviceProductEntity product) {
+         return registry.getProduct(product.getId())
+-            .map(operator -> DeviceDashboardObject.of(product.getId(), product.getName(), operator, eventBus, dataService));
++            .map(operator -> DeviceDashboardObject.of(product.getId(), product.getName(), operator, eventBus, dataService,registry));
+     }
+ }
+
+File: jetlinks-components/elasticsearch-component/src/main/java/org/jetlinks/community/elastic/search/parser/LinkTypeParser.java
+Patch:
+@@ -3,12 +3,13 @@
+ import org.elasticsearch.index.query.BoolQueryBuilder;
+ import org.hswebframework.ezorm.core.param.Term;
+ 
++import java.util.List;
+ import java.util.function.Consumer;
+ 
+ /**
+  * @version 1.0
+  **/
+ public interface LinkTypeParser {
+ 
+-    BoolQueryBuilder process(Term term, Consumer<Term> consumer, BoolQueryBuilder queryBuilders);
++    void process(List<Term> terms, Consumer<Term> consumer, BoolQueryBuilder queryBuilders);
+ }
+
+File: jetlinks-components/elasticsearch-component/src/main/java/org/jetlinks/community/elastic/search/utils/QueryParamTranslator.java
+Patch:
+@@ -103,9 +103,7 @@ public static QueryBuilder createQueryBuilder(QueryParam queryParam, ElasticSear
+                 }
+             };
+         }
+-        for (Term term : queryParam.getTerms()) {
+-            linkTypeParser.process(term, paramConverter, queryBuilders);
+-        }
++        linkTypeParser.process(queryParam.getTerms(), paramConverter, queryBuilders);
+         return queryBuilders;
+     }
+ 
+
+File: jetlinks-components/script-component/src/main/java/org/jetlinks/community/script/jsr223/Jsr223ScriptFactory.java
+Patch:
+@@ -96,12 +96,12 @@ public void error(String text, Object... args) {
+ 
+     @Override
+     @SuppressWarnings("all")
+-    public final <T> T bind(Script script, Class<T> interfaceType) {
++    public final <T> T bind(Script script, Class<T> interfaceType,ExecutionContext context) {
+         String returns = createFunctionMapping(interfaceType.getDeclaredMethods());
+         String content = script.getContent() + "\n return " + returns + ";";
+ 
+         CompiledScript compiledScript = compile(script.content(content), false);
+-        Object source = compiledScript.call(Collections.emptyMap());
++        Object source = compiledScript.call(context);
+         Set<Method> ignoreMethods = new HashSet<>();
+ 
+         return (T) Proxy.newProxyInstance(
+
+File: jetlinks-manager/rule-engine-manager/src/main/java/org/jetlinks/community/rule/engine/entity/AlarmRuleBindEntity.java
+Patch:
+@@ -26,12 +26,12 @@ public class AlarmRuleBindEntity extends GenericEntity<String> {
+ 
+     public static final int ANY_BRANCH_INDEX = -1;
+ 
+-    @Column(nullable = false, updatable = false)
++    @Column(nullable = false, updatable = false, length = 64)
+     @NotBlank
+     @Schema(description = "告警ID")
+     private String alarmId;
+ 
+-    @Column(nullable = false, updatable = false)
++    @Column(nullable = false, updatable = false, length = 64)
+     @NotBlank
+     @Schema(description = "场景规则ID")
+     private String ruleId;
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/entity/DeviceInstanceEntity.java
+Patch:
+@@ -209,8 +209,7 @@ public DeviceInfo toDeviceInfo(boolean includeConfiguration) {
+         info.addConfig(DeviceConfigKey.parentGatewayId, this.getParentId());
+         info.addConfig(PropertyConstants.deviceName, name);
+         info.addConfig(PropertyConstants.productName, productName);
+-        info.addConfig(PropertyConstants.orgId, orgId);
+-        info.addConfig(PropertyConstants.creatorId, creatorId);
++        info.addConfig(PropertyConstants.creatorId,creatorId);
+         if (hasFeature(DeviceFeature.selfManageState)) {
+             info.addConfig(DeviceConfigKey.selfManageState, true);
+         }
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/web/DeviceInstanceController.java
+Patch:
+@@ -160,7 +160,9 @@ public DeviceInstanceController(LocalDeviceInstanceService service,
+     @QueryAction
+     @Operation(summary = "获取指定ID设备详情")
+     public Mono<DeviceDetail> getDeviceDetailInfo(@PathVariable @Parameter(description = "设备ID") String id) {
+-        return service.getDeviceDetail(id);
++        return service
++            .getDeviceDetail(id)
++            .switchIfEmpty(Mono.error(NotFoundException::new));
+     }
+ 
+     //读取设备属性
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/entity/DeviceTagEntity.java
+Patch:
+@@ -65,6 +65,7 @@ public class DeviceTagEntity extends GenericEntity<String> {
+     @Schema(description = "说明")
+     private String description;
+ 
++    private DataType dataType;
+ 
+     public static DeviceTagEntity of(PropertyMetadata property) {
+        DeviceTagEntity entity = new DeviceTagEntity();
+@@ -73,6 +74,7 @@ public static DeviceTagEntity of(PropertyMetadata property) {
+         entity.setType(property.getValueType().getId());
+         entity.setDescription(property.getDescription());
+         entity.setCreateTime(new Date());
++        entity.setDataType(property.getValueType());
+         return entity;
+     }
+ 
+
+File: jetlinks-manager/rule-engine-manager/src/main/java/org/jetlinks/community/rule/engine/entity/SceneEntity.java
+Patch:
+@@ -42,10 +42,10 @@ public class SceneEntity extends GenericEntity<String> implements RecordCreation
+ 
+     @Schema(description = "触发器类型")
+     @Column(length = 32, nullable = false, updatable = false)
+-    @EnumCodec
+-    @ColumnType(javaType = String.class)
++//    @EnumCodec
++//    @ColumnType(javaType = String.class)
+     @NotNull
+-    private TriggerType triggerType;
++    private String triggerType;
+ 
+     @Column
+     @JsonCodec
+
+File: jetlinks-manager/rule-engine-manager/src/main/java/org/jetlinks/community/rule/engine/scene/TriggerType.java
+Patch:
+@@ -6,6 +6,7 @@
+ 
+ @Getter
+ @AllArgsConstructor
++@Deprecated
+ public enum TriggerType implements EnumDict<String> {
+     manual("手动触发"),
+     timer("定时触发"),
+
+File: jetlinks-components/notify-component/notify-dingtalk/src/main/java/org/jetlinks/community/notify/dingtalk/corp/DingTalkMessageTemplate.java
+Patch:
+@@ -131,8 +131,10 @@ public Mono<UriComponentsBuilder> createUriParameter(UriComponentsBuilder builde
+     }
+ 
+     public Mono<String> createUserIdList(Values context, ConfigKey<String> relationPropertyPath) {
+-        return VariableSource.resolveValue(USER_ID_LIST_KEY, context.getAllValues(), relationPropertyPath)
++        return VariableSource
++            .resolveValue(USER_ID_LIST_KEY, context.getAllValues(), relationPropertyPath)
+             .map(String::valueOf)
++            .filter(StringUtils::hasText)
+             .defaultIfEmpty(userIdList == null ? "" : userIdList)
+             .collect(Collectors.joining(","));
+     }
+
+File: jetlinks-manager/rule-engine-manager/src/main/java/org/jetlinks/community/rule/engine/entity/AlarmConfigEntity.java
+Patch:
+@@ -56,7 +56,7 @@ public class AlarmConfigEntity extends GenericEntity<String> implements RecordCr
+     @Column(length = 32, nullable = false)
+     @EnumCodec
+     @ColumnType(javaType = String.class)
+-    @DefaultValue("disabled")
++    @DefaultValue("enabled")
+     @Schema(description = "状态")
+     private AlarmState state;
+ 
+
+File: jetlinks-components/notify-component/notify-wechat/src/main/java/org/jetlinks/community/notify/wechat/corp/CorpDepartment.java
+Patch:
+@@ -44,7 +44,7 @@ public class CorpDepartment implements Comparable<CorpDepartment> {
+     private String parentId;
+ 
+     @Schema(description = "父部门id")
+-    private int order;
++    private long order;
+ 
+     private List<CorpDepartment> children;
+ 
+@@ -57,6 +57,6 @@ public static List<CorpDepartment> toTree(List<CorpDepartment> list) {
+ 
+     @Override
+     public int compareTo(CorpDepartment target) {
+-        return Integer.compare(this.order, target.getOrder());
++        return Long.compare(this.order, target.getOrder());
+     }
+ }
+
+File: jetlinks-components/common-component/src/main/java/org/jetlinks/community/config/verification/ConfigVerificationService.java
+Patch:
+@@ -62,10 +62,10 @@ public Mono<Void> doBasePathValidate(Object basePath) {
+ 
+         URI uri = URI.create(CastUtils.castString(CastUtils.castString(basePath).concat(PATH_VERIFICATION_URI)));
+         if (Objects.equals(uri.getHost(), "127.0.0.1")){
+-            return Mono.defer(() -> Mono.error(new BusinessException("error.base_path_host_error", 500, "127.0.0.1")));
++            return Mono.error(new BusinessException("error.base_path_host_error", 500, "127.0.0.1"));
+         }
+         if (Objects.equals(uri.getHost(), "localhost")){
+-            return Mono.defer(() -> Mono.error(new BusinessException("error.base_path_host_error", 500, "localhost")));
++            return Mono.error(new BusinessException("error.base_path_host_error", 500, "localhost"));
+         }
+ 
+         return webClient
+
+File: jetlinks-components/common-component/src/main/java/org/jetlinks/community/config/web/SystemConfigManagerController.java
+Patch:
+@@ -100,7 +100,7 @@ public Mono<Void> saveConfig(@PathVariable String scope,
+     public Mono<Void> saveConfig(@RequestBody Flux<Scope> scope) {
+ 
+         return scope
+-            .flatMap(scopeConfig -> configManager.setProperties(scopeConfig.getScope(), scopeConfig.getProperties()))
++            .concatMap(scopeConfig -> configManager.setProperties(scopeConfig.getScope(), scopeConfig.getProperties()))
+             .then();
+     }
+ 
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/service/data/DatabaseDeviceLatestDataService.java
+Patch:
+@@ -131,9 +131,7 @@ public void init() {
+                 BufferSettings.create("./data/buffer", buffer),
+                 Buffer::new,
+                 this::doWrite)
+-            .name("device-latest-data")
+-            //最大缓冲10万条数据
+-            .settings(setting -> setting.bufferSize(10_0000));
++            .name("device-latest-data");
+ 
+         writer.start();
+ 
+
+File: jetlinks-components/relation-component/src/main/java/org/jetlinks/community/relation/utils/VariableSource.java
+Patch:
+@@ -111,7 +111,7 @@ public Flux<Object> resolve(Map<String, Object> context,
+                                 ConfigKey<?> propertyPath) {
+         validate();
+         if (getSource() == VariableSource.Source.fixed) {
+-            return CastUtils.flatStream(Flux.just(value));
++            return value == null ? Flux.empty() : CastUtils.flatStream(Flux.just(value));
+         }
+         if (getSource() == VariableSource.Source.upper) {
+             return Mono
+
+File: jetlinks-components/relation-component/src/main/java/org/jetlinks/community/relation/utils/VariableSource.java
+Patch:
+@@ -111,7 +111,7 @@ public Flux<Object> resolve(Map<String, Object> context,
+                                 ConfigKey<?> propertyPath) {
+         validate();
+         if (getSource() == VariableSource.Source.fixed) {
+-            return value == null ? Flux.empty() : CastUtils.flatStream(Flux.just(value));
++            return CastUtils.flatStream(Flux.just(value));
+         }
+         if (getSource() == VariableSource.Source.upper) {
+             return Mono
+
+File: jetlinks-components/relation-component/src/main/java/org/jetlinks/community/relation/utils/VariableSource.java
+Patch:
+@@ -111,7 +111,7 @@ public Flux<Object> resolve(Map<String, Object> context,
+                                 ConfigKey<?> propertyPath) {
+         validate();
+         if (getSource() == VariableSource.Source.fixed) {
+-            return CastUtils.flatStream(Flux.just(value));
++            return value == null ? Flux.empty() : CastUtils.flatStream(Flux.just(value));
+         }
+         if (getSource() == VariableSource.Source.upper) {
+             return Mono
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/message/DeviceMessageConnector.java
+Patch:
+@@ -148,11 +148,11 @@ public DeviceMessageConnector(EventBus eventBus,
+             }
+             //从会话管理器里监听会话注册,转发为设备上线消息
+             if (event.getType() == DeviceSessionEvent.Type.unregister) {
+-                return handleSessionMessage(new DeviceOnlineMessage(),event.getSession());
++                return handleSessionMessage(new DeviceOfflineMessage(),event.getSession());
+             }
+             //从会话管理器里监听会话注销,转发为设备离线消息
+             if (event.getType() == DeviceSessionEvent.Type.register) {
+-                return handleSessionMessage(new DeviceOfflineMessage(),event.getSession());
++                return handleSessionMessage(new DeviceOnlineMessage(),event.getSession());
+             }
+             return Mono.empty();
+         });
+
+File: jetlinks-components/tdengine-component/src/main/java/org/jetlinks/community/tdengine/things/TDengineThingDataHelper.java
+Patch:
+@@ -11,6 +11,7 @@
+ import org.hswebframework.web.api.crud.entity.PagerResult;
+ import org.hswebframework.web.api.crud.entity.QueryParamEntity;
+ import org.hswebframework.web.exception.BusinessException;
++import org.jetlinks.community.tdengine.TDEngineUtils;
+ import org.jetlinks.community.tdengine.term.TDengineQueryConditionBuilder;
+ import org.jetlinks.core.metadata.Converter;
+ import org.jetlinks.core.metadata.DataType;
+@@ -114,9 +115,9 @@ public List<Term> prepareTerms(String metric, List<Term> terms) {
+ 
+     public static Object prepareTimestampValue(Object value, String type) {
+ 
+-        return ConverterUtils.tryConvertToList(value,v->{
++        return ConverterUtils.tryConvertToList(value, v -> {
+             Date date = CastUtils.castDate(v);
+-            return date.getTime();
++            return TDEngineUtils.formatTime(date.getTime());
+         });
+     }
+ 
+
+File: jetlinks-components/notify-component/notify-sms/src/main/java/org/jetlinks/community/notify/sms/aliyun/web/AliyunSmsController.java
+Patch:
+@@ -41,7 +41,7 @@ public Flux<SmsSign> getAliyunSmsSigns(@PathVariable String configId) {
+ 
+     @GetMapping("/{configId}/templates")
+     @QueryAction
+-    @Operation(summary = "获取短信标签列表")
++    @Operation(summary = "获取短信模板列表")
+     public Flux<SmsTemplate> getAliyunSmsTemplates(@PathVariable String configId) {
+         return notifierManager
+             .getNotifier(DefaultNotifyType.sms, configId)
+
+File: jetlinks-components/script-component/src/main/java/org/jetlinks/community/script/jsr223/JavaScriptFactory.java
+Patch:
+@@ -30,6 +30,8 @@ protected final String prepare(Script script) {
+                      "this.eval = function(e){};" +
+                      "function readFully(){};" +
+                      "function readLine(){};" +
++                     "const console=_$console;" +
++                     "const utils=_$utils;" +
+                      "const print = function(e){console.log(e)};" +
+                      "const echo = print;");
+ 
+
+File: jetlinks-components/script-component/src/main/java/org/jetlinks/community/script/jsr223/Jsr223ScriptFactory.java
+Patch:
+@@ -42,10 +42,10 @@ private CompiledScript compile(Script script, boolean convert) {
+ 
+         ExecutionContext ctx = ExecutionContext.create();
+ 
+-        ctx.setAttribute("console", new Jsr223ScriptFactory.Console(
++        ctx.setAttribute("_$console", new Jsr223ScriptFactory.Console(
+                              LoggerFactory.getLogger("org.jetlinks.community.script." + script.getName())),
+                          ScriptContext.ENGINE_SCOPE);
+-        ctx.setAttribute("utils", getUtils(), ScriptContext.ENGINE_SCOPE);
++        ctx.setAttribute("_$utils", getUtils(), ScriptContext.ENGINE_SCOPE);
+ 
+         ctx.setAttribute("engine", null, ScriptContext.ENGINE_SCOPE);
+ 
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/web/excel/DeviceExcelInfo.java
+Patch:
+@@ -38,7 +38,7 @@ public class DeviceExcelInfo {
+     private String state;
+ 
+     public void config(String key, Object value) {
+-        if (value == null) {
++        if (value == null || value instanceof String && !StringUtils.hasText((String) value)) {
+             return;
+         }
+         configuration.put(key, value);
+
+File: jetlinks-components/network-component/mqtt-component/src/main/java/org/jetlinks/community/network/mqtt/client/MqttClientProvider.java
+Patch:
+@@ -129,7 +129,7 @@ private Mono<MqttClientOptions> convert(MqttClientProperties config) {
+ 
+         String username = config.getUsername();
+ 
+-        String password = config.getUsername();
++        String password = config.getPassword();
+ 
+         options.setClientId(clientId);
+         options.setPassword(password);
+
+File: jetlinks-components/common-component/src/main/java/org/jetlinks/community/reference/DataReferenceManager.java
+Patch:
+@@ -24,6 +24,8 @@ public interface DataReferenceManager {
+     String TYPE_NETWORK = "network";
+     //数据类型：关系配置
+     String TYPE_RELATION = "relation";
++    //数据类型：消息协议
++    String TYPE_PROTOCOL = "protocol";
+ 
+     /**
+      * 判断指定数据类型的数据是否已经被其他地方所引用
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/service/DefaultDeviceConfigMetadataSupplier.java
+Patch:
+@@ -1,6 +1,7 @@
+ package org.jetlinks.community.device.service;
+ 
+ import lombok.AllArgsConstructor;
++import org.hswebframework.web.exception.BusinessException;
+ import org.jetlinks.community.device.entity.DeviceInstanceEntity;
+ import org.jetlinks.community.device.entity.DeviceProductEntity;
+ import org.jetlinks.community.device.spi.DeviceConfigMetadataSupplier;
+@@ -94,8 +95,10 @@ public Flux<ConfigMetadata> getMetadataExpandsConfig(String productId,
+     private Flux<ConfigMetadata> getProductConfigMetadata0(String productId) {
+         return productService
+             .findById(productId)
++            .filter(product -> StringUtils.hasText(product.getMessageProtocol()))
+             .flatMapMany(product -> protocolSupports
+                 .getProtocol(product.getMessageProtocol())
++                .onErrorMap(e -> new BusinessException("error.unable_to_load_protocol_by_access_id", 404, product.getMessageProtocol()))
+                 .flatMap(support -> support.getConfigMetadata(Transport.of(product.getTransportProtocol()))));
+     }
+ }
+
+File: jetlinks-components/elasticsearch-component/src/main/java/org/jetlinks/community/elastic/search/service/reactive/ReactiveElasticSearchService.java
+Patch:
+@@ -42,6 +42,8 @@
+ import org.reactivestreams.Publisher;
+ import org.springframework.boot.context.properties.ConfigurationProperties;
+ import org.springframework.context.annotation.DependsOn;
++import org.springframework.stereotype.Component;
++import org.springframework.stereotype.Service;
+ import org.springframework.util.StringUtils;
+ import org.springframework.web.reactive.function.client.WebClientException;
+ import reactor.core.publisher.Flux;
+@@ -71,6 +73,7 @@
+ @Slf4j
+ @DependsOn("reactiveElasticsearchClient")
+ @ConfigurationProperties(prefix = "elasticsearch")
++@Service
+ public class ReactiveElasticSearchService implements ElasticSearchService {
+ 
+     @Getter
+
+File: jetlinks-components/io-component/src/main/java/org/jetlinks/community/io/file/FileManagerConfiguration.java
+Patch:
+@@ -9,7 +9,7 @@
+ 
+ @Configuration
+ @EnableConfigurationProperties(FileProperties.class)
+-@EnableEasyormRepository("org.jetlinks.pro.io.file.FileEntity")
++@EnableEasyormRepository("org.jetlinks.community.io.file.FileEntity")
+ public class FileManagerConfiguration {
+ 
+ 
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/web/GatewayDeviceController.java
+Patch:
+@@ -140,7 +140,7 @@ public Mono<GatewayDeviceInfo> bindDevice(@PathVariable @Parameter(description =
+                               .flatMap(operator -> operator.setConfig(DeviceConfigKey.parentGatewayId, gatewayId))
+                     ).then(registry.getDevice(gatewayId)
+                         .flatMap(gwOperator -> gwOperator.getProtocol()
+-                            .map(protocolSupport -> protocolSupport.onChildBind(gwOperator,
++                            .flatMap(protocolSupport -> protocolSupport.onChildBind(gwOperator,
+                                 Flux.from(registry.getDevice(deviceId)))
+                             )
+                         )
+@@ -177,7 +177,7 @@ public Mono<GatewayDeviceInfo> bindDevice(@PathVariable @Parameter(description =
+                           .then()
+                 ).then(registry.getDevice(gatewayId)
+                     .flatMap(gwOperator -> gwOperator.getProtocol()
+-                        .map(protocolSupport -> protocolSupport.onChildBind(gwOperator,
++                        .flatMap(protocolSupport -> protocolSupport.onChildBind(gwOperator,
+                             Flux.fromIterable(deviceIdList).flatMap(id -> registry.getDevice(id)))
+                         )
+                     )
+@@ -202,7 +202,7 @@ public Mono<GatewayDeviceInfo> unBindDevice(@PathVariable @Parameter(description
+                 .flatMap(operator -> operator.removeConfig(DeviceConfigKey.parentGatewayId.getKey())))
+             .then(registry.getDevice(gatewayId)
+                 .flatMap(gwOperator -> gwOperator.getProtocol()
+-                    .map(protocolSupport -> protocolSupport.onChildUnbind(gwOperator,
++                    .flatMap(protocolSupport -> protocolSupport.onChildUnbind(gwOperator,
+                         Flux.from(registry.getDevice(deviceId)))
+                     )
+                 )
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/web/GatewayDeviceController.java
+Patch:
+@@ -140,7 +140,7 @@ public Mono<GatewayDeviceInfo> bindDevice(@PathVariable @Parameter(description =
+                               .flatMap(operator -> operator.setConfig(DeviceConfigKey.parentGatewayId, gatewayId))
+                     ).then(registry.getDevice(gatewayId)
+                         .flatMap(gwOperator -> gwOperator.getProtocol()
+-                            .map(protocolSupport -> protocolSupport.onChildBind(gwOperator,
++                            .flatMap(protocolSupport -> protocolSupport.onChildBind(gwOperator,
+                                 Flux.from(registry.getDevice(deviceId)))
+                             )
+                         )
+@@ -177,7 +177,7 @@ public Mono<GatewayDeviceInfo> bindDevice(@PathVariable @Parameter(description =
+                           .then()
+                 ).then(registry.getDevice(gatewayId)
+                     .flatMap(gwOperator -> gwOperator.getProtocol()
+-                        .map(protocolSupport -> protocolSupport.onChildBind(gwOperator,
++                        .flatMap(protocolSupport -> protocolSupport.onChildBind(gwOperator,
+                             Flux.fromIterable(deviceIdList).flatMap(id -> registry.getDevice(id)))
+                         )
+                     )
+@@ -202,7 +202,7 @@ public Mono<GatewayDeviceInfo> unBindDevice(@PathVariable @Parameter(description
+                 .flatMap(operator -> operator.removeConfig(DeviceConfigKey.parentGatewayId.getKey())))
+             .then(registry.getDevice(gatewayId)
+                 .flatMap(gwOperator -> gwOperator.getProtocol()
+-                    .map(protocolSupport -> protocolSupport.onChildUnbind(gwOperator,
++                    .flatMap(protocolSupport -> protocolSupport.onChildUnbind(gwOperator,
+                         Flux.from(registry.getDevice(deviceId)))
+                     )
+                 )
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/service/LocalDeviceInstanceService.java
+Patch:
+@@ -542,7 +542,7 @@ private Flux<Void> deletedHandle(Flux<DeviceInstanceEntity> devices) {
+     @EventListener
+     public void deletedHandle(EntityDeletedEvent<DeviceInstanceEntity> event) {
+         event.async(
+-            this.deletedHandle(Flux.fromIterable(event.getEntity()))
++            this.deletedHandle(Flux.fromIterable(event.getEntity())).then()
+         );
+     }
+ }
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/web/DeviceInstanceController.java
+Patch:
+@@ -446,7 +446,8 @@ private Mono<Tuple4<DeviceProductEntity, DeviceProductOperator, DeviceMetadata,
+     @SaveAction
+     @Operation(summary = "导入设备数据")
+     public Flux<ImportDeviceInstanceResult> doBatchImportByProduct(@PathVariable @Parameter(description = "产品ID") String productId,
+-                                                                   @RequestParam @Parameter(description = "文件地址,支持csv,xlsx文件格式") String fileUrl) {
++                                                                   @RequestParam(required = false) @Parameter(description = "文件地址,支持csv,xlsx文件格式") String fileUrl,
++                                                                   @RequestParam(required = false) @Parameter(description = "文件Id") String fileId) {
+         return Authentication
+             .currentReactive()
+             .flatMapMany(auth -> {
+@@ -461,8 +462,7 @@ public Flux<ImportDeviceInstanceResult> doBatchImportByProduct(@PathVariable @Pa
+                     .getDeviceProductDetail(productId)
+                     .map(tp4 -> Tuples.of(new DeviceWrapper(tp4.getT3().getTags(), tp4.getT4()), tp4.getT1()))
+                     .flatMapMany(wrapper -> importExportService
+-                        .getInputStream(fileUrl)
+-                        .flatMapMany(inputStream -> read(inputStream, FileUtils.getExtension(fileUrl), wrapper.getT1()))
++                        .readData(fileUrl, fileId, wrapper.getT1())
+                         .doOnNext(info -> info.setProductName(wrapper.getT2().getName()))
+                     )
+                     .map(info -> {
+
+File: jetlinks-components/network-component/mqtt-component/src/main/java/org/jetlinks/community/network/mqtt/gateway/device/MqttServerDeviceGateway.java
+Patch:
+@@ -113,7 +113,6 @@ private void doStart() {
+             .flatMap(this::handleConnection)
+             .flatMap(tuple3 -> handleAuthResponse(tuple3.getT1(), tuple3.getT2(), tuple3.getT3()))
+             .flatMap(tp -> handleAcceptedMqttConnection(tp.getT1(), tp.getT2(), tp.getT3()), Integer.MAX_VALUE)
+-            .onErrorContinue((err, obj) -> log.error("处理MQTT连接失败", err))
+             .subscriberContext(ReactiveLogger.start("network", mqttServer.getId()))
+             .subscribe();
+ 
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/message/DefaultDeviceDataManager.java
+Patch:
+@@ -94,7 +94,7 @@ public Mono<Long> getFirstPropertyTime(@Nonnull String deviceId) {
+     }
+ 
+     @Override
+-    public Mono<PropertyValue> getFistProperty(@Nonnull String deviceId, @Nonnull String propertyId) {
++    public Mono<PropertyValue> getFirstProperty(@Nonnull String deviceId, @Nonnull String propertyId) {
+         return localCache
+             .computeIfAbsent(deviceId, id -> new DevicePropertyRef(id, eventBus, dataService))
+             .getFirstProperty(propertyId);
+
+File: jetlinks-manager/rule-engine-manager/src/main/java/org/jetlinks/community/rule/engine/enums/SqlRuleType.java
+Patch:
+@@ -32,7 +32,7 @@ public void validate(SqlRule rule) {
+     realTime("实时") {
+         @Override
+         public void validate(SqlRule rule) {
+-            Assert.notNull(rule.getSql(), "sql能为空");
++            Assert.notNull(rule.getSql(), "sql不能为空");
+             try {
+                 PlainSelect select = ((PlainSelect) ((Select) CCJSqlParserUtil.parse(rule.getSql())).getSelectBody());
+                 if (select.getGroupBy() != null && select.getGroupBy().getGroupByExpressions() != null) {
+
+File: jetlinks-manager/rule-engine-manager/src/main/java/org/jetlinks/community/rule/engine/enums/SqlRuleType.java
+Patch:
+@@ -32,7 +32,7 @@ public void validate(SqlRule rule) {
+     realTime("实时") {
+         @Override
+         public void validate(SqlRule rule) {
+-            Assert.notNull(rule.getSql(), "sql能为空");
++            Assert.notNull(rule.getSql(), "sql不能为空");
+             try {
+                 PlainSelect select = ((PlainSelect) ((Select) CCJSqlParserUtil.parse(rule.getSql())).getSelectBody());
+                 if (select.getGroupBy() != null && select.getGroupBy().getGroupByExpressions() != null) {
+
+File: jetlinks-components/network-component/mqtt-component/src/test/java/org/jetlinks/community/network/mqtt/VertxMqttSslProviderTest.java
+Patch:
+@@ -15,6 +15,7 @@
+ import org.jetlinks.community.network.security.VertxKeyCertTrustOptions;
+ import org.junit.jupiter.api.Test;
+ import org.springframework.core.io.ClassPathResource;
++import org.springframework.mock.env.MockEnvironment;
+ import org.springframework.util.StreamUtils;
+ import reactor.core.publisher.Mono;
+ import reactor.test.StepVerifier;
+@@ -67,7 +68,7 @@ public void test() {
+                 .setKeyCertOptions(new VertxKeyCertTrustOptions(clientCert))
+                 .setTrustOptions(new VertxKeyCertTrustOptions(clientCert)));
+ 
+-        MqttClientProvider provider = new MqttClientProvider(id -> Mono.empty(), vertx);
++        MqttClientProvider provider = new MqttClientProvider(id -> Mono.empty(), vertx,new MockEnvironment());
+         VertxMqttClient client = provider.createNetwork(propertiesClient);
+         mqttServer.handleConnection()
+                 .map(MqttConnection::getClientId)
+
+File: jetlinks-components/network-component/mqtt-component/src/test/java/org/jetlinks/community/network/mqtt/client/MqttClientProviderTest.java
+Patch:
+@@ -7,6 +7,7 @@
+ import io.vertx.mqtt.MqttServer;
+ import org.jetlinks.core.message.codec.MqttMessage;
+ import org.junit.jupiter.api.Test;
++import org.springframework.mock.env.MockEnvironment;
+ import reactor.core.publisher.Mono;
+ import reactor.test.StepVerifier;
+ 
+@@ -28,7 +29,7 @@ void test() {
+                     .publish("/test", Buffer.buffer("test"), MqttQoS.AT_MOST_ONCE, false, false);
+         }).listen(11223);
+ 
+-        MqttClientProvider provider = new MqttClientProvider(id -> Mono.empty(), vertx);
++        MqttClientProvider provider = new MqttClientProvider(id -> Mono.empty(), vertx,new MockEnvironment());
+ 
+         MqttClientProperties properties = new MqttClientProperties();
+         properties.setHost("127.0.0.1");
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/web/excel/DeviceExcelInfo.java
+Patch:
+@@ -33,18 +33,19 @@ public class DeviceExcelInfo {
+     private long rowNumber;
+ 
+ 
+-    public void tag(String key, String name, Object value) {
++    public void tag(String key, String name, Object value,String type) {
+         if (value == null) {
+             return;
+         }
+         DeviceTagEntity entity = new DeviceTagEntity();
+         entity.setKey(key);
+         entity.setValue(String.valueOf(value));
+         entity.setName(name);
++        entity.setDeviceId(id);
++        entity.setType(type);
+         entity.setId(String.valueOf(id).concat(":").concat(key));
+         tags.add(entity);
+     }
+-
+     public void setId(String id) {
+         this.id = id;
+         for (DeviceTagEntity tag : tags) {
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/web/DeviceInstanceController.java
+Patch:
+@@ -457,7 +457,7 @@ public Mono<Void> export(ServerHttpResponse response,
+     @PostMapping("/export")
+     @QueryAction
+     @SneakyThrows
+-    public Mono<Void> export(ServerHttpResponse response, QueryParam parameter) {
++    public Mono<Void> export(ServerHttpResponse response, QueryParamEntity parameter) {
+         response.getHeaders().set(HttpHeaders.CONTENT_DISPOSITION,
+             "attachment; filename=".concat(URLEncoder.encode("设备实例.xlsx", StandardCharsets.UTF_8.displayName())));
+         return Authentication
+
+File: jetlinks-components/elasticsearch-component/src/main/java/org/jetlinks/community/elastic/search/index/strategies/DirectElasticSearchIndexStrategy.java
+Patch:
+@@ -2,14 +2,15 @@
+ 
+ import org.jetlinks.community.elastic.search.ElasticRestClient;
+ import org.jetlinks.community.elastic.search.index.ElasticSearchIndexMetadata;
++import org.jetlinks.community.elastic.search.index.ElasticSearchIndexProperties;
+ import org.springframework.stereotype.Component;
+ import reactor.core.publisher.Mono;
+ 
+ @Component
+ public class DirectElasticSearchIndexStrategy extends AbstractElasticSearchIndexStrategy {
+ 
+-    public DirectElasticSearchIndexStrategy(ElasticRestClient client) {
+-        super("direct", client);
++    public DirectElasticSearchIndexStrategy(ElasticRestClient client, ElasticSearchIndexProperties properties) {
++        super("direct", client,properties);
+     }
+ 
+     @Override
+
+File: jetlinks-components/elasticsearch-component/src/main/java/org/jetlinks/community/elastic/search/index/strategies/TimeByMonthElasticSearchIndexStrategy.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import org.hswebframework.utils.time.DateFormatter;
+ import org.jetlinks.community.elastic.search.ElasticRestClient;
++import org.jetlinks.community.elastic.search.index.ElasticSearchIndexProperties;
+ import org.springframework.stereotype.Component;
+ 
+ import java.util.Date;
+@@ -17,8 +18,8 @@ public class TimeByMonthElasticSearchIndexStrategy extends TemplateElasticSearch
+ 
+     private final String format = "yyyy-MM";
+ 
+-    public TimeByMonthElasticSearchIndexStrategy(ElasticRestClient client) {
+-        super("time-by-month", client);
++    public TimeByMonthElasticSearchIndexStrategy(ElasticRestClient client, ElasticSearchIndexProperties properties) {
++        super("time-by-month", client,properties);
+     }
+ 
+     @Override
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/entity/DeviceInstanceEntity.java
+Patch:
+@@ -60,6 +60,7 @@ public String getId() {
+     @Column(name = "state")
+     @EnumCodec
+     @ColumnType(javaType = String.class)
++    @DefaultValue("notActive")
+     private DeviceState state;
+ 
+     @Column(name = "creator_id")
+
+File: jetlinks-manager/device-manager/src/main/java/org/jetlinks/community/device/entity/ProtocolSupportEntity.java
+Patch:
+@@ -3,6 +3,7 @@
+ import lombok.Getter;
+ import lombok.Setter;
+ import org.hswebframework.ezorm.rdb.mapping.annotation.ColumnType;
++import org.hswebframework.ezorm.rdb.mapping.annotation.DefaultValue;
+ import org.hswebframework.ezorm.rdb.mapping.annotation.JsonCodec;
+ import org.hswebframework.web.api.crud.entity.GenericEntity;
+ import org.jetlinks.supports.protocol.management.ProtocolSupportDefinition;
+@@ -27,6 +28,7 @@ public class ProtocolSupportEntity extends GenericEntity<String> {
+     private String type;
+ 
+     @Column
++    @DefaultValue("0")
+     private Byte state;
+ 
+     @Column
+
+File: jetlinks-manager/network-manager/src/main/java/org/jetlinks/community/network/manager/entity/NetworkConfigEntity.java
+Patch:
+@@ -3,6 +3,7 @@
+ import lombok.Getter;
+ import lombok.Setter;
+ import org.hswebframework.ezorm.rdb.mapping.annotation.ColumnType;
++import org.hswebframework.ezorm.rdb.mapping.annotation.DefaultValue;
+ import org.hswebframework.ezorm.rdb.mapping.annotation.EnumCodec;
+ import org.hswebframework.ezorm.rdb.mapping.annotation.JsonCodec;
+ import org.hswebframework.web.api.crud.entity.GenericEntity;
+@@ -37,6 +38,7 @@ public class NetworkConfigEntity extends GenericEntity<String> {
+     @Column
+     @EnumCodec
+     @ColumnType(javaType = String.class)
++    @DefaultValue("disabled")
+     private NetworkConfigState state;
+ 
+     @Column
+

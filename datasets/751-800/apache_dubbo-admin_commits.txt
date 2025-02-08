@@ -1,0 +1,1250 @@
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/RegistryServerSync.java
+Patch:
+@@ -20,6 +20,7 @@
+ import org.apache.dubbo.admin.common.util.Constants;
+ import org.apache.dubbo.admin.common.util.Tool;
+ import org.apache.dubbo.admin.service.impl.InterfaceRegistryCache;
++
+ import org.apache.dubbo.common.BaseServiceMetadata;
+ import org.apache.dubbo.common.URL;
+ import org.apache.dubbo.common.logger.Logger;
+@@ -29,8 +30,6 @@
+ import org.apache.dubbo.registry.NotifyListener;
+ import org.apache.dubbo.registry.Registry;
+ import org.apache.dubbo.registry.client.InstanceAddressURL;
+-import org.apache.dubbo.registry.nacos.NacosRegistry;
+-
+ import org.springframework.beans.factory.DisposableBean;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.boot.context.event.ApplicationReadyEvent;
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/SyncUtils.java
+Patch:
+@@ -31,6 +31,7 @@
+ import java.util.Map;
+ 
+ import static org.apache.dubbo.admin.common.util.Constants.COLON;
++import static org.apache.dubbo.admin.common.util.Constants.INTERFACE_KEY;
+ 
+ public class SyncUtils {
+ 
+@@ -201,7 +202,7 @@ public static <SM extends Map<String, Map<String, URL>>> Pair<String, URL> filte
+     }
+ 
+     private static String getServiceInterface(URL url) {
+-        String serviceInterface = url.getServiceInterface();
++        String serviceInterface = url.getOriginalParameter(INTERFACE_KEY);
+         if (StringUtils.isBlank(serviceInterface) || Constants.ANY_VALUE.equals(serviceInterface)) {
+             serviceInterface = url.getPath();
+         }
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/InstanceRegistryCache.java
+Patch:
+@@ -54,7 +54,7 @@ public class InstanceRegistryCache implements RegistryCache<String, ConcurrentMa
+ 
+     private final ConcurrentMap<String, ConcurrentMap<String, Map<String, List<InstanceAddressURL>>>> registryCache = new ConcurrentHashMap<>();
+ 
+-    private final Map<String, Map<String, List<URL>>> subscribedCache = new ConcurrentHashMap<>();
++    private final ConcurrentMap<String, Map<String, List<URL>>> subscribedCache = new ConcurrentHashMap<>();
+ 
+     private final AtomicBoolean startRefresh = new AtomicBoolean(false);
+ 
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/MetrcisCollectServiceImpl.java
+Patch:
+@@ -29,6 +29,8 @@ public MetrcisCollectServiceImpl() {
+         referenceConfig = new ReferenceConfig<>();
+         referenceConfig.setApplication(new ApplicationConfig("dubbo-admin"));
+         referenceConfig.setInterface(MetricsService.class);
++        //Keep it consistent with the ConfigManager cache
++        referenceConfig.setSticky(false);
+     }
+ 
+     public void setUrl(String url) {
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/registry/mapping/impl/ZookeeperServiceMapping.java
+Patch:
+@@ -53,7 +53,7 @@ public void init(URL url) {
+ 
+     @Override
+     public void listenerAll() {
+-        zkClient.create(MAPPING_PATH, false);
++        zkClient.create(MAPPING_PATH, false, false);
+         List<String> services = zkClient.addChildListener(MAPPING_PATH, (path, currentChildList) -> {
+             for (String child : currentChildList) {
+                 if (anyServices.add(child)) {
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/SyncUtils.java
+Patch:
+@@ -21,6 +21,7 @@
+ import org.apache.dubbo.admin.model.domain.RegistrySource;
+ import org.apache.dubbo.common.BaseServiceMetadata;
+ import org.apache.dubbo.common.URL;
++import org.apache.dubbo.common.constants.CommonConstants;
+ import org.apache.dubbo.common.utils.StringUtils;
+ 
+ import java.util.ArrayList;
+@@ -62,6 +63,8 @@ public static Provider url2Provider(Pair<String, URL> pair) {
+ 
+         p.setDynamic(url.getParameter("dynamic", true));
+         p.setEnabled(url.getParameter(Constants.ENABLED_KEY, true));
++        p.setSerialization(url.getParameter(org.apache.dubbo.remoting.Constants.SERIALIZATION_KEY, "hessian2"));
++        p.setTimeout(url.getParameter(CommonConstants.TIMEOUT_KEY, CommonConstants.DEFAULT_TIMEOUT));
+         p.setWeight(url.getParameter(Constants.WEIGHT_KEY, Constants.DEFAULT_WEIGHT));
+         p.setUsername(url.getParameter("owner"));
+         p.setRegistrySource(RegistrySource.INTERFACE);
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/InstanceRegistryQueryHelper.java
+Patch:
+@@ -24,6 +24,7 @@
+ import org.apache.dubbo.admin.model.domain.Provider;
+ import org.apache.dubbo.admin.model.domain.RegistrySource;
+ import org.apache.dubbo.common.URLBuilder;
++import org.apache.dubbo.common.constants.CommonConstants;
+ import org.apache.dubbo.common.url.component.ServiceConfigURL;
+ import org.apache.dubbo.common.utils.CollectionUtils;
+ import org.apache.dubbo.metadata.MetadataInfo;
+@@ -178,6 +179,8 @@ private List<Provider> urlsToProviderList(List<InstanceAddressURL> urls) {
+                 p.setUrl(url.toFullString());
+                 p.setDynamic(url.getParameter("dynamic", true));
+                 p.setEnabled(url.getParameter(Constants.ENABLED_KEY, true));
++                p.setSerialization(url.getParameter(org.apache.dubbo.remoting.Constants.SERIALIZATION_KEY, "hessian2"));
++                p.setTimeout(url.getParameter(CommonConstants.TIMEOUT_KEY, CommonConstants.DEFAULT_TIMEOUT));
+                 p.setWeight(url.getParameter(Constants.WEIGHT_KEY, Constants.DEFAULT_WEIGHT));
+                 p.setUsername(url.getParameter("owner"));
+                 p.setRegistrySource(RegistrySource.INSTANCE);
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/SyncUtils.java
+Patch:
+@@ -57,7 +57,7 @@ public static Provider url2Provider(Pair<String, URL> pair) {
+         p.setService(service);
+         p.setAddress(url.getAddress());
+         p.setApplication(url.getParameter(Constants.APPLICATION_KEY));
+-        p.setUrl(url.toIdentityString());
++        p.setUrl(url.toFullString());
+         p.setParameters(url.toParameterString());
+ 
+         p.setDynamic(url.getParameter("dynamic", true));
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/config/SwaggerConfiguration.java
+Patch:
+@@ -30,7 +30,7 @@
+ 
+ @Configuration
+ @EnableSwagger2
+-@ConditionalOnProperty(name = "swagger.enable", havingValue = "true", matchIfMissing = true)
++@ConditionalOnProperty(name = "swagger.enable", havingValue = "true")
+ public class SwaggerConfiguration {
+     @Bean
+     public Docket createRestApi() {
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/model/domain/RegistrySource.java
+Patch:
+@@ -19,6 +19,8 @@
+ 
+ public enum RegistrySource {
+ 
++    ALL,
++
+     INTERFACE,
+ 
+     INSTANCE
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/registry/mapping/AdminMappingListener.java
+Patch:
+@@ -115,6 +115,7 @@ public void notifyAddressChanged(String protocolServiceKey, List<URL> urls) {
+                 List<InstanceAddressURL> instanceAddressUrls = urls.stream().map(url -> (InstanceAddressURL) url).collect(Collectors.toList());
+                 serviceMap.put(serviceKey, instanceAddressUrls);
+             }
++            instanceRegistryCache.refreshConsumer(false);
+         }
+ 
+         private String removeProtocol(String protocolServiceKey) {
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/config/SwaggerConfiguration.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ package org.apache.dubbo.admin.config;
+ 
++import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+ import springfox.documentation.builders.ApiInfoBuilder;
+@@ -29,6 +30,7 @@
+ 
+ @Configuration
+ @EnableSwagger2
++@ConditionalOnProperty(name = "swagger.enable", havingValue = "true", matchIfMissing = true)
+ public class SwaggerConfiguration {
+     @Bean
+     public Docket createRestApi() {
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/utils/ApiDocsDubboGenericUtil.java
+Patch:
+@@ -121,6 +121,8 @@ private static ReferenceConfig<GenericService> getReferenceConfig(String address
+             referenceConfig.setTimeout(timeout);
+             referenceConfig.setVersion(version);
+             referenceConfig.setGroup(group);
++            //Keep it consistent with the ConfigManager cache
++            referenceConfig.setSticky(false);
+ 
+             referenceConfig.setApplication(application);
+             if (address.startsWith("dubbo")) {
+
+File: dubbo-admin-server/src/test/java/org/apache/dubbo/admin/common/util/UrlUtilsTest.java
+Patch:
+@@ -19,14 +19,14 @@
+ import org.junit.Assert;
+ import org.junit.Test;
+ 
+-import java.util.HashMap;
++import java.util.LinkedHashMap;
+ import java.util.Map;
+ 
+ public class UrlUtilsTest {
+ 
+     @Test
+     public void testParamsMapToString() {
+-        Map<String, String[]> params = new HashMap<>();
++        Map<String, String[]> params = new LinkedHashMap<>();
+         params.put("a", new String[]{"1", "2", "3"});
+         params.put("b", new String[]{"8", "7", "6"});
+         String result = UrlUtils.paramsMapToString(params);
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/GenericServiceImpl.java
+Patch:
+@@ -73,7 +73,8 @@ public Object invoke(String service, String method, String[] parameterTypes, Obj
+         reference.setInterface(intf);
+         reference.setVersion(version);
+         reference.setGroup(group);
+-
++        //Keep it consistent with the ConfigManager cache
++        reference.setSticky(false);
+         try {
+             removeGenericSymbol(parameterTypes);
+             GenericService genericService = reference.get();
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/ManagementServiceImpl.java
+Patch:
+@@ -73,8 +73,7 @@ public boolean deleteConfig(String key) {
+     }
+ 
+     private String getPath(String key) {
+-        return Constants.CONFIG_KEY + Constants.PATH_SEPARATOR + key + Constants.PATH_SEPARATOR
+-                + Constants.DUBBO_PROPERTY;
++        return  key + Constants.PATH_SEPARATOR + Constants.DUBBO_PROPERTY;
+     }
+ 
+ }
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/OverrideServiceImpl.java
+Patch:
+@@ -42,7 +42,6 @@
+ 
+ @Component
+ public class OverrideServiceImpl extends AbstractService implements OverrideService {
+-    private String prefix = Constants.CONFIG_KEY;
+ 
+     @java.lang.Override
+     public void saveOverride(DynamicConfigDTO override) {
+@@ -528,9 +527,10 @@ private List<Override> convertDTOtoOldOverride(DynamicConfigDTO overrideDTO) {
+         }
+         return result;
+     }
++
+     private String getPath(String key) {
+         key = key.replace("/", "*");
+-        return prefix + Constants.PATH_SEPARATOR + key + Constants.CONFIGURATOR_RULE_SUFFIX;
++        return key + Constants.CONFIGURATOR_RULE_SUFFIX;
+     }
+ 
+     private void unregisterWeight(WeightDTO weightDTO) {
+
+File: dubbo-admin-server/src/test/java/org/apache/dubbo/admin/AbstractSpringIntegrationTest.java
+Patch:
+@@ -73,9 +73,11 @@ public void initialize(ConfigurableApplicationContext configurableApplicationCon
+             TestPropertySourceUtils.addInlinedPropertiesToEnvironment(configurableApplicationContext,
+                     "admin.registry.address=zookeeper://" + zkServer.getConnectString());
+             TestPropertySourceUtils.addInlinedPropertiesToEnvironment(configurableApplicationContext,
+-                    "admin.metadata.address=zookeeper://" + zkServer.getConnectString());
++                    "admin.metadata-report.address=zookeeper://" + zkServer.getConnectString());
+             TestPropertySourceUtils.addInlinedPropertiesToEnvironment(configurableApplicationContext,
+                     "admin.config-center=zookeeper://" + zkServer.getConnectString());
++            TestPropertySourceUtils.addInlinedPropertiesToEnvironment(configurableApplicationContext,
++                    "dubbo.config.ignore-duplicated-interface=true");
+         }
+     }
+ }
+
+File: dubbo-admin-server/src/test/java/org/apache/dubbo/admin/AbstractSpringIntegrationTest.java
+Patch:
+@@ -76,6 +76,8 @@ public void initialize(ConfigurableApplicationContext configurableApplicationCon
+                     "admin.metadata-report.address=zookeeper://" + zkServer.getConnectString());
+             TestPropertySourceUtils.addInlinedPropertiesToEnvironment(configurableApplicationContext,
+                     "admin.config-center=zookeeper://" + zkServer.getConnectString());
++            TestPropertySourceUtils.addInlinedPropertiesToEnvironment(configurableApplicationContext,
++                    "dubbo.config.ignore-duplicated-interface=true");
+         }
+     }
+ }
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/registry/mapping/AdminMappingListener.java
+Patch:
+@@ -31,7 +31,6 @@
+ import org.apache.dubbo.registry.client.event.listener.ServiceInstancesChangedListener;
+ 
+ import com.google.common.collect.Sets;
+-import org.springframework.stereotype.Component;
+ 
+ import java.util.List;
+ import java.util.Map;
+@@ -40,7 +39,6 @@
+ import java.util.concurrent.ConcurrentMap;
+ import java.util.stream.Collectors;
+ 
+-@Component
+ public class AdminMappingListener implements MappingListener {
+ 
+     private static final URL CONSUMER_URL = new URL(Constants.ADMIN_PROTOCOL, NetUtils.getLocalHost(), 0, "",
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/GenericServiceImpl.java
+Patch:
+@@ -73,7 +73,8 @@ public Object invoke(String service, String method, String[] parameterTypes, Obj
+         reference.setInterface(intf);
+         reference.setVersion(version);
+         reference.setGroup(group);
+-
++        //Keep it consistent with the ConfigManager cache
++        reference.setSticky(false);
+         try {
+             removeGenericSymbol(parameterTypes);
+             GenericService genericService = reference.get();
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/ServiceTestV3Util.java
+Patch:
+@@ -91,7 +91,7 @@ private static List<Object> generateParameterTypes(String[] parameterTypes, Serv
+ 
+     private static TypeDefinition findTypeDefinition(ServiceDefinition serviceDefinition, String type) {
+         return serviceDefinition.getTypes().stream()
+-                .filter(t -> t.getType().equals(type))
++                .filter(t -> type.equals(t.getType()))
+                 .findFirst().orElse(new TypeDefinition(type));
+     }
+ 
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/Constants.java
+Patch:
+@@ -79,7 +79,8 @@ public class Constants {
+     public static final String METRICS_PROTOCOL = "metrics.protocol";
+     public static final Set<String> CONFIGS = new HashSet<>();
+     public static final String COLON = ":";
+-
++    public static final String MESH_RULE_SUFFIX = ".MESHAPPRULE";
++    public static final String DEFAULT_MAPPING_GROUP = "mapping";
+     static {
+         CONFIGS.add(WEIGHT);
+         CONFIGS.add(BALANCING);
+
+File: dubbo-admin-server/src/test/java/org/apache/dubbo/admin/AbstractSpringIntegrationTest.java
+Patch:
+@@ -73,7 +73,7 @@ public void initialize(ConfigurableApplicationContext configurableApplicationCon
+             TestPropertySourceUtils.addInlinedPropertiesToEnvironment(configurableApplicationContext,
+                     "admin.registry.address=zookeeper://" + zkServer.getConnectString());
+             TestPropertySourceUtils.addInlinedPropertiesToEnvironment(configurableApplicationContext,
+-                    "admin.metadata.address=zookeeper://" + zkServer.getConnectString());
++                    "admin.metadata-report.address=zookeeper://" + zkServer.getConnectString());
+             TestPropertySourceUtils.addInlinedPropertiesToEnvironment(configurableApplicationContext,
+                     "admin.config-center=zookeeper://" + zkServer.getConnectString());
+         }
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/ServiceTestUtil.java
+Patch:
+@@ -86,7 +86,7 @@ private static List<Object> generateParameterTypes(String[] parameterTypes, Serv
+ 
+     private static TypeDefinition findTypeDefinition(ServiceDefinition serviceDefinition, String type) {
+         return serviceDefinition.getTypes().stream()
+-                .filter(t -> t.getType().equals(type))
++                .filter(t -> type.equals(t.getType()))
+                 .findFirst().orElse(new TypeDefinition(type));
+     }
+ 
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/RouteUtils.java
+Patch:
+@@ -342,7 +342,7 @@ public static AccessDTO convertToAccessDTO(List<String> blackWhiteList, String s
+         if (scope.equals(Constants.APPLICATION)) {
+             accessDTO.setApplication(key);
+         } else {
+-            accessDTO.setService(key);
++            ConvertUtil.detachIdToService(key, accessDTO);
+         }
+         if (blackWhiteList != null) {
+             for (String condition : blackWhiteList) {
+@@ -363,7 +363,7 @@ public static AccessDTO convertToAccessDTO(List<String> blackWhiteList, String s
+ 
+     public static Route convertAccessDTOtoRoute(AccessDTO accessDTO) {
+         Route route = new Route();
+-        route.setService(accessDTO.getService());
++        route.setService(ConvertUtil.getIdFromDTO(accessDTO));
+         route.setForce(true);
+         route.setFilterRule("false");
+         route.setEnabled(true);
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/RouteServiceImpl.java
+Patch:
+@@ -398,7 +398,7 @@ private List<Route> convertRouteToOldRoute(ConditionRouteDTO route) {
+     	List<Route> oldList = new LinkedList<Route>();
+     	for (String condition : route.getConditions()) {
+ 	        Route old = new Route();
+-	        old.setService(route.getService());
++            old.setService(ConvertUtil.getIdFromDTO(route));
+ 	        old.setEnabled(route.isEnabled());
+ 	        old.setForce(route.isForce());
+ 	        old.setRuntime(route.isRuntime());
+
+File: dubbo-admin-server/src/test/java/org/apache/dubbo/admin/service/RegistryServerSyncTest.java
+Patch:
+@@ -53,7 +53,7 @@ public void testGetRegistryCache() {
+ 
+     @Test
+     public void testAfterPropertiesSet() throws Exception {
+-        registryServerSync.afterPropertiesSet();
++        registryServerSync.startSubscribe();
+         verify(registry).subscribe(any(URL.class), any(RegistryServerSync.class));
+     }
+ 
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/config/ConfigCenter.java
+Patch:
+@@ -170,10 +170,10 @@ MetaDataCollector getMetadataCollector() {
+ 
+     private URL formUrl(String config, String group, String nameSpace, String username, String password) {
+         URL url = URL.valueOf(config);
+-        if (StringUtils.isNotEmpty(group)) {
++        if (StringUtils.isEmpty(url.getParameter(Constants.GROUP_KEY)) && StringUtils.isNotEmpty(group)) {
+             url = url.addParameter(Constants.GROUP_KEY, group);
+         }
+-        if (StringUtils.isNotEmpty(nameSpace)){
++        if (StringUtils.isEmpty(url.getParameter(Constants.NAMESPACE_KEY)) && StringUtils.isNotEmpty(nameSpace)) {
+             url = url.addParameter(Constants.NAMESPACE_KEY, nameSpace);
+         }
+         if (StringUtils.isNotEmpty(username)) {
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/RouteUtils.java
+Patch:
+@@ -353,7 +353,7 @@ public static Route convertAccessDTOtoRoute(AccessDTO accessDTO) {
+ 
+     public static ConditionRouteDTO createConditionRouteFromRule(RoutingRule routingRule) {
+         ConditionRouteDTO conditionRouteDTO = new ConditionRouteDTO();
+-        if (routingRule.getScope().equals(Constants.SERVICE)) {
++        if (Constants.SERVICE.equals(routingRule.getScope())) {
+             conditionRouteDTO.setService(routingRule.getKey());
+         } else {
+             conditionRouteDTO.setApplication(routingRule.getKey());
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/controller/ApiDocsController.java
+Patch:
+@@ -198,7 +198,9 @@ private static boolean isBaseType(String typeStr) {
+                 "java.lang.Character".equals(typeStr) ||
+                 "java.lang.Short".equals(typeStr) ||
+                 "java.lang.Boolean".equals(typeStr) ||
+-                "java.lang.String".equals(typeStr)) {
++                "java.lang.String".equals(typeStr) ||
++                "java.math.BigDecimal".equals(typeStr) ||
++                "java.math.BigInteger".equals(typeStr)) {
+             return true;
+         }
+         return false;
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/registry/config/impl/NacosConfiguration.java
+Patch:
+@@ -192,7 +192,7 @@ private String[] parseGroupAndDataId(String key, String group) {
+             groupAndDataId[1] = split[2];
+         } else {
+             groupAndDataId[0] = group;
+-            groupAndDataId[1] = split[1] + Constants.PUNCTUATION_POINT + split[2];
++            groupAndDataId[1] = split[2];
+         }
+         return groupAndDataId;
+     }
+
+File: dubbo-admin-server/src/test/java/org/apache/dubbo/admin/controller/AccessesControllerTest.java
+Patch:
+@@ -22,6 +22,7 @@
+ import org.apache.dubbo.admin.AbstractSpringIntegrationTest;
+ import org.apache.dubbo.admin.model.dto.AccessDTO;
+ import org.apache.dubbo.admin.model.dto.ConditionRouteDTO;
++import org.apache.dubbo.admin.model.dto.ConditionRouteResultDTO;
+ import org.apache.dubbo.admin.service.ProviderService;
+ import org.apache.dubbo.admin.service.RouteService;
+ import org.junit.After;
+@@ -130,7 +131,7 @@ public void updateAccess() throws IOException {
+         restTemplate.put(url("/api/{env}/rules/access/{id}"), accessDTO, env, id);
+         verify(routeService).findConditionRoute(id);
+         //
+-        ConditionRouteDTO conditionRouteDTO = mock(ConditionRouteDTO.class);
++        ConditionRouteResultDTO conditionRouteDTO = mock(ConditionRouteResultDTO.class);
+         when(routeService.findConditionRoute(id)).thenReturn(conditionRouteDTO);
+         restTemplate.put(url("/api/{env}/rules/access/{id}"), accessDTO, env, id);
+         verify(routeService).updateAccess(any(AccessDTO.class));
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/controller/ApiDocsController.java
+Patch:
+@@ -16,6 +16,7 @@
+  */
+ package org.apache.dubbo.admin.controller;
+ 
++import org.apache.dubbo.admin.annotation.Authority;
+ import org.apache.dubbo.admin.controller.editors.CustomLocalDateEditor;
+ import org.apache.dubbo.admin.controller.editors.CustomLocalDateTimeEditor;
+ import org.apache.dubbo.admin.model.dto.docs.ApiInfoRequest;
+@@ -53,6 +54,7 @@
+ /**
+  * dubbo doc ui server api.
+  */
++@Authority(needLogin = true)
+ @Api(tags = {"dubbo-api-docs-api"})
+ @RestController
+ @RequestMapping("/api/{env}/docs")
+@@ -131,7 +133,7 @@ public String callDubboService(CallDubboServiceRequest dubboCfg, @RequestBody Li
+             paramValues = new Object[0];
+         }
+         CompletableFuture<Object> future = ApiDocsDubboGenericUtil.invoke(dubboCfg.getRegistryCenterUrl(), dubboCfg.getInterfaceClassName(),
+-                dubboCfg.getMethodName(), dubboCfg.isAsync(), dubboCfg.getVersion(), paramTypes, paramValues);
++                dubboCfg.getMethodName(), dubboCfg.isAsync(), dubboCfg.getVersion(), paramTypes, paramValues, dubboCfg.getGroup());
+         try {
+             Object objResult = future.get();
+             return JSON.toJSONString(objResult, CLASS_NAME_PRE_FILTER);
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/Constants.java
+Patch:
+@@ -78,6 +78,7 @@ public class Constants {
+     public static final String METRICS_PORT = "metrics.port";
+     public static final String METRICS_PROTOCOL = "metrics.protocol";
+     public static final Set<String> CONFIGS = new HashSet<>();
++    public static final String COLON = ":";
+ 
+     static {
+         CONFIGS.add(WEIGHT);
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/SyncUtils.java
+Patch:
+@@ -25,6 +25,8 @@
+ import java.util.List;
+ import java.util.Map;
+ 
++import static org.apache.dubbo.admin.common.util.Constants.COLON;
++
+ public class SyncUtils {
+ 
+     public static final String SERVICE_FILTER_KEY = ".service";
+@@ -33,8 +35,6 @@ public class SyncUtils {
+ 
+     public static final String ID_FILTER_KEY = ".id";
+ 
+-    public static final String COLON = ":";
+-
+     public static Provider url2Provider(Pair<String, URL> pair) {
+         if (pair == null) {
+             return null;
+
+File: dubbo-admin-test/src/main/java/org/apache/dubbo/admin/impl/consumer/AnnotatedGreetingService.java
+Patch:
+@@ -24,7 +24,7 @@
+ 
+ @Service
+ public class AnnotatedGreetingService {
+-    @DubboReference(version = "1.0.0")
++    @DubboReference(version = "1.0.0", group = "test")
+     private GreetingService greetingService;
+ 
+     public String sayHello(String name) {
+
+File: dubbo-admin-test/src/main/java/org/apache/dubbo/admin/impl/provider/AnnotatedGreetingService.java
+Patch:
+@@ -22,7 +22,7 @@
+ import org.apache.dubbo.admin.api.GreetingService;
+ import org.apache.dubbo.config.annotation.DubboService;
+ 
+-@DubboService(version = "1.0.0")
++@DubboService(version = "1.0.0", group = "test")
+ public class AnnotatedGreetingService implements GreetingService {
+     public String sayHello(String name) {
+         System.out.println("greeting service received: " + name);
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/config/ConfigCenter.java
+Patch:
+@@ -105,9 +105,9 @@ GovernanceConfiguration getDynamicConfiguration() {
+                 Arrays.stream(config.split("\n")).forEach( s -> {
+                     if(s.startsWith(Constants.REGISTRY_ADDRESS)) {
+                         String registryAddress = s.split("=")[1].trim();
+-                        registryUrl = formUrl(registryAddress, configCenterGroup, registryNameSpace, username, password);
++                        registryUrl = formUrl(registryAddress, registryGroup, registryNameSpace, username, password);
+                     } else if (s.startsWith(Constants.METADATA_ADDRESS)) {
+-                        metadataUrl = formUrl(s.split("=")[1].trim(), configCenterGroup, metadataGroupNameSpace, username, password);
++                        metadataUrl = formUrl(s.split("=")[1].trim(), metadataGroup, metadataGroupNameSpace, username, password);
+                     }
+                 });
+             }
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/interceptor/AuthInterceptor.java
+Patch:
+@@ -47,7 +47,7 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
+         if (null != authority && authority.needLogin()) {
+             String authorization = request.getHeader("Authorization");
+             UserController.User user = UserController.tokenMap.get(authorization);
+-            if (null != user && System.currentTimeMillis() - user.getLastUpdateTime() <= 1000 * 60 * 15) {
++            if (null != user && System.currentTimeMillis() - user.getLastUpdateTime() <= 1000 * 60 * 60) {
+                 user.setLastUpdateTime(System.currentTimeMillis());
+                 return true;
+             }
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/controller/ApiDocsController.java
+Patch:
+@@ -112,8 +112,8 @@ public String callDubboService(CallDubboServiceRequest dubboCfg, @RequestBody Li
+                     if(paramValue instanceof Map){
+                         Map<?, ?> tempMap = (Map<?, ?>) paramValue;
+                         if(!tempMap.isEmpty()) {
+-                            this.emptyString2Null(tempMap);
+-                            paramValues[i] = tempMap.values().stream().findFirst().orElse(null);
++                            Object tempParamValue = tempMap.values().stream().findFirst().orElse(null);
++                            paramValues[i] = this.emptyString2Null(tempParamValue);
+                         }
+                     } else {
+                         paramValues[i] = emptyString2Null(paramValue);
+@@ -131,7 +131,7 @@ public String callDubboService(CallDubboServiceRequest dubboCfg, @RequestBody Li
+             paramValues = new Object[0];
+         }
+         CompletableFuture<Object> future = ApiDocsDubboGenericUtil.invoke(dubboCfg.getRegistryCenterUrl(), dubboCfg.getInterfaceClassName(),
+-                dubboCfg.getMethodName(), dubboCfg.isAsync(), paramTypes, paramValues);
++                dubboCfg.getMethodName(), dubboCfg.isAsync(), dubboCfg.getVersion(), paramTypes, paramValues);
+         try {
+             Object objResult = future.get();
+             return JSON.toJSONString(objResult, CLASS_NAME_PRE_FILTER);
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/Constants.java
+Patch:
+@@ -28,6 +28,7 @@ public class Constants {
+     public static final String DEFAULT_ROOT = "dubbo";
+     public static final String PATH_SEPARATOR = "/";
+     public static final String GROUP_KEY = "group";
++    public static final String NAMESPACE_KEY = "namespace";
+     public static final String CONFIG_KEY = "config" + PATH_SEPARATOR + "dubbo";
+     public static final String DUBBO_PROPERTY = "dubbo.properties";
+     public static final String PROVIDER_SIDE = "provider";
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/OverrideServiceImpl.java
+Patch:
+@@ -515,7 +515,7 @@ private List<Override> convertDTOtoOldOverride(DynamicConfigDTO overrideDTO) {
+     }
+     private String getPath(String key) {
+         key = key.replace("/", "*");
+-        return prefix + Constants.PATH_SEPARATOR + key + Constants.PATH_SEPARATOR + Constants.CONFIGURATOR;
++        return prefix + Constants.PATH_SEPARATOR + key + Constants.CONFIGURATOR_RULE_SUFFIX;
+     }
+ 
+     private void unregisterWeight(WeightDTO weightDTO) {
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/RouteServiceImpl.java
+Patch:
+@@ -329,9 +329,9 @@ public TagRouteDTO findTagRoute(String id) {
+     private String getPath(String key, String type) {
+         key = key.replace("/", "*");
+         if (type.equals(Constants.CONDITION_ROUTE)) {
+-            return prefix + Constants.PATH_SEPARATOR + key + Constants.PATH_SEPARATOR + "condition-router";
++            return prefix + Constants.PATH_SEPARATOR + key + Constants.CONDITION_RULE_SUFFIX;
+         } else {
+-            return prefix + Constants.PATH_SEPARATOR + key + Constants.PATH_SEPARATOR + "tag-router";
++            return prefix + Constants.PATH_SEPARATOR + key + Constants.TAG_RULE_SUFFIX;
+         }
+     }
+ 
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/config/ConfigCenter.java
+Patch:
+@@ -101,7 +101,7 @@ GovernanceConfiguration getDynamicConfiguration() {
+         }
+         if (dynamicConfiguration == null) {
+             if (StringUtils.isNotEmpty(registryAddress)) {
+-                registryUrl = formUrl(registryAddress, configCenterGroup, username, password);
++                registryUrl = formUrl(registryAddress, registryGroup, username, password);
+                 dynamicConfiguration = ExtensionLoader.getExtensionLoader(GovernanceConfiguration.class).getExtension(registryUrl.getProtocol());
+                 dynamicConfiguration.setUrl(registryUrl);
+                 dynamicConfiguration.init();
+
+File: dubbo-admin-server/src/test/java/org/apache/dubbo/admin/config/ConfigCenterTest.java
+Patch:
+@@ -69,7 +69,7 @@ public void tearDown() throws IOException {
+     public void testGetDynamicConfiguration() throws Exception {
+         // mock @value inject
+         ReflectionTestUtils.setField(configCenter, "configCenter", zkAddress);
+-        ReflectionTestUtils.setField(configCenter, "group", "dubbo");
++        ReflectionTestUtils.setField(configCenter, "configCenterGroup", "dubbo");
+         ReflectionTestUtils.setField(configCenter, "username", "username");
+         ReflectionTestUtils.setField(configCenter, "password", "password");
+ 
+@@ -129,7 +129,7 @@ public void testGetRegistry() throws Exception {
+ 
+         // mock @value inject
+         ReflectionTestUtils.setField(configCenter, "registryAddress", zkAddress);
+-        ReflectionTestUtils.setField(configCenter, "group", "dubbo");
++        ReflectionTestUtils.setField(configCenter, "registryGroup", "dubbo");
+         ReflectionTestUtils.setField(configCenter, "username", "username");
+         ReflectionTestUtils.setField(configCenter, "password", "password");
+ 
+@@ -148,7 +148,7 @@ public void testGetMetadataCollector() throws Exception {
+ 
+         // mock @value inject
+         ReflectionTestUtils.setField(configCenter, "metadataAddress", zkAddress);
+-        ReflectionTestUtils.setField(configCenter, "group", "dubbo");
++        ReflectionTestUtils.setField(configCenter, "metadataGroup", "dubbo");
+         ReflectionTestUtils.setField(configCenter, "username", "username");
+         ReflectionTestUtils.setField(configCenter, "password", "password");
+ 
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/OverrideServiceImpl.java
+Patch:
+@@ -514,6 +514,7 @@ private List<Override> convertDTOtoOldOverride(DynamicConfigDTO overrideDTO) {
+         return result;
+     }
+     private String getPath(String key) {
++        key = key.replace("/", "*");
+         return prefix + Constants.PATH_SEPARATOR + key + Constants.PATH_SEPARATOR + Constants.CONFIGURATOR;
+     }
+ 
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/service/impl/OverrideServiceImpl.java
+Patch:
+@@ -335,7 +335,7 @@ public void saveBalance(BalancingDTO balancingDTO) {
+         String scope = ConvertUtil.getScopeFromDTO(balancingDTO);
+         String path = getPath(id);
+         String config = dynamicConfiguration.getConfig(path);
+-        OverrideConfig overrideConfig = new BalancingDTO2OverrideConfigAdapter(balancingDTO);
++        OverrideConfig overrideConfig = OverrideUtils.balancingDTOtoConfig(balancingDTO);
+         OverrideDTO overrideDTO = insertConfig(config, overrideConfig, id, scope, Constants.BALANCING);
+         dynamicConfiguration.setConfig(path, YamlParser.dumpObject(overrideDTO));
+ 
+@@ -363,7 +363,7 @@ public void updateBalance(BalancingDTO balancingDTO) {
+                             oldBalancing = OverrideUtils.configtoBalancingDTO(overrideConfig, Constants.SERVICE, overrideDTO.getKey());
+                         }
+                         int index = configs.indexOf(overrideConfig);
+-                        OverrideConfig newConfig = new BalancingDTO2OverrideConfigAdapter(balancingDTO);
++                        OverrideConfig newConfig = OverrideUtils.balancingDTOtoConfig(balancingDTO);
+                         configs.set(index, newConfig);
+                         break;
+                     }
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/common/util/RouteUtils.java
+Patch:
+@@ -230,7 +230,7 @@ public static RoutingRule insertConditionRule(RoutingRule existRule, ConditionRo
+                 existRule.setKey(conditionRoute.getApplication());
+                 existRule.setScope(Constants.APPLICATION);
+             } else {
+-                existRule.setKey(conditionRoute.getService());
++                existRule.setKey(conditionRoute.getService().replace("/", "*"));
+                 existRule.setScope(Constants.SERVICE);
+             }
+         }
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/config/SwaggerConfiguration.java
+Patch:
+@@ -42,8 +42,8 @@ public Docket createRestApi() {
+ 
+     private ApiInfo apiInfo() {
+         return new ApiInfoBuilder()
+-                .title("dubbo ops swagger api")
+-                .description("for more information please visit github page: https://github.com/apache/incubator-dubbo-ops")
++                .title("dubbo admin swagger api")
++                .description("for more information please visit github page: https://github.com/apache/incubator-dubbo-admin")
+                 .version("1.0")
+                 .build();
+     }
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/config/ConfigCenter.java
+Patch:
+@@ -60,8 +60,6 @@ public class ConfigCenter {
+     @Value("${admin.config-center.password:}")
+     private String password;
+ 
+-    private static String globalConfigPath = "config/dubbo/dubbo.properties";
+-
+     private static final Logger logger = LoggerFactory.getLogger(ConfigCenter.class);
+ 
+     private URL configCenterUrl;
+@@ -82,7 +80,7 @@ GovernanceConfiguration getDynamicConfiguration() {
+             dynamicConfiguration = ExtensionLoader.getExtensionLoader(GovernanceConfiguration.class).getExtension(configCenterUrl.getProtocol());
+             dynamicConfiguration.setUrl(configCenterUrl);
+             dynamicConfiguration.init();
+-            String config = dynamicConfiguration.getConfig(globalConfigPath);
++            String config = dynamicConfiguration.getConfig(Constants.GLOBAL_CONFIG_PATH);
+ 
+             if (StringUtils.isNotEmpty(config)) {
+                 Arrays.stream(config.split("\n")).forEach( s -> {
+
+File: dubbo-admin-server/src/main/java/org/apache/dubbo/admin/controller/AccessesController.java
+Patch:
+@@ -37,7 +37,6 @@
+ import org.springframework.web.bind.annotation.ResponseStatus;
+ import org.springframework.web.bind.annotation.RestController;
+ 
+-import java.text.ParseException;
+ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Objects;
+@@ -59,7 +58,7 @@ public AccessesController(RouteService routeService, ProviderService providerSer
+     @RequestMapping(method = RequestMethod.GET)
+     public List<AccessDTO> searchAccess(@RequestParam(required = false) String service,
+                                         @RequestParam(required = false) String application,
+-                                        @PathVariable String env) throws ParseException {
++                                        @PathVariable String env) {
+         if (StringUtils.isBlank(service) && StringUtils.isBlank(application)) {
+             throw new ParamValidationException("Either service or application is required");
+         }
+@@ -78,7 +77,7 @@ public List<AccessDTO> searchAccess(@RequestParam(required = false) String servi
+     }
+ 
+     @RequestMapping(value = "/{id}", method = RequestMethod.GET)
+-    public AccessDTO detailAccess(@PathVariable String id, @PathVariable String env) throws ParseException {
++    public AccessDTO detailAccess(@PathVariable String id, @PathVariable String env) {
+         id = id.replace(Constants.ANY_VALUE, Constants.PATH_SEPARATOR);
+         AccessDTO accessDTO = routeService.findAccess(id);
+         return accessDTO;
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/controller/ServiceTestController.java
+Patch:
+@@ -29,8 +29,7 @@ public class ServiceTestController {
+ 
+     @RequestMapping(method = RequestMethod.POST)
+     public Object test(@PathVariable String env, @RequestBody ServiceTestDTO serviceTestDTO) {
+-        return genericService.invoke(serviceTestDTO.getService(), serviceTestDTO.getMethod(), serviceTestDTO.getParamaterTypes(), serviceTestDTO.getParams());
+-//        return null;
++        return genericService.invoke(serviceTestDTO.getService(), serviceTestDTO.getMethod(), serviceTestDTO.getParameterTypes(), serviceTestDTO.getParams());
+     }
+ 
+     @RequestMapping(value = "/method", method = RequestMethod.GET)
+
+File: dubbo-admin-backend/src/test/java/org/apache/dubbo/admin/controller/ManagementControllerTest.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ package org.apache.dubbo.admin.controller;
+ 
++import java.util.UUID;
+ import org.apache.dubbo.admin.AbstractSpringIntegrationTest;
+ import org.apache.dubbo.admin.common.util.Constants;
+ import org.apache.dubbo.admin.model.dto.ConfigDTO;
+@@ -64,7 +65,8 @@ public void shouldCreateGlobalConfig() throws Exception {
+ 
+   @Test
+   public void shouldCreateApplicationConfig() throws Exception {
+-    String application = "dubbo-admin";
++    String uuid = UUID.randomUUID().toString();
++    String application = "dubbo-admin" + uuid;
+     ConfigDTO configDTO = new ConfigDTO();
+     configDTO.setKey(application);
+     configDTO.setConfig("key1=val1\nkey2=val2");
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/common/util/Constants.java
+Patch:
+@@ -54,6 +54,7 @@ public class Constants {
+     public static final String CONSUMERS_CATEGORY = "consumers";
+     public static final String SPECIFICATION_VERSION_KEY = "release";
+     public static final String GLOBAL_CONFIG = "global";
++    public static final String GLOBAL_CONFIG_PATH = "config/dubbo/dubbo.properties";
+     public static final Set<String> CONFIGS = new HashSet<>();
+ 
+     static {
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/controller/ManagementController.java
+Patch:
+@@ -72,7 +72,7 @@ public List<ConfigDTO> getConfig(@PathVariable String key, @PathVariable String
+         List<ConfigDTO> configDTOs = new ArrayList<>();
+         if (key.equals(Constants.ANY_VALUE)) {
+             query = providerService.findApplications();
+-            query.add("global");
++            query.add(Constants.GLOBAL_CONFIG);
+         } else {
+             query.add(key);
+         }
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/service/impl/RouteServiceImpl.java
+Patch:
+@@ -328,9 +328,9 @@ public TagRouteDTO findTagRoute(String id) {
+ 
+     private String getPath(String key, String type) {
+         if (type.equals(Constants.CONDITION_ROUTE)) {
+-            return prefix + Constants.PATH_SEPARATOR + key + Constants.PATH_SEPARATOR + "condition-route";
++            return prefix + Constants.PATH_SEPARATOR + key + Constants.PATH_SEPARATOR + "condition-router";
+         } else {
+-            return prefix + Constants.PATH_SEPARATOR + key + Constants.PATH_SEPARATOR + "tag-route";
++            return prefix + Constants.PATH_SEPARATOR + key + Constants.PATH_SEPARATOR + "tag-router";
+         }
+     }
+ 
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/controller/TagRoutesController.java
+Patch:
+@@ -68,7 +68,7 @@ public boolean updateRule(@PathVariable String id, @RequestBody TagRouteDTO rout
+         if (providerService.findVersionInApplication(app).equals("2.6")) {
+             throw new VersionValidationException("dubbo 2.6 does not support tag route");
+         }
+-        if (routeService.findConditionRoute(id) == null) {
++        if (routeService.findTagRoute(id) == null) {
+             throw new ResourceNotFoundException("can not find tag route, Id: " + id);
+         }
+         routeService.updateTagRoute(routeDTO);
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/controller/TagRoutesController.java
+Patch:
+@@ -68,7 +68,7 @@ public boolean updateRule(@PathVariable String id, @RequestBody TagRouteDTO rout
+         if (providerService.findVersionInApplication(app).equals("2.6")) {
+             throw new VersionValidationException("dubbo 2.6 does not support tag route");
+         }
+-        if (routeService.findConditionRoute(id) == null) {
++        if (routeService.findTagRoute(id) == null) {
+             throw new ResourceNotFoundException("can not find tag route, Id: " + id);
+         }
+         routeService.updateTagRoute(routeDTO);
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/config/ConfigCenter.java
+Patch:
+@@ -92,7 +92,6 @@ GovernanceConfiguration getDynamicConfiguration() {
+                         String registryAddress = s.split("=")[1].trim();
+                         registryUrl = formUrl(registryAddress, group, username, password);
+                     } else if (s.startsWith(Constants.METADATA_ADDRESS)) {
+-                        metadataAddress = s.split("=")[1].trim();
+                         metadataUrl = formUrl(s.split("=")[1].trim(), group, username, password);
+                     }
+                 });
+@@ -140,7 +139,7 @@ MetaDataCollector getMetadataCollector() {
+         MetaDataCollector metaDataCollector = new NoOpMetadataCollector();
+         if (metadataUrl == null) {
+             if (StringUtils.isNotEmpty(metadataAddress)) {
+-                metadataUrl = formUrl(metadataAddress.split("=")[1].trim(), group, username, password);
++                metadataUrl = formUrl(metadataAddress, group, username, password);
+             }
+         }
+         if (metadataUrl != null) {
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/common/util/Constants.java
+Patch:
+@@ -45,6 +45,7 @@ public class Constants {
+     public static final String PUNCTUATION_SEPARATOR_POINT = "\\.";
+     public static final String INTERROGATION_POINT = "?";
+     public static final String ANY_VALUE = "*";
++    public static final String PLUS_SIGNS = "+";
+     public static final String IP = "ip";
+     public static final String INTERFACE_KEY = "interface";
+     public static final String VERSION_KEY = "version";
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/common/util/Constants.java
+Patch:
+@@ -48,6 +48,9 @@ public class Constants {
+     public static final String IP = "ip";
+     public static final String INTERFACE_KEY = "interface";
+     public static final String VERSION_KEY = "version";
++    public static final String PROVIDERS_CATEGORY = "providers";
++    public static final String CONSUMERS_CATEGORY = "consumers";
++    public static final String SPECIFICATION_VERSION_KEY = "specVersion";
+     public static final Set<String> CONFIGS = new HashSet<>();
+ 
+     static {
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/handler/CustomExceptionHandler.java
+Patch:
+@@ -24,6 +24,7 @@
+ import org.apache.dubbo.common.logger.Logger;
+ import org.apache.dubbo.common.logger.LoggerFactory;
+ import org.springframework.http.HttpStatus;
++import org.springframework.web.bind.ServletRequestBindingException;
+ import org.springframework.web.bind.annotation.ControllerAdvice;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.ResponseBody;
+@@ -66,7 +67,8 @@ public CommonResponse permissionDeniedExceptionHandle(Exception e) {
+ 
+     @ResponseBody
+     @ResponseStatus(HttpStatus.BAD_REQUEST)
+-    @ExceptionHandler(value = {ParamValidationException.class})
++    @ExceptionHandler(value = {ParamValidationException.class,
++            ServletRequestBindingException.class})
+     public CommonResponse paramValidationExceptionHandle(Exception e) {
+         CommonResponse commonResponse = CommonResponse.createCommonResponse();
+         logger.error("[ParamValidationException]Exception:", e);
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/service/impl/RouteServiceImpl.java
+Patch:
+@@ -339,14 +339,14 @@ private String parseCondition(List<String> conditions) {
+                 String[] array = condition.split("=>", 2);
+                 String consumer = array[0].trim();
+                 String provider = array[1].trim();
+-                if (consumer != "") {
++                if (consumer.length() != 0) {
+                     if (when.length() != 0) {
+                         when.append(" & ").append(consumer);
+                     } else {
+                         when.append(consumer);
+                     }
+                 }
+-                if (provider != "") {
++                if (provider.length() != 0) {
+                     if (then.length() != 0) {
+                         then.append(" & ").append(provider);
+                     } else {
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/common/util/Constants.java
+Patch:
+@@ -24,7 +24,7 @@
+ public class Constants {
+ 
+     public static final String REGISTRY_ADDRESS = "dubbo.registry.address";
+-    public static final String METADATA_ADDRESS = "dubbo.metadatareport.address";
++    public static final String METADATA_ADDRESS = "dubbo.metadataReport.address";
+     public static final String DEFAULT_ROOT = "dubbo";
+     public static final String PATH_SEPARATOR = "/";
+     public static final String GROUP_KEY = "group";
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/common/util/Constants.java
+Patch:
+@@ -24,7 +24,7 @@
+ public class Constants {
+ 
+     public static final String REGISTRY_ADDRESS = "dubbo.registry.address";
+-    public static final String METADATA_ADDRESS = "dubbo.metadatareport.address";
++    public static final String METADATA_ADDRESS = "dubbo.metadataReport.address";
+     public static final String DEFAULT_ROOT = "dubbo";
+     public static final String PATH_SEPARATOR = "/";
+     public static final String GROUP_KEY = "group";
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/controller/ServiceController.java
+Patch:
+@@ -124,10 +124,10 @@ public ServiceDetailDTO serviceDetail(@PathVariable String service, @PathVariabl
+         if (metadata != null) {
+             Gson gson = new Gson();
+             FullServiceDefinition serviceDefinition = gson.fromJson(metadata, FullServiceDefinition.class);
+-            serviceDetailDTO.setConsumers(consumers);
+-            serviceDetailDTO.setProviders(providers);
+             serviceDetailDTO.setMetadata(serviceDefinition);
+         }
++        serviceDetailDTO.setConsumers(consumers);
++        serviceDetailDTO.setProviders(providers);
+         return serviceDetailDTO;
+     }
+ }
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/common/util/Constants.java
+Patch:
+@@ -29,6 +29,8 @@ public class Constants {
+     public static final String PATH_SEPARATOR = "/";
+     public static final String GROUP_KEY = "group";
+     public static final String CONFIG_KEY = "config";
++    public static final String PROVIDER_SIDE = "provider";
++    public static final String CONSUMER_SIDE = "consumer";
+     public static final String CATEGORY_KEY = "category";
+     public static final String ROUTERS_CATEGORY = "routers";
+     public static final String CONDITION_ROUTE = "condition_route";
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/model/store/RoutingRule.java
+Patch:
+@@ -19,7 +19,7 @@
+ 
+ import java.util.List;
+ 
+-public class RoutingRuleDTO {
++public class RoutingRule {
+ 
+     private String key;
+     private String scope;
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/service/RouteService.java
+Patch:
+@@ -61,7 +61,7 @@ public interface RouteService {
+     void disableTagRoute(String id);
+ 
+ 
+-    TagRouteDTO findTagRoute(String serviceName);
++    TagRouteDTO findTagRoute(String id);
+ 
+ 
+ }
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/service/impl/OverrideServiceImpl.java
+Patch:
+@@ -64,7 +64,6 @@ public void saveOverride(DynamicConfigDTO override) {
+         }
+         configs.addAll(override.getConfigs());
+         existOverride.setEnabled(override.isEnabled());
+-        existOverride.setRuntime(override.isRuntime());
+         existOverride.setConfigs(configs);
+         dynamicConfiguration.setConfig(path, YamlParser.dumpObject(existOverride));
+ 
+@@ -98,7 +97,6 @@ public void updateOverride(DynamicConfigDTO update) {
+         }
+         configs.addAll(update.getConfigs());
+         overrideDTO.setConfigs(configs);
+-        overrideDTO.setRuntime(update.isRuntime());
+         overrideDTO.setEnabled(update.isEnabled());
+         dynamicConfiguration.setConfig(path, YamlParser.dumpObject(overrideDTO));
+ 
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/common/util/OverrideUtils.java
+Patch:
+@@ -84,6 +84,8 @@ public static DynamicConfigDTO createFromOverride(OverrideDTO overrideDTO) {
+         } else {
+             dynamicConfigDTO.setService(overrideDTO.getKey());
+         }
++        dynamicConfigDTO.setDynamic(overrideDTO.isDynamic());
++        dynamicConfigDTO.setEnabled(overrideDTO.isEnabled());
+         return dynamicConfigDTO;
+     }
+     public static OverrideDTO createFromDynamicConfig(DynamicConfigDTO dynamicConfigDTO) {
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/controller/ServiceController.java
+Patch:
+@@ -58,14 +58,14 @@ public Set<ServiceDTO> searchService(@RequestParam String pattern,
+         if (!filter.contains("*") && !filter.contains("?")) {
+             if (pattern.equals("ip")) {
+                 providers = providerService.findByAddress(filter);
+-            } else if (pattern.equals("serviceName")) {
++            } else if (pattern.equals("service")) {
+                 providers = providerService.findByService(filter);
+             } else if (pattern.equals("application")) {
+                 providers = providerService.findByApplication(filter);
+             }
+         } else {
+             List<String> candidates = Collections.emptyList();
+-            if (pattern.equals("serviceName")) {
++            if (pattern.equals("service")) {
+                candidates = providerService.findServices();
+             } else if (pattern.equals("application")) {
+                 candidates = providerService.findApplications();
+@@ -78,7 +78,7 @@ public Set<ServiceDTO> searchService(@RequestParam String pattern,
+             for (String candidate : candidates) {
+                 Matcher matcher = regex.matcher(candidate);
+                 if (matcher.matches() || matcher.lookingAt()) {
+-                    if (pattern.equals("serviceName")) {
++                    if (pattern.equals("service")) {
+                         providers.addAll(providerService.findByService(candidate));
+                     } else {
+                         providers.addAll(providerService.findByApplication(candidate));
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/service/impl/RouteServiceImpl.java
+Patch:
+@@ -97,7 +97,7 @@ public void enableConditionRoute(String serviceName) {
+                 //for2.6
+                 URL oldURL = convertRouteToOldRoute(conditionRoute).toUrl();
+                 registry.unregister(oldURL);
+-                oldURL.addParameter("enabled", true);
++                oldURL = oldURL.addParameter("enabled", true);
+                 registry.register(oldURL);
+             }
+ 
+@@ -119,7 +119,7 @@ public void disableConditionRoute(String serviceName) {
+                 //for 2.6
+                 URL oldURL = convertRouteToOldRoute(conditionRoute).toUrl();
+                 registry.unregister(oldURL);
+-                oldURL.addParameter("enabled", false);
++                oldURL = oldURL.addParameter("enabled", false);
+                 registry.register(oldURL);
+             }
+ 
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/controller/TagRoutesController.java
+Patch:
+@@ -39,7 +39,7 @@ public boolean createRule(@RequestBody TagRouteDTO routeDTO, @PathVariable Strin
+     }
+ 
+     @RequestMapping(value = "/{id}", method = RequestMethod.PUT)
+-    public boolean updateRule(@PathVariable String id, @RequestBody TagRouteDTO routeDTO, @PathVariable String dev) {
++    public boolean updateRule(@PathVariable String id, @RequestBody TagRouteDTO routeDTO, @PathVariable String env) {
+         if (routeService.findConditionRoute(id) == null) {
+             //throw exception
+         }
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/data/config/impl/ZookeeperConfiguration.java
+Patch:
+@@ -65,8 +65,9 @@ public String getConfig(String key) {
+ 
+     @Override
+     public boolean deleteConfig(String key) {
++        String path = getNodePath(key);
+         try {
+-            zkClient.delete().forPath(key);
++            zkClient.delete().forPath(path);
+         } catch (Exception e) {
+             e.printStackTrace();
+         }
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/model/domain/OverrideConfig.java
+Patch:
+@@ -18,12 +18,12 @@ public void setSide(String side) {
+         this.side = side;
+     }
+ 
+-    public String[] getAddress() {
++    public String[] getAddresses() {
+         return addresses;
+     }
+ 
+-    public void setAddress(String[] address) {
+-        this.addresses = address;
++    public void setAddresses(String[] addresses) {
++        this.addresses = addresses;
+     }
+ 
+     public String[] getProviderAddresses() {
+
+File: dubbo-admin-backend/src/main/java/org/apache/dubbo/admin/controller/ServiceController.java
+Patch:
+@@ -81,7 +81,7 @@ public List<ServiceDTO> searchService(@RequestParam String pattern,
+                         key = provider.getService().toLowerCase();
+                         break;
+                     case "ip":
+-                        key = provider.getService().toLowerCase();
++                        key = provider.getAddress().toLowerCase();
+                         break;
+                 }
+                 if (key != null && key.contains(filter)) {
+
+File: dubbo-admin/src/main/java/com/alibaba/dubboadmin/web/mvc/BaseController.java
+Patch:
+@@ -68,6 +68,7 @@ public void prepare(HttpServletRequest request, HttpServletResponse response, Mo
+         model.addAttribute("rootContextPath", new RootContextPath(request.getContextPath()));
+         model.addAttribute("tool", tool);
+         model.addAttribute("_method", methodName);
++        model.addAttribute("helpUrl", WebConstants.HELP_URL);
+         model.addAttribute("_type", type);
+ 
+     }
+
+File: dubbo-admin/src/main/java/com/alibaba/dubboadmin/web/mvc/home/IndexController.java
+Patch:
+@@ -28,6 +28,7 @@
+ import com.alibaba.dubbo.common.logger.LoggerFactory;
+ import com.alibaba.dubboadmin.governance.service.ConsumerService;
+ import com.alibaba.dubboadmin.governance.service.ProviderService;
++import com.alibaba.dubboadmin.governance.util.WebConstants;
+ import com.alibaba.dubboadmin.registry.common.domain.Consumer;
+ import com.alibaba.dubboadmin.registry.common.domain.Provider;
+ import com.alibaba.dubboadmin.web.pulltool.RootContextPath;
+@@ -77,6 +78,7 @@ public String indexRequest(HttpServletRequest request, Model model) {
+         model.addAttribute("providers", pList.size());
+         model.addAttribute("consumers", cList.size());
+         model.addAttribute("applications", applications.size());
++        model.addAttribute("helpUrl", WebConstants.HELP_URL);
+         model.addAttribute("tool", new Tool());
+         return "home/screen/index";
+ 
+
+File: dubbo-admin/src/main/java/com/alibaba/dubboadmin/governance/util/WebConstants.java
+Patch:
+@@ -71,6 +71,8 @@ public class WebConstants {
+         mapper.put("loadbalances", "loadbalancesController");
+         mapper.put("owners", "ownersController");
+         mapper.put("weights", "weightsController");
++        mapper.put("addresses", "addressesController");
++        mapper.put("services", "servicesController");
+     }
+ 
+ 
+

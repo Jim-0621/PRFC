@@ -1,0 +1,1143 @@
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/MainActivity.java
+Patch:
+@@ -54,7 +54,7 @@ public class MainActivity extends AppCompatActivity {
+   public static class InnerClass {
+     @DeepLink("dld://innerClassDeeplink")
+     public static Intent intentForDeepLinkMethod(Context context) {
+-      return new Intent(context, SecondActivity.class).setAction(ACTION_DEEP_LINK_INNER);
++      return new Intent(context, MainActivity.class).setAction(ACTION_DEEP_LINK_INNER);
+     }
+   }
+ 
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/MainActivityTest.java
+Patch:
+@@ -77,7 +77,7 @@ public void testIntentViaInnerClassMethodResult() {
+     ShadowActivity shadowActivity = shadowOf(deepLinkActivity);
+     Intent launchedIntent = shadowActivity.peekNextStartedActivityForResult().intent;
+     assertThat(launchedIntent.getComponent(),
+-      equalTo(new ComponentName(deepLinkActivity, SecondActivity.class)));
++      equalTo(new ComponentName(deepLinkActivity, MainActivity.class)));
+ 
+     assertThat(launchedIntent.getBooleanExtra(DeepLink.IS_DEEP_LINK, false), equalTo(true));
+     assertThat(launchedIntent.getAction(), equalTo(MainActivity.ACTION_DEEP_LINK_INNER));
+
+File: deeplinkdispatch-base/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkSpec.java
+Patch:
+@@ -44,5 +44,5 @@
+ // are not so we need to mark them as RetentionPolicy.RUNTIME.
+ @Retention(RetentionPolicy.RUNTIME)
+ public @interface DeepLinkSpec {
+-  String[] prefix();
++   String[] prefix();
+ }
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -348,7 +348,7 @@ public int compare(DeepLinkAnnotatedElement element1, DeepLinkAnnotatedElement e
+       String uriTemplate = element.getUri();
+ 
+       try {
+-        urisTrie.addToTrie(uriTemplate, activity.canonicalName(), element.getMethod());
++        urisTrie.addToTrie(uriTemplate, activity.reflectionName(), element.getMethod());
+       } catch (IllegalArgumentException e) {
+         error(element.getAnnotatedElement(), e.getMessage());
+       }
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -345,15 +345,15 @@ public int compare(DeepLinkAnnotatedElement element1, DeepLinkAnnotatedElement e
+       String type = "DeepLinkEntry.Type." + element.getAnnotationType().toString();
+       ClassName activity = ClassName.get(element.getAnnotatedElement());
+       Object method = element.getMethod();
+-      String uri = element.getUri();
++      String uriTemplate = element.getUri();
+ 
+       try {
+-        urisTrie.addToTrie(uri, activity.canonicalName(), element.getMethod());
++        urisTrie.addToTrie(uriTemplate, activity.canonicalName(), element.getMethod());
+       } catch (IllegalArgumentException e) {
+         error(element.getAnnotatedElement(), e.getMessage());
+       }
+ 
+-      DeepLinkUri deeplinkUri = DeepLinkUri.parseTemplate(uri);
++      DeepLinkUri deeplinkUri = DeepLinkUri.parseTemplate(uriTemplate);
+       //Keep track of pathVariables added in a module so that we can check at runtime to ensure
+       //that all pathVariables have a corresponding entry provided to BaseDeepLinkDelegate.
+       for (String pathSegment : deeplinkUri.pathSegments()) {
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkAnnotatedElement.java
+Patch:
+@@ -29,7 +29,7 @@ final class DeepLinkAnnotatedElement {
+ 
+   DeepLinkAnnotatedElement(String annotation, Element element, DeepLinkEntry.Type type)
+       throws MalformedURLException {
+-    DeepLinkUri url = DeepLinkUri.parse(annotation);
++    DeepLinkUri url = DeepLinkUri.parseTemplate(annotation);
+     if (url == null) {
+       throw new MalformedURLException("Malformed Uri " + annotation);
+     }
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -316,8 +316,8 @@ private void generateDeepLinkRegistry(String packageName, String className,
+     Collections.sort(elements, new Comparator<DeepLinkAnnotatedElement>() {
+       @Override
+       public int compare(DeepLinkAnnotatedElement element1, DeepLinkAnnotatedElement element2) {
+-        DeepLinkUri uri1 = DeepLinkUri.parse(element1.getUri());
+-        DeepLinkUri uri2 = DeepLinkUri.parse(element2.getUri());
++        DeepLinkUri uri1 = DeepLinkUri.parseTemplate(element1.getUri());
++        DeepLinkUri uri2 = DeepLinkUri.parseTemplate(element2.getUri());
+         int comparisonResult = uri2.pathSegments().size() - uri1.pathSegments().size();
+         if (comparisonResult == 0) {
+           comparisonResult = uri2.queryParameterNames().size() - uri1.queryParameterNames().size();
+@@ -351,7 +351,7 @@ public int compare(DeepLinkAnnotatedElement element1, DeepLinkAnnotatedElement e
+         error(element.getAnnotatedElement(), e.getMessage());
+       }
+ 
+-      DeepLinkUri deeplinkUri = DeepLinkUri.parse(uri);
++      DeepLinkUri deeplinkUri = DeepLinkUri.parseTemplate(uri);
+       //Keep track of pathVariables added in a module so that we can check at runtime to ensure
+       //that all pathVariables have a corresponding entry provided to BaseDeepLinkDelegate.
+       for (String pathSegment : deeplinkUri.pathSegments()) {
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/CustomPrefixesActivity.java
+Patch:
+@@ -14,6 +14,7 @@
+  */
+ @AppDeepLink({ "/view_users" })
+ @WebDeepLink({ "/users", "/user/{id}" })
++@WebPlaceholderDeepLink({ "/guests", "/guest/{id}" })
+ @LibraryDeepLink({ "/library_deeplink", "/library_deeplink/{lib_id}" })
+ public class CustomPrefixesActivity extends AppCompatActivity {
+   private static final String TAG = CustomPrefixesActivity.class.getSimpleName();
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/MainActivityTest.java
+Patch:
+@@ -22,11 +22,11 @@
+ import java.util.HashMap;
+ import java.util.Map;
+ 
++import static org.hamcrest.MatcherAssert.assertThat;
+ import static org.hamcrest.core.IsEqual.equalTo;
+ import static org.junit.Assert.assertEquals;
+ import static org.junit.Assert.assertNotNull;
+ import static org.junit.Assert.assertNull;
+-import static org.junit.Assert.assertThat;
+ import static org.robolectric.Shadows.shadowOf;
+ 
+ @Config(sdk = 21, manifest = "../sample/src/main/AndroidManifest.xml", shadows = {ShadowTaskStackBuilder.class})
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/SecondActivityTest.java
+Patch:
+@@ -13,8 +13,8 @@
+ import org.robolectric.annotation.Config;
+ import org.robolectric.shadows.ShadowActivity;
+ 
++import static org.hamcrest.MatcherAssert.assertThat;
+ import static org.hamcrest.core.IsEqual.equalTo;
+-import static org.junit.Assert.assertThat;
+ import static org.robolectric.Shadows.shadowOf;
+ 
+ @Config(sdk = 21, manifest = "../sample/src/main/AndroidManifest.xml")
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/ShadowTaskStackBuilder.java
+Patch:
+@@ -3,7 +3,8 @@
+ import android.content.Context;
+ import android.content.Intent;
+ import androidx.core.app.TaskStackBuilder;
+-import org.robolectric.RuntimeEnvironment;
++import androidx.test.core.app.ApplicationProvider;
++
+ import org.robolectric.annotation.Implementation;
+ import org.robolectric.annotation.Implements;
+ import org.robolectric.annotation.RealObject;
+@@ -38,7 +39,7 @@ public void startActivities() {
+     intents[0] = new Intent(intents[0]).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
+         Intent.FLAG_ACTIVITY_CLEAR_TASK |
+         Intent.FLAG_ACTIVITY_TASK_ON_HOME);
+-    RuntimeEnvironment.application.startActivities(intents);
++    ApplicationProvider.getApplicationContext().startActivities(intents);
+   }
+ 
+   @Implementation
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/BaseDeepLinkDelegate.java
+Patch:
+@@ -179,7 +179,7 @@ public DeepLinkResult dispatchFrom(Activity activity, Intent sourceIntent) {
+       Class<?> c = deepLinkEntry.getActivityClass();
+       Intent newIntent = null;
+       TaskStackBuilder taskStackBuilder = null;
+-      if (deepLinkEntry.getType() == DeepLinkEntry.Type.CLASS) {
++      if (deepLinkEntry.getMethod() == null) {
+         newIntent = new Intent(activity, c);
+       } else {
+         Method method;
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/BaseDeepLinkDelegate.java
+Patch:
+@@ -228,7 +228,7 @@ public DeepLinkResult dispatchFrom(Activity activity, Intent sourceIntent) {
+       }
+       return new DeepLinkResult(true, uriString, "", newIntent, taskStackBuilder, deepLinkEntry);
+     } catch (NoSuchMethodException exception) {
+-      return new DeepLinkResult(false, uriString, "Dee3p link to non-existent method: "
++      return new DeepLinkResult(false, uriString, "Deep link to non-existent method: "
+         + deepLinkEntry.getMethod(), null, null, deepLinkEntry);
+     } catch (IllegalAccessException exception) {
+       return new DeepLinkResult(false, uriString, "Could not deep link to method: "
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -137,7 +137,9 @@ public SourceVersion getSupportedSourceVersion() {
+   @Override
+   public Set<String> getSupportedOptions() {
+     HashSet<String> supportedOptions = Sets.newHashSet(
+-      Documentor.DOC_OUTPUT_PROPERTY_NAME
++      Documentor.DOC_OUTPUT_PROPERTY_NAME,
++      OPTION_CUSTOM_ANNOTATIONS,
++      OPTION_INCREMENTAL
+     );
+     if (incrementalMetadata != null) {
+       supportedOptions.add("org.gradle.annotation.processing.aggregating");
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/Documentor.java
+Patch:
+@@ -30,7 +30,6 @@ final class Documentor {
+   protected static final String CLASS_METHOD_NAME_DELIMITER = "#";
+   protected static final String PARAM = "@param";
+   protected static final String RETURN = "@return";
+-  @VisibleForTesting
+   static final String DOC_OUTPUT_PROPERTY_NAME = "deepLinkDoc.output";
+ 
+   private final ProcessingEnvironment processingEnv;
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -434,13 +434,13 @@ private StringBuilder getStringMethodNames(Root urisTrie,
+                                              TypeSpec.Builder deepLinkRegistryBuilder) {
+     int i = 0;
+     StringBuilder stringMethodNames = new StringBuilder();
+-    for (String string : urisTrie.getStrings()) {
++    for (CharSequence charSequence : urisTrie.getStrings()) {
+       String methodName = "matchIndex" + i;
+       stringMethodNames.append(methodName).append("(), ");
+       deepLinkRegistryBuilder.addMethod(MethodSpec.methodBuilder(methodName)
+         .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+         .returns(String.class)
+-        .addCode(CodeBlock.builder().add("return $S;", string).build()).build());
++        .addCode(CodeBlock.builder().add("return $S;", charSequence).build()).build());
+       i++;
+     }
+     return stringMethodNames;
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/BaseDeepLinkDelegate.java
+Patch:
+@@ -29,7 +29,7 @@ public class BaseDeepLinkDelegate {
+    * <p>Example</p>
+    * Given:
+    * <ul>
+-   * <li><xmp>@DeepLink("https://www.example.com/<replaceable-path-variable>/users/{param1}")
++   * <li><xmp>@DeepLink("https://www.example.com/<configurable-path-segment>/users/{param1}")
+    * </xmp></li>
+    * <li>mapOf("pathVariableReplacementValue" to "obamaOs")</li>
+    * </ul>
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/ProcessorUtils.java
+Patch:
+@@ -5,7 +5,7 @@ public final class ProcessorUtils {
+   static String decapitalize(String str) {
+     if (str != null && str.length() != 0) {
+       if (str.length() > 1 && Character.isUpperCase(str.charAt(1))
+-          && Character.isUpperCase(str.charAt(0))) {
++        && Character.isUpperCase(str.charAt(0))) {
+         return str;
+       } else {
+         char[] var1 = str.toCharArray();
+@@ -25,4 +25,5 @@ static boolean hasEmptyOrNullString(String[] strings) {
+     }
+     return false;
+   }
++
+ }
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/DeepLinkActivity.java
+Patch:
+@@ -17,10 +17,8 @@ protected void onCreate(Bundle savedInstanceState) {
+ //    Debug.startMethodTracing("deeplink.trace",90000000);
+         DeepLinkDelegate deepLinkDelegate = new DeepLinkDelegate(
+                 new SampleModuleRegistry(), new LibraryDeepLinkModuleRegistry(), new BenchmarkDeepLinkModuleRegistry());
+-
+         deepLinkDelegate.dispatchFrom(this);
+ //    Debug.stopMethodTracing();
+-
+         finish();
+     }
+ }
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/BaseDeepLinkDelegate.java
+Patch:
+@@ -7,6 +7,7 @@
+ import android.os.Bundle;
+ import android.util.Log;
+ 
++import androidx.annotation.NonNull;
+ import androidx.core.app.TaskStackBuilder;
+ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+ 
+@@ -90,7 +91,7 @@ public DeepLinkResult dispatchFrom(Activity activity, Intent sourceIntent) {
+    *                      {@link #findEntry(String)}. Can be injected for testing.
+    * @return DeepLinkResult
+    */
+-  public DeepLinkResult createResult(
++  public @NonNull DeepLinkResult createResult(
+     Activity activity, Intent sourceIntent, DeepLinkEntry deepLinkEntry
+   ) {
+     if (activity == null) {
+
+File: sample-benchmarkable-library/src/main/java/com/airbnb/deeplinkdispatch/sample/benchmarkable/ScaleTestActivity.java
+Patch:
+@@ -13,7 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package com.airbnb.deeplinkdispatch.sample;
++package com.airbnb.deeplinkdispatch.sample.benchmarkable;
+ 
+ import android.content.Context;
+ import android.content.Intent;
+@@ -24,7 +24,6 @@
+ 
+ import androidx.appcompat.app.AppCompatActivity;
+ import androidx.core.app.ActivityCompat;
+-import androidx.core.app.TaskStackBuilder;
+ 
+ import com.airbnb.deeplinkdispatch.DeepLink;
+ 
+@@ -38,7 +37,7 @@ public class ScaleTestActivity extends AppCompatActivity {
+ 
+   @Override protected void onCreate(Bundle savedInstanceState) {
+     super.onCreate(savedInstanceState);
+-    setContentView(R.layout.activity_main);
++    setContentView(R.layout.scale_activity_main);
+ 
+     Intent intent = getIntent();
+     if (intent.getBooleanExtra(DeepLink.IS_DEEP_LINK, false)) {
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/CustomPrefixesActivity.java
+Patch:
+@@ -20,7 +20,7 @@ public class CustomPrefixesActivity extends AppCompatActivity {
+ 
+   @Override protected void onCreate(Bundle savedInstanceState) {
+     super.onCreate(savedInstanceState);
+-    setContentView(R.layout.activity_main);
++    setContentView(R.layout.sample_activity_main);
+ 
+     if (getIntent().getBooleanExtra(DeepLink.IS_DEEP_LINK, false)) {
+       Bundle parameters = getIntent().getExtras();
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/MainActivity.java
+Patch:
+@@ -36,7 +36,7 @@ public class MainActivity extends AppCompatActivity {
+ 
+   @Override protected void onCreate(Bundle savedInstanceState) {
+     super.onCreate(savedInstanceState);
+-    setContentView(R.layout.activity_main);
++    setContentView(R.layout.sample_activity_main);
+ 
+     Intent intent = getIntent();
+     if (intent.getBooleanExtra(DeepLink.IS_DEEP_LINK, false)) {
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/SecondActivity.java
+Patch:
+@@ -17,7 +17,7 @@ public class SecondActivity extends AppCompatActivity {
+   @Override
+   protected void onCreate(Bundle savedInstanceState) {
+     super.onCreate(savedInstanceState);
+-    setContentView(R.layout.activity_main);
++    setContentView(R.layout.sample_activity_main);
+ 
+     if (getIntent().getBooleanExtra(DeepLink.IS_DEEP_LINK, false)) {
+       Bundle parameters = getIntent().getExtras();
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/MainActivityTest.java
+Patch:
+@@ -5,6 +5,7 @@
+ import android.net.Uri;
+ 
+ import com.airbnb.deeplinkdispatch.DeepLink;
++import com.airbnb.deeplinkdispatch.sample.benchmarkable.BenchmarkDeepLinkModuleRegistry;
+ import com.airbnb.deeplinkdispatch.sample.library.LibraryDeepLinkModuleRegistry;
+ 
+ import org.junit.Test;
+@@ -162,7 +163,7 @@ public class MainActivityTest {
+   @Test
+   public void testSupportsUri() throws Exception {
+     DeepLinkDelegate deepLinkDelegate = new DeepLinkDelegate(new SampleModuleRegistry(),
+-        new LibraryDeepLinkModuleRegistry());
++        new LibraryDeepLinkModuleRegistry(), new BenchmarkDeepLinkModuleRegistry());
+     assertThat(deepLinkDelegate.supportsUri("dld://classDeepLink"), equalTo(true));
+     assertThat(deepLinkDelegate.supportsUri("some://weirdNonExistentUri"), equalTo(false));
+   }
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/ProcessorUtils.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.airbnb.deeplinkdispatch;
+ 
+-final class Utils {
++public final class ProcessorUtils {
++
+   static String decapitalize(String str) {
+     if (str != null && str.length() != 0) {
+       if (str.length() > 1 && Character.isUpperCase(str.charAt(1))
+
+File: deeplinkdispatch-processor/src/test/resources/DeepLinkDelegate.java
+Patch:
+@@ -5,8 +5,8 @@
+ 
+ public final class DeepLinkDelegate extends BaseDeepLinkDelegate {
+ 
+-  public DeepLinkDelegate(SampleModuleLoader sampleModuleLoader) {
+-    super(Arrays.asList(sampleModuleLoader));
++  public DeepLinkDelegate(SampleModuleRegistry sampleModuleRegistry) {
++    super(Arrays.asList(sampleModuleRegistry));
+   }
+ 
+ }
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/MainActivity.java
+Patch:
+@@ -28,7 +28,7 @@
+ import androidx.core.app.ActivityCompat;
+ import androidx.core.app.TaskStackBuilder;
+ 
+-@DeepLink({ "dld://classDeepLink", "http://example.com/foo{arg}", "dld://example.com/deepLink" })
++@DeepLink({ "dld://classDeepLink", "http://example.com/foo{arg_end}", "http://example.com/{arg_start}bar", "dld://example.com/deepLink" })
+ public class MainActivity extends AppCompatActivity {
+   private static final String ACTION_DEEP_LINK_METHOD = "deep_link_method";
+   private static final String ACTION_DEEP_LINK_COMPLEX = "deep_link_complex";
+@@ -77,7 +77,6 @@ public static Intent intentForDeepLinkMethod(Context context) {
+     return new Intent(context, MainActivity.class).setAction(ACTION_DEEP_LINK_METHOD);
+   }
+ 
+-
+   @DeepLink("dld://host/somePath/{arbitraryNumber}")
+   public static Intent intentForParamDeepLinkMethod(Context context) {
+     return new Intent(context, MainActivity.class).setAction(ACTION_DEEP_LINK_COMPLEX);
+
+File: deeplinkdispatch-base/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkHandler.java
+Patch:
+@@ -26,7 +26,7 @@
+  * incoming {@code Intent} to the correct Activities annotated with {@link DeepLink}.
+  */
+ @Target({ ElementType.TYPE })
+-@Retention(RetentionPolicy.SOURCE)
++@Retention(RetentionPolicy.CLASS)
+ public @interface DeepLinkHandler {
+   /**
+    * A list of {@link DeepLinkModule} annotated classes used for collecting all the deep links in
+
+File: deeplinkdispatch-base/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkModule.java
+Patch:
+@@ -16,6 +16,6 @@
+  * Intent delivery.
+  */
+ @Target({ ElementType.TYPE })
+-@Retention(RetentionPolicy.SOURCE)
++@Retention(RetentionPolicy.CLASS)
+ public @interface DeepLinkModule {
+ }
+
+File: deeplinkdispatch-base/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkEntry.java
+Patch:
+@@ -30,6 +30,9 @@ public final class DeepLinkEntry {
+   private static final Pattern PARAM_PATTERN = Pattern.compile(PARAM_REGEX);
+ 
+   private final Type type;
++  /**
++   * The class where the annotation corresponding to where an instance of DeepLinkEntry is declared.
++   */
+   private final Class<?> activityClass;
+   private final String method;
+   private final Set<String> parameters;
+
+File: deeplinkdispatch-base/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkHandler.java
+Patch:
+@@ -38,5 +38,6 @@
+   String ACTION = "com.airbnb.deeplinkdispatch.DEEPLINK_ACTION";
+   String EXTRA_SUCCESSFUL = "com.airbnb.deeplinkdispatch.EXTRA_SUCCESSFUL";
+   String EXTRA_URI = "com.airbnb.deeplinkdispatch.EXTRA_URI";
++  String EXTRA_URI_TEMPLATE = "com.airbnb.deeplinkdispatch.EXTRA_URI_TEMPLATE";
+   String EXTRA_ERROR_MESSAGE = "com.airbnb.deeplinkdispatch.EXTRA_ERROR_MESSAGE";
+ }
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/BaseDeepLinkDelegate.java
+Patch:
+@@ -5,8 +5,8 @@
+ import android.content.Intent;
+ import android.net.Uri;
+ import android.os.Bundle;
+-import android.support.v4.app.TaskStackBuilder;
+-import android.support.v4.content.LocalBroadcastManager;
++import androidx.core.app.TaskStackBuilder;
++import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+ import android.util.Log;
+ 
+ import java.lang.reflect.InvocationTargetException;
+
+File: sample-library/src/main/java/com/airbnb/deeplinkdispatch/sample/library/LibraryActivity.java
+Patch:
+@@ -3,8 +3,8 @@
+ import android.annotation.SuppressLint;
+ import android.content.Intent;
+ import android.os.Bundle;
+-import android.support.annotation.Nullable;
+-import android.support.v7.app.AppCompatActivity;
++import androidx.annotation.Nullable;
++import androidx.appcompat.app.AppCompatActivity;
+ import android.widget.Toast;
+ 
+ import com.airbnb.deeplinkdispatch.DeepLink;
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/CustomPrefixesActivity.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.airbnb.deeplinkdispatch.sample;
+ 
+ import android.os.Bundle;
+-import android.support.v7.app.AppCompatActivity;
++import androidx.appcompat.app.AppCompatActivity;
+ import android.text.TextUtils;
+ import android.util.Log;
+ import android.widget.Toast;
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/SampleApplication.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import android.app.Application;
+ import android.content.IntentFilter;
+-import android.support.v4.content.LocalBroadcastManager;
++import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+ 
+ import com.airbnb.deeplinkdispatch.DeepLinkHandler;
+ 
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/SecondActivity.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.airbnb.deeplinkdispatch.sample;
+ 
+ import android.os.Bundle;
+-import android.support.v7.app.AppCompatActivity;
++import androidx.appcompat.app.AppCompatActivity;
+ import android.text.TextUtils;
+ import android.util.Log;
+ import android.widget.Toast;
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/ShadowTaskStackBuilder.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import android.content.Context;
+ import android.content.Intent;
+-import android.support.v4.app.TaskStackBuilder;
++import androidx.core.app.TaskStackBuilder;
+ import org.robolectric.RuntimeEnvironment;
+ import org.robolectric.annotation.Implementation;
+ import org.robolectric.annotation.Implements;
+
+File: deeplinkdispatch-processor/src/test/java/com/airbnb/deeplinkdispatch/DeepLinkProcessorTest.java
+Patch:
+@@ -1,12 +1,10 @@
+ package com.airbnb.deeplinkdispatch;
+ 
+ import com.google.testing.compile.JavaFileObjects;
+-
+ import org.junit.Test;
+ 
+-import java.util.Arrays;
+-
+ import javax.tools.JavaFileObject;
++import java.util.Arrays;
+ 
+ import static com.google.common.truth.Truth.assertAbout;
+ import static com.google.testing.compile.JavaSourceSubjectFactory.javaSource;
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/SecondActivityTest.java
+Patch:
+@@ -23,8 +23,8 @@ public class SecondActivityTest {
+   @Test public void testIntent() {
+     Intent intent = new Intent(Intent.ACTION_VIEW,
+         Uri.parse("http://example.com/deepLink/123/myname"));
+-    DeepLinkActivity deepLinkActivity = Robolectric.buildActivity(DeepLinkActivity.class)
+-        .withIntent(intent).create().get();
++    DeepLinkActivity deepLinkActivity = Robolectric.buildActivity(DeepLinkActivity.class, intent)
++        .create().get();
+     ShadowActivity shadowActivity = shadowOf(deepLinkActivity);
+ 
+     Intent launchedIntent = shadowActivity.peekNextStartedActivityForResult().intent;
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/ShadowTaskStackBuilder.java
+Patch:
+@@ -9,7 +9,7 @@
+ import org.robolectric.annotation.Implementation;
+ import org.robolectric.annotation.Implements;
+ import org.robolectric.annotation.RealObject;
+-import org.robolectric.internal.Shadow;
++import org.robolectric.shadow.api.Shadow;
+ 
+ import java.util.ArrayList;
+ 
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -89,11 +89,13 @@ public class DeepLinkProcessor extends AbstractProcessor {
+ 
+   private Filer filer;
+   private Messager messager;
++  private Documentor documentor;
+ 
+   @Override public synchronized void init(ProcessingEnvironment processingEnv) {
+     super.init(processingEnv);
+     filer = processingEnv.getFiler();
+     messager = processingEnv.getMessager();
++    documentor = new Documentor(processingEnv);
+   }
+ 
+   @Override public Set<String> getSupportedAnnotationTypes() {
+@@ -245,6 +247,7 @@ private void generateDeepLinkLoader(String packageName, String className,
+     CodeBlock.Builder initializer = CodeBlock.builder()
+         .add("$T.unmodifiableList($T.asList(\n", CLASS_COLLECTIONS, CLASS_ARRAYS)
+         .indent();
++    documentor.write(elements);
+     int totalElements = elements.size();
+     for (int i = 0; i < totalElements; i++) {
+       DeepLinkAnnotatedElement element = elements.get(i);
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/CustomPrefixesActivity.java
+Patch:
+@@ -9,6 +9,9 @@
+ import com.airbnb.deeplinkdispatch.DeepLink;
+ import com.airbnb.deeplinkdispatch.sample.library.LibraryDeepLink;
+ 
++/**
++ * Main airbnb activity to show case {@link AppDeepLink}, {@link WebDeepLink} and {@link LibraryDeepLink}.
++ */
+ @AppDeepLink({ "/view_users" })
+ @WebDeepLink({ "/users", "/user/{id}" })
+ @LibraryDeepLink({ "/library_deeplink", "/library_deeplink/{lib_id}" })
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLink.java
+Patch:
+@@ -27,7 +27,7 @@
+  * </code></pre>
+  */
+ @Target({ ElementType.TYPE, ElementType.METHOD })
+-@Retention(RetentionPolicy.CLASS)
++@Retention(RetentionPolicy.SOURCE)
+ public @interface DeepLink {
+   String IS_DEEP_LINK = "is_deep_link_flag";
+   String URI = "deep_link_uri";
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkHandler.java
+Patch:
+@@ -26,7 +26,7 @@
+  * incoming {@code Intent} to the correct Activities annotated with {@link DeepLink}.
+  */
+ @Target({ ElementType.TYPE })
+-@Retention(RetentionPolicy.CLASS)
++@Retention(RetentionPolicy.SOURCE)
+ public @interface DeepLinkHandler {
+   /**
+    * A list of {@link DeepLinkModule} annotated classes used for collecting all the deep links in
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkModule.java
+Patch:
+@@ -16,6 +16,6 @@
+  * Intent delivery.
+  */
+ @Target({ ElementType.TYPE })
+-@Retention(RetentionPolicy.CLASS)
++@Retention(RetentionPolicy.SOURCE)
+ public @interface DeepLinkModule {
+ }
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/CustomPrefixesActivity.java
+Patch:
+@@ -13,7 +13,7 @@
+ @WebDeepLink({ "/users", "/user/{id}" })
+ @LibraryDeepLink({ "/library_deeplink", "/library_deeplink/{lib_id}" })
+ public class CustomPrefixesActivity extends AppCompatActivity {
+-  private static final String TAG = SecondActivity.class.getSimpleName();
++  private static final String TAG = CustomPrefixesActivity.class.getSimpleName();
+ 
+   @Override protected void onCreate(Bundle savedInstanceState) {
+     super.onCreate(savedInstanceState);
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/MainActivity.java
+Patch:
+@@ -31,7 +31,7 @@
+ public class MainActivity extends AppCompatActivity {
+   private static final String ACTION_DEEP_LINK_METHOD = "deep_link_method";
+   private static final String ACTION_DEEP_LINK_COMPLEX = "deep_link_complex";
+-  private static final String TAG = SecondActivity.class.getSimpleName();
++  private static final String TAG = MainActivity.class.getSimpleName();
+ 
+   @Override protected void onCreate(Bundle savedInstanceState) {
+     super.onCreate(savedInstanceState);
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/SecondActivity.java
+Patch:
+@@ -12,7 +12,7 @@
+ @DeepLink("http://example.com/deepLink/{id}/{name}")
+ public class SecondActivity extends AppCompatActivity {
+ 
+-  private String TAG = SecondActivity.class.getSimpleName();
++  private static final String TAG = SecondActivity.class.getSimpleName();
+ 
+   @Override
+   protected void onCreate(Bundle savedInstanceState) {
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/AppDeepLink.java
+Patch:
+@@ -4,6 +4,6 @@
+ 
+ @DeepLinkSpec(prefix = { "app://airbnb" })
+ public @interface AppDeepLink {
+-    String[] value();
++  String[] value();
+ }
+ 
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/WebDeepLink.java
+Patch:
+@@ -4,5 +4,5 @@
+ 
+ @DeepLinkSpec(prefix = { "http://airbnb.com", "https://airbnb.com" })
+ public @interface WebDeepLink {
+-    String[] value();
++  String[] value();
+ }
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/MoreAnnotationMirrors.java
+Patch:
+@@ -57,7 +57,7 @@ protected ImmutableList<AnnotationValue> defaultAction(Object o, String elementN
+    *
+    * @throws IllegalArgumentException unless {@code annotationValue} represents an array
+    */
+-  private static ImmutableList<AnnotationValue> asAnnotationValues(
++  static ImmutableList<AnnotationValue> asAnnotationValues(
+       AnnotationValue annotationValue) {
+     return annotationValue.accept(AS_ANNOTATION_VALUES, null);
+   }
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkEntry.java
+Patch:
+@@ -27,6 +27,7 @@ public final class DeepLinkEntry {
+   private static final String PARAM_VALUE = "([a-zA-Z0-9_#'!+%~,\\-\\.\\@\\$\\:]+)";
+   private static final String PARAM = "([a-zA-Z][a-zA-Z0-9_-]*)";
+   private static final String PARAM_REGEX = "%7B(" + PARAM + ")%7D";
++  private static final Pattern PARAM_PATTERN = Pattern.compile(PARAM_REGEX);
+ 
+   private final Type type;
+   private final Class<?> activityClass;
+@@ -66,7 +67,7 @@ public String getMethod() {
+    * in the URI, it will only show up once in the set.
+    */
+   private static Set<String> parseParameters(DeepLinkUri uri) {
+-    Matcher matcher = Pattern.compile(PARAM_REGEX).matcher(uri.encodedHost() + uri.encodedPath());
++    Matcher matcher = PARAM_PATTERN.matcher(uri.encodedHost() + uri.encodedPath());
+     Set<String> patterns = new LinkedHashSet<>();
+     while (matcher.find()) {
+       patterns.add(matcher.group(1));
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/DeepLinkReceiver.java
+Patch:
+@@ -7,7 +7,6 @@
+ 
+ import com.airbnb.deeplinkdispatch.DeepLinkHandler;
+ 
+-
+ public class DeepLinkReceiver extends BroadcastReceiver {
+   private static final String TAG = DeepLinkReceiver.class.getSimpleName();
+ 
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -421,6 +421,7 @@ private void generateDeepLinkDelegate(String packageName) throws IOException {
+         .endControlFlow()
+         .addStatement("newIntent.putExtras(parameters)")
+         .addStatement("newIntent.putExtra(DeepLink.IS_DEEP_LINK, true)")
++        .addStatement("newIntent.putExtra(DeepLink.REFERRER_URI, uri)")
+         .beginControlFlow("if (activity.getCallingActivity() != null)")
+         .addStatement("newIntent.setFlags(Intent.FLAG_ACTIVITY_FORWARD_RESULT)")
+         .endControlFlow()
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLink.java
+Patch:
+@@ -31,6 +31,7 @@
+ public @interface DeepLink {
+   String IS_DEEP_LINK = "is_deep_link_flag";
+   String URI = "deep_link_uri";
++  String REFERRER_URI = "android.intent.extra.REFERRER";
+ 
+   String[] value();
+ }
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/MainActivityTest.java
+Patch:
+@@ -30,16 +30,16 @@ public class MainActivityTest {
+     DeepLinkActivity deepLinkActivity = Robolectric.buildActivity(DeepLinkActivity.class)
+         .withIntent(intent).create().get();
+     ShadowActivity shadowActivity = shadowOf(deepLinkActivity);
+-
+     Intent launchedIntent = shadowActivity.peekNextStartedActivityForResult().intent;
+     assertThat(launchedIntent.getComponent(),
+         equalTo(new ComponentName(deepLinkActivity, MainActivity.class)));
+ 
+-    assertThat(launchedIntent.getBooleanExtra(DeepLink.IS_DEEP_LINK, false), equalTo(
+-        true));
++    assertThat(launchedIntent.getBooleanExtra(DeepLink.IS_DEEP_LINK, false), equalTo(true));
+     assertThat(launchedIntent.getStringExtra("arbitraryNumber"), equalTo("1234321"));
+     assertThat(launchedIntent.getStringExtra("TEST_EXTRA"), equalTo("FOO"));
+     assertThat(launchedIntent.getAction(), equalTo("deep_link_complex"));
++    assertThat(launchedIntent.<Uri>getParcelableExtra(DeepLink.REFERRER_URI).toString(),
++        equalTo("dld://host/somePath/1234321"));
+     assertThat(launchedIntent.getData(), equalTo(Uri.parse("dld://host/somePath/1234321")));
+     assertThat(launchedIntent.getStringExtra(DeepLink.URI),
+         equalTo("dld://host/somePath/1234321"));
+
+File: deeplinkdispatch-processor/src/test/resources/DeepLinkActivity.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.airbnb.deeplinkdispatch;
++package com.example;
+ 
+ import android.app.Activity;
+ import android.os.Bundle;
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/MainActivityTest.java
+Patch:
+@@ -5,7 +5,6 @@
+ import android.net.Uri;
+ 
+ import com.airbnb.deeplinkdispatch.DeepLink;
+-import com.airbnb.deeplinkdispatch.DeepLinkActivity;
+ 
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/SecondActivityTest.java
+Patch:
+@@ -5,7 +5,6 @@
+ import android.net.Uri;
+ 
+ import com.airbnb.deeplinkdispatch.DeepLink;
+-import com.airbnb.deeplinkdispatch.DeepLinkActivity;
+ 
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -280,7 +280,8 @@ private void generateDeepLinkDelegate() throws IOException {
+         .addParameter(String.class, "errorMessage")
+         .addStatement("$T intent = new Intent()", ANDROID_INTENT)
+         .addStatement("intent.setAction($T.ACTION)", DeepLinkHandler.class)
+-        .addStatement("intent.putExtra($T.EXTRA_URI, uri.toString())", DeepLinkHandler.class)
++        .addStatement("intent.putExtra($T.EXTRA_URI, uri != null ? uri.toString() : $S)",
++                DeepLinkHandler.class, "")
+         .addStatement("intent.putExtra($T.EXTRA_SUCCESSFUL, !isError)", DeepLinkHandler.class)
+         .beginControlFlow("if (isError)")
+         .addStatement("intent.putExtra($T.EXTRA_ERROR_MESSAGE, errorMessage)",
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -280,7 +280,8 @@ private void generateDeepLinkDelegate() throws IOException {
+         .addParameter(String.class, "errorMessage")
+         .addStatement("$T intent = new Intent()", ANDROID_INTENT)
+         .addStatement("intent.setAction($T.ACTION)", DeepLinkHandler.class)
+-        .addStatement("intent.putExtra($T.EXTRA_URI, uri != null ? uri.toString() : $S)", DeepLinkHandler.class, "")
++        .addStatement("intent.putExtra($T.EXTRA_URI, uri != null ? uri.toString() : $S)",
++                DeepLinkHandler.class, "")
+         .addStatement("intent.putExtra($T.EXTRA_SUCCESSFUL, !isError)", DeepLinkHandler.class)
+         .beginControlFlow("if (isError)")
+         .addStatement("intent.putExtra($T.EXTRA_ERROR_MESSAGE, errorMessage)",
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -280,7 +280,7 @@ private void generateDeepLinkDelegate() throws IOException {
+         .addParameter(String.class, "errorMessage")
+         .addStatement("$T intent = new Intent()", ANDROID_INTENT)
+         .addStatement("intent.setAction($T.ACTION)", DeepLinkHandler.class)
+-        .addStatement("intent.putExtra($T.EXTRA_URI, uri.toString())", DeepLinkHandler.class)
++        .addStatement("intent.putExtra($T.EXTRA_URI, uri != null ? uri.toString() : $S)", DeepLinkHandler.class, "")
+         .addStatement("intent.putExtra($T.EXTRA_SUCCESSFUL, !isError)", DeepLinkHandler.class)
+         .beginControlFlow("if (isError)")
+         .addStatement("intent.putExtra($T.EXTRA_ERROR_MESSAGE, errorMessage)",
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -271,7 +271,6 @@ private void generateDeepLinkLoader(List<DeepLinkAnnotatedElement> elements)
+   }
+ 
+   private void generateDeepLinkDelegate() throws IOException {
+-
+     MethodSpec notifyListenerMethod = MethodSpec.methodBuilder("notifyListener")
+         .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+         .returns(void.class)
+@@ -420,6 +419,7 @@ private void generateDeepLinkActivity() throws IOException {
+         .addStatement("super.onCreate(savedInstanceState)")
+         .addStatement("$T.dispatchFrom(this)",
+             ClassName.get("com.airbnb.deeplinkdispatch", "DeepLinkDelegate"))
++        .addStatement("finish()")
+         .build();
+ 
+     TypeSpec deepLinkActivity = TypeSpec.classBuilder("DeepLinkActivity")
+
+File: deeplinkdispatch-processor/src/test/resources/DeepLinkActivity.java
+Patch:
+@@ -9,5 +9,6 @@ public class DeepLinkActivity extends Activity {
+   protected void onCreate(Bundle savedInstanceState) {
+     super.onCreate(savedInstanceState);
+     DeepLinkDelegate.dispatchFrom(this);
++    finish();
+   }
+ }
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -355,10 +355,10 @@ private void generateDeepLinkDelegate() throws IOException {
+             ClassName.get("android.content", "Context"))
+         .addStatement("newIntent = (Intent) method.invoke(c, activity)")
+         .endControlFlow()
+-        .beginControlFlow("if (sourceIntent.getAction() == null)")
++        .beginControlFlow("if (newIntent.getAction() == null)")
+         .addStatement("newIntent.setAction(sourceIntent.getAction())")
+         .endControlFlow()
+-        .beginControlFlow("if (sourceIntent.getData() == null)")
++        .beginControlFlow("if (newIntent.getData() == null)")
+         .addStatement("newIntent.setData(sourceIntent.getData())")
+         .endControlFlow()
+         .addStatement("$T parameters", ClassName.get("android.os", "Bundle"))
+
+File: deeplinkdispatch-processor/src/test/resources/DeepLinkDelegate.java
+Patch:
+@@ -55,10 +55,10 @@ public static com.airbnb.deeplinkdispatch.DeepLinkResult dispatchFrom(Activity a
+           Method method = c.getMethod(entry.getMethod(), Context.class);
+           newIntent = (Intent) method.invoke(c, activity);
+         }
+-        if (sourceIntent.getAction() == null) {
++        if (newIntent.getAction() == null) {
+           newIntent.setAction(sourceIntent.getAction());
+         }
+-        if (sourceIntent.getData() == null) {
++        if (newIntent.getData() == null) {
+           newIntent.setData(sourceIntent.getData());
+         }
+         Bundle parameters;
+
+File: deeplinkdispatch-processor/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkProcessor.java
+Patch:
+@@ -355,10 +355,10 @@ private void generateDeepLinkDelegate() throws IOException {
+             ClassName.get("android.content", "Context"))
+         .addStatement("newIntent = (Intent) method.invoke(c, activity)")
+         .endControlFlow()
+-        .beginControlFlow("if (sourceIntent.getAction() == null)")
++        .beginControlFlow("if (newIntent.getAction() == null)")
+         .addStatement("newIntent.setAction(sourceIntent.getAction())")
+         .endControlFlow()
+-        .beginControlFlow("if (sourceIntent.getData() == null)")
++        .beginControlFlow("if (newIntent.getData() == null)")
+         .addStatement("newIntent.setData(sourceIntent.getData())")
+         .endControlFlow()
+         .addStatement("$T parameters", ClassName.get("android.os", "Bundle"))
+
+File: deeplinkdispatch-processor/src/test/resources/DeepLinkDelegate.java
+Patch:
+@@ -55,10 +55,10 @@ public static com.airbnb.deeplinkdispatch.DeepLinkResult dispatchFrom(Activity a
+           Method method = c.getMethod(entry.getMethod(), Context.class);
+           newIntent = (Intent) method.invoke(c, activity);
+         }
+-        if (sourceIntent.getAction() == null) {
++        if (newIntent.getAction() == null) {
+           newIntent.setAction(sourceIntent.getAction());
+         }
+-        if (sourceIntent.getData() == null) {
++        if (newIntent.getData() == null) {
+           newIntent.setData(sourceIntent.getData());
+         }
+         Bundle parameters;
+
+File: deeplinkdispatch-processor/src/test/resources/DeepLinkActivity.java
+Patch:
+@@ -70,6 +70,9 @@ protected void onCreate(Bundle savedInstanceState) {
+         }
+         intent.putExtras(parameters);
+         intent.putExtra(DeepLink.IS_DEEP_LINK, true);
++        if (getCallingActivity() != null) {
++          intent.setFlags(Intent.FLAG_ACTIVITY_FORWARD_RESULT);
++        }
+         startActivity(intent);
+         notifyListener(false, uri, null);
+       } catch (NoSuchMethodException exception) {
+
+File: sample/src/test/java/com/airbnb/deeplinkdispatch/sample/SecondActivityTest.java
+Patch:
+@@ -24,7 +24,7 @@ public class SecondActivityTest {
+     @Test
+     public void testIntent() {
+         Intent intent = new Intent(Intent.ACTION_VIEW,
+-                                   Uri.parse("dld://example.com/deepLink/123"));
++                                   Uri.parse("http://example.com/deepLink/123/myname"));
+         DeepLinkActivity deepLinkActivity = Robolectric.buildActivity(DeepLinkActivity.class)
+             .withIntent(intent).create().get();
+         ShadowActivity shadowActivity = shadowOf(deepLinkActivity);
+@@ -35,6 +35,6 @@ public void testIntent() {
+ 
+         assertThat(launchedIntent.getBooleanExtra(DeepLink.IS_DEEP_LINK, false), equalTo(true));
+         assertThat(launchedIntent.getStringExtra(DeepLink.URI),
+-                   equalTo("dld://example.com/deepLink/123"));
++                   equalTo("http://example.com/deepLink/123/myname"));
+     }
+ }
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkEntry.java
+Patch:
+@@ -24,7 +24,7 @@
+ import java.util.regex.Pattern;
+ 
+ final class DeepLinkEntry {
+-  private static final String PARAM_VALUE = "([a-zA-Z0-9_#!+%~,\\-\\.\\$]*)";
++  private static final String PARAM_VALUE = "([a-zA-Z0-9_#'!+%~,\\-\\.\\$]*)";
+   private static final String PARAM = "([a-zA-Z][a-zA-Z0-9_-]*)";
+   private static final String PARAM_REGEX = "%7B(" + PARAM + ")%7D";
+ 
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkEntry.java
+Patch:
+@@ -24,7 +24,7 @@
+ import java.util.regex.Pattern;
+ 
+ final class DeepLinkEntry {
+-  private static final String PARAM_VALUE = "([a-zA-Z0-9_#!+%-~,\\.\\$]*)";
++  private static final String PARAM_VALUE = "([a-zA-Z0-9_#!+%~,\\-\\.\\$]*)";
+   private static final String PARAM = "([a-zA-Z][a-zA-Z0-9_-]*)";
+   private static final String PARAM_REGEX = "%7B(" + PARAM + ")%7D";
+ 
+
+File: sample/src/main/java/com/airbnb/deeplinkdispatch/sample/DeepLinkReceiver.java
+Patch:
+@@ -8,7 +8,6 @@
+ import com.airbnb.deeplinkdispatch.DeepLinkActivity;
+ 
+ public class DeepLinkReceiver extends BroadcastReceiver {
+-
+   private static final String TAG = DeepLinkReceiver.class.getSimpleName();
+ 
+   @Override
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkUri.java
+Patch:
+@@ -444,9 +444,8 @@ static final class Builder {
+     }
+ 
+     Builder scheme(String scheme) {
+-      if (scheme == null) {
+-        throw new IllegalArgumentException("scheme == null");
+-      }
++      if (scheme == null) throw new IllegalArgumentException("scheme == null");
++      this.scheme = scheme;
+       return this;
+     }
+ 
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkUri.java
+Patch:
+@@ -444,9 +444,8 @@ static final class Builder {
+     }
+ 
+     Builder scheme(String scheme) {
+-      if (scheme == null) {
+-        throw new IllegalArgumentException("scheme == null");
+-      }
++      if (scheme == null) throw new IllegalArgumentException("scheme == null");
++      this.scheme = scheme;
+       return this;
+     }
+ 
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkUri.java
+Patch:
+@@ -782,7 +782,7 @@ ParseResult parse(DeepLinkUri base, String input) {
+               pos = componentDelimiterOffset;
+               break authority;
+             default:
+-              throw new AssertionError();
++              break;
+           }
+         }
+       } else {
+@@ -998,7 +998,7 @@ private static int portColonOffset(String input, int pos, int limit) {
+           case ':':
+             return i;
+           default:
+-            throw new AssertionError();
++            break;
+         }
+       }
+       return limit; // No colon.
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkEntry.java
+Patch:
+@@ -104,7 +104,7 @@ private static String parsePath(DeepLinkUri parsedUri) {
+ 
+   boolean matches(String inputUri) {
+     DeepLinkUri deepLinkUri = DeepLinkUri.parse(inputUri);
+-    return regex.matcher(schemeHostAndPath(deepLinkUri)).find();
++    return deepLinkUri != null && regex.matcher(schemeHostAndPath(deepLinkUri)).find();
+   }
+ 
+   private String schemeHostAndPath(DeepLinkUri uri) {
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkEntry.java
+Patch:
+@@ -104,7 +104,7 @@ private static String parsePath(DeepLinkUri parsedUri) {
+ 
+   boolean matches(String inputUri) {
+     DeepLinkUri deepLinkUri = DeepLinkUri.parse(inputUri);
+-    return regex.matcher(schemeHostAndPath(deepLinkUri)).find();
++    return deepLinkUri != null && regex.matcher(schemeHostAndPath(deepLinkUri)).find();
+   }
+ 
+   private String schemeHostAndPath(DeepLinkUri uri) {
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLinkError.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.airbnb.deeplinkdispatch;
+ 
+ public class DeepLinkError {
+-  public String uri;
+-  public String errorMessage;
++  public final String uri;
++  public final String errorMessage;
+ 
+   public DeepLinkError(String uri, String errorMessage) {
+     this.uri = uri;
+
+File: deeplinkdispatch/src/main/java/com/airbnb/deeplinkdispatch/DeepLink.java
+Patch:
+@@ -11,7 +11,8 @@
+  * {@literal @}DeepLink(host, path);
+  * </code></pre>
+  */
+-@Retention(RetentionPolicy.CLASS) @Target({ElementType.TYPE, ElementType.METHOD})
++@Target({ElementType.TYPE, ElementType.METHOD})
++@Retention(RetentionPolicy.CLASS)
+ public @interface DeepLink {
+   String IS_DEEP_LINK = "is_deep_link_flag";
+ 
+

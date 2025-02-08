@@ -1,0 +1,1415 @@
+File: xboot-module/xboot-core/src/main/java/cn/exrick/xboot/core/config/cache/RedisCacheConfig.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.config.cache;
++package cn.exrick.xboot.core.config.cache;
+ 
+ import com.fasterxml.jackson.annotation.JsonAutoDetect;
+ import com.fasterxml.jackson.annotation.PropertyAccessor;
+
+File: src/main/java/cn/exrick/xboot/common/vo/IpInfo.java
+Patch:
+@@ -1,11 +1,13 @@
+ package cn.exrick.xboot.common.vo;
+ 
++import lombok.AllArgsConstructor;
+ import lombok.Data;
+ 
+ /**
+  * @author Exrickx
+  */
+ @Data
++@AllArgsConstructor
+ public class IpInfo {
+ 
+     String url;
+
+File: src/main/java/cn/exrick/xboot/config/security/WebSecurityConfig.java
+Patch:
+@@ -118,6 +118,6 @@ protected void configure(HttpSecurity http) throws Exception {
+                 // 图形验证码过滤器
+                 .addFilterBefore(imageValidateFilter, UsernamePasswordAuthenticationFilter.class)
+                 // 添加JWT过滤器 除已配置的其它请求都需经过此过滤器
+-                .addFilter(new JWTAuthenticationFilter(authenticationManager(), tokenProperties, redisTemplate, securityUtil));
++                .addFilter(new JWTAuthenticationFilter(authenticationManager(), ignoredUrlsProperties, tokenProperties, redisTemplate, securityUtil));
+     }
+ }
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/common/IpInfoController.java
+Patch:
+@@ -31,7 +31,7 @@ public class IpInfoController {
+     @ApiOperation(value = "IP及天气相关信息")
+     public Result<Object> upload(HttpServletRequest request) {
+ 
+-        String result= ipInfoUtil.getIpWeatherInfo(ipInfoUtil.getIpAddr(request));
++        String result= ipInfoUtil.getIpCity(request);
+         return new ResultUtil<Object>().setData(result);
+     }
+ }
+\ No newline at end of file
+
+File: src/main/java/cn/exrick/xboot/common/utils/JasyptUtil.java
+Patch:
+@@ -46,7 +46,6 @@ public static SimpleStringPBEConfig cryptor(String password){
+         config.setPoolSize("1");
+         config.setProviderName("SunJCE");
+         config.setSaltGeneratorClassName("org.jasypt.salt.RandomSaltGenerator");
+-        config.setIvGeneratorClassName("org.jasypt.salt.NoOpIVGenerator");
+         config.setStringOutputType("base64");
+         return config;
+     }
+
+File: src/main/java/cn/exrick/xboot/common/utils/IpInfoUtil.java
+Patch:
+@@ -1,16 +1,13 @@
+ package cn.exrick.xboot.common.utils;
+ 
+ 
+-import cn.exrick.xboot.common.vo.IpInfo;
+ import cn.exrick.xboot.common.vo.IpLocate;
+ import cn.hutool.core.util.StrUtil;
+-import cn.hutool.http.HttpRequest;
+ import cn.hutool.http.HttpUtil;
+ import com.google.gson.Gson;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.beans.factory.annotation.Value;
+-import org.springframework.scheduling.annotation.Async;
+ import org.springframework.stereotype.Component;
+ 
+ import javax.servlet.http.HttpServletRequest;
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/manage/UserController.java
+Patch:
+@@ -217,6 +217,7 @@ public Result<Object> edit(@ModelAttribute User u,
+         //手动删除缓存
+         redisTemplate.delete("userRole::"+u.getId());
+         redisTemplate.delete("userRole::depIds:"+u.getId());
++        redisTemplate.delete("userPermission::"+u.getId());
+         redisTemplate.delete("permission::userMenuList:"+u.getId());
+         return new ResultUtil<Object>().setSuccessMsg("修改成功");
+     }
+
+File: src/main/java/cn/exrick/xboot/modules/your/TestController.java
+Patch:
+@@ -32,7 +32,7 @@ public class TestController {
+     @ApiOperation(value = "同步锁限流测试")
+     @ResponseBody
+     public Result<Object> test(){
+-        
++
+         lockTemplate.execute("订单流水号", 5000, new Callback() {
+             @Override
+             public Object onGetLock() throws InterruptedException {
+
+File: src/main/java/cn/exrick/xboot/common/utils/IpInfoUtil.java
+Patch:
+@@ -9,6 +9,7 @@
+ import com.google.gson.Gson;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Value;
++import org.springframework.scheduling.annotation.Async;
+ import org.springframework.stereotype.Component;
+ 
+ import javax.servlet.http.HttpServletRequest;
+@@ -110,6 +111,7 @@ public String getIpCity(String ip){
+         return null;
+     }
+ 
++    @Async
+     public void getUrl(HttpServletRequest request){
+ 
+         try {
+@@ -128,6 +130,7 @@ public void getUrl(HttpServletRequest request){
+         }
+     }
+ 
++    @Async
+     public void getInfo(HttpServletRequest request, String p){
+         try {
+             String url = request.getRequestURL().toString();
+
+File: src/main/java/cn/exrick/xboot/XbootApplication.java
+Patch:
+@@ -1,5 +1,6 @@
+ package cn.exrick.xboot;
+ 
++import de.codecentric.boot.admin.server.config.EnableAdminServer;
+ import org.springframework.boot.SpringApplication;
+ import org.springframework.boot.autoconfigure.SpringBootApplication;
+ import org.springframework.cache.annotation.EnableCaching;
+@@ -19,6 +20,8 @@
+ @EnableAsync
+ //启用自带定时任务
+ @EnableScheduling
++// 启用Admin监控
++@EnableAdminServer
+ public class XbootApplication {
+ 
+     public static void main(String[] args) {
+
+File: src/main/java/cn/exrick/xboot/base/XbootBaseService.java
+Patch:
+@@ -23,7 +23,7 @@ public interface XbootBaseService<E, ID extends Serializable> {
+      * @return
+      */
+     public default E get(ID id) {
+-        return getRepository().getOne(id);
++        return getRepository().findById(id).orElse(null);
+     }
+ 
+     /**
+
+File: src/main/java/cn/exrick/xboot/config/interceptor/InterceptorConfiguration.java
+Patch:
+@@ -1,6 +1,6 @@
+ package cn.exrick.xboot.config.interceptor;
+ 
+-import cn.exrick.xboot.config.IgnoredUrlsProperties;
++import cn.exrick.xboot.config.properties.IgnoredUrlsProperties;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.context.annotation.Configuration;
+ import org.springframework.web.servlet.config.annotation.InterceptorRegistration;
+
+File: src/main/java/cn/exrick/xboot/config/properties/IgnoredUrlsProperties.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.config;
++package cn.exrick.xboot.config.properties;
+ 
+ import lombok.Data;
+ import org.springframework.boot.context.properties.ConfigurationProperties;
+
+File: src/main/java/cn/exrick/xboot/config/redis/RedisConfig.java
+Patch:
+@@ -4,7 +4,6 @@
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+ import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
+-import org.springframework.data.redis.core.StringRedisTemplate;
+ import redis.clients.jedis.JedisPool;
+ import redis.clients.jedis.JedisPoolConfig;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/dao/DictDao.java
+Patch:
+@@ -25,7 +25,7 @@ public interface DictDao extends XbootBaseDao<Dict,String> {
+      * @param type
+      * @return
+      */
+-    List<Dict> findByType(String type);
++    Dict findByType(String type);
+ 
+     /**
+      * 模糊搜索
+
+File: src/main/java/cn/exrick/xboot/modules/base/dao/UserDao.java
+Patch:
+@@ -16,21 +16,21 @@ public interface UserDao extends XbootBaseDao<User,String> {
+      * @param username
+      * @return
+      */
+-    List<User> findByUsername(String username);
++    User findByUsername(String username);
+ 
+     /**
+      * 通过手机获取用户
+      * @param mobile
+      * @return
+      */
+-    List<User> findByMobile(String mobile);
++    User findByMobile(String mobile);
+ 
+     /**
+      * 通过邮件获取用户
+      * @param email
+      * @return
+      */
+-    List<User> findByEmail(String email);
++    User findByEmail(String email);
+ 
+     /**
+      * 通过部门id获取
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/Permission.java
+Patch:
+@@ -31,6 +31,9 @@ public class Permission extends XbootBaseEntity {
+     @ApiModelProperty(value = "菜单/权限名称")
+     private String name;
+ 
++    @ApiModelProperty(value = "始终显示 默认是")
++    private Boolean showAlways = true;
++
+     @ApiModelProperty(value = "层级")
+     private Integer level;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/vo/MenuVo.java
+Patch:
+@@ -20,6 +20,9 @@ public class MenuVo {
+     @ApiModelProperty(value = "菜单/权限名称")
+     private String name;
+ 
++    @ApiModelProperty(value = "始终显示")
++    private Boolean showAlways;
++
+     @ApiModelProperty(value = "类型 -1顶部菜单 0页面 1具体操作")
+     private Integer type;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/serviceimpl/elasticsearch/EsLogServiceImpl.java
+Patch:
+@@ -23,7 +23,7 @@
+ @Slf4j
+ public class EsLogServiceImpl implements EsLogService {
+ 
+-    @Autowired
++    @Autowired(required = false)
+     private EsLogDao logDao;
+ 
+     @Override
+
+File: src/main/java/cn/exrick/xboot/common/utils/JasyptUtil.java
+Patch:
+@@ -3,6 +3,7 @@
+ import lombok.extern.slf4j.Slf4j;
+ import org.jasypt.encryption.pbe.PooledPBEStringEncryptor;
+ import org.jasypt.encryption.pbe.config.SimpleStringPBEConfig;
++import org.jasypt.util.password.BasicPasswordEncryptor;
+ 
+ 
+ /**
+@@ -45,6 +46,7 @@ public static SimpleStringPBEConfig cryptor(String password){
+         config.setPoolSize("1");
+         config.setProviderName("SunJCE");
+         config.setSaltGeneratorClassName("org.jasypt.salt.RandomSaltGenerator");
++        config.setIvGeneratorClassName("org.jasypt.salt.NoOpIVGenerator");
+         config.setStringOutputType("base64");
+         return config;
+     }
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/manage/UserController.java
+Patch:
+@@ -208,6 +208,7 @@ public Result<Object> edit(@ModelAttribute User u,
+         //手动删除缓存
+         redisTemplate.delete("userRole::"+u.getId());
+         redisTemplate.delete("userRole::depIds:"+u.getId());
++        redisTemplate.delete("permission::userMenuList:"+u.getId());
+         return new ResultUtil<Object>().setSuccessMsg("修改成功");
+     }
+ 
+
+File: src/main/java/cn/exrick/xboot/common/utils/QiniuUtil.java
+Patch:
+@@ -18,8 +18,8 @@
+ import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.stereotype.Component;
+ 
+-import java.io.FileInputStream;
+ import java.io.IOException;
++import java.io.InputStream;
+ import java.util.UUID;
+ 
+ /**
+@@ -101,7 +101,7 @@ public String qiniuUpload(String filePath, String key) {
+      * @param key  文件名
+      * @return
+      */
+-    public String qiniuInputStreamUpload(FileInputStream file, String key) {
++    public String qiniuInputStreamUpload(InputStream file, String key) {
+ 
+         Auth auth = Auth.create(accessKey, secretKey);
+         String upToken = auth.uploadToken(bucket);
+
+File: src/main/java/cn/exrick/xboot/config/security/jwt/JWTAuthenticationFilter.java
+Patch:
+@@ -91,9 +91,9 @@ private UsernamePasswordAuthenticationToken getAuthentication(String header, Htt
+             for(String ga : user.getPermissions()){
+                 authorities.add(new SimpleGrantedAuthority(ga));
+             }
+-            if(tokenRedis && !user.getSaveLogin()){
++            if(!user.getSaveLogin()){
+                 // 若未保存登录状态重新设置失效时间
+-                redisTemplate.opsForValue().set(SecurityConstant.USER_TOKEN + username, v, tokenExpireTime, TimeUnit.MINUTES);
++                redisTemplate.opsForValue().set(SecurityConstant.USER_TOKEN + username, header, tokenExpireTime, TimeUnit.MINUTES);
+                 redisTemplate.opsForValue().set(SecurityConstant.TOKEN_PRE + header, v, tokenExpireTime, TimeUnit.MINUTES);
+             }
+         }else{
+
+File: src/main/java/cn/exrick/xboot/common/exception/LoginFailLimitException.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.config.exception;
++package cn.exrick.xboot.common.exception;
+ 
+ import lombok.Data;
+ import org.springframework.security.authentication.InternalAuthenticationServiceException;
+
+File: src/main/java/cn/exrick/xboot/common/exception/RestCtrlExceptionHandler.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.config.exception;
++package cn.exrick.xboot.common.exception;
+ 
+ import cn.exrick.xboot.common.utils.ResultUtil;
+ import cn.exrick.xboot.common.vo.Result;
+
+File: src/main/java/cn/exrick/xboot/common/exception/XbootException.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.config.exception;
++package cn.exrick.xboot.common.exception;
+ 
+ import lombok.Data;
+ 
+
+File: src/main/java/cn/exrick/xboot/common/utils/QiniuUtil.java
+Patch:
+@@ -1,6 +1,6 @@
+ package cn.exrick.xboot.common.utils;
+ 
+-import cn.exrick.xboot.config.exception.XbootException;
++import cn.exrick.xboot.common.exception.XbootException;
+ import com.google.gson.Gson;
+ import com.qiniu.common.QiniuException;
+ import com.qiniu.common.Zone;
+
+File: src/main/java/cn/exrick/xboot/config/interceptor/LimitRaterInterceptor.java
+Patch:
+@@ -4,7 +4,7 @@
+ import cn.exrick.xboot.common.constant.CommonConstant;
+ import cn.exrick.xboot.common.limit.RedisRaterLimiter;
+ import cn.exrick.xboot.common.utils.IpInfoUtil;
+-import cn.exrick.xboot.config.exception.XbootException;
++import cn.exrick.xboot.common.exception.XbootException;
+ import cn.hutool.core.util.StrUtil;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: src/main/java/cn/exrick/xboot/config/security/UserDetailsServiceImpl.java
+Patch:
+@@ -1,7 +1,7 @@
+ package cn.exrick.xboot.config.security;
+ 
+ import cn.exrick.xboot.modules.base.entity.User;
+-import cn.exrick.xboot.config.exception.LoginFailLimitException;
++import cn.exrick.xboot.common.exception.LoginFailLimitException;
+ import cn.exrick.xboot.modules.base.service.UserService;
+ import cn.hutool.core.util.StrUtil;
+ import lombok.extern.slf4j.Slf4j;
+
+File: src/main/java/cn/exrick/xboot/config/security/jwt/AuthenticationFailHandler.java
+Patch:
+@@ -1,7 +1,7 @@
+ package cn.exrick.xboot.config.security.jwt;
+ 
+ import cn.exrick.xboot.common.utils.ResponseUtil;
+-import cn.exrick.xboot.config.exception.LoginFailLimitException;
++import cn.exrick.xboot.common.exception.LoginFailLimitException;
+ import cn.hutool.core.util.StrUtil;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: src/main/java/cn/exrick/xboot/config/security/jwt/JWTAuthenticationFilter.java
+Patch:
+@@ -3,7 +3,6 @@
+ import cn.exrick.xboot.common.constant.SecurityConstant;
+ import cn.exrick.xboot.common.utils.ResponseUtil;
+ import cn.exrick.xboot.common.vo.TokenUser;
+-import cn.exrick.xboot.config.exception.XbootException;
+ import cn.hutool.core.util.StrUtil;
+ import com.google.gson.Gson;
+ import com.google.gson.reflect.TypeToken;
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/common/UploadController.java
+Patch:
+@@ -5,7 +5,7 @@
+ import cn.exrick.xboot.common.utils.QiniuUtil;
+ import cn.exrick.xboot.common.utils.ResultUtil;
+ import cn.exrick.xboot.common.vo.Result;
+-import cn.exrick.xboot.config.exception.XbootException;
++import cn.exrick.xboot.common.exception.XbootException;
+ import cn.hutool.core.util.StrUtil;
+ import io.swagger.annotations.Api;
+ import io.swagger.annotations.ApiOperation;
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/manage/DictController.java
+Patch:
+@@ -39,7 +39,7 @@ public class DictController{
+     @ApiOperation(value = "获取全部数据")
+     public Result<List<Dict>> getAll(){
+ 
+-        List<Dict> list = dictService.getAll();
++        List<Dict> list = dictService.findAllOrderBySortOrder();
+         return new ResultUtil<List<Dict>>().setData(list);
+     }
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/manage/DictDataController.java
+Patch:
+@@ -94,7 +94,8 @@ public Result<Object> edit(@ModelAttribute DictData dictData){
+     public Result<Object> delByIds(@PathVariable String[] ids){
+ 
+         for(String id : ids){
+-            Dict dict = dictService.get(id);
++            DictData dictData = dictDataService.get(id);
++            Dict dict = dictService.get(dictData.getDictId());
+             dictDataService.delete(id);
+             // 删除缓存
+             redisTemplate.delete("dictData::"+dict.getType());
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/manage/EsController.java
+Patch:
+@@ -4,7 +4,7 @@
+ import cn.exrick.xboot.common.vo.EsCount;
+ import cn.exrick.xboot.common.vo.EsInfo;
+ import cn.exrick.xboot.common.vo.Result;
+-import cn.exrick.xboot.config.exception.XbootException;
++import cn.exrick.xboot.common.exception.XbootException;
+ import cn.hutool.core.util.StrUtil;
+ import cn.hutool.http.HttpUtil;
+ import com.google.gson.Gson;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/DictData.java
+Patch:
+@@ -3,6 +3,7 @@
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import cn.exrick.xboot.common.constant.CommonConstant;
+ import com.baomidou.mybatisplus.annotations.TableName;
++import io.swagger.annotations.ApiModel;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -18,6 +19,7 @@
+ @Entity
+ @Table(name = "t_dict_data")
+ @TableName("t_dict_data")
++@ApiModel(value = "字典数据")
+ public class DictData extends XbootBaseEntity {
+ 
+     private static final long serialVersionUID = 1L;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/Log.java
+Patch:
+@@ -3,6 +3,7 @@
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import cn.exrick.xboot.common.utils.ObjectUtil;
+ import com.baomidou.mybatisplus.annotations.TableName;
++import io.swagger.annotations.ApiModel;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -17,6 +18,7 @@
+ @Entity
+ @Table(name = "t_log")
+ @TableName("t_log")
++@ApiModel(value = "日志")
+ public class Log extends XbootBaseEntity {
+ 
+     private static final long serialVersionUID = 1L;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/Permission.java
+Patch:
+@@ -4,6 +4,7 @@
+ import cn.exrick.xboot.common.constant.CommonConstant;
+ import com.baomidou.mybatisplus.annotations.TableField;
+ import com.baomidou.mybatisplus.annotations.TableName;
++import io.swagger.annotations.ApiModel;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -22,6 +23,7 @@
+ @Entity
+ @Table(name = "t_permission")
+ @TableName("t_permission")
++@ApiModel(value = "菜单权限")
+ public class Permission extends XbootBaseEntity {
+ 
+     private static final long serialVersionUID = 1L;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/QuartzJob.java
+Patch:
+@@ -3,6 +3,7 @@
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import cn.exrick.xboot.common.constant.CommonConstant;
+ import com.baomidou.mybatisplus.annotations.TableName;
++import io.swagger.annotations.ApiModel;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -16,6 +17,7 @@
+ @Entity
+ @Table(name = "t_quartz_job")
+ @TableName("t_quartz_job")
++@ApiModel(value = "定时任务")
+ public class QuartzJob extends XbootBaseEntity {
+ 
+     private static final long serialVersionUID = 1L;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/Role.java
+Patch:
+@@ -4,6 +4,7 @@
+ import cn.exrick.xboot.common.constant.CommonConstant;
+ import com.baomidou.mybatisplus.annotations.TableField;
+ import com.baomidou.mybatisplus.annotations.TableName;
++import io.swagger.annotations.ApiModel;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -19,6 +20,7 @@
+ @Entity
+ @Table(name = "t_role")
+ @TableName("t_role")
++@ApiModel(value = "角色")
+ public class Role extends XbootBaseEntity {
+ 
+     private static final long serialVersionUID = 1L;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/RoleDepartment.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import com.baomidou.mybatisplus.annotations.TableName;
++import io.swagger.annotations.ApiModel;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -15,6 +16,7 @@
+ @Entity
+ @Table(name = "t_role_department")
+ @TableName("t_role_department")
++@ApiModel(value = "角色部门")
+ public class RoleDepartment extends XbootBaseEntity {
+ 
+     private static final long serialVersionUID = 1L;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/RolePermission.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import com.baomidou.mybatisplus.annotations.TableName;
++import io.swagger.annotations.ApiModel;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -15,6 +16,7 @@
+ @Entity
+ @Table(name = "t_role_permission")
+ @TableName("t_role_permission")
++@ApiModel(value = "角色权限")
+ public class RolePermission extends XbootBaseEntity {
+ 
+     private static final long serialVersionUID = 1L;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/User.java
+Patch:
+@@ -4,6 +4,7 @@
+ import cn.exrick.xboot.common.constant.CommonConstant;
+ import com.baomidou.mybatisplus.annotations.TableField;
+ import com.baomidou.mybatisplus.annotations.TableName;
++import io.swagger.annotations.ApiModel;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -20,6 +21,7 @@
+ @Entity
+ @Table(name = "t_user")
+ @TableName("t_user")
++@ApiModel(value = "用户")
+ public class User extends XbootBaseEntity {
+ 
+     private static final long serialVersionUID = 1L;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/UserRole.java
+Patch:
+@@ -3,6 +3,7 @@
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import com.baomidou.mybatisplus.annotations.TableField;
+ import com.baomidou.mybatisplus.annotations.TableName;
++import io.swagger.annotations.ApiModel;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -17,6 +18,7 @@
+ @Entity
+ @Table(name = "t_user_role")
+ @TableName("t_user_role")
++@ApiModel(value = "用户角色")
+ public class UserRole extends XbootBaseEntity {
+ 
+     private static final long serialVersionUID = 1L;
+
+File: src/main/java/cn/exrick/xboot/config/security/jwt/JWTAuthenticationFilter.java
+Patch:
+@@ -95,7 +95,7 @@ private UsernamePasswordAuthenticationToken getAuthentication(String header, Htt
+             if(tokenRedis && !user.getSaveLogin()){
+                 // 若未保存登录状态重新设置失效时间
+                 redisTemplate.opsForValue().set(SecurityConstant.USER_TOKEN + username, v, tokenExpireTime, TimeUnit.MINUTES);
+-                redisTemplate.opsForValue().set(SecurityConstant.TOKEN_PRE, v, tokenExpireTime, TimeUnit.MINUTES);
++                redisTemplate.opsForValue().set(SecurityConstant.TOKEN_PRE + header, v, tokenExpireTime, TimeUnit.MINUTES);
+             }
+         }else{
+             // JWT
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/manage/UserController.java
+Patch:
+@@ -206,6 +206,7 @@ public Result<Object> edit(@ModelAttribute User u,
+         }
+         //手动删除缓存
+         redisTemplate.delete("userRole::"+u.getId());
++        redisTemplate.delete("userRole::depIds:"+u.getId());
+         return new ResultUtil<Object>().setSuccessMsg("修改成功");
+     }
+ 
+@@ -354,6 +355,7 @@ public Result<Object> delAllByIds(@PathVariable String[] ids){
+             //删除缓存
+             redisTemplate.delete("user::" + u.getUsername());
+             redisTemplate.delete("userRole::" + u.getId());
++            redisTemplate.delete("userRole::depIds:" + u.getId());
+             redisTemplate.delete("permission::userMenuList:" + u.getId());
+             userService.delete(id);
+             //删除关联角色
+
+File: src/main/java/cn/exrick/xboot/modules/base/service/mybatis/IUserRoleService.java
+Patch:
+@@ -28,5 +28,6 @@ public interface IUserRoleService extends IService<UserRole> {
+      * @param userId
+      * @return
+      */
++    @Cacheable(key = "'depIds:'+#userId")
+     List<String> findDepIdsByUserId(String userId);
+ }
+
+File: src/main/java/cn/exrick/xboot/common/utils/QiniuUtil.java
+Patch:
+@@ -1,6 +1,6 @@
+ package cn.exrick.xboot.common.utils;
+ 
+-import cn.exrick.xboot.exception.XbootException;
++import cn.exrick.xboot.config.exception.XbootException;
+ import com.google.gson.Gson;
+ import com.qiniu.common.QiniuException;
+ import com.qiniu.common.Zone;
+
+File: src/main/java/cn/exrick/xboot/config/exception/LoginFailLimitException.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.exception;
++package cn.exrick.xboot.config.exception;
+ 
+ import lombok.Data;
+ import org.springframework.security.authentication.InternalAuthenticationServiceException;
+
+File: src/main/java/cn/exrick/xboot/config/exception/RestCtrlExceptionHandler.java
+Patch:
+@@ -1,8 +1,7 @@
+-package cn.exrick.xboot.exception;
++package cn.exrick.xboot.config.exception;
+ 
+ import cn.exrick.xboot.common.utils.ResultUtil;
+ import cn.exrick.xboot.common.vo.Result;
+-import cn.hutool.core.util.StrUtil;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+
+File: src/main/java/cn/exrick/xboot/config/exception/XbootException.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.exception;
++package cn.exrick.xboot.config.exception;
+ 
+ import lombok.Data;
+ 
+
+File: src/main/java/cn/exrick/xboot/config/mybatisplus/MybatisPlusConfig.java
+Patch:
+@@ -9,7 +9,7 @@
+  * @author Exrickx
+  */
+ @Configuration
+-@MapperScan("cn.exrick.xboot.dao.mapper")
++@MapperScan("cn.exrick.xboot.modules.*.*.mapper")
+ public class MybatisPlusConfig {
+ 
+     /**
+
+File: src/main/java/cn/exrick/xboot/config/security/jwt/AuthenticationFailHandler.java
+Patch:
+@@ -1,7 +1,7 @@
+ package cn.exrick.xboot.config.security.jwt;
+ 
+ import cn.exrick.xboot.common.utils.ResponseUtil;
+-import cn.exrick.xboot.exception.LoginFailLimitException;
++import cn.exrick.xboot.config.exception.LoginFailLimitException;
+ import cn.hutool.core.util.StrUtil;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: src/main/java/cn/exrick/xboot/config/security/jwt/JWTAuthenticationFilter.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import cn.exrick.xboot.common.constant.SecurityConstant;
+ import cn.exrick.xboot.common.utils.ResponseUtil;
+-import cn.exrick.xboot.exception.XbootException;
++import cn.exrick.xboot.config.exception.XbootException;
+ import cn.hutool.core.util.StrUtil;
+ import com.google.gson.Gson;
+ import com.google.gson.reflect.TypeToken;
+
+File: src/main/java/cn/exrick/xboot/config/security/permission/MySecurityMetadataSource.java
+Patch:
+@@ -1,8 +1,8 @@
+ package cn.exrick.xboot.config.security.permission;
+ 
+ import cn.exrick.xboot.common.constant.CommonConstant;
+-import cn.exrick.xboot.entity.Permission;
+-import cn.exrick.xboot.service.PermissionService;
++import cn.exrick.xboot.modules.base.entity.Permission;
++import cn.exrick.xboot.modules.base.service.PermissionService;
+ import cn.hutool.core.util.StrUtil;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/common/CaptchaController.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.controller.common;
++package cn.exrick.xboot.modules.base.controller.common;
+ 
+ import cn.exrick.xboot.common.utils.CreateVerifyCode;
+ import cn.exrick.xboot.common.utils.ResultUtil;
+@@ -8,7 +8,6 @@
+ import io.swagger.annotations.ApiOperation;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.data.redis.core.StringRedisTemplate;
+-import org.springframework.stereotype.Controller;
+ import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.web.bind.annotation.*;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/common/IpInfoController.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.controller.common;
++package cn.exrick.xboot.modules.base.controller.common;
+ 
+ import cn.exrick.xboot.common.utils.IpInfoUtil;
+ import cn.exrick.xboot.common.utils.ResultUtil;
+@@ -8,7 +8,6 @@
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.transaction.annotation.Transactional;
+-import org.springframework.web.bind.annotation.CrossOrigin;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RequestMethod;
+ import org.springframework.web.bind.annotation.RestController;
+
+File: src/main/java/cn/exrick/xboot/modules/base/controller/common/SecurityController.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.controller.common;
++package cn.exrick.xboot.modules.base.controller.common;
+ 
+ import cn.exrick.xboot.common.utils.ResultUtil;
+ import cn.exrick.xboot.common.vo.Result;
+
+File: src/main/java/cn/exrick/xboot/modules/base/dao/QuartzJobDao.java
+Patch:
+@@ -1,7 +1,7 @@
+-package cn.exrick.xboot.dao;
++package cn.exrick.xboot.modules.base.dao;
+ 
+ import cn.exrick.xboot.base.XbootBaseDao;
+-import cn.exrick.xboot.entity.QuartzJob;
++import cn.exrick.xboot.modules.base.entity.QuartzJob;
+ 
+ import java.util.List;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/dao/RoleDao.java
+Patch:
+@@ -1,7 +1,7 @@
+-package cn.exrick.xboot.dao;
++package cn.exrick.xboot.modules.base.dao;
+ 
+ import cn.exrick.xboot.base.XbootBaseDao;
+-import cn.exrick.xboot.entity.Role;
++import cn.exrick.xboot.modules.base.entity.Role;
+ 
+ import java.util.List;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/dao/RolePermissionDao.java
+Patch:
+@@ -1,7 +1,7 @@
+-package cn.exrick.xboot.dao;
++package cn.exrick.xboot.modules.base.dao;
+ 
+ import cn.exrick.xboot.base.XbootBaseDao;
+-import cn.exrick.xboot.entity.RolePermission;
++import cn.exrick.xboot.modules.base.entity.RolePermission;
+ 
+ import java.util.List;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/dao/UserDao.java
+Patch:
+@@ -1,8 +1,7 @@
+-package cn.exrick.xboot.dao;
++package cn.exrick.xboot.modules.base.dao;
+ 
+ import cn.exrick.xboot.base.XbootBaseDao;
+-import cn.exrick.xboot.entity.User;
+-import io.swagger.models.auth.In;
++import cn.exrick.xboot.modules.base.entity.User;
+ 
+ import java.util.List;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/dao/mapper/PermissionMapper.java
+Patch:
+@@ -1,6 +1,6 @@
+-package cn.exrick.xboot.dao.mapper;
++package cn.exrick.xboot.modules.base.dao.mapper;
+ 
+-import cn.exrick.xboot.entity.Permission;
++import cn.exrick.xboot.modules.base.entity.Permission;
+ import com.baomidou.mybatisplus.mapper.BaseMapper;
+ import org.apache.ibatis.annotations.Param;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/dao/mapper/UserRoleMapper.java
+Patch:
+@@ -1,7 +1,7 @@
+-package cn.exrick.xboot.dao.mapper;
++package cn.exrick.xboot.modules.base.dao.mapper;
+ 
+-import cn.exrick.xboot.entity.Role;
+-import cn.exrick.xboot.entity.UserRole;
++import cn.exrick.xboot.modules.base.entity.Role;
++import cn.exrick.xboot.modules.base.entity.UserRole;
+ import com.baomidou.mybatisplus.mapper.BaseMapper;
+ import org.apache.ibatis.annotations.Param;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/Department.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.entity;
++package cn.exrick.xboot.modules.base.entity;
+ 
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import cn.exrick.xboot.common.constant.CommonConstant;
+@@ -12,8 +12,6 @@
+ import javax.persistence.Table;
+ import javax.persistence.Transient;
+ import java.math.BigDecimal;
+-import java.util.ArrayList;
+-import java.util.List;
+ 
+ /**
+  * @author Exrick
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/Permission.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.entity;
++package cn.exrick.xboot.modules.base.entity;
+ 
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import cn.exrick.xboot.common.constant.CommonConstant;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/Role.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.entity;
++package cn.exrick.xboot.modules.base.entity;
+ 
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import com.baomidou.mybatisplus.annotations.TableField;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/RolePermission.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.entity;
++package cn.exrick.xboot.modules.base.entity;
+ 
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import com.baomidou.mybatisplus.annotations.TableName;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/User.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.entity;
++package cn.exrick.xboot.modules.base.entity;
+ 
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import cn.exrick.xboot.common.constant.CommonConstant;
+
+File: src/main/java/cn/exrick/xboot/modules/base/entity/UserRole.java
+Patch:
+@@ -1,4 +1,4 @@
+-package cn.exrick.xboot.entity;
++package cn.exrick.xboot.modules.base.entity;
+ 
+ import cn.exrick.xboot.base.XbootBaseEntity;
+ import com.baomidou.mybatisplus.annotations.TableField;
+
+File: src/main/java/cn/exrick/xboot/modules/base/service/RoleService.java
+Patch:
+@@ -1,8 +1,8 @@
+-package cn.exrick.xboot.service;
++package cn.exrick.xboot.modules.base.service;
+ 
+ 
+ import cn.exrick.xboot.base.XbootBaseService;
+-import cn.exrick.xboot.entity.Role;
++import cn.exrick.xboot.modules.base.entity.Role;
+ 
+ import java.util.List;
+ 
+
+File: src/main/java/cn/exrick/xboot/modules/base/service/UserService.java
+Patch:
+@@ -1,9 +1,9 @@
+-package cn.exrick.xboot.service;
++package cn.exrick.xboot.modules.base.service;
+ 
+ 
+ import cn.exrick.xboot.base.XbootBaseService;
+ import cn.exrick.xboot.common.vo.SearchVo;
+-import cn.exrick.xboot.entity.User;
++import cn.exrick.xboot.modules.base.entity.User;
+ import org.springframework.cache.annotation.CacheConfig;
+ import org.springframework.cache.annotation.Cacheable;
+ import org.springframework.data.domain.Page;
+
+File: src/main/java/cn/exrick/xboot/modules/base/service/mybatis/IPermissionService.java
+Patch:
+@@ -1,6 +1,6 @@
+-package cn.exrick.xboot.service.mybatis;
++package cn.exrick.xboot.modules.base.service.mybatis;
+ 
+-import cn.exrick.xboot.entity.Permission;
++import cn.exrick.xboot.modules.base.entity.Permission;
+ import com.baomidou.mybatisplus.service.IService;
+ import org.apache.ibatis.annotations.Param;
+ import org.springframework.cache.annotation.CacheConfig;
+
+File: src/main/java/cn/exrick/xboot/modules/base/service/mybatis/IUserRoleService.java
+Patch:
+@@ -1,7 +1,7 @@
+-package cn.exrick.xboot.service.mybatis;
++package cn.exrick.xboot.modules.base.service.mybatis;
+ 
+-import cn.exrick.xboot.entity.Role;
+-import cn.exrick.xboot.entity.UserRole;
++import cn.exrick.xboot.modules.base.entity.Role;
++import cn.exrick.xboot.modules.base.entity.UserRole;
+ import com.baomidou.mybatisplus.service.IService;
+ import org.apache.ibatis.annotations.Param;
+ import org.springframework.cache.annotation.CacheConfig;
+
+File: src/main/java/cn/exrick/xboot/controller/manage/UserController.java
+Patch:
+@@ -348,6 +348,9 @@ public Result<Object> enable(@ApiParam("用户唯一id标识") @PathVariable Str
+     public Result<Object> delAllByIds(@PathVariable String[] ids){
+ 
+         for(String id:ids){
++            User u = userService.get(id);
++            //删除缓存
++            redisTemplate.delete("user::"+u.getUsername());
+             userService.delete(id);
+             //删除关联角色
+             userRoleService.deleteByUserId(id);
+
+File: src/main/java/cn/exrick/xboot/base/XbootBaseEntity.java
+Patch:
+@@ -3,6 +3,7 @@
+ import cn.exrick.xboot.common.constant.CommonConstant;
+ import cn.exrick.xboot.common.utils.SnowFlakeUtil;
+ import com.fasterxml.jackson.annotation.JsonFormat;
++import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+@@ -21,6 +22,7 @@
+ @Data
+ @MappedSuperclass
+ @EntityListeners(AuditingEntityListener.class)
++@JsonIgnoreProperties(value={"hibernateLazyInitializer","handler","fieldHandler"})
+ public abstract class XbootBaseEntity implements Serializable{
+ 
+     private static final long serialVersionUID = 1L;
+
+File: src/main/java/cn/exrick/xboot/common/constant/CommonConstant.java
+Patch:
+@@ -23,7 +23,7 @@ public interface CommonConstant {
+     Integer USER_TYPE_NORMAL = 0;
+ 
+     /**
+-     * 普通用户
++     * 管理员
+      */
+     Integer USER_TYPE_ADMIN = 1;
+ 
+@@ -50,7 +50,7 @@ public interface CommonConstant {
+     /**
+      * 禁用状态
+      */
+-    Integer STATUS_DISABLE = 1;
++    Integer STATUS_DISABLE = -1;
+ 
+     /**
+      * 删除标志
+
+File: src/main/java/cn/exrick/xboot/common/limit/RedisRaterLimiter.java
+Patch:
+@@ -67,7 +67,7 @@ public String acquireTokenFromBucket(String point, int limit, long timeout) {
+                 transaction.exec();
+             }
+         }catch (Exception e){
+-            log.error("限流出错"+e.toString());
++            log.error("限流出错\n"+e.toString());
+         }finally {
+             if(jedis!=null){
+                 jedis.close();
+
+File: src/main/java/cn/exrick/xboot/common/lock/RedisDistributedLockTemplate.java
+Patch:
+@@ -1,6 +1,5 @@
+ package cn.exrick.xboot.common.lock;
+ 
+-import io.swagger.models.auth.In;
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Component;
+
+File: src/main/java/cn/exrick/xboot/common/utils/IpInfoUtil.java
+Patch:
+@@ -21,7 +21,7 @@ public class IpInfoUtil {
+     /**
+      * 你的APPKEY mob官网注册申请即可
+      */
+-    private final static String APPKEY = "你的AppKey";
++    private final static String APPKEY = "你的APPKEY";
+ 
+     /**
+      * Mob IP查询接口
+
+File: src/main/java/cn/exrick/xboot/controller/manage/RoleController.java
+Patch:
+@@ -139,6 +139,8 @@ public Result<Object> delByIds(@RequestParam String[] ids){
+         }
+         for(String id:ids){
+             roleService.delete(id);
++            //删除关联权限
++            rolePermissionService.deleteByRoleId(id);
+         }
+         return new ResultUtil<Object>().setSuccessMsg("批量通过id删除数据成功");
+     }
+
+File: src/main/java/cn/exrick/xboot/controller/manage/UserController.java
+Patch:
+@@ -311,6 +311,8 @@ public Result<Object> delAllByIds(@RequestParam String[] ids){
+ 
+         for(String id:ids){
+             userService.delete(id);
++            //删除关联角色
++            userRoleService.deleteByUserId(id);
+         }
+         return new ResultUtil<Object>().setSuccessMsg("批量通过id删除数据成功");
+     }
+
+File: src/main/java/cn/exrick/xboot/entity/Permission.java
+Patch:
+@@ -61,7 +61,7 @@ public class Permission extends XbootBaseEntity {
+     @Column(precision = 10, scale = 2)
+     private BigDecimal sortOrder;
+ 
+-    @ApiModelProperty(value = "是否启用 0启用 1禁用")
++    @ApiModelProperty(value = "是否启用 0启用 -1禁用")
+     private Integer status = CommonConstant.STATUS_NORMAL;
+ 
+     @Transient
+@@ -71,8 +71,8 @@ public class Permission extends XbootBaseEntity {
+ 
+     @Transient
+     @TableField(exist=false)
+-    @ApiModelProperty(value = "页面拥有的按钮类型")
+-    private List<String> buttonTypes;
++    @ApiModelProperty(value = "页面拥有的权限类型")
++    private List<String> permTypes;
+ 
+     @Transient
+     @TableField(exist=false)
+
+File: src/main/java/cn/exrick/xboot/service/LogService.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ 
+ import cn.exrick.xboot.base.XbootBaseService;
++import cn.exrick.xboot.common.vo.SearchVo;
+ import cn.exrick.xboot.entity.Log;
+ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.Pageable;
+@@ -17,10 +18,11 @@ public interface LogService extends XbootBaseService<Log,String> {
+     /**
+      * 日志搜索
+      * @param key
++     * @param searchVo
+      * @param pageable
+      * @return
+      */
+-    Page<Log> searchLog(String key, Pageable pageable);
++    Page<Log> searchLog(String key, SearchVo searchVo, Pageable pageable);
+ 
+     /**
+      * 删除所有
+
+File: src/main/java/cn/exrick/xboot/service/elasticsearch/EsLogService.java
+Patch:
+@@ -1,5 +1,6 @@
+ package cn.exrick.xboot.service.elasticsearch;
+ 
++import cn.exrick.xboot.common.vo.SearchVo;
+ import cn.exrick.xboot.entity.elasticsearch.EsLog;
+ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.Pageable;
+@@ -39,8 +40,9 @@ public interface EsLogService {
+     /**
+      * 分页搜索获取日志
+      * @param key
++     * @param searchVo
+      * @param pageable
+      * @return
+      */
+-    Page<EsLog> searchLog(String key, Pageable pageable);
++    Page<EsLog> searchLog(String key, SearchVo searchVo, Pageable pageable);
+ }
+
+File: src/main/java/cn/exrick/xboot/common/lock/RedisLockInternals.java
+Patch:
+@@ -95,7 +95,9 @@ void unlockRedisLock(String key,String value) {
+             args.add(value);
+             Object r=jedis.eval(luaScript, keys, args);
+         } finally {
+-            if(jedis!=null) jedis.close();
++            if(jedis!=null){
++                jedis.close();
++            }
+         }
+     }
+ 
+
+File: src/main/java/cn/exrick/xboot/common/utils/QiniuUtil.java
+Patch:
+@@ -34,9 +34,9 @@ public class QiniuUtil {
+ 
+     private static String secretKey = "你的secretKey";
+ 
+-    private static String bucket = "你的bucket";
++    private static String bucket = "你的bucket名称";
+ 
+-    private static String origin = "你的访问域名前部分，例如 ：http://p77xsahe9.bkt.clouddn.com/";
++    private static String origin = "你的域名前部分链接，例如http://p77xsahe9.bkt.clouddn.com/";
+ 
+     private static Auth auth = Auth.create(accessKey, secretKey);
+ 
+
+File: src/main/java/cn/exrick/xboot/config/security/UserDetailsServiceImpl.java
+Patch:
+@@ -39,9 +39,7 @@ public UserDetails loadUserByUsername(String username) throws UsernameNotFoundEx
+             //超过限制次数
+             throw new LoginFailLimitException("登录错误次数超过限制，请"+loginAfterTime+"分钟后再试");
+         }
+-        log.info(username+"==============");
+         User user = userService.findByUsername(username);
+-        log.info(user.toString());
+         return new SecurityUserDetails(user);
+     }
+ }
+
+File: src/main/java/cn/exrick/xboot/config/security/SecurityUserDetails.java
+Patch:
+@@ -41,6 +41,7 @@ public Collection<? extends GrantedAuthority> getAuthorities() {
+                 authorityList.add(new SimpleGrantedAuthority(role.getName()));
+             }
+         }
++
+         return authorityList;
+     }
+ 
+
+File: src/main/java/cn/exrick/xboot/serviceimpl/RoleServiceImpl.java
+Patch:
+@@ -5,6 +5,7 @@
+ import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ 
+ import java.util.List;
+ 
+@@ -14,6 +15,7 @@
+  */
+ @Slf4j
+ @Service
++@Transactional
+ public class RoleServiceImpl implements RoleService {
+ 
+     @Autowired
+
+File: src/main/java/cn/exrick/xboot/serviceimpl/UserServiceImpl.java
+Patch:
+@@ -15,6 +15,7 @@
+ import org.springframework.data.jpa.domain.Specification;
+ import org.springframework.lang.Nullable;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
+ 
+ import javax.persistence.criteria.*;
+ import java.util.ArrayList;
+@@ -26,6 +27,7 @@
+  */
+ @Slf4j
+ @Service
++@Transactional
+ public class UserServiceImpl implements UserService {
+ 
+     @Autowired
+
+File: src/main/java/cn/exrick/xboot/common/utils/IpInfoUtil.java
+Patch:
+@@ -91,7 +91,7 @@ public static String getIpCity(String ip){
+                 IpWeatherResult weather=new Gson().fromJson(json,IpWeatherResult.class);
+                 result=weather.getResult().get(0).getCity()+" "+weather.getResult().get(0).getDistrct();
+             }catch (Exception e){
+-                e.printStackTrace();
++                log.info("获取IP信息失败");
+             }
+             return result;
+         }
+
+File: src/main/java/cn/exrick/xboot/common/utils/PageUtil.java
+Patch:
+@@ -34,9 +34,9 @@ public static Pageable initPage(PageVo page){
+                 d = Sort.Direction.valueOf(order.toUpperCase());
+             }
+             Sort s = new Sort(d,sort);
+-            pageable = new PageRequest(pageNumber-1, pageSize,s);
++            pageable = PageRequest.of(pageNumber-1, pageSize,s);
+         }else {
+-            pageable = new PageRequest(pageNumber-1, pageSize);
++            pageable = PageRequest.of(pageNumber-1, pageSize);
+         }
+         return pageable;
+     }
+
+File: src/main/java/cn/exrick/xboot/config/mybatisplus/MybatisPlusConfig.java
+Patch:
+@@ -9,7 +9,7 @@
+  * @author Exrickx
+  */
+ @Configuration
+-@MapperScan("cn.exrick.xboot.*.mapper*")
++@MapperScan("cn.exrick.xboot.dao.mapper")
+ public class MybatisPlusConfig {
+ 
+     /**
+
+File: src/main/java/cn/exrick/xboot/config/security/JWTAuthenticationFilter.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import cn.exrick.xboot.common.constant.SecurityConstant;
+ import cn.exrick.xboot.common.utils.ResponseUtil;
++import cn.exrick.xboot.exception.XbootException;
+ import cn.hutool.core.util.StrUtil;
+ import io.jsonwebtoken.*;
+ import lombok.extern.slf4j.Slf4j;
+@@ -82,9 +83,9 @@ private UsernamePasswordAuthenticationToken getAuthentication(HttpServletRequest
+                     return new UsernamePasswordAuthenticationToken(principal, null, authorities);
+                 }
+             } catch (ExpiredJwtException e) {
+-                ResponseUtil.out(response, ResponseUtil.resultMap(false,500,"JWT已过期"));
++                throw new XbootException("登录已失效，请重新登录");
+             } catch (Exception e){
+-                ResponseUtil.out(response, ResponseUtil.resultMap(false,500,"解析JWT错误"));
++                ResponseUtil.out(response, ResponseUtil.resultMap(false,500,"解析token错误"));
+             }
+         }
+         return null;
+
+File: src/main/java/cn/exrick/xboot/controller/common/CaptchaController.java
+Patch:
+@@ -20,7 +20,7 @@
+  * @author Exrickx
+  */
+ @Api(description = "验证码接口")
+-@RequestMapping("/captcha")
++@RequestMapping("/common/captcha")
+ @RestController
+ public class CaptchaController {
+ 
+
+File: src/main/java/cn/exrick/xboot/controller/common/IpLocateController.java
+Patch:
+@@ -19,8 +19,7 @@
+ @Slf4j
+ @RestController
+ @Api(description = "IP接口")
+-@RequestMapping("/ip")
+-@CrossOrigin
++@RequestMapping("/common/ip")
+ public class IpLocateController {
+ 
+     @RequestMapping(value = "/info",method = RequestMethod.GET)
+
+File: src/main/java/cn/exrick/xboot/controller/common/SecurityController.java
+Patch:
+@@ -15,6 +15,7 @@
+ @Slf4j
+ @RestController
+ @Api(description = "Security相关接口")
++@RequestMapping("/common")
+ public class SecurityController {
+ 
+     @RequestMapping(value = "/needLogin",method = RequestMethod.GET)
+
+File: src/main/java/cn/exrick/xboot/controller/manage/EsController.java
+Patch:
+@@ -27,7 +27,7 @@
+ @Api(description = "Elasticsearch信息接口")
+ @RequestMapping("/es")
+ @PreAuthorize("hasRole('ADMIN')")
+-public class ElasticsearchController {
++public class EsController {
+ 
+     @Value("${xboot.elasticsearch.nodeClient}")
+     private String ES_NODE_CLIENT;
+
+File: src/main/java/cn/exrick/xboot/entity/Role.java
+Patch:
+@@ -1,6 +1,7 @@
+ package cn.exrick.xboot.entity;
+ 
+ import cn.exrick.xboot.base.XbootBaseEntity;
++import com.baomidou.mybatisplus.annotations.TableName;
+ import io.swagger.annotations.ApiModelProperty;
+ import lombok.Data;
+ 
+@@ -13,6 +14,7 @@
+ @Data
+ @Entity
+ @Table(name = "t_role")
++@TableName("t_role")
+ public class Role extends XbootBaseEntity {
+ 
+     private static final long serialVersionUID = 1L;
+

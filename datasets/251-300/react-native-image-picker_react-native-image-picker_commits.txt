@@ -1,0 +1,608 @@
+File: android/src/main/java/com/imagepicker/VideoMetadata.java
+Patch:
+@@ -41,9 +41,9 @@ public VideoMetadata(Uri uri, Context context) {
+ 
+             if (datetime != null) {
+                 // METADATA_KEY_DATE gives us the following format: "20211214T102646.000Z"
+-                // This format is very hard to parse, so we convert it to "20211214 102646" ("yyyyMMdd HHmmss")
+-                String datetimeToFormat = datetime.substring(0, datetime.indexOf(".")).replace("T", " ");
+-                this.datetime = getDateTimeInUTC(datetimeToFormat, "yyyyMMdd HHmmss");
++                // This date is always returned in UTC, so we strip the ending that `SimpleDateFormat` can't parse, and append `+GMT`
++                String datetimeToFormat = datetime.substring(0, datetime.indexOf(".")) + "+GMT";
++                this.datetime = getDateTimeInUTC(datetimeToFormat, "yyyyMMdd'T'HHmmss+zzz");
+             }
+ 
+             String width = metadataRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+
+File: android/src/main/java/com/imagepicker/ImagePickerPackage.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.imagepicker;
+ 
+ import androidx.annotation.Nullable;
++
+ import com.facebook.react.bridge.NativeModule;
+ import com.facebook.react.bridge.ReactApplicationContext;
+ import com.facebook.react.module.model.ReactModuleInfo;
+@@ -37,7 +38,7 @@ public ReactModuleInfoProvider getReactModuleInfoProvider() {
+                             true, // hasConstants
+                             false, // isCxxModule
+                             isTurboModule // isTurboModule
+-            ));
++                    ));
+             return moduleInfos;
+         };
+     }
+
+File: android/src/main/java/com/imagepicker/Options.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.imagepicker;
+ 
+ import com.facebook.react.bridge.ReadableMap;
++
+ import android.text.TextUtils;
+ 
+ public class Options {
+@@ -24,7 +25,7 @@ public class Options {
+         includeExtra = options.getBoolean("includeExtra");
+ 
+         String videoQualityString = options.getString("videoQuality");
+-        if(!TextUtils.isEmpty(videoQualityString) && !videoQualityString.toLowerCase().equals("high")) {
++        if (!TextUtils.isEmpty(videoQualityString) && !videoQualityString.toLowerCase().equals("high")) {
+             videoQuality = 0;
+         }
+ 
+
+File: android/src/main/java/com/imagepicker/ImageMetadata.java
+Patch:
+@@ -8,8 +8,7 @@
+ 
+ public class ImageMetadata extends Metadata {
+   public ImageMetadata(Uri uri, Context context) {
+-    try {
+-      InputStream inputStream = context.getContentResolver().openInputStream(uri);
++    try(InputStream inputStream = context.getContentResolver().openInputStream(uri)) {
+       ExifInterface exif = new ExifInterface(inputStream);
+       String datetimeTag = exif.getAttribute(ExifInterface.TAG_DATETIME);
+ 
+@@ -23,7 +22,7 @@ public ImageMetadata(Uri uri, Context context) {
+ 
+   @Override
+   public String getDateTime() { return datetime; }
+-  
++
+   // At the moment we are not using the ImageMetadata class to get width/height
+   // TODO: to use this class for extracting image width and height in the future
+   @Override
+
+File: android/src/main/java/com/imagepicker/Utils.java
+Patch:
+@@ -206,6 +206,9 @@ public static Uri resizeImage(Uri uri, Context context, Options options) {
+             OutputStream os = context.getContentResolver().openOutputStream(Uri.fromFile(file));
+             b.compress(getBitmapCompressFormat(mimeType), options.quality, os);
+             setOrientation(file, originalOrientation, context);
++
++            deleteFile(uri);
++
+             return Uri.fromFile(file);
+ 
+         } catch (Exception e) {
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -152,7 +152,7 @@ public void launchImageLibrary(final ReadableMap options, final Callback callbac
+         }
+ 
+         try {
+-            currentActivity.startActivityForResult(Intent.createChooser(libraryIntent, null), requestCode);
++            currentActivity.startActivityForResult(libraryIntent, requestCode);
+         } catch (ActivityNotFoundException e) {
+             callback.invoke(getErrorMap(errOthers, e.getMessage()));
+             this.callback = null;
+
+File: android/src/main/java/com/imagepicker/Metadata.java
+Patch:
+@@ -7,7 +7,6 @@
+ import java.text.SimpleDateFormat;
+ import java.util.Date;
+ import java.util.Locale;
+-import java.util.TimeZone;
+ 
+ abstract class Metadata {
+   protected String datetime;
+@@ -30,7 +29,6 @@ String getDateTimeInUTC(String value, String format) {
+     try {
+       Date datetime = new SimpleDateFormat(format, Locale.US).parse(value);
+       SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ", Locale.US);
+-      formatter.setTimeZone(TimeZone.getTimeZone("UTC"));
+ 
+       if (datetime != null) {
+         return formatter.format(datetime);
+
+File: android/src/main/java/com/imagepicker/Options.java
+Patch:
+@@ -6,6 +6,7 @@
+ public class Options {
+     int selectionLimit;
+     Boolean includeBase64;
++    Boolean includeExtra;
+     int videoQuality = 1;
+     int quality;
+     int maxWidth;
+@@ -20,6 +21,7 @@ public class Options {
+         mediaType = options.getString("mediaType");
+         selectionLimit = options.getInt("selectionLimit");
+         includeBase64 = options.getBoolean("includeBase64");
++        includeExtra = options.getBoolean("includeExtra");
+ 
+         String videoQualityString = options.getString("videoQuality");
+         if(!TextUtils.isEmpty(videoQualityString) && !videoQualityString.toLowerCase().equals("high")) {
+
+File: android/src/main/java/com/imagepicker/Utils.java
+Patch:
+@@ -297,6 +297,7 @@ static String getFileTypeFromMime(String mimeType) {
+         switch (mimeType) {
+             case "image/jpeg": return "jpg";
+             case "image/png": return "png";
++            case "image/gif": return "gif";
+         }
+         return "jpg";
+     }
+
+File: android/src/main/java/com/imagepicker/Options.java
+Patch:
+@@ -4,7 +4,7 @@
+ import android.text.TextUtils;
+ 
+ public class Options {
+-    Boolean allowMultiple;
++    int selectionLimit;
+     Boolean includeBase64;
+     int videoQuality = 1;
+     int quality;
+@@ -18,7 +18,7 @@ public class Options {
+ 
+     Options(ReadableMap options) {
+         mediaType = options.getString("mediaType");
+-        allowMultiple = options.getBoolean("allowMultiple");
++        selectionLimit = options.getInt("selectionLimit");
+         includeBase64 = options.getBoolean("includeBase64");
+ 
+         String videoQualityString = options.getString("videoQuality");
+
+File: android/src/main/java/com/imagepicker/Utils.java
+Patch:
+@@ -80,9 +80,11 @@ public static void saveToPublicDirectory(Uri uri, Context context, String mediaT
+ 
+         if (mediaType.equals("video")) {
+             fileDetails.put(MediaStore.Video.Media.DISPLAY_NAME, UUID.randomUUID().toString());
++            fileDetails.put(MediaStore.Video.Media.MIME_TYPE, resolver.getType(uri));
+             mediaStoreUri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, fileDetails);
+         } else {
+             fileDetails.put(MediaStore.Images.Media.DISPLAY_NAME, UUID.randomUUID().toString());
++            fileDetails.put(MediaStore.Images.Media.MIME_TYPE, resolver.getType(uri));
+             mediaStoreUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, fileDetails);
+         }
+ 
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -91,6 +91,7 @@ public void launchCamera(final ReadableMap options, final Callback callback) {
+         }
+ 
+         cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, cameraCaptureURI);
++        cameraIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+ 
+         if (cameraIntent.resolveActivity(reactContext.getPackageManager()) == null) {
+             callback.invoke(getErrorMap(errOthers, "Activity error"));
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -168,9 +168,9 @@ public void onActivityResult(Activity activity, int requestCode, int resultCode,
+ 
+             case REQUEST_LAUNCH_VIDEO_CAPTURE:
+                 if (options.saveToPhotos) {
+-                    saveToPublicDirectory(data.getData(), reactContext, "video");
++                    saveToPublicDirectory(cameraCaptureURI, reactContext, "video");
+                 }
+-                onVideoObtained(data.getData());
++                onVideoObtained(cameraCaptureURI);
+                 break;
+         }
+     }
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -125,6 +125,7 @@ public void launchImageLibrary(final ReadableMap options, final Callback callbac
+     void onImageObtained(Uri uri) {
+         if (uri == null) {
+             callback.invoke(getErrorMap(errOthers, "Uri error"));
++            return;
+         }
+         Uri newUri = resizeImage(uri, reactContext, options);
+         callback.invoke(getResponseMap(newUri, options, reactContext));
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -71,11 +71,11 @@ public void launchCamera(final ReadableMap options, final Callback callback) {
+             requestCode = REQUEST_LAUNCH_VIDEO_CAPTURE;
+             cameraIntent = new Intent(MediaStore.ACTION_VIDEO_CAPTURE);
+             cameraIntent.putExtra(MediaStore.EXTRA_VIDEO_QUALITY, this.options.videoQuality);
+-            cameraCaptureURI = createUri(reactContext, "mp4");
++            cameraCaptureURI = createUri(createFile(reactContext, "mp4"), reactContext);
+         } else {
+             requestCode = REQUEST_LAUNCH_IMAGE_CAPTURE;
+             cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+-            cameraCaptureURI = createUri(reactContext, "jpg");
++            cameraCaptureURI = createUri(createFile(reactContext, "jpg"), reactContext);
+         }
+         cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, cameraCaptureURI);
+ 
+
+File: android/src/main/java/com/imagepicker/utils/MediaUtils.java
+Patch:
+@@ -122,7 +122,7 @@ else if (forceLocal)
+ 
+         if (photo == null)
+         {
+-            return null;
++            return imageConfig;
+         }
+ 
+         ImageConfig result = imageConfig;
+
+File: android/src/main/java/com/imagepicker/ImagePickerPackage.java
+Patch:
+@@ -13,12 +13,11 @@
+ import java.util.List;
+ 
+ public class ImagePickerPackage implements ReactPackage {
+-  public static final int DEFAULT_EXPLAINING_PERMISSION_DIALIOG_THEME = R.style.DefaultExplainingPermissionsTheme;
+   private @StyleRes final int dialogThemeId;
+ 
+   public ImagePickerPackage()
+   {
+-    this.dialogThemeId = DEFAULT_EXPLAINING_PERMISSION_DIALIOG_THEME;
++    this.dialogThemeId = ImagePickerModule.DEFAULT_EXPLAINING_PERMISSION_DIALIOG_THEME;
+   }
+ 
+   public ImagePickerPackage(@StyleRes final int dialogThemeId)
+
+File: android/src/main/java/com/imagepicker/FileProvider.java
+Patch:
+@@ -1,4 +1,4 @@
+ package com.imagepicker;
+ 
+-public class FileProvider extends android.support.v4.content.FileProvider {
++public class FileProvider extends androidx.core.content.FileProvider {
+ }
+
+File: android/src/main/java/com/imagepicker/ImagePickerPackage.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.imagepicker;
+ 
+-import android.support.annotation.StyleRes;
++import androidx.annotation.StyleRes;
+ 
+ import com.facebook.react.ReactPackage;
+ import com.facebook.react.bridge.JavaScriptModule;
+
+File: android/src/main/java/com/imagepicker/ResponseHelper.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.imagepicker;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ 
+ import com.facebook.react.bridge.Arguments;
+ import com.facebook.react.bridge.Callback;
+
+File: android/src/main/java/com/imagepicker/media/ImageConfig.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.imagepicker.media;
+ 
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.webkit.MimeTypeMap;
+ 
+ import com.facebook.react.bridge.ReadableMap;
+
+File: android/src/main/java/com/imagepicker/permissions/OnImagePickerPermissionsCallback.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.imagepicker.permissions;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import com.facebook.react.modules.core.PermissionListener;
+ 
+ /**
+
+File: android/src/main/java/com/imagepicker/permissions/PermissionsHelper.java
+Patch:
+@@ -1,7 +1,5 @@
+ package com.imagepicker.permissions;
+ 
+-import android.support.annotation.NonNull;
+-
+ /**
+  * Created by rusfearuth on 03.03.17.
+  */
+
+File: android/src/main/java/com/imagepicker/utils/ButtonsHelper.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.imagepicker.utils;
+ 
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ 
+ import com.facebook.react.bridge.ReadableArray;
+ import com.facebook.react.bridge.ReadableMap;
+
+File: android/src/main/java/com/imagepicker/utils/MediaUtils.java
+Patch:
+@@ -8,8 +8,8 @@
+ import android.media.MediaScannerConnection;
+ import android.net.Uri;
+ import android.os.Environment;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.util.Log;
+ 
+ import com.facebook.react.bridge.ReadableMap;
+@@ -20,7 +20,6 @@
+ import java.io.ByteArrayOutputStream;
+ import java.io.File;
+ import java.io.FileInputStream;
+-import java.io.FileNotFoundException;
+ import java.io.FileOutputStream;
+ import java.io.IOException;
+ import java.nio.channels.FileChannel;
+
+File: android/src/main/java/com/imagepicker/utils/ReadableMapUtils.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.imagepicker.utils;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.text.TextUtils;
+ 
+ import com.facebook.react.bridge.ReadableMap;
+
+File: android/src/main/java/com/imagepicker/media/ImageConfig.java
+Patch:
+@@ -107,12 +107,12 @@ public ImageConfig(@Nullable final File original,
+         int maxWidth = 0;
+         if (options.hasKey("maxWidth"))
+         {
+-            maxWidth = options.getInt("maxWidth");
++            maxWidth = (int) options.getDouble("maxWidth");
+         }
+         int maxHeight = 0;
+         if (options.hasKey("maxHeight"))
+         {
+-            maxHeight = options.getInt("maxHeight");
++            maxHeight = (int) options.getDouble("maxHeight");
+         }
+         int quality = 100;
+         if (options.hasKey("quality"))
+@@ -122,7 +122,7 @@ public ImageConfig(@Nullable final File original,
+         int rotation = 0;
+         if (options.hasKey("rotation"))
+         {
+-            rotation = options.getInt("rotation");
++            rotation = (int) options.getDouble("rotation");
+         }
+         boolean saveToCameraRoll = false;
+         if (options.hasKey("storageOptions"))
+
+File: android/src/main/java/com/imagepicker/ImagePickerPackage.java
+Patch:
+@@ -31,7 +31,7 @@ public List<NativeModule> createNativeModules(ReactApplicationContext reactConte
+     return Arrays.<NativeModule>asList(new ImagePickerModule(reactContext, dialogThemeId));
+   }
+ 
+-  @Override
++  // Deprecated RN 0.47
+   public List<Class<? extends JavaScriptModule>> createJSModules() {
+     return Collections.emptyList();
+   }
+@@ -40,4 +40,4 @@ public List<Class<? extends JavaScriptModule>> createJSModules() {
+   public List<ViewManager> createViewManagers(ReactApplicationContext reactContext) {
+     return Collections.emptyList();
+   }
+-}
+\ No newline at end of file
++}
+
+File: android/src/main/java/com/imagepicker/ImagePickerPackage.java
+Patch:
+@@ -31,7 +31,7 @@ public List<NativeModule> createNativeModules(ReactApplicationContext reactConte
+     return Arrays.<NativeModule>asList(new ImagePickerModule(reactContext, dialogThemeId));
+   }
+ 
+-  @Override
++  // Deprecated RN 0.47
+   public List<Class<? extends JavaScriptModule>> createJSModules() {
+     return Collections.emptyList();
+   }
+@@ -40,4 +40,4 @@ public List<Class<? extends JavaScriptModule>> createJSModules() {
+   public List<ViewManager> createViewManagers(ReactApplicationContext reactContext) {
+     return Collections.emptyList();
+   }
+-}
+\ No newline at end of file
++}
+
+File: android/src/main/java/com/imagepicker/utils/ButtonsHelper.java
+Patch:
+@@ -103,7 +103,7 @@ public static ButtonsHelper newInstance(@NonNull final ReadableMap options)
+                                                     @NonNull final String key,
+                                                     @NonNull final String action)
+     {
+-        if (!ReadableMapUtils.hasAndNotEmpty(options, key))
++        if (!ReadableMapUtils.hasAndNotEmptyString(options, key))
+         {
+             return null;
+         }
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -307,7 +307,7 @@ public void onActivityResult(Activity activity, int requestCode, int resultCode,
+ 
+     // user cancel
+     if (resultCode != Activity.RESULT_OK) {
+-      responseHelper.invokeResponse(callback);
++      responseHelper.invokeCancel(callback);
+       callback = null;
+       return;
+     }
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -825,7 +825,7 @@ public Context getContext()
+                                                  @NonNull final File file)
+   {
+     Uri result = null;
+-    if (Build.VERSION.SDK_INT < 19)
++    if (Build.VERSION.SDK_INT < 21)
+     {
+       result = Uri.fromFile(file);
+     }
+@@ -844,4 +844,4 @@ public Context getContext()
+     }
+     return result;
+   }
+-}
+\ No newline at end of file
++}
+
+File: Example/android/app/src/main/java/com/example/MainApplication.java
+Patch:
+@@ -18,7 +18,7 @@ public class MainApplication extends Application implements ReactApplication {
+ 
+   private final ReactNativeHost mReactNativeHost = new ReactNativeHost(this) {
+     @Override
+-    protected boolean getUseDeveloperSupport() {
++    public boolean getUseDeveloperSupport() {
+       return BuildConfig.DEBUG;
+     }
+ 
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -413,6 +413,7 @@ public void onActivityResult(final int requestCode, final int resultCode, final
+ 
+     BitmapFactory.Options options = new BitmapFactory.Options();
+     options.inJustDecodeBounds = true;
++    BitmapFactory.decodeFile(realPath, options);
+     int initialWidth = options.outWidth;
+     int initialHeight = options.outHeight;
+ 
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -724,4 +724,6 @@ private void parseOptions(final ReadableMap options) {
+       videoDurationLimit = options.getInt("durationLimit");
+     }
+   }
++
++  public void onNewIntent(Intent intent) { }
+ }
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -415,7 +415,7 @@ public void onActivityResult(final int requestCode, final int resultCode, final
+       try {
+         String isoFormatString = isoFormat.format(exifDatetimeFormat.parse(timestamp)) + "Z";
+         response.putString("timestamp", isoFormatString);
+-      } catch (ParseException e) {}
++      } catch (Exception e) {}
+ 
+       int orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+       boolean isVertical = true;
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -415,7 +415,7 @@ public void onActivityResult(final int requestCode, final int resultCode, final
+       try {
+         String isoFormatString = isoFormat.format(exifDatetimeFormat.parse(timestamp)) + "Z";
+         response.putString("timestamp", isoFormatString);
+-      } catch (ParseException e) {}
++      } catch (Exception e) {}
+ 
+       int orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+       boolean isVertical = true;
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -518,7 +518,9 @@ private File getResizedImage (final String realPath, final int initialWidth, fin
+ 
+     // recycle to avoid java.lang.OutOfMemoryError
+     if (photo != null) {
++        scaledphoto.recycle();
+         photo.recycle();
++        scaledphoto = null;
+         photo = null;
+     }
+     return f;
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -153,7 +153,7 @@ public void launchCamera(final ReadableMap options, final Callback callback) {
+ 
+     Intent cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+     if (cameraIntent.resolveActivity(mMainActivity.getPackageManager()) == null) {
+-        response.putString("error", "error resolving activity");
++        response.putString("error", "Cannot launch camera");
+         callback.invoke(response);
+         return;
+     }
+
+File: android/src/main/java/com/imagepicker/ImagePickerModule.java
+Patch:
+@@ -325,7 +325,7 @@ private String getResizedImage (final String realPath, final int initialWidth, f
+         String filname = UUID.randomUUID().toString();
+         File path = Environment.getExternalStoragePublicDirectory(
+             Environment.DIRECTORY_PICTURES);
+-        File file = new File(path, filname +".jpg");
++        File f = new File(path, filname +".jpg");
+         try {
+             // Make sure the Pictures directory exists.
+             path.mkdirs();
+
+File: Android/src/main/java/com/imagepicker/ImagePickerPackage.java
+Patch:
+@@ -7,16 +7,17 @@
+ import com.facebook.react.uimanager.ViewManager;
+ 
+ import android.content.Intent;
++import android.app.Activity;
+ 
+ import java.util.Arrays;
+ import java.util.Collections;
+ import java.util.List;
+ 
+ public class ImagePickerPackage implements ReactPackage {
+-  private final MainActivity mMainActivity;
++  private final Activity mMainActivity;
+   private ImagePickerModule mModuleInstance;
+ 
+-  public ImagePickerPackage(MainActivity mainActivity) {
++  public ImagePickerPackage(Activity mainActivity) {
+     this.mMainActivity = mainActivity;
+   }
+ 
+

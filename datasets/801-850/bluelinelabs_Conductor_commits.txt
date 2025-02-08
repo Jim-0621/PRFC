@@ -1,0 +1,3227 @@
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -193,7 +193,7 @@ public boolean popController(@NonNull Controller controller) {
+                 RouterTransaction transaction = iterator.next();
+                 if (transaction.controller() == controller) {
+                     trackDestroyingController(transaction);
+-                    iterator.remove();
++                    backstack.remove(transaction);
+                     removedTransaction = transaction;
+                 } else if (removedTransaction != null) {
+                     if (needsNextTransactionAttach && !transaction.controller().isAttached()) {
+
+File: conductor-modules/viewpager/src/main/java/com/bluelinelabs/conductor/viewpager/RouterPagerAdapter.java
+Patch:
+@@ -77,7 +77,8 @@ public Object instantiateItem(ViewGroup container, int position) {
+             savedPages.remove(position);
+         }
+ 
+-        Router router = host.getChildRouter(container, name);
++        Router router = host.getChildRouter(container, name)
++                .setPopRootControllerMode(Router.PopRootControllerMode.NEVER);
+         if (!router.hasRootController()) {
+             Bundle routerSavedState = savedPages.get(position);
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -1082,7 +1082,7 @@ private void removeViewReference(@Nullable Context context) {
+     final View inflate(@NonNull ViewGroup parent) {
+         if (view != null && view.getParent() != null && view.getParent() != parent) {
+             detach(view, true, false);
+-            removeViewReference(view.getContext());
++            removeViewReference(view != null ? view.getContext() : null);
+         }
+ 
+         if (view == null) {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -1099,7 +1099,7 @@ public void onViewDetachAfterStop() {
+                 });
+                 viewAttachHandler.listenForAttach(view);
+             }
+-        } else if (retainViewMode == RetainViewMode.RETAIN_DETACH) {
++        } else {
+             restoreChildControllerHosts();
+         }
+ 
+@@ -1111,7 +1111,7 @@ private void restoreChildControllerHosts() {
+             if (!childRouter.hasHost()) {
+                 View containerView = view.findViewById(childRouter.getHostId());
+ 
+-                if (containerView != null && containerView instanceof ViewGroup) {
++                if (containerView instanceof ViewGroup) {
+                     childRouter.setHostContainer(this, (ViewGroup) containerView);
+                     childRouter.rebindIfNeeded();
+                 }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/internal/ViewAttachHandler.java
+Patch:
+@@ -64,6 +64,7 @@ public void unregisterAttachListener(View view) {
+ 
+         if (childOnAttachStateChangeListener != null && view instanceof ViewGroup) {
+             findDeepestChild((ViewGroup)view).removeOnAttachStateChangeListener(childOnAttachStateChangeListener);
++            childOnAttachStateChangeListener = null;
+         }
+     }
+ 
+@@ -117,7 +118,7 @@ private void listenForDeepestChildAttach(final View view, final ChildAttachListe
+ 
+             @Override
+             public void onViewAttachedToWindow(View v) {
+-                if (!attached) {
++                if (!attached && childOnAttachStateChangeListener != null) {
+                     attached = true;
+                     attachListener.onAttached();
+                     v.removeOnAttachStateChangeListener(this);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/internal/ViewAttachHandler.java
+Patch:
+@@ -43,7 +43,6 @@ public void onViewAttachedToWindow(final View v) {
+         listenForDeepestChildAttach(v, () -> {
+             childrenAttached = true;
+             reportAttached();
+-
+         });
+     }
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -759,7 +759,7 @@ public final Boolean handleRequestedPermission(@NonNull String permission) {
+         return null;
+     }
+ 
+-    private void performControllerChange(@Nullable RouterTransaction to, @Nullable RouterTransaction from, boolean isPush) {
++    void performControllerChange(@Nullable RouterTransaction to, @Nullable RouterTransaction from, boolean isPush) {
+         if (isPush && to != null) {
+             to.onAttachedToRouter();
+         }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -932,7 +932,9 @@ void attach(@NonNull View view) {
+                 }
+             }
+ 
+-            childRouter.rebindIfNeeded();
++            if (childRouter.hasHost()) {
++                childRouter.rebindIfNeeded();
++            }
+         }
+     }
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Backstack.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.bluelinelabs.conductor;
+ 
+ import android.os.Bundle;
++
+ import androidx.annotation.NonNull;
+ import androidx.annotation.Nullable;
+ 
+@@ -58,7 +59,7 @@ List<RouterTransaction> popTo(@NonNull RouterTransaction transaction) {
+     @NonNull
+     RouterTransaction pop() {
+         RouterTransaction popped = backstack.pop();
+-        popped.controller.destroy();
++        popped.controller().destroy();
+         return popped;
+     }
+ 
+@@ -89,7 +90,7 @@ void setBackstack(@NonNull List<RouterTransaction> backstack) {
+ 
+     boolean contains(@NonNull Controller controller) {
+         for (RouterTransaction transaction : backstack) {
+-            if (controller == transaction.controller) {
++            if (controller == transaction.controller()) {
+                 return true;
+             }
+         }
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerTransactionTests.java
+Patch:
+@@ -26,7 +26,7 @@ public void testRouterSaveRestore() {
+ 
+         RouterTransaction restoredTransaction = new RouterTransaction(bundle);
+ 
+-        assertEquals(transaction.controller.getClass(), restoredTransaction.controller.getClass());
++        assertEquals(transaction.controller().getClass(), restoredTransaction.controller().getClass());
+         assertEquals(transaction.pushChangeHandler().getClass(), restoredTransaction.pushChangeHandler().getClass());
+         assertEquals(transaction.popChangeHandler().getClass(), restoredTransaction.popChangeHandler().getClass());
+         assertEquals(transaction.tag(), restoredTransaction.tag());
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/TestController.java
+Patch:
+@@ -3,15 +3,16 @@
+ import android.content.Context;
+ import android.content.Intent;
+ import android.os.Bundle;
+-import androidx.annotation.IdRes;
+-import androidx.annotation.NonNull;
+ import android.view.LayoutInflater;
+ import android.view.Menu;
+ import android.view.MenuInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.widget.FrameLayout;
+ 
++import androidx.annotation.IdRes;
++import androidx.annotation.NonNull;
++
+ import com.bluelinelabs.conductor.Controller;
+ import com.bluelinelabs.conductor.ControllerChangeHandler;
+ import com.bluelinelabs.conductor.ControllerChangeType;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/AutodisposeController.java
+Patch:
+@@ -1,13 +1,14 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+-import androidx.annotation.NonNull;
+-import androidx.core.content.ContextCompat;
+ import android.util.Log;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.widget.TextView;
+ 
++import androidx.annotation.NonNull;
++import androidx.core.content.ContextCompat;
++
+ import com.bluelinelabs.conductor.Controller;
+ import com.bluelinelabs.conductor.ControllerChangeHandler;
+ import com.bluelinelabs.conductor.ControllerChangeType;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/RxLifecycle2Controller.java
+Patch:
+@@ -1,13 +1,14 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+-import androidx.annotation.NonNull;
+-import androidx.core.content.ContextCompat;
+ import android.util.Log;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.widget.TextView;
+ 
++import androidx.annotation.NonNull;
++import androidx.core.content.ContextCompat;
++
+ import com.bluelinelabs.conductor.ControllerChangeHandler;
+ import com.bluelinelabs.conductor.ControllerChangeType;
+ import com.bluelinelabs.conductor.RouterTransaction;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/RxLifecycleController.java
+Patch:
+@@ -1,13 +1,14 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+-import androidx.annotation.NonNull;
+-import androidx.core.content.ContextCompat;
+ import android.util.Log;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.widget.TextView;
+ 
++import androidx.annotation.NonNull;
++import androidx.core.content.ContextCompat;
++
+ import com.bluelinelabs.conductor.ControllerChangeHandler;
+ import com.bluelinelabs.conductor.ControllerChangeType;
+ import com.bluelinelabs.conductor.RouterTransaction;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/base/RefWatchingController.java
+Patch:
+@@ -1,6 +1,7 @@
+ package com.bluelinelabs.conductor.demo.controllers.base;
+ 
+ import android.os.Bundle;
++
+ import androidx.annotation.NonNull;
+ 
+ import com.bluelinelabs.conductor.ControllerChangeHandler;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/internal/LifecycleHandler.java
+Patch:
+@@ -11,8 +11,6 @@
+ import android.os.Bundle;
+ import android.os.Parcel;
+ import android.os.Parcelable;
+-import androidx.annotation.NonNull;
+-import androidx.annotation.Nullable;
+ import android.util.SparseArray;
+ import android.view.Menu;
+ import android.view.MenuInflater;
+@@ -27,6 +25,9 @@
+ import java.util.List;
+ import java.util.Map;
+ 
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
+ public class LifecycleHandler extends Fragment implements ActivityLifecycleCallbacks {
+ 
+     private static final String FRAGMENT_TAG = "LifecycleHandler";
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -546,6 +546,8 @@ public void rebindIfNeeded() {
+ 
+             if (transaction.controller.getNeedsAttach()) {
+                 performControllerChange(transaction, null, true, new SimpleSwapChangeHandler(false));
++            } else {
++                setControllerRouter(transaction.controller);
+             }
+         }
+     }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -1282,6 +1282,8 @@ final void changeEnded(@NonNull ControllerChangeHandler changeHandler, @NonNull
+             }
+             destroyedView = null;
+         }
++
++        changeHandler.onEnd();
+     }
+ 
+     final void setDetachFrozen(boolean frozen) {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerChangeHandler.java
+Patch:
+@@ -232,6 +232,8 @@ public void onChangeCompleted() {
+         }
+     }
+ 
++    protected void onEnd(){ }
++
+     public boolean removesFromViewOnPush() {
+         return true;
+     }
+
+File: conductor-modules/autodispose/src/main/java/com/bluelinelabs/conductor/autodispose/ControllerLifecycleSubjectHelper.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.autodispose;
+ 
+ import android.content.Context;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.View;
+ 
+ import com.bluelinelabs.conductor.Controller;
+
+File: conductor-modules/autodispose/src/main/java/com/bluelinelabs/conductor/autodispose/ControllerScopeProvider.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.bluelinelabs.conductor.autodispose;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ 
+ import com.bluelinelabs.conductor.Controller;
+ import com.uber.autodispose.OutsideScopeException;
+
+File: conductor-modules/rxlifecycle/src/main/java/com/bluelinelabs/conductor/rxlifecycle/ControllerLifecycleSubjectHelper.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.rxlifecycle;
+ 
+ import android.content.Context;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.View;
+ 
+ import com.bluelinelabs.conductor.Controller;
+
+File: conductor-modules/rxlifecycle/src/main/java/com/bluelinelabs/conductor/rxlifecycle/RxController.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor.rxlifecycle;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.CheckResult;
+-import android.support.annotation.NonNull;
++import androidx.annotation.CheckResult;
++import androidx.annotation.NonNull;
+ 
+ import com.bluelinelabs.conductor.Controller;
+ import com.trello.rxlifecycle.LifecycleProvider;
+
+File: conductor-modules/rxlifecycle/src/main/java/com/bluelinelabs/conductor/rxlifecycle/RxControllerLifecycle.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.rxlifecycle;
+ 
+-import android.support.annotation.CheckResult;
+-import android.support.annotation.NonNull;
++import androidx.annotation.CheckResult;
++import androidx.annotation.NonNull;
+ 
+ import com.trello.rxlifecycle.LifecycleTransformer;
+ import com.trello.rxlifecycle.OutsideLifecycleException;
+
+File: conductor-modules/rxlifecycle/src/main/java/com/bluelinelabs/conductor/rxlifecycle/RxRestoreViewOnCreateController.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor.rxlifecycle;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.CheckResult;
+-import android.support.annotation.NonNull;
++import androidx.annotation.CheckResult;
++import androidx.annotation.NonNull;
+ 
+ import com.bluelinelabs.conductor.RestoreViewOnCreateController;
+ import com.trello.rxlifecycle.LifecycleProvider;
+
+File: conductor-modules/rxlifecycle2/src/main/java/com/bluelinelabs/conductor/rxlifecycle2/ControllerLifecycleSubjectHelper.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.rxlifecycle2;
+ 
+ import android.content.Context;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.View;
+ 
+ import com.bluelinelabs.conductor.Controller;
+
+File: conductor-modules/rxlifecycle2/src/main/java/com/bluelinelabs/conductor/rxlifecycle2/RxController.java
+Patch:
+@@ -1,9 +1,9 @@
+ package com.bluelinelabs.conductor.rxlifecycle2;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.CheckResult;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.CheckResult;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import com.bluelinelabs.conductor.Controller;
+ import com.trello.rxlifecycle2.LifecycleProvider;
+ import com.trello.rxlifecycle2.LifecycleTransformer;
+
+File: conductor-modules/rxlifecycle2/src/main/java/com/bluelinelabs/conductor/rxlifecycle2/RxControllerLifecycle.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.bluelinelabs.conductor.rxlifecycle2;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import com.trello.rxlifecycle2.LifecycleTransformer;
+ import com.trello.rxlifecycle2.OutsideLifecycleException;
+ import com.trello.rxlifecycle2.RxLifecycle;
+
+File: conductor-modules/rxlifecycle2/src/main/java/com/bluelinelabs/conductor/rxlifecycle2/RxRestoreViewOnCreateController.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor.rxlifecycle2;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.CheckResult;
+-import android.support.annotation.NonNull;
++import androidx.annotation.CheckResult;
++import androidx.annotation.NonNull;
+ import com.bluelinelabs.conductor.RestoreViewOnCreateController;
+ import com.trello.rxlifecycle2.LifecycleProvider;
+ import com.trello.rxlifecycle2.LifecycleTransformer;
+
+File: conductor-modules/support/src/main/java/com/bluelinelabs/conductor/support/ControllerPagerAdapter.java
+Patch:
+@@ -2,9 +2,9 @@
+ 
+ import android.os.Bundle;
+ import android.os.Parcelable;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
+-import android.support.v4.view.PagerAdapter;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.viewpager.widget.PagerAdapter;
+ import android.util.SparseArray;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: conductor-modules/support/src/main/java/com/bluelinelabs/conductor/support/RouterPagerAdapter.java
+Patch:
+@@ -2,9 +2,9 @@
+ 
+ import android.os.Bundle;
+ import android.os.Parcelable;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
+-import android.support.v4.view.PagerAdapter;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.viewpager.widget.PagerAdapter;
+ import android.util.SparseArray;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: conductor-modules/support/src/test/java/com/bluelinelabs/conductor/support/StateSaveTests.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import android.app.Activity;
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.util.SparseArray;
+ import android.widget.FrameLayout;
+ 
+
+File: conductor-modules/support/src/test/java/com/bluelinelabs/conductor/support/util/TestController.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.bluelinelabs.conductor.support.util;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ActivityHostedRouter.java
+Patch:
+@@ -5,8 +5,8 @@
+ import android.content.IntentSender;
+ import android.content.IntentSender.SendIntentException;
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.ViewGroup;
+ 
+ import com.bluelinelabs.conductor.ControllerChangeHandler.ControllerChangeListener;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Backstack.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ 
+ import java.util.ArrayDeque;
+ import java.util.ArrayList;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ChangeHandlerFrameLayout.java
+Patch:
+@@ -3,8 +3,8 @@
+ import android.annotation.TargetApi;
+ import android.content.Context;
+ import android.os.Build;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.util.AttributeSet;
+ import android.view.MotionEvent;
+ import android.view.ViewGroup;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Conductor.java
+Patch:
+@@ -2,9 +2,9 @@
+ 
+ import android.app.Activity;
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
+-import android.support.annotation.UiThread;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.annotation.UiThread;
+ import android.view.ViewGroup;
+ 
+ import com.bluelinelabs.conductor.internal.LifecycleHandler;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -9,9 +9,9 @@
+ import android.os.Build;
+ import android.os.Bundle;
+ import android.os.Parcelable;
+-import android.support.annotation.IdRes;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.IdRes;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.text.TextUtils;
+ import android.util.SparseArray;
+ import android.view.LayoutInflater;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerChangeHandler.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.view.ViewParent;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerHostedRouter.java
+Patch:
+@@ -5,9 +5,9 @@
+ import android.content.IntentSender;
+ import android.content.IntentSender.SendIntentException;
+ import android.os.Bundle;
+-import android.support.annotation.IdRes;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.IdRes;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.ViewGroup;
+ 
+ import com.bluelinelabs.conductor.ControllerChangeHandler.ControllerChangeListener;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/RestoreViewOnCreateController.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -4,9 +4,9 @@
+ import android.content.Intent;
+ import android.content.IntentSender;
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
+-import android.support.annotation.UiThread;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.annotation.UiThread;
+ import android.view.Menu;
+ import android.view.MenuInflater;
+ import android.view.MenuItem;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/RouterTransaction.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ 
+ import com.bluelinelabs.conductor.internal.TransactionIndexer;
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/AnimatorChangeHandler.java
+Patch:
+@@ -4,8 +4,8 @@
+ import android.animation.Animator.AnimatorListener;
+ import android.animation.AnimatorListenerAdapter;
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.View;
+ import android.view.ViewGroup;
+ import android.view.ViewTreeObserver;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/AutoTransitionChangeHandler.java
+Patch:
+@@ -2,8 +2,8 @@
+ 
+ import android.annotation.TargetApi;
+ import android.os.Build;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.transition.AutoTransition;
+ import android.transition.Transition;
+ import android.view.View;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/FadeChangeHandler.java
+Patch:
+@@ -3,8 +3,8 @@
+ import android.animation.Animator;
+ import android.animation.AnimatorSet;
+ import android.animation.ObjectAnimator;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/HorizontalChangeHandler.java
+Patch:
+@@ -3,8 +3,8 @@
+ import android.animation.Animator;
+ import android.animation.AnimatorSet;
+ import android.animation.ObjectAnimator;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/SharedElementTransitionChangeHandler.java
+Patch:
+@@ -4,8 +4,8 @@
+ import android.app.SharedElementCallback;
+ import android.graphics.Rect;
+ import android.os.Build;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.transition.Transition;
+ import android.transition.Transition.TransitionListener;
+ import android.transition.TransitionSet;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/SimpleSwapChangeHandler.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor.changehandler;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.View;
+ import android.view.View.OnAttachStateChangeListener;
+ import android.view.ViewGroup;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/TransitionChangeHandler.java
+Patch:
+@@ -2,8 +2,8 @@
+ 
+ import android.annotation.TargetApi;
+ import android.os.Build;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.transition.Transition;
+ import android.transition.Transition.TransitionListener;
+ import android.transition.TransitionManager;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/TransitionChangeHandlerCompat.java
+Patch:
+@@ -2,8 +2,8 @@
+ 
+ import android.os.Build;
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/VerticalChangeHandler.java
+Patch:
+@@ -3,8 +3,8 @@
+ import android.animation.Animator;
+ import android.animation.AnimatorSet;
+ import android.animation.ObjectAnimator;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/internal/ClassUtils.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.internal;
+ 
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.text.TextUtils;
+ 
+ public class ClassUtils {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/internal/LifecycleHandler.java
+Patch:
+@@ -11,8 +11,8 @@
+ import android.os.Bundle;
+ import android.os.Parcel;
+ import android.os.Parcelable;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.util.SparseArray;
+ import android.view.Menu;
+ import android.view.MenuInflater;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/internal/NoOpControllerChangeHandler.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.internal;
+ 
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/internal/StringSparseArrayParceler.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.util.SparseArray;
+ 
+ public class StringSparseArrayParceler implements Parcelable {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/internal/TransactionIndexer.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.internal;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ 
+ public class TransactionIndexer {
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/internal/TransitionUtils.java
+Patch:
+@@ -3,8 +3,8 @@
+ import android.annotation.TargetApi;
+ import android.graphics.Rect;
+ import android.os.Build;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.transition.Transition;
+ import android.transition.TransitionSet;
+ import android.view.View;
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerLifecycleActivityReferenceTests.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerLifecycleCallbacksTests.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import android.content.Context;
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/RouterTests.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.bluelinelabs.conductor;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ViewLeakTests.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/ActivityProxy.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.util;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.IdRes;
++import androidx.annotation.IdRes;
+ 
+ import org.robolectric.Robolectric;
+ import org.robolectric.android.controller.ActivityController;
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/MockChangeHandler.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor.util;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/TestController.java
+Patch:
+@@ -3,8 +3,8 @@
+ import android.content.Context;
+ import android.content.Intent;
+ import android.os.Bundle;
+-import android.support.annotation.IdRes;
+-import android.support.annotation.NonNull;
++import androidx.annotation.IdRes;
++import androidx.annotation.NonNull;
+ import android.view.LayoutInflater;
+ import android.view.Menu;
+ import android.view.MenuInflater;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/ActionBarProvider.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.bluelinelabs.conductor.demo;
+ 
+-import android.support.v7.app.ActionBar;
++import androidx.appcompat.app.ActionBar;
+ 
+ public interface ActionBarProvider {
+     ActionBar getSupportActionBar();
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/MainActivity.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor.demo;
+ 
+ import android.os.Bundle;
+-import android.support.v7.app.AppCompatActivity;
+-import android.support.v7.widget.Toolbar;
++import androidx.appcompat.app.AppCompatActivity;
++import androidx.appcompat.widget.Toolbar;
+ import android.view.ViewGroup;
+ 
+ import com.bluelinelabs.conductor.Conductor;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/ArcFadeMoveChangeHandler.java
+Patch:
+@@ -3,8 +3,8 @@
+ import android.annotation.TargetApi;
+ import android.os.Build;
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.transition.ArcMotion;
+ import android.transition.ChangeBounds;
+ import android.transition.ChangeClipBounds;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/CircularRevealChangeHandler.java
+Patch:
+@@ -4,7 +4,7 @@
+ import android.annotation.TargetApi;
+ import android.os.Build;
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.View;
+ import android.view.ViewAnimationUtils;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/CircularRevealChangeHandlerCompat.java
+Patch:
+@@ -4,7 +4,7 @@
+ import android.animation.AnimatorSet;
+ import android.animation.ObjectAnimator;
+ import android.os.Build;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/CityGridSharedElementTransitionChangeHandler.java
+Patch:
+@@ -3,8 +3,8 @@
+ import android.annotation.TargetApi;
+ import android.os.Build;
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
+ import android.transition.ChangeBounds;
+ import android.transition.ChangeClipBounds;
+ import android.transition.ChangeTransform;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/FabToDialogTransitionChangeHandler.java
+Patch:
+@@ -2,9 +2,9 @@
+ 
+ import android.annotation.TargetApi;
+ import android.os.Build;
+-import android.support.annotation.NonNull;
+-import android.support.annotation.Nullable;
+-import android.support.v4.content.ContextCompat;
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.core.content.ContextCompat;
+ import android.transition.Fade;
+ import android.transition.Transition;
+ import android.transition.TransitionSet;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/FlipChangeHandler.java
+Patch:
+@@ -3,7 +3,7 @@
+ import android.animation.Animator;
+ import android.animation.AnimatorSet;
+ import android.animation.ObjectAnimator;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.util.Property;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/ScaleFadeChangeHandler.java
+Patch:
+@@ -3,7 +3,7 @@
+ import android.animation.Animator;
+ import android.animation.AnimatorSet;
+ import android.animation.ObjectAnimator;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/transitions/FabTransform.java
+Patch:
+@@ -31,9 +31,9 @@
+ import android.graphics.drawable.ColorDrawable;
+ import android.graphics.drawable.Drawable;
+ import android.os.Build;
+-import android.support.annotation.ColorInt;
+-import android.support.annotation.DrawableRes;
+-import android.support.v4.content.ContextCompat;
++import androidx.annotation.ColorInt;
++import androidx.annotation.DrawableRes;
++import androidx.core.content.ContextCompat;
+ import android.transition.Transition;
+ import android.transition.TransitionValues;
+ import android.view.View;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/AutodisposeController.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+-import android.support.annotation.NonNull;
+-import android.support.v4.content.ContextCompat;
++import androidx.annotation.NonNull;
++import androidx.core.content.ContextCompat;
+ import android.util.Log;
+ import android.view.LayoutInflater;
+ import android.view.View;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/ChildController.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.v4.content.ContextCompat;
++import androidx.annotation.NonNull;
++import androidx.core.content.ContextCompat;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/DialogController.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.text.method.LinkMovementMethod;
+ import android.view.LayoutInflater;
+ import android.view.View;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/DragDismissController.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import android.annotation.TargetApi;
+ import android.os.Build.VERSION_CODES;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/MultipleChildRouterController.java
+Patch:
+@@ -1,6 +1,6 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/NavigationDemoController.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/PagerController.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+-import android.support.annotation.NonNull;
+-import android.support.design.widget.TabLayout;
+-import android.support.v4.view.ViewPager;
++import androidx.annotation.NonNull;
++import com.google.android.material.tabs.TabLayout;
++import androidx.viewpager.widget.ViewPager;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/ParentController.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+-import android.support.annotation.IdRes;
+-import android.support.annotation.NonNull;
++import androidx.annotation.IdRes;
++import androidx.annotation.NonNull;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/RxLifecycle2Controller.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+-import android.support.annotation.NonNull;
+-import android.support.v4.content.ContextCompat;
++import androidx.annotation.NonNull;
++import androidx.core.content.ContextCompat;
+ import android.util.Log;
+ import android.view.LayoutInflater;
+ import android.view.View;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/RxLifecycleController.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+-import android.support.annotation.NonNull;
+-import android.support.v4.content.ContextCompat;
++import androidx.annotation.NonNull;
++import androidx.core.content.ContextCompat;
+ import android.util.Log;
+ import android.view.LayoutInflater;
+ import android.view.View;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/TargetDisplayController.java
+Patch:
+@@ -5,7 +5,7 @@
+ import android.net.Uri;
+ import android.os.Bundle;
+ import android.provider.MediaStore;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.text.TextUtils;
+ import android.view.LayoutInflater;
+ import android.view.View;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/TargetTitleEntryController.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+ import android.content.Context;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/TextController.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.demo.controllers;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/base/BaseController.java
+Patch:
+@@ -1,8 +1,8 @@
+ package com.bluelinelabs.conductor.demo.controllers.base;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
+-import android.support.v7.app.ActionBar;
++import androidx.annotation.NonNull;
++import androidx.appcompat.app.ActionBar;
+ import android.view.View;
+ 
+ import com.bluelinelabs.conductor.Controller;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/base/ButterKnifeController.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.demo.controllers.base;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ import android.view.LayoutInflater;
+ import android.view.View;
+ import android.view.ViewGroup;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/base/RefWatchingController.java
+Patch:
+@@ -1,7 +1,7 @@
+ package com.bluelinelabs.conductor.demo.controllers.base;
+ 
+ import android.os.Bundle;
+-import android.support.annotation.NonNull;
++import androidx.annotation.NonNull;
+ 
+ import com.bluelinelabs.conductor.ControllerChangeHandler;
+ import com.bluelinelabs.conductor.ControllerChangeType;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/widget/ElasticDragDismissFrameLayout.java
+Patch:
+@@ -18,8 +18,8 @@
+ 
+ import android.annotation.TargetApi;
+ import android.content.Context;
+-import android.support.v4.view.NestedScrollingParent;
+-import android.support.v4.view.animation.FastOutSlowInInterpolator;
++import androidx.core.view.NestedScrollingParent;
++import androidx.interpolator.view.animation.FastOutSlowInInterpolator;
+ import android.util.AttributeSet;
+ import android.util.TypedValue;
+ import android.view.View;
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/ViewUtils.java
+Patch:
+@@ -16,7 +16,7 @@ public static void reportAttached(View view, boolean attached) {
+ 
+     public static void reportAttached(View view, boolean attached, boolean propogateToChildren) {
+         if (view instanceof AttachFakingFrameLayout) {
+-            ((AttachFakingFrameLayout)view).setAttached(attached, false);
++            ((AttachFakingFrameLayout) view).setAttached(attached, false);
+         }
+ 
+         List<OnAttachStateChangeListener> listeners = getAttachStateListeners(view);
+@@ -44,7 +44,7 @@ public void onViewDetachedFromWindow(View v) { }
+         }
+ 
+         if (propogateToChildren && view instanceof ViewGroup) {
+-            ViewGroup viewGroup = (ViewGroup)view;
++            ViewGroup viewGroup = (ViewGroup) view;
+             int childCount = viewGroup.getChildCount();
+             for (int i = 0; i < childCount; i++) {
+                 reportAttached(viewGroup.getChildAt(i), attached, true);
+
+File: conductor-modules/autodispose/src/main/java/com/bluelinelabs/conductor/autodispose/ControllerLifecycleSubjectHelper.java
+Patch:
+@@ -13,7 +13,7 @@ public class ControllerLifecycleSubjectHelper {
+     private ControllerLifecycleSubjectHelper() { }
+ 
+     @NonNull
+-    public static BehaviorSubject<ControllerEvent> create(Controller controller) {
++    public static BehaviorSubject<ControllerEvent> create(@NonNull Controller controller) {
+         ControllerEvent initialState;
+         if (controller.isBeingDestroyed() || controller.isDestroyed()) {
+             throw new OutsideLifecycleException("Cannot bind to Controller lifecycle when outside of it.");
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -607,7 +607,7 @@ public void onActivityDestroyed(@NonNull Activity activity) {
+         container = null;
+     }
+ 
+-    void prepareForHostDetach() {
++    public void prepareForHostDetach() {
+         for (RouterTransaction transaction : backstack) {
+             if (ControllerChangeHandler.completeHandlerImmediately(transaction.controller.getInstanceId())) {
+                 transaction.controller.setNeedsAttach(true);
+@@ -617,8 +617,6 @@ void prepareForHostDetach() {
+     }
+ 
+     public void saveInstanceState(@NonNull Bundle outState) {
+-        prepareForHostDetach();
+-
+         Bundle backstackState = new Bundle();
+         backstack.saveInstanceState(backstackState);
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -887,7 +887,7 @@ void attach(@NonNull View view) {
+         }
+ 
+         attached = true;
+-        needsAttach = false;
++        needsAttach = router.isActivityStopped;
+ 
+         onAttach(view);
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -62,7 +62,7 @@ public abstract class Controller {
+ 
+     Bundle viewState;
+     private Bundle savedInstanceState;
+-    private boolean isBeingDestroyed;
++    boolean isBeingDestroyed;
+     private boolean destroyed;
+     private boolean attached;
+     private boolean hasOptionsMenu;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerHostedRouter.java
+Patch:
+@@ -204,8 +204,8 @@ public void restoreInstanceState(@NonNull Bundle savedInstanceState) {
+ 
+     @Override
+     void setControllerRouter(@NonNull Controller controller) {
+-        super.setControllerRouter(controller);
+         controller.setParentController(hostController);
++        super.setControllerRouter(controller);
+     }
+ 
+     int getHostId() {
+
+File: conductor-modules/support/src/test/java/com/bluelinelabs/conductor/support/StateSaveTests.java
+Patch:
+@@ -17,8 +17,8 @@
+ import org.junit.runner.RunWith;
+ import org.robolectric.Robolectric;
+ import org.robolectric.RobolectricTestRunner;
++import org.robolectric.android.controller.ActivityController;
+ import org.robolectric.annotation.Config;
+-import org.robolectric.util.ActivityController;
+ 
+ import static org.junit.Assert.assertEquals;
+ 
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/ActivityProxy.java
+Patch:
+@@ -4,7 +4,7 @@
+ import android.support.annotation.IdRes;
+ 
+ import org.robolectric.Robolectric;
+-import org.robolectric.util.ActivityController;
++import org.robolectric.android.controller.ActivityController;
+ 
+ public class ActivityProxy {
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -137,12 +137,13 @@ public boolean popController(@NonNull Controller controller) {
+         } else {
+             RouterTransaction removedTransaction = null;
+             RouterTransaction nextTransaction = null;
+-            for (RouterTransaction transaction : backstack) {
++            for (Iterator<RouterTransaction> iter = backstack.iterator(); iter.hasNext();) {
++                RouterTransaction transaction = iter.next();
+                 if (transaction.controller == controller) {
+                     if (controller.isAttached()) {
+                         trackDestroyingController(transaction);
+                     }
+-                    backstack.remove(transaction);
++                    iter.remove();
+                     removedTransaction = transaction;
+                 } else if (removedTransaction != null) {
+                     if (!transaction.controller.isAttached()) {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -408,7 +408,9 @@ public void setBackstack(@NonNull List<RouterTransaction> newBackstack, @Nullabl
+         backstack.setBackstack(newBackstack);
+ 
+         // Ensure all new controllers have a valid router set
+-        for (RouterTransaction transaction : backstack) {
++        Iterator<RouterTransaction> backstackIterator = backstack.reverseIterator();
++        while (backstackIterator.hasNext()) {
++            RouterTransaction transaction = backstackIterator.next();
+             transaction.onAttachedToRouter();
+             setControllerRouter(transaction.controller);
+         }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -822,7 +822,7 @@ private void removeAllExceptVisibleAndUnowned() {
+         }
+ 
+         final int childCount = container.getChildCount();
+-        for (int i = 0; i < childCount; i++) {
++        for (int i = childCount - 1; i >= 0; i--) {
+             final View child = container.getChildAt(i);
+             if (!views.contains(child)) {
+                 container.removeView(child);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/SharedElementTransitionChangeHandler.java
+Patch:
+@@ -231,7 +231,7 @@ private void configureSharedElements(@NonNull ViewGroup container, @NonNull fina
+             return;
+         }
+ 
+-        ArrayMap<String, View> capturedFromSharedElements = captureFromSharedElements(from, isPush);
++        ArrayMap<String, View> capturedFromSharedElements = captureFromSharedElements(from);
+ 
+         if (sharedElementNames.isEmpty()) {
+             sharedElementTransition = null;
+@@ -368,7 +368,7 @@ private String findKeyForValue(@NonNull ArrayMap<String, String> map, @NonNull S
+     }
+ 
+     @Nullable
+-    private ArrayMap<String, View> captureFromSharedElements(@NonNull View from, boolean isPush) {
++    private ArrayMap<String, View> captureFromSharedElements(@NonNull View from) {
+         if (sharedElementNames.isEmpty() || sharedElementTransition == null) {
+             sharedElementNames.clear();
+             return null;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -753,7 +753,7 @@ private void performControllerChange(@Nullable final Controller to, @Nullable fi
+             throw new IllegalStateException("Trying to push a controller that has already been destroyed. (" + to.getClass().getSimpleName() + ")");
+         }
+ 
+-        final ChangeTransaction transaction = new ChangeTransaction(to, from, isPush, container, changeHandler, changeListeners);
++        final ChangeTransaction transaction = new ChangeTransaction(to, from, isPush, container, changeHandler, new ArrayList<>(changeListeners));
+ 
+         if (pendingControllerChanges.size() > 0) {
+             // If we already have changes queued up (awaiting full container attach), queue this one up as well so they don't happen
+
+File: conductor-modules/autodispose/src/main/java/com/bluelinelabs/conductor/autodispose/ControllerScopeProvider.java
+Patch:
+@@ -34,7 +34,7 @@ public ControllerEvent apply(ControllerEvent lastEvent) throws Exception {
+ 
+     @NonNull private final BehaviorSubject<ControllerEvent> lifecycleSubject;
+ 
+-    public static LifecycleScopeProvider from(@NonNull Controller controller) {
++    public static ControllerScopeProvider from(@NonNull Controller controller) {
+         return new ControllerScopeProvider(controller);
+     }
+ 
+@@ -56,4 +56,4 @@ public Function<ControllerEvent, ControllerEvent> correspondingEvents() {
+     public ControllerEvent peekLifecycle() {
+         return lifecycleSubject.getValue();
+     }
+-}
+\ No newline at end of file
++}
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -570,7 +570,7 @@ public final void requestPermissions(@NonNull final String[] permissions, final
+      * @param permission A permission this Controller has requested
+      */
+     public boolean shouldShowRequestPermissionRationale(@NonNull String permission) {
+-        return false;
++        return Build.VERSION.SDK_INT >= 23 && getActivity().shouldShowRequestPermissionRationale(permission);
+     }
+ 
+     /**
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/FadeChangeHandler.java
+Patch:
+@@ -37,7 +37,7 @@ protected Animator getAnimator(@NonNull ViewGroup container, @Nullable View from
+             animator.play(ObjectAnimator.ofFloat(to, View.ALPHA, start, 1));
+         }
+ 
+-        if (from != null && removesFromViewOnPush()) {
++        if (from != null && (!isPush || removesFromViewOnPush())) {
+             animator.play(ObjectAnimator.ofFloat(from, View.ALPHA, 0));
+         }
+ 
+
+File: conductor-modules/autodispose/src/main/java/com/bluelinelabs/conductor/autodispose/ControllerLifecycleSubjectHelper.java
+Patch:
+@@ -31,7 +31,7 @@ public static BehaviorSubject<ControllerEvent> create(Controller controller) {
+ 
+         controller.addLifecycleListener(new Controller.LifecycleListener() {
+             @Override
+-            public void onContextAvailable(@NonNull Controller controller, @NonNull Context context) {
++            public void preContextAvailable(@NonNull Controller controller) {
+                 subject.onNext(ControllerEvent.CONTEXT_AVAILABLE);
+             }
+ 
+@@ -56,7 +56,7 @@ public void preDestroyView(@NonNull Controller controller, @NonNull View view) {
+             }
+ 
+             @Override
+-            public void onContextUnavailable(@NonNull Controller controller) {
++            public void preContextUnavailable(@NonNull Controller controller, @NonNull Context context) {
+                 subject.onNext(ControllerEvent.CONTEXT_UNAVAILABLE);
+             }
+ 
+
+File: conductor-modules/rxlifecycle/src/main/java/com/bluelinelabs/conductor/rxlifecycle/ControllerLifecycleSubjectHelper.java
+Patch:
+@@ -36,7 +36,7 @@ public static BehaviorSubject<ControllerEvent> create(Controller controller) {
+ 
+         controller.addLifecycleListener(new LifecycleListener() {
+             @Override
+-            public void onContextAvailable(@NonNull Controller controller, @NonNull Context context) {
++            public void preContextAvailable(@NonNull Controller controller) {
+                 subject.onNext(ControllerEvent.CONTEXT_AVAILABLE);
+             }
+ 
+@@ -61,7 +61,7 @@ public void preDestroyView(@NonNull Controller controller, @NonNull View view) {
+             }
+ 
+             @Override
+-            public void onContextUnavailable(@NonNull Controller controller) {
++            public void preContextUnavailable(@NonNull Controller controller, @NonNull Context context) {
+                 subject.onNext(ControllerEvent.CONTEXT_UNAVAILABLE);
+             }
+ 
+
+File: conductor-modules/rxlifecycle2/src/main/java/com/bluelinelabs/conductor/rxlifecycle2/ControllerLifecycleSubjectHelper.java
+Patch:
+@@ -31,7 +31,7 @@ public static BehaviorSubject<ControllerEvent> create(Controller controller) {
+ 
+         controller.addLifecycleListener(new Controller.LifecycleListener() {
+             @Override
+-            public void onContextAvailable(@NonNull Controller controller, @NonNull Context context) {
++            public void preContextAvailable(@NonNull Controller controller) {
+                 subject.onNext(ControllerEvent.CONTEXT_AVAILABLE);
+             }
+ 
+@@ -56,7 +56,7 @@ public void preDestroyView(@NonNull Controller controller, @NonNull View view) {
+             }
+ 
+             @Override
+-            public void onContextUnavailable(@NonNull Controller controller) {
++            public void preContextUnavailable(@NonNull Controller controller, @NonNull Context context) {
+                 subject.onNext(ControllerEvent.CONTEXT_UNAVAILABLE);
+             }
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -555,7 +555,7 @@ public void onActivityDestroyed(@NonNull Activity activity) {
+         changeListeners.clear();
+ 
+         for (RouterTransaction transaction : backstack) {
+-            transaction.controller.activityDestroyed(activity.isChangingConfigurations());
++            transaction.controller.activityDestroyed(activity);
+ 
+             for (Router childRouter : transaction.controller.getChildRouters()) {
+                 childRouter.onActivityDestroyed(activity);
+@@ -564,7 +564,7 @@ public void onActivityDestroyed(@NonNull Activity activity) {
+ 
+         for (int index = destroyingControllers.size() - 1; index >= 0; index--) {
+             Controller controller = destroyingControllers.get(index);
+-            controller.activityDestroyed(activity.isChangingConfigurations());
++            controller.activityDestroyed(activity);
+ 
+             for (Router childRouter : controller.getChildRouters()) {
+                 childRouter.onActivityDestroyed(activity);
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/TestController.java
+Patch:
+@@ -24,7 +24,7 @@ public class TestController extends Controller {
+ 
+     private static final String KEY_CALL_STATE = "TestController.currentCallState";
+ 
+-    public CallState currentCallState = new CallState(true, false);
++    public CallState currentCallState = new CallState(false);
+     public ChangeHandlerHistory changeHandlerHistory = new ChangeHandlerHistory();
+ 
+     @NonNull
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -8,7 +8,6 @@
+ import android.content.res.Resources;
+ import android.os.Build;
+ import android.os.Bundle;
+-import android.os.Handler;
+ import android.os.Parcelable;
+ import android.support.annotation.IdRes;
+ import android.support.annotation.NonNull;
+@@ -732,8 +731,8 @@ public boolean onOptionsItemSelected(@NonNull MenuItem item) {
+         return false;
+     }
+ 
+-    final void setNeedsAttach() {
+-        needsAttach = true;
++    final void setNeedsAttach(boolean needsAttach) {
++        this.needsAttach = needsAttach;
+     }
+ 
+     final void prepareForHostDetach() {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -577,7 +577,7 @@ public void onActivityDestroyed(@NonNull Activity activity) {
+     void prepareForHostDetach() {
+         for (RouterTransaction transaction : backstack) {
+             if (ControllerChangeHandler.completeHandlerImmediately(transaction.controller.getInstanceId())) {
+-                transaction.controller.setNeedsAttach();
++                transaction.controller.setNeedsAttach(true);
+             }
+             transaction.controller.prepareForHostDetach();
+         }
+
+File: conductor-lint/src/main/java/com/bluelinelabs/conductor/lint/ControllerChangeHandlerIssueDetector.java
+Patch:
+@@ -66,4 +66,4 @@ public void checkClass(JavaContext context, PsiClass declaration) {
+             context.report(ISSUE, declaration, context.getLocation(declaration), message);
+         }
+     }
+-}
+\ No newline at end of file
++}
+
+File: conductor-lint/src/main/java/com/bluelinelabs/conductor/lint/ControllerIssueDetector.java
+Patch:
+@@ -79,4 +79,4 @@ public void checkClass(JavaContext context, PsiClass declaration) {
+             context.report(ISSUE, declaration, context.getLocation(declaration), message);
+         }
+     }
+-}
+\ No newline at end of file
++}
+
+File: conductor-lint/src/main/java/com/bluelinelabs/conductor/lint/IssueRegistry.java
+Patch:
+@@ -11,4 +11,4 @@ public final class IssueRegistry extends com.android.tools.lint.client.api.Issue
+                 ControllerIssueDetector.ISSUE,
+                 ControllerChangeHandlerIssueDetector.ISSUE);
+     }
+-}
+\ No newline at end of file
++}
+
+File: conductor-rxlifecycle/src/main/java/com/bluelinelabs/conductor/rxlifecycle/RxController.java
+Patch:
+@@ -49,4 +49,4 @@ public final <T> LifecycleTransformer<T> bindToLifecycle() {
+         return RxControllerLifecycle.bindController(lifecycleSubject);
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: conductor-rxlifecycle/src/main/java/com/bluelinelabs/conductor/rxlifecycle/RxRestoreViewOnCreateController.java
+Patch:
+@@ -49,4 +49,4 @@ public final <T> LifecycleTransformer<T> bindToLifecycle() {
+         return RxControllerLifecycle.bindController(lifecycleSubject);
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: conductor-support/src/main/java/com/bluelinelabs/conductor/support/RouterPagerAdapter.java
+Patch:
+@@ -158,4 +158,4 @@ private static String makeRouterName(int viewId, long id) {
+         return viewId + ":" + id;
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/RouterTransaction.java
+Patch:
+@@ -140,4 +140,4 @@ public Bundle saveInstanceState() {
+         return bundle;
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/internal/NoOpControllerChangeHandler.java
+Patch:
+@@ -24,4 +24,4 @@ public ControllerChangeHandler copy() {
+     public boolean isReusable() {
+         return true;
+     }
+-}
+\ No newline at end of file
++}
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/CallState.java
+Patch:
+@@ -172,4 +172,4 @@ public CallState[] newArray(int size) {
+             return new CallState[size];
+         }
+     };
+-}
+\ No newline at end of file
++}
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/transitions/FabTransform.java
+Patch:
+@@ -292,4 +292,4 @@ private void captureValues(TransitionValues transitionValues) {
+         transitionValues.values.put(PROP_BOUNDS, new Rect(view.getLeft(), view.getTop(),
+                 view.getRight(), view.getBottom()));
+     }
+-}
+\ No newline at end of file
++}
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/transitions/GravityArcMotion.java
+Patch:
+@@ -214,4 +214,4 @@ public Path getPath(float startX, float startY, float endX, float endY) {
+         return path;
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/CityDetailController.java
+Patch:
+@@ -84,7 +84,7 @@ static class CityDetailAdapter extends RecyclerView.Adapter<CityDetailAdapter.Vi
+         private final String textViewTransitionName;
+         private final String[] details;
+ 
+-        public CityDetailAdapter(LayoutInflater inflater, @DrawableRes String title, int imageDrawableRes, String[] details, String transitionNameBase) {
++        public CityDetailAdapter(LayoutInflater inflater, String title, @DrawableRes int imageDrawableRes, String[] details, String transitionNameBase) {
+             this.inflater = inflater;
+             this.title = title;
+             this.imageDrawableRes = imageDrawableRes;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/util/BundleBuilder.java
+Patch:
+@@ -169,4 +169,4 @@ public Bundle build() {
+         return bundle;
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/widget/ElasticDragDismissFrameLayout.java
+Patch:
+@@ -239,4 +239,4 @@ private void dispatchDismissCallback() {
+         }
+     }
+ 
+-}
+\ No newline at end of file
++}
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ActivityHostedRouter.java
+Patch:
+@@ -32,6 +32,8 @@ public final void setHost(@NonNull LifecycleHandler lifecycleHandler, @NonNull V
+ 
+             this.lifecycleHandler = lifecycleHandler;
+             this.container = container;
++
++            watchContainerAttach();
+         }
+     }
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerHostedRouter.java
+Patch:
+@@ -44,6 +44,8 @@ final void setHost(@NonNull Controller controller, @NonNull ViewGroup container)
+ 
+             hostController = controller;
+             this.container = container;
++
++            watchContainerAttach();
+         }
+     }
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/SharedElementDelayingChangeHandler.java
+Patch:
+@@ -95,7 +95,7 @@ public boolean onPreDraw() {
+     }
+ 
+     @Override
+-    public void executePropertyChanges(@NonNull ViewGroup container, @Nullable View from, @Nullable View to, @NonNull Transition transition, boolean isPush) {
++    public void executePropertyChanges(@NonNull ViewGroup container, @Nullable View from, @Nullable View to, @Nullable Transition transition, boolean isPush) {
+         if (to != null) {
+             to.setVisibility(View.VISIBLE);
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/HorizontalChangeHandler.java
+Patch:
+@@ -46,7 +46,7 @@ protected Animator getAnimator(@NonNull ViewGroup container, @Nullable View from
+             }
+             if (to != null) {
+                 // Allow this to have a nice transition when coming off an aborted push animation
+-                float fromLeft = from != null ? from.getX() : 0;
++                float fromLeft = from != null ? from.getTranslationX() : 0;
+                 animatorSet.play(ObjectAnimator.ofFloat(to, View.TRANSLATION_X, fromLeft - to.getWidth(), 0));
+             }
+         }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -603,7 +603,7 @@ public int compare(RouterTransaction o1, RouterTransaction o2) {
+      *
+      * @param lifecycleListener The listener
+      */
+-    public void addLifecycleListener(@NonNull LifecycleListener lifecycleListener) {
++    public final void addLifecycleListener(@NonNull LifecycleListener lifecycleListener) {
+         if (!lifecycleListeners.contains(lifecycleListener)) {
+             lifecycleListeners.add(lifecycleListener);
+         }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -679,7 +679,7 @@ private void performControllerChange(@Nullable final RouterTransaction to, @Null
+         ControllerChangeHandler.executeChange(toController, fromController, isPush, container, changeHandler, changeListeners);
+     }
+ 
+-    private void pushToBackstack(@NonNull RouterTransaction entry) {
++    protected void pushToBackstack(@NonNull RouterTransaction entry) {
+         backstack.push(entry);
+     }
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/HomeController.java
+Patch:
+@@ -41,7 +41,7 @@
+ 
+ public class HomeController extends BaseController {
+ 
+-    public enum HomeDemoModel {
++    private enum HomeDemoModel {
+         NAVIGATION("Navigation Demos", R.color.red_300),
+         TRANSITIONS("Transition Demos", R.color.blue_grey_300),
+         SHARED_ELEMENT_TRANSITIONS("Shared Element Demos", R.color.purple_300),
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import android.app.Activity;
+ import android.content.Intent;
++import android.content.IntentSender;
+ import android.os.Bundle;
+ import android.support.annotation.NonNull;
+ import android.support.annotation.Nullable;
+@@ -760,6 +761,8 @@ void setControllerRouter(@NonNull Controller controller) {
+     abstract void startActivity(@NonNull Intent intent);
+     abstract void startActivityForResult(@NonNull String instanceId, @NonNull Intent intent, int requestCode);
+     abstract void startActivityForResult(@NonNull String instanceId, @NonNull Intent intent, int requestCode, @Nullable Bundle options);
++    abstract void startIntentSenderForResult(@NonNull String instanceId, @NonNull IntentSender intent, int requestCode, @Nullable Intent fillInIntent, int flagsMask,
++                                             int flagsValues, int extraFlags, @Nullable Bundle options) throws IntentSender.SendIntentException;
+     abstract void registerForActivityResult(@NonNull String instanceId, int requestCode);
+     abstract void unregisterForActivityResults(@NonNull String instanceId);
+     abstract void requestPermissions(@NonNull String instanceId, @NonNull String[] permissions, int requestCode);
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/TestController.java
+Patch:
+@@ -33,11 +33,11 @@ protected View onCreateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup
+         FrameLayout view = new AttachFakingFrameLayout(inflater.getContext());
+         view.setId(VIEW_ID);
+ 
+-        FrameLayout childContainer1 = new FrameLayout(inflater.getContext());
++        FrameLayout childContainer1 = new AttachFakingFrameLayout(inflater.getContext());
+         childContainer1.setId(CHILD_VIEW_ID_1);
+         view.addView(childContainer1);
+ 
+-        FrameLayout childContainer2 = new FrameLayout(inflater.getContext());
++        FrameLayout childContainer2 = new AttachFakingFrameLayout(inflater.getContext());
+         childContainer2.setId(CHILD_VIEW_ID_2);
+         view.addView(childContainer2);
+ 
+
+File: conductor-support/src/main/java/com/bluelinelabs/conductor/support/ControllerPagerAdapter.java
+Patch:
+@@ -124,7 +124,8 @@ public void restoreState(Parcelable state, ClassLoader loader) {
+     }
+ 
+     /**
+-     * Returns the already instantiated Controller in the specified position, if available.
++     * Returns the already instantiated Controller in the specified position or {@code null} if
++     * this position does not yet have a controller.
+      */
+     @Nullable
+     public Controller getController(int position) {
+
+File: conductor-support/src/main/java/com/bluelinelabs/conductor/support/RouterPagerAdapter.java
+Patch:
+@@ -101,7 +101,8 @@ public void restoreState(Parcelable state, ClassLoader loader) {
+     }
+ 
+     /**
+-     * Returns the already instantiated Router in the specified position, if available.
++     * Returns the already instantiated Router in the specified position or {@code null} if there
++     * is no router associated with this position.
+      */
+     @Nullable
+     public Router getRouter(int position) {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/RestoreViewOnCreateController.java
+Patch:
+@@ -45,7 +45,7 @@ protected final View onCreateView(@NonNull LayoutInflater inflater, @NonNull Vie
+      *                       This Controller's view should NOT be added in this method. It is simply passed in
+      *                       so that valid LayoutParams can be used during inflation.
+      * @param savedViewState A bundle for the view's state, which would have been created in {@link #onSaveViewState(View, Bundle)},
+-     *                       or null if no saved state exists.
++     *                       or {@code null} if no saved state exists.
+      */
+     @NonNull
+     protected abstract View onCreateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup container, @Nullable Bundle savedViewState);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/AnimatorChangeHandler.java
+Patch:
+@@ -94,8 +94,8 @@ public boolean removesFromViewOnPush() {
+      * Should be overridden to return the Animator to use while replacing Views.
+      *
+      * @param container The container these Views are hosted in.
+-     * @param from The previous View in the container, if any.
+-     * @param to The next View that should be put in the container, if any.
++     * @param from The previous View in the container or {@code null} if there was no Controller before this transition
++     * @param to The next View that should be put in the container or {@code null} if no Controller is being transitioned to
+      * @param isPush True if this is a push transaction, false if it's a pop.
+      * @param toAddedToContainer True if the "to" view was added to the container as a part of this ChangeHandler. False if it was already in the hierarchy.
+      */
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerHostedRouter.java
+Patch:
+@@ -51,12 +51,12 @@ final void removeHost() {
+         final List<Controller> controllersToDestroy = new ArrayList<>(destroyingControllers);
+         for (Controller controller : controllersToDestroy) {
+             if (controller.getView() != null) {
+-                controller.detach(controller.getView(), true);
++                controller.detach(controller.getView(), true, false);
+             }
+         }
+         for (RouterTransaction transaction : backstack) {
+             if (transaction.controller.getView() != null) {
+-                transaction.controller.detach(transaction.controller.getView(), true);
++                transaction.controller.detach(transaction.controller.getView(), true, false);
+             }
+         }
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/AnimatorChangeHandler.java
+Patch:
+@@ -150,7 +150,7 @@ private void complete(@NonNull ControllerChangeCompletedListener changeListener,
+             if (animatorListener != null) {
+                 animator.removeListener(animatorListener);
+             }
+-            animator.end();
++            animator.cancel();
+             animator = null;
+         }
+     }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/FadeChangeHandler.java
+Patch:
+@@ -32,8 +32,9 @@ public FadeChangeHandler(long duration, boolean removesFromViewOnPush) {
+     @Override @NonNull
+     protected Animator getAnimator(@NonNull ViewGroup container, @Nullable View from, @Nullable View to, boolean isPush, boolean toAddedToContainer) {
+         AnimatorSet animator = new AnimatorSet();
+-        if (to != null && toAddedToContainer) {
+-            animator.play(ObjectAnimator.ofFloat(to, View.ALPHA, 0, 1));
++        if (to != null) {
++            float start = toAddedToContainer ? 0 : to.getAlpha();
++            animator.play(ObjectAnimator.ofFloat(to, View.ALPHA, start, 1));
+         }
+ 
+         if (from != null) {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/HorizontalChangeHandler.java
+Patch:
+@@ -45,7 +45,9 @@ protected Animator getAnimator(@NonNull ViewGroup container, @Nullable View from
+                 animatorSet.play(ObjectAnimator.ofFloat(from, View.TRANSLATION_X, from.getWidth()));
+             }
+             if (to != null) {
+-                animatorSet.play(ObjectAnimator.ofFloat(to, View.TRANSLATION_X, -to.getWidth(), 0));
++                // Allow this to have a nice transition when coming off an aborted push animation
++                float fromLeft = from != null ? from.getX() : 0;
++                animatorSet.play(ObjectAnimator.ofFloat(to, View.TRANSLATION_X, fromLeft - to.getWidth(), 0));
+             }
+         }
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/CircularRevealChangeHandlerCompat.java
+Patch:
+@@ -22,8 +22,9 @@ protected Animator getAnimator(@NonNull ViewGroup container, View from, View to,
+             return super.getAnimator(container, from, to, isPush, toAddedToContainer);
+         } else {
+             AnimatorSet animator = new AnimatorSet();
+-            if (to != null && toAddedToContainer) {
+-                animator.play(ObjectAnimator.ofFloat(to, View.ALPHA, 0, 1));
++            if (to != null) {
++                float start = toAddedToContainer ? 0 : to.getAlpha();
++                animator.play(ObjectAnimator.ofFloat(to, View.ALPHA, start, 1));
+             }
+ 
+             if (from != null) {
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/ScaleFadeChangeHandler.java
+Patch:
+@@ -18,8 +18,9 @@ public ScaleFadeChangeHandler() {
+     @Override @NonNull
+     protected Animator getAnimator(@NonNull ViewGroup container, View from, View to, boolean isPush, boolean toAddedToContainer) {
+         AnimatorSet animator = new AnimatorSet();
+-        if (to != null && toAddedToContainer) {
+-            animator.play(ObjectAnimator.ofFloat(to, View.ALPHA, 0, 1));
++        if (to != null) {
++            float start = toAddedToContainer ? 0 : to.getAlpha();
++            animator.play(ObjectAnimator.ofFloat(to, View.ALPHA, start, 1));
+         }
+ 
+         if (from != null) {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -268,7 +268,7 @@ public final View getView() {
+      */
+     @Nullable
+     public final Activity getActivity() {
+-        return router.getActivity();
++        return router != null ? router.getActivity() : null;
+     }
+ 
+     /**
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -188,10 +188,9 @@ public void replaceTopController(@NonNull RouterTransaction transaction) {
+     void destroy(boolean popViews) {
+         popsLastView = true;
+         List<RouterTransaction> poppedControllers = backstack.popAll();
++        trackDestroyingControllers(poppedControllers);
+ 
+         if (popViews && poppedControllers.size() > 0) {
+-            trackDestroyingControllers(poppedControllers);
+-
+             performControllerChange(null, poppedControllers.get(0).controller, false, poppedControllers.get(0).popChangeHandler());
+         }
+     }
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerLifecycleCallbacksTests.java
+Patch:
+@@ -23,7 +23,7 @@
+ 
+ @RunWith(RobolectricTestRunner.class)
+ @Config(manifest = Config.NONE)
+-public class ControllerLifecycleTests {
++public class ControllerLifecycleCallbacksTests {
+ 
+     private Router router;
+ 
+@@ -89,7 +89,7 @@ public void testLifecycleWithActivityDestroy() {
+ 
+         assertCalls(expectedCallState, controller);
+ 
+-        activityProxy.stop();
++        activityProxy.stop(true);
+ 
+         expectedCallState.saveViewStateCalls++;
+         expectedCallState.detachCalls++;
+@@ -128,7 +128,7 @@ public void testLifecycleWithActivityConfigurationChange() {
+         activityProxy.pause();
+         assertCalls(expectedCallState, controller);
+ 
+-        activityProxy.stop();
++        activityProxy.stop(true);
+         expectedCallState.detachCalls++;
+         expectedCallState.destroyViewCalls++;
+         assertCalls(expectedCallState, controller);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -849,6 +849,7 @@ private void removeViewReference() {
+             onDestroyView(view);
+ 
+             viewAttachHandler.unregisterAttachListener(view);
++            viewAttachHandler = null;
+             viewIsAttached = false;
+ 
+             if (isBeingDestroyed) {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/AnimatorChangeHandler.java
+Patch:
+@@ -150,6 +150,7 @@ private void complete(@NonNull ControllerChangeCompletedListener changeListener,
+             if (animatorListener != null) {
+                 animator.removeListener(animatorListener);
+             }
++            animator.end();
+             animator = null;
+         }
+     }
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/ActivityProxy.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.bluelinelabs.conductor;
++package com.bluelinelabs.conductor.util;
+ 
+ import android.os.Bundle;
+ import android.support.annotation.IdRes;
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/AttachFakingFrameLayout.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.bluelinelabs.conductor;
++package com.bluelinelabs.conductor.util;
+ 
+ import android.content.Context;
+ import android.os.IBinder;
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/CallState.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.bluelinelabs.conductor;
++package com.bluelinelabs.conductor.util;
+ 
+ import android.os.Parcel;
+ import android.os.Parcelable;
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/TestActivity.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.bluelinelabs.conductor;
++package com.bluelinelabs.conductor.util;
+ 
+ import android.app.Activity;
+ 
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/util/ViewUtils.java
+Patch:
+@@ -1,4 +1,4 @@
+-package com.bluelinelabs.conductor;
++package com.bluelinelabs.conductor.util;
+ 
+ import android.view.View;
+ import android.view.View.OnAttachStateChangeListener;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -229,7 +229,7 @@ public final Router getChildRouter(@NonNull ViewGroup container, @Nullable Strin
+ 
+     public final void removeChildRouter(@NonNull Router childRouter) {
+         if ((childRouter instanceof ControllerHostedRouter) && childRouters.remove(childRouter)) {
+-            childRouter.destroy();
++            childRouter.destroy(true);
+         }
+     }
+ 
+@@ -969,7 +969,7 @@ private void destroy(boolean removeViews) {
+         }
+ 
+         for (ControllerHostedRouter childRouter : childRouters) {
+-            childRouter.destroy();
++            childRouter.destroy(false);
+         }
+ 
+         if (!attached) {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerHostedRouter.java
+Patch:
+@@ -72,9 +72,9 @@ final void setDetachFrozen(boolean frozen) {
+     }
+ 
+     @Override
+-    void destroy() {
++    void destroy(boolean popViews) {
+         setDetachFrozen(false);
+-        super.destroy();
++        super.destroy(popViews);
+     }
+ 
+     @Override @Nullable
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -185,11 +185,11 @@ public void replaceTopController(@NonNull RouterTransaction transaction) {
+         performControllerChange(transaction.pushChangeHandler(handler), topTransaction, true);
+     }
+ 
+-    void destroy() {
++    void destroy(boolean popViews) {
+         popsLastView = true;
+         List<RouterTransaction> poppedControllers = backstack.popAll();
+ 
+-        if (poppedControllers.size() > 0) {
++        if (popViews && poppedControllers.size() > 0) {
+             trackDestroyingControllers(poppedControllers);
+ 
+             performControllerChange(null, poppedControllers.get(0).controller, false, poppedControllers.get(0).popChangeHandler());
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -751,6 +751,7 @@ final void activityResumed(@NonNull Activity activity) {
+             attach(view);
+         } else if (attached) {
+             needsAttach = false;
++            hasSavedViewState = false;
+         }
+ 
+         onActivityResumed(activity);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/TransitionChangeHandler.java
+Patch:
+@@ -81,4 +81,5 @@ public void onTransitionResume(Transition transition) { }
+     public final boolean removesFromViewOnPush() {
+         return true;
+     }
++
+ }
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/widget/ElasticDragDismissFrameLayout.java
+Patch:
+@@ -16,6 +16,7 @@
+ 
+ package com.bluelinelabs.conductor.demo.widget;
+ 
++import android.annotation.TargetApi;
+ import android.content.Context;
+ import android.support.v4.view.NestedScrollingParent;
+ import android.support.v4.view.animation.FastOutSlowInInterpolator;
+@@ -32,6 +33,7 @@
+  * Applies an elasticity factor to reduce movement as you approach the given dismiss distance.
+  * Optionally also scales down content during drag.
+  */
++@TargetApi(21)
+ public class ElasticDragDismissFrameLayout extends FrameLayout implements NestedScrollingParent {
+ 
+     public static abstract class ElasticDragDismissCallback {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -365,7 +365,7 @@ public void setBackstack(@NonNull List<RouterTransaction> newBackstack, @Nullabl
+                 ControllerChangeHandler handler = changeHandler != null ? changeHandler : new SimpleSwapChangeHandler();
+ 
+                 Controller rootController = oldVisibleTransactions.size() > 0 ? oldVisibleTransactions.get(0).controller : null;
+-                performControllerChange(newVisibleTransactions.get(0).controller, rootController, true, handler.copy());
++                performControllerChange(newVisibleTransactions.get(0).controller, rootController, true, handler);
+ 
+                 for (int i = oldVisibleTransactions.size() - 1; i > 0; i--) {
+                     RouterTransaction transaction = oldVisibleTransactions.get(i);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -130,7 +130,7 @@ protected Controller() {
+      * @param args Any arguments that need to be retained.
+      */
+     protected Controller(@Nullable Bundle args) {
+-        this.args = args;
++        this.args = args != null ? args : new Bundle();
+         instanceId = UUID.randomUUID().toString();
+         ensureRequiredConstructor();
+     }
+@@ -158,7 +158,7 @@ public final Router getRouter() {
+     /**
+      * Returns any arguments that were set in this Controller's constructor
+      */
+-    @Nullable
++    @NonNull
+     public Bundle getArgs() {
+         return args;
+     }
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/HomeController.java
+Patch:
+@@ -80,7 +80,7 @@ protected void onViewBound(@NonNull View view) {
+     }
+ 
+     @Override
+-    public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
++    public void onCreateOptionsMenu(@NonNull Menu menu, @NonNull MenuInflater inflater) {
+         super.onCreateOptionsMenu(menu, inflater);
+         inflater.inflate(R.menu.home, menu);
+     }
+@@ -95,7 +95,7 @@ protected void onChangeStarted(@NonNull ControllerChangeHandler changeHandler, @
+     }
+ 
+     @Override
+-    public boolean onOptionsItemSelected(MenuItem item) {
++    public boolean onOptionsItemSelected(@NonNull MenuItem item) {
+         if (item.getItemId() == R.id.about) {
+             SpannableString details = new SpannableString("A small, yet full-featured framework that allows building View-based Android applications");
+             details.setSpan(new AbsoluteSizeSpan(16, true), 0, details.length(), Spanned.SPAN_INCLUSIVE_INCLUSIVE);
+
+File: conductor-support/src/main/java/com/bluelinelabs/conductor/support/ControllerPagerAdapter.java
+Patch:
+@@ -40,7 +40,7 @@ public ControllerPagerAdapter(Controller host, boolean saveControllerState) {
+     public Object instantiateItem(ViewGroup container, int position) {
+         final String name = makeControllerName(container.getId(), getItemId(position));
+ 
+-        Router router = host.getChildRouter(container);
++        Router router = host.getChildRouter(container, name);
+         if (savesState && !router.hasRootController()) {
+             Bundle routerSavedState = savedPages.get(position);
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -647,23 +647,23 @@ public final void setOptionsMenuHidden(boolean optionsMenuHidden) {
+      * @param menu The menu into which your options should be placed.
+      * @param inflater The inflater that can be used to inflate your menu items.
+      */
+-    public void onCreateOptionsMenu(@Nullable Menu menu, @Nullable MenuInflater inflater) { }
++    public void onCreateOptionsMenu(@NonNull Menu menu, @NonNull MenuInflater inflater) { }
+ 
+     /**
+      * Prepare the screen's options menu to be displayed. This is called directly before showing the
+      * menu and can be used modify its contents.
+      *
+      * @param menu The menu that will be displayed
+      */
+-    public void onPrepareOptionsMenu(@Nullable Menu menu) { }
++    public void onPrepareOptionsMenu(@NonNull Menu menu) { }
+ 
+     /**
+      * Called when an option menu item has been selected by the user.
+      *
+      * @param item The selected item.
+      * @return True if this event has been consumed, false if it has not.
+      */
+-    public boolean onOptionsItemSelected(@Nullable MenuItem item) {
++    public boolean onOptionsItemSelected(@NonNull MenuItem item) {
+         return false;
+     }
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/AnimatorChangeHandler.java
+Patch:
+@@ -77,7 +77,7 @@ public void completeImmediately() {
+ 
+         needsImmediateCompletion = true;
+         if (animator != null) {
+-            animator.cancel();
++            animator.end();
+         }
+     }
+ 
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerTests.java
+Patch:
+@@ -38,11 +38,12 @@ public void setup() {
+     @Test
+     public void testViewRetention() {
+         Controller controller = new TestController();
++        controller.setRouter(router);
+ 
+         // Test View getting released w/ RELEASE_DETACH
+         controller.setRetainViewMode(RetainViewMode.RELEASE_DETACH);
+         Assert.assertNull(controller.getView());
+-        View view = controller.inflate(new AttachFakingFrameLayout(router.getActivity()));
++        View view = controller.inflate(router.container);
+         Assert.assertNotNull(controller.getView());
+         ViewUtils.reportAttached(view, true);
+         Assert.assertNotNull(controller.getView());
+@@ -51,7 +52,7 @@ public void testViewRetention() {
+ 
+         // Test View getting retained w/ RETAIN_DETACH
+         controller.setRetainViewMode(RetainViewMode.RETAIN_DETACH);
+-        view = controller.inflate(new AttachFakingFrameLayout(router.getActivity()));
++        view = controller.inflate(router.container);
+         Assert.assertNotNull(controller.getView());
+         ViewUtils.reportAttached(view, true);
+         Assert.assertNotNull(controller.getView());
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/TransitionChangeHandler.java
+Patch:
+@@ -71,7 +71,7 @@ public void onTransitionResume(Transition transition) { }
+         if (from != null) {
+             container.removeView(from);
+         }
+-        if (to != null) {
++        if (to != null && to.getParent() == null) {
+             container.addView(to);
+         }
+     }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -1057,9 +1057,10 @@ final void changeEnded(ControllerChangeHandler changeHandler, ControllerChangeTy
+ 
+         if (isBeingDestroyed && !viewIsAttached && !attached && destroyedView != null) {
+             View view = destroyedView.get();
+-            if (router.container != null && view.getParent() == router.container) {
++            if (router.container != null && view != null && view.getParent() == router.container) {
+                 router.container.removeView(view);
+             }
++            destroyedView = null;
+         }
+     }
+ 
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/CallState.java
+Patch:
+@@ -119,9 +119,9 @@ public String toString() {
+                 "\n    restoreInstanceStateCalls=" + restoreInstanceStateCalls +
+                 "\n    saveViewStateCalls=" + saveViewStateCalls +
+                 "\n    restoreViewStateCalls=" + restoreViewStateCalls +
+-                "\n    onActivityResultCalls= " + onActivityResultCalls +
+-                "\n    onRequestPermissionsResultCalls= " + onRequestPermissionsResultCalls +
+-                "\n    createOptionsMenuCalls= " + createOptionsMenuCalls +
++                "\n    onActivityResultCalls=" + onActivityResultCalls +
++                "\n    onRequestPermissionsResultCalls=" + onRequestPermissionsResultCalls +
++                "\n    createOptionsMenuCalls=" + createOptionsMenuCalls +
+                 "}\n";
+     }
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -345,7 +345,7 @@ public void setBackstack(@NonNull List<RouterTransaction> newBackstack, Controll
+                 ControllerChangeHandler handler = changeHandler != null ? changeHandler : new SimpleSwapChangeHandler();
+ 
+                 Controller rootController = oldVisibleTransactions.size() > 0 ? oldVisibleTransactions.get(0).controller : null;
+-                performControllerChange(newVisibleTransactions.get(0).controller, rootController, true, handler);
++                performControllerChange(newVisibleTransactions.get(0).controller, rootController, true, handler.copy());
+ 
+                 for (int i = oldVisibleTransactions.size() - 1; i > 0; i--) {
+                     RouterTransaction transaction = oldVisibleTransactions.get(i);
+@@ -354,7 +354,7 @@ public void setBackstack(@NonNull List<RouterTransaction> newBackstack, Controll
+ 
+                 for (int i = 1; i < newVisibleTransactions.size(); i++) {
+                     RouterTransaction transaction = newVisibleTransactions.get(i);
+-                    handler = transaction.pushChangeHandler() != null ? transaction.pushChangeHandler(): new SimpleSwapChangeHandler();
++                    handler = transaction.pushChangeHandler() != null ? transaction.pushChangeHandler().copy() : new SimpleSwapChangeHandler();
+                     performControllerChange(transaction.controller, newVisibleTransactions.get(i - 1).controller, true, handler);
+                 }
+             }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerHostedRouter.java
+Patch:
+@@ -47,7 +47,8 @@ final void removeHost() {
+             removeChangeListener((ControllerChangeListener)container);
+         }
+ 
+-        for (Controller controller : destroyingControllers) {
++        final List<Controller> controllersToDestroy = new ArrayList<>(destroyingControllers);
++        for (Controller controller : controllersToDestroy) {
+             if (controller.getView() != null) {
+                 controller.detach(controller.getView(), true);
+             }
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerLifecycleTests.java
+Patch:
+@@ -5,7 +5,6 @@
+ import android.support.annotation.NonNull;
+ import android.view.View;
+ import android.view.ViewGroup;
+-import android.widget.FrameLayout;
+ 
+ import com.bluelinelabs.conductor.Controller.LifecycleListener;
+ import com.bluelinelabs.conductor.MockChangeHandler.ChangeHandlerListener;
+@@ -32,8 +31,9 @@ public void createActivityController(Bundle savedInstanceState) {
+         activityController = Robolectric.buildActivity(TestActivity.class).create(savedInstanceState).start();
+ 
+         @IdRes int containerId = 4;
+-        FrameLayout routerContainer = new FrameLayout(activityController.get());
++        AttachFakingFrameLayout routerContainer = new AttachFakingFrameLayout(activityController.get());
+         routerContainer.setId(containerId);
++        routerContainer.setAttached(true);
+ 
+         router = Conductor.attachRouter(activityController.get(), routerContainer, savedInstanceState);
+         if (!router.hasRootController()) {
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/TestController.java
+Patch:
+@@ -29,7 +29,7 @@ public TestController() {
+     @Override
+     protected View onCreateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup container) {
+         currentCallState.createViewCalls++;
+-        FrameLayout view = new FrameLayout(inflater.getContext());
++        FrameLayout view = new AttachFakingFrameLayout(inflater.getContext());
+         view.setId(VIEW_ID);
+ 
+         FrameLayout childContainer1 = new FrameLayout(inflater.getContext());
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/AnimatorChangeHandler.java
+Patch:
+@@ -157,6 +157,7 @@ public void onAnimationCancel(Animator animation) {
+ 
+                 changeListener.onChangeCompleted();
+                 animator.removeListener(this);
++                animator = null;
+             }
+ 
+             @Override
+@@ -171,6 +172,8 @@ public void onAnimationEnd(Animator animation) {
+                 if (isPush && from != null) {
+                     resetFromView(from);
+                 }
++
++                animator = null;
+             }
+         });
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/base/ButterKnifeController.java
+Patch:
+@@ -37,6 +37,7 @@ protected void onViewBound(@NonNull View view) { }
+     protected void onDestroyView(View view) {
+         super.onDestroyView(view);
+         unbinder.unbind();
++        unbinder = null;
+     }
+ 
+ }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -481,6 +481,7 @@ public void onActivityDestroyed(Activity activity) {
+ 
+     public void prepareForHostDetach() {
+         for (RouterTransaction transaction : backstack) {
++            ControllerChangeHandler.completePushImmediately(transaction.controller.getInstanceId());
+             transaction.controller.prepareForHostDetach();
+         }
+     }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerHostedRouter.java
+Patch:
+@@ -52,7 +52,7 @@ final void removeHost() {
+                 controller.detach(controller.getView(), true);
+             }
+         }
+-        for (RouterTransaction transaction : backStack) {
++        for (RouterTransaction transaction : backstack) {
+             if (transaction.controller.getView() != null) {
+                 transaction.controller.detach(transaction.controller.getView(), true);
+             }
+@@ -64,7 +64,7 @@ final void removeHost() {
+     }
+ 
+     final void setDetachFrozen(boolean frozen) {
+-        for (RouterTransaction transaction : backStack) {
++        for (RouterTransaction transaction : backstack) {
+             transaction.controller.setDetachFrozen(frozen);
+         }
+     }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/AnimatorChangeHandler.java
+Patch:
+@@ -71,6 +71,7 @@ public long getAnimationDuration() {
+         return animationDuration;
+     }
+ 
++    @Override
+     public boolean removesFromViewOnPush() {
+         return removesFromViewOnPush;
+     }
+@@ -99,7 +100,7 @@ public final void performChange(@NonNull final ViewGroup container, final View f
+         if (addingToView) {
+             if (isPush || from == null) {
+                 container.addView(to);
+-            } else {
++            } else if (to.getParent() == null) {
+                 container.addView(to, container.indexOfChild(from));
+             }
+ 
+@@ -157,6 +158,7 @@ public void onAnimationEnd(Animator animation) {
+                 }
+             }
+         });
++
+         animator.start();
+     }
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -638,4 +638,5 @@ void setControllerRouter(Controller controller) {
+     abstract void requestPermissions(String instanceId, String[] permissions, int requestCode);
+     abstract boolean hasHost();
+     abstract List<Router> getSiblingRouters();
++    abstract Router getRootRouter();
+ }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -692,7 +692,7 @@ final void activityStarted(Activity activity) {
+     final void activityResumed(Activity activity) {
+         if (!attached && view != null && viewIsAttached) {
+             attach(view);
+-        } else {
++        } else if (attached) {
+             needsAttach = false;
+         }
+ 
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerChangeHandler.java
+Patch:
+@@ -138,7 +138,6 @@ public static void executeChange(final Controller to, final Controller from, fin
+             handler.performChange(container, fromView, toView, isPush, new ControllerChangeCompletedListener() {
+                 @Override
+                 public void onChangeCompleted() {
+-
+                     if (from != null) {
+                         from.changeEnded(handler, fromChangeType);
+                     }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/AnimatorChangeHandler.java
+Patch:
+@@ -140,7 +140,6 @@ private void performAnimation(@NonNull final ViewGroup container, final View fro
+             @Override
+             public void onAnimationCancel(Animator animation) {
+                 changeListener.onChangeCompleted();
+-                container.removeView(to);
+             }
+ 
+             @Override
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/TransitionDemoController.java
+Patch:
+@@ -140,11 +140,10 @@ public ControllerChangeHandler getChangeHandler(Controller from) {
+ 
+     public static RouterTransaction getRouterTransaction(int index, Controller fromController) {
+         TransitionDemoController toController = new TransitionDemoController(index);
+-        ControllerChangeHandler changeHandler = toController.getChangeHandler(fromController);
+ 
+         return RouterTransaction.with(toController)
+-                .pushChangeHandler(changeHandler)
+-                .popChangeHandler(changeHandler);
++                .pushChangeHandler(toController.getChangeHandler(fromController))
++                .popChangeHandler(toController.getChangeHandler(fromController));
+     }
+ 
+ }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -910,6 +910,7 @@ final void restoreViewState(@NonNull View view) {
+ 
+                     if (containerView != null && containerView instanceof ViewGroup) {
+                         childRouter.setHost(this, (ViewGroup)containerView);
++                        monitorChildRouter(childRouter);
+                         childRouter.rebindIfNeeded();
+                     }
+                 }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -692,6 +692,8 @@ final void activityStarted(Activity activity) {
+     final void activityResumed(Activity activity) {
+         if (!attached && view != null && viewIsAttached) {
+             attach(view);
++        } else {
++            needsAttach = false;
+         }
+ 
+         onActivityResumed(activity);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -31,7 +31,7 @@ public abstract class Router {
+ 
+     protected final Backstack backStack = new Backstack();
+     private final List<ControllerChangeListener> changeListeners = new ArrayList<>();
+-    private final List<Controller> destroyingControllers = new ArrayList<>();
++    final List<Controller> destroyingControllers = new ArrayList<>();
+ 
+     private boolean popsLastView = false;
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/TargetDisplayController.java
+Patch:
+@@ -101,10 +101,10 @@ protected String getTitle() {
+ 
+     private void setImageView() {
+         Picasso.with(getActivity())
+-                .load(mImageUri)
++                .load(imageUri)
+                 .fit()
+                 .centerCrop()
+-                .into(mImageView);
++                .into(imageView);
+     }
+ 
+     private void setTextView() {
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/TargetTitleEntryController.java
+Patch:
+@@ -31,8 +31,8 @@ public TargetTitleEntryController() { }
+ 
+     @Override
+     protected void onDetach(@NonNull View view) {
+-        InputMethodManager imm = (InputMethodManager) mEditText.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+-        imm.hideSoftInputFromWindow(mEditText.getWindowToken(), 0);
++        InputMethodManager imm = (InputMethodManager) editText.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
++        imm.hideSoftInputFromWindow(editText.getWindowToken(), 0);
+     }
+ 
+     @NonNull
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -853,6 +853,7 @@ private void removeViewReference() {
+     final View inflate(@NonNull ViewGroup parent) {
+         if (mView != null && mView.getParent() != null && mView.getParent() != parent) {
+             detach(mView, true);
++            removeViewReference();
+         }
+ 
+         if (mView == null) {
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -45,7 +45,7 @@ public abstract class Controller {
+     private static final String KEY_TARGET_INSTANCE_ID = "Controller.target.instanceId";
+     private static final String KEY_ARGS = "Controller.args";
+     private static final String KEY_NEEDS_ATTACH = "Controller.needsAttach";
+-    private static final String KEY_REQUESTED_PERMISSIONS = "Controller.childControllers";
++    private static final String KEY_REQUESTED_PERMISSIONS = "Controller.requestedPermissions";
+     private static final String KEY_OVERRIDDEN_PUSH_HANDLER = "Controller.overriddenPushHandler";
+     private static final String KEY_OVERRIDDEN_POP_HANDLER = "Controller.overriddenPopHandler";
+     private static final String KEY_VIEW_STATE_HIERARCHY = "Controller.viewState.hierarchy";
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerTests.java
+Patch:
+@@ -130,6 +130,7 @@ public void testLifecycleWithActivityConfigurationChange() {
+         mActivityController.saveInstanceState(bundle);
+ 
+         expectedCallState.detachCalls++;
++        expectedCallState.saveViewStateCalls++;
+         expectedCallState.saveInstanceStateCalls++;
+         assertCalls(expectedCallState, controller);
+ 
+@@ -140,20 +141,21 @@ public void testLifecycleWithActivityConfigurationChange() {
+         assertCalls(expectedCallState, controller);
+ 
+         mActivityController.destroy();
+-        expectedCallState.saveViewStateCalls++;
+         expectedCallState.destroyViewCalls++;
+         assertCalls(expectedCallState, controller);
+ 
+         createActivityController(bundle);
+         controller = (TestController)mRouter.getControllerWithTag("root");
+ 
+         expectedCallState.restoreInstanceStateCalls++;
++        expectedCallState.restoreViewStateCalls++;
+         expectedCallState.changeStartCalls++;
+         expectedCallState.changeEndCalls++;
+         expectedCallState.createViewCalls++;
+ 
+         // Lifecycle listener isn't attached during restore, grab the current views from the controller for this stuff...
+         mCurrentCallState.restoreInstanceStateCalls = controller.currentCallState.restoreInstanceStateCalls;
++        mCurrentCallState.restoreViewStateCalls = controller.currentCallState.restoreViewStateCalls;
+         mCurrentCallState.changeStartCalls = controller.currentCallState.changeStartCalls;
+         mCurrentCallState.changeEndCalls = controller.currentCallState.changeEndCalls;
+         mCurrentCallState.createViewCalls = controller.currentCallState.createViewCalls;
+@@ -182,11 +184,9 @@ public void testLifecycleWithActivityBackground() {
+         mActivityController.pause();
+ 
+         Bundle bundle = new Bundle();
+-        ViewUtils.setAttached(controller.getView(), false);
+         mActivityController.saveInstanceState(bundle);
+ 
+         expectedCallState.detachCalls++;
+-        expectedCallState.destroyViewCalls++;
+         expectedCallState.saveInstanceStateCalls++;
+         expectedCallState.saveViewStateCalls++;
+         assertCalls(expectedCallState, controller);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -928,7 +928,7 @@ final Bundle detachAndSaveInstanceState() {
+         }
+ 
+         Bundle outState = new Bundle();
+-        outState.putString(KEY_CLASS_NAME, getClass().getCanonicalName());
++        outState.putString(KEY_CLASS_NAME, getClass().getName());
+         outState.putBundle(KEY_VIEW_STATE, mViewState);
+         outState.putBundle(KEY_ARGS, mArgs);
+         outState.putString(KEY_INSTANCE_ID, mInstanceId);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerChangeHandler.java
+Patch:
+@@ -53,7 +53,7 @@ public void restoreFromBundle(@NonNull Bundle bundle) { }
+ 
+     final Bundle toBundle() {
+         Bundle bundle = new Bundle();
+-        bundle.putString(KEY_CLASS_NAME, getClass().getCanonicalName());
++        bundle.putString(KEY_CLASS_NAME, getClass().getName());
+ 
+         Bundle savedState = new Bundle();
+         saveToBundle(savedState);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/TransitionChangeHandlerCompat.java
+Patch:
+@@ -50,8 +50,8 @@ public void performChange(@NonNull final ViewGroup container, View from, View to
+     public void saveToBundle(@NonNull Bundle bundle) {
+         super.saveToBundle(bundle);
+ 
+-        bundle.putString(KEY_TRANSITION_HANDLER_CLASS, mTransitionChangeHandler.getClass().getCanonicalName());
+-        bundle.putString(KEY_FALLBACK_HANDLER_CLASS, mFallbackChangeHandler.getClass().getCanonicalName());
++        bundle.putString(KEY_TRANSITION_HANDLER_CLASS, mTransitionChangeHandler.getClass().getName());
++        bundle.putString(KEY_FALLBACK_HANDLER_CLASS, mFallbackChangeHandler.getClass().getName());
+ 
+         Bundle transitionBundle = new Bundle();
+         mTransitionChangeHandler.saveToBundle(transitionBundle);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -928,7 +928,7 @@ final Bundle detachAndSaveInstanceState() {
+         }
+ 
+         Bundle outState = new Bundle();
+-        outState.putString(KEY_CLASS_NAME, getClass().getCanonicalName());
++        outState.putString(KEY_CLASS_NAME, getClass().getName());
+         outState.putBundle(KEY_VIEW_STATE, mViewState);
+         outState.putBundle(KEY_ARGS, mArgs);
+         outState.putString(KEY_INSTANCE_ID, mInstanceId);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerChangeHandler.java
+Patch:
+@@ -53,7 +53,7 @@ public void restoreFromBundle(@NonNull Bundle bundle) { }
+ 
+     final Bundle toBundle() {
+         Bundle bundle = new Bundle();
+-        bundle.putString(KEY_CLASS_NAME, getClass().getCanonicalName());
++        bundle.putString(KEY_CLASS_NAME, getClass().getName());
+ 
+         Bundle savedState = new Bundle();
+         saveToBundle(savedState);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/changehandler/TransitionChangeHandlerCompat.java
+Patch:
+@@ -50,8 +50,8 @@ public void performChange(@NonNull final ViewGroup container, View from, View to
+     public void saveToBundle(@NonNull Bundle bundle) {
+         super.saveToBundle(bundle);
+ 
+-        bundle.putString(KEY_TRANSITION_HANDLER_CLASS, mTransitionChangeHandler.getClass().getCanonicalName());
+-        bundle.putString(KEY_FALLBACK_HANDLER_CLASS, mFallbackChangeHandler.getClass().getCanonicalName());
++        bundle.putString(KEY_TRANSITION_HANDLER_CLASS, mTransitionChangeHandler.getClass().getName());
++        bundle.putString(KEY_FALLBACK_HANDLER_CLASS, mFallbackChangeHandler.getClass().getName());
+ 
+         Bundle transitionBundle = new Bundle();
+         mTransitionChangeHandler.saveToBundle(transitionBundle);
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/changehandler/CircularRevealChangeHandlerCompat.java
+Patch:
+@@ -8,8 +8,6 @@
+ import android.view.View;
+ import android.view.ViewGroup;
+ 
+-import com.bluelinelabs.conductor.changehandler.CircularRevealChangeHandler;
+-
+ public class CircularRevealChangeHandlerCompat extends CircularRevealChangeHandler {
+ 
+     public CircularRevealChangeHandlerCompat() { }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Conductor.java
+Patch:
+@@ -12,7 +12,7 @@
+  */
+ public final class Conductor {
+     
+-    private Conductor(){}
++    private Conductor() {}
+     
+     /**
+      * Conductor will create a {@link Router} that has been initialized for your Activity and containing ViewGroup.
+
+File: conductor-rxlifecycle/src/main/java/com/bluelinelabs/conductor/rxlifecycle/ControllerEvent.java
+Patch:
+@@ -3,10 +3,10 @@
+ public enum ControllerEvent {
+ 
+     CREATE,
++    CREATE_VIEW,
+     ATTACH,
+-    BIND_VIEW,
+     DETACH,
+-    UNBIND_VIEW,
++    DESTROY_VIEW,
+     DESTROY
+ 
+ }
+
+File: conductor-rxlifecycle/src/main/java/com/bluelinelabs/conductor/rxlifecycle/RxControllerLifecycle.java
+Patch:
+@@ -33,8 +33,8 @@ public ControllerEvent call(ControllerEvent lastEvent) {
+                             return ControllerEvent.DESTROY;
+                         case ATTACH:
+                             return ControllerEvent.DETACH;
+-                        case BIND_VIEW:
+-                            return ControllerEvent.UNBIND_VIEW;
++                        case CREATE_VIEW:
++                            return ControllerEvent.DESTROY_VIEW;
+                         case DETACH:
+                             return ControllerEvent.DESTROY;
+                         default:
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Backstack.java
+Patch:
+@@ -75,10 +75,10 @@ public List<RouterTransaction> popAll() {
+         return list;
+     }
+ 
+-    public void saveInstanceState(Bundle outState) {
++    public void detachAndSaveInstanceState(Bundle outState) {
+         ArrayList<Bundle> entryBundles = new ArrayList<>(mBackStack.size());
+         for (RouterTransaction entry : mBackStack) {
+-            entryBundles.add(entry.toBundle());
++            entryBundles.add(entry.detachAndSaveInstanceState());
+         }
+ 
+         outState.putParcelableArrayList(KEY_ENTRIES, entryBundles);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ChildControllerTransaction.java
+Patch:
+@@ -31,8 +31,8 @@ public class ChildControllerTransaction extends ControllerTransaction {
+     }
+ 
+     @Override
+-    public Bundle toBundle() {
+-        Bundle bundle = super.toBundle();
++    public Bundle detachAndSaveInstanceState() {
++        Bundle bundle = super.detachAndSaveInstanceState();
+         bundle.putInt(KEY_CONTAINER_ID, containerId);
+         bundle.putBoolean(KEY_ADD_TO_LOCAL_BACKSTACK, addToLocalBackstack);
+         return bundle;
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/ControllerTransaction.java
+Patch:
+@@ -77,10 +77,10 @@ public ControllerChangeHandler getPopControllerChangeHandler() {
+     /**
+      * Used to serialize this transaction into a Bundle
+      */
+-    public Bundle toBundle() {
++    public Bundle detachAndSaveInstanceState() {
+         Bundle bundle = new Bundle();
+ 
+-        bundle.putBundle(KEY_VIEW_CONTROLLER_BUNDLE, controller.saveInstanceState());
++        bundle.putBundle(KEY_VIEW_CONTROLLER_BUNDLE, controller.detachAndSaveInstanceState());
+ 
+         if (mPushControllerChangeHandler != null) {
+             bundle.putBundle(KEY_PUSH_TRANSITION, mPushControllerChangeHandler.toBundle());
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerChangeHandlerTests.java
+Patch:
+@@ -17,7 +17,7 @@ public void testSaveRestore() {
+                 .pushChangeHandler(horizontalChangeHandler)
+                 .popChangeHandler(fadeChangeHandler)
+                 .build();
+-        RouterTransaction restoredTransaction = new RouterTransaction(transaction.toBundle());
++        RouterTransaction restoredTransaction = new RouterTransaction(transaction.detachAndSaveInstanceState());
+ 
+         ControllerChangeHandler restoredHorizontal = restoredTransaction.getPushControllerChangeHandler();
+         ControllerChangeHandler restoredFade = restoredTransaction.getPopControllerChangeHandler();
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerTransactionTests.java
+Patch:
+@@ -20,7 +20,7 @@ public void testRouterSaveRestore() {
+                 .tag("Test Tag")
+                 .build();
+ 
+-        Bundle bundle = transaction.toBundle();
++        Bundle bundle = transaction.detachAndSaveInstanceState();
+ 
+         RouterTransaction restoredTransaction = new RouterTransaction(bundle);
+ 
+@@ -39,7 +39,7 @@ public void testChildSaveRestore() {
+                 .tag("Test Tag")
+                 .build();
+ 
+-        Bundle bundle = transaction.toBundle();
++        Bundle bundle = transaction.detachAndSaveInstanceState();
+ 
+         ChildControllerTransaction restoredTransaction = new ChildControllerTransaction(bundle);
+ 
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/TestController.java
+Patch:
+@@ -15,7 +15,7 @@ public TestController() { }
+ 
+     @NonNull
+     @Override
+-    protected View inflateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup container) {
++    protected View onCreateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup container) {
+         View view = new FrameLayout(inflater.getContext());
+         view.setId(VIEW_ID);
+         return view;
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/ChildController.java
+Patch:
+@@ -41,8 +41,8 @@ protected View inflateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup
+     }
+ 
+     @Override
+-    protected void onBindView(@NonNull View view) {
+-        super.onBindView(view);
++    protected void onViewBound(@NonNull View view) {
++        super.onViewBound(view);
+ 
+         mTvTitle.setText(getArgs().getString(KEY_TITLE));
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/HomeController.java
+Patch:
+@@ -52,8 +52,8 @@ protected View inflateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup
+     }
+ 
+     @Override
+-    protected void onBindView(@NonNull View view) {
+-        super.onBindView(view);
++    protected void onViewBound(@NonNull View view) {
++        super.onViewBound(view);
+ 
+         mRecyclerView.setHasFixedSize(true);
+         mRecyclerView.setLayoutManager(new LinearLayoutManager(view.getContext()));
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/NavigationDemoController.java
+Patch:
+@@ -45,8 +45,8 @@ protected View inflateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup
+     }
+ 
+     @Override
+-    protected void onBindView(@NonNull View view) {
+-        super.onBindView(view);
++    protected void onViewBound(@NonNull View view) {
++        super.onViewBound(view);
+ 
+         view.setBackgroundColor(ColorUtil.getMaterialColor(getResources(), mIndex));
+         mTvTitle.setText(getResources().getString(R.string.navigation_title, mIndex));
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/OverlayController.java
+Patch:
+@@ -22,8 +22,8 @@ protected View inflateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup
+     }
+ 
+     @Override
+-    public void onBindView(@NonNull View view) {
+-        super.onBindView(view);
++    public void onViewBound(@NonNull View view) {
++        super.onViewBound(view);
+         mTextView.setText("I'm an Overlay");
+     }
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/PagerController.java
+Patch:
+@@ -42,8 +42,8 @@ public int getCount() {
+     }
+ 
+     @Override
+-    protected void onBindView(@NonNull View view) {
+-        super.onBindView(view);
++    protected void onViewBound(@NonNull View view) {
++        super.onViewBound(view);
+         mViewPager.setAdapter(mPagerAdapter);
+     }
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/TargetDisplayController.java
+Patch:
+@@ -70,8 +70,8 @@ public void onActivityResult(int requestCode, int resultCode, Intent data) {
+     }
+ 
+     @Override
+-    protected void onBindView(@NonNull View view) {
+-        super.onBindView(view);
++    protected void onViewBound(@NonNull View view) {
++        super.onViewBound(view);
+         setTextView();
+         setImageView();
+     }
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/TextController.java
+Patch:
+@@ -37,8 +37,8 @@ protected View inflateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup
+     }
+ 
+     @Override
+-    public void onBindView(@NonNull View view) {
+-        super.onBindView(view);
++    public void onViewBound(@NonNull View view) {
++        super.onViewBound(view);
+         mTextView.setText(getArgs().getString(KEY_TEXT));
+     }
+ 
+
+File: demo/src/main/java/com/bluelinelabs/conductor/demo/controllers/TransitionDemoController.java
+Patch:
+@@ -80,8 +80,8 @@ protected View inflateView(@NonNull LayoutInflater inflater, @NonNull ViewGroup
+     }
+ 
+     @Override
+-    protected void onBindView(@NonNull View view) {
+-        super.onBindView(view);
++    protected void onViewBound(@NonNull View view) {
++        super.onViewBound(view);
+ 
+         View bgView = ButterKnife.findById(view, R.id.bg_view);
+         if (mTransitionDemo.colorId != 0 && bgView != null) {
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerTests.java
+Patch:
+@@ -94,7 +94,6 @@ public void testLifecycleWithActivityDestroy() {
+         assertCalls(1, 1, 1, 1, 0, 0, 0);
+ 
+         mActivityController.destroy();
+-        ViewUtils.setAttached(controller.getView(), false);
+ 
+         assertCalls(1, 1, 1, 1, 1, 1, 1);
+     }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -735,7 +735,7 @@ final void destroy() {
+             child.controller.destroy();
+         }
+ 
+-        if (mAttached) {
++        if (!mAttached) {
+             removeViewReference();
+         }
+     }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -735,7 +735,7 @@ final void destroy() {
+             child.controller.destroy();
+         }
+ 
+-        if (!mAttached) {
++        if (mAttached) {
+             removeViewReference();
+         }
+     }
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Router.java
+Patch:
+@@ -346,13 +346,14 @@ public final void onActivitySaveInstanceState(Activity activity, Bundle outState
+ 
+     public final void onActivityDestroyed(Activity activity) {
+         mContainer.setOnHierarchyChangeListener(null);
+-        mLifecycleHandler = null;
+-        mContainer = null;
+         mChangeListeners.clear();
+ 
+         for (RouterTransaction transaction : mBackStack) {
+             transaction.controller.activityDestroyed(activity.isChangingConfigurations());
+         }
++
++        mLifecycleHandler = null;
++        mContainer = null;
+     }
+ 
+     public final void onRestoreInstanceState(Bundle savedInstanceState) {
+
+File: conductor/src/test/java/com/bluelinelabs/conductor/ControllerTests.java
+Patch:
+@@ -180,7 +180,7 @@ public void testViewRetention() {
+         controller.setRetainViewMode(RetainViewMode.RELEASE_DETACH);
+         Assert.assertNull(controller.getView());
+         View view = controller.inflate(new FrameLayout(mRouter.getActivity()));
+-        Assert.assertNull(controller.getView());
++        Assert.assertNotNull(controller.getView());
+         ViewUtils.setAttached(view, true);
+         Assert.assertNotNull(controller.getView());
+         ViewUtils.setAttached(view, false);
+@@ -189,7 +189,7 @@ public void testViewRetention() {
+         // Test View getting retained w/ RETAIN_DETACH
+         controller.setRetainViewMode(RetainViewMode.RETAIN_DETACH);
+         view = controller.inflate(new FrameLayout(mRouter.getActivity()));
+-        Assert.assertNull(controller.getView());
++        Assert.assertNotNull(controller.getView());
+         ViewUtils.setAttached(view, true);
+         Assert.assertNotNull(controller.getView());
+         ViewUtils.setAttached(view, false);
+
+File: conductor/src/main/java/com/bluelinelabs/conductor/Controller.java
+Patch:
+@@ -637,7 +637,6 @@ private void attach(@NonNull View view) {
+ 
+         mAttached = true;
+         mNeedsAttach = false;
+-        mView = view;
+ 
+         for (ChildControllerTransaction child : mChildControllers) {
+             attachChildController(child, new SimpleSwapChangeHandler());
+@@ -850,6 +849,8 @@ private void bindView(@NonNull final View view) {
+             lifecycleListener.preBindView(this, view);
+         }
+ 
++        mView = view;
++
+         onBindView(view);
+ 
+         view.addOnAttachStateChangeListener(new OnAttachStateChangeListener() {
+

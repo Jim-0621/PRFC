@@ -1,0 +1,2137 @@
+File: tcc-transaction-unit-test/src/test/java/org/mengyun/tcctransaction/unittest/AbstractTestCase.java
+Patch:
+@@ -1,5 +1,6 @@
+ package org.mengyun.tcctransaction.unittest;
+ 
++import org.junit.After;
+ import org.junit.Before;
+ import org.junit.runner.RunWith;
+ import org.mengyun.tcctransaction.unittest.entity.SubAccount;
+@@ -25,13 +26,14 @@ public void init() throws Exception {
+         buildAccount();
+     }
+ 
+-
+     private void initMethodCallSeq() {
+         TraceLog.clear();
+     }
+ 
+ 
+     private void buildAccount() {
++
++        subAccountRepository.init();
+         SubAccount subAccountFrom = subAccountRepository.findById(1L);
+         subAccountFrom.setBalanceAmount(100);
+         subAccountFrom.setFrozenAmount(0);
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/service/condition/BaseStorageCondition.java
+Patch:
+@@ -20,12 +20,12 @@ public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata)
+         String storageTypeVaule = context.getEnvironment().getProperty("spring.tcc.storage.storage-type");
+ 
+         if (StringUtils.isEmpty(connectionModeValue)) {
+-            throw new IllegalArgumentException("spring.tcc.dashboard.connectionMode is empty is empty");
++            throw new IllegalArgumentException("spring.tcc.dashboard.connectionMode is empty");
+         }
+ 
+         ConnectionMode connectionMode = ConnectionMode.nameOf(connectionModeValue.toUpperCase());
+         if (connectionMode == null) {
+-            throw new IllegalArgumentException("tcc.dashboard.connectionMode:" + connectionModeValue + " not exist");
++            throw new IllegalArgumentException("spring.tcc.dashboard.connectionMode:" + connectionModeValue + " not exist");
+         }
+ 
+         return match(connectionModeValue, storageTypeVaule);
+
+File: tcc-transaction-api/src/main/java/org/mengyun/tcctransaction/api/Compensable.java
+Patch:
+@@ -21,4 +21,6 @@
+     public boolean asyncConfirm() default false;
+ 
+     public boolean asyncCancel() default false;
++
++    public Class<? extends Exception>[] delayCancelExceptions() default {};
+ }
+\ No newline at end of file
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/RegistryConfig.java
+Patch:
+@@ -18,7 +18,5 @@ public interface RegistryConfig {
+ 
+     DirectRegistryProperties getDirectRegistryProperties();
+ 
+-    RegistryType getRegistryType();
+-
+     String getCustomRegistryName();
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/RegistryService.java
+Patch:
+@@ -11,11 +11,11 @@ public interface RegistryService {
+ 
+     void start();
+ 
+-    void register(InetSocketAddress address);
++    void register(InetSocketAddress address, InetSocketAddress addressForDashboard);
+ 
+-    void subscribe();
++    void subscribe(boolean addressForDashboard);
+ 
+-    List<String> lookup();
++    List<String> lookup(boolean addressForDashboard);
+ 
+     void close();
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/processor/ServerRequestProcessor.java
+Patch:
+@@ -128,7 +128,7 @@ private void doRegister(String domain, Channel channel) {
+     public void registerDomain(String domain) {
+         try {
+             if (transactionStorage.supportStorageRecoverable()) {
+-                ((StorageRecoverable) transactionStorage).registerDomain(new DomainStore(domain));
++                ((StorageRecoverable) transactionStorage).registerDomain(new DomainStore(domain, this.scheduler.getRecoveryConfig().getMaxRetryCount()));
+             } else {
+                 logger.warn("transactionStorage:{} not StorageRecoverable, do not regist domain", transactionStorage.getClass().getSimpleName());
+             }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/remoting/RemotingService.java
+Patch:
+@@ -12,5 +12,8 @@ public interface RemotingService<T> {
+ 
+     void registerDefaultProcessor(final RequestProcessor<T> processor, final ExecutorService executor);
+ 
++    void registerProcessor(final int requestCode, final RequestProcessor<T> processor,
++                           final ExecutorService executor);
++
+     void registerChannelHandlers(ChannelHandler... channelHandlers);
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/repository/TransactionConvertor.java
+Patch:
+@@ -36,6 +36,7 @@ public static TransactionStore getTransactionStore(TransactionSerializer seriali
+         transactionStore.setCreateTime(transaction.getCreateTime());
+         transactionStore.setDomain(domain);
+         transactionStore.setTransactionTypeId(transaction.getTransactionType().getId());
++        transactionStore.setId(transaction.getId());
+ 
+         return transactionStore;
+     }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/xid/TransactionXid.java
+Patch:
+@@ -31,7 +31,7 @@ public static TransactionXid withUniqueIdentity(Object uniqueIdentity) {
+         int formatId = Xid.AUTO;
+         String xid = null;
+         if (uniqueIdentity == null) {
+-            xid = FactoryBuilder.factoryOf(UUIDGenerator.class).getInstance().generate();
++            xid = FactoryBuilder.factoryOf(UUIDGenerator.class).getInstance().generateString();
+         } else {
+             xid = uniqueIdentity.toString();
+             formatId = Xid.CUSTOMIZED;
+@@ -40,7 +40,7 @@ public static TransactionXid withUniqueIdentity(Object uniqueIdentity) {
+     }
+ 
+     public static TransactionXid withUuid() {
+-        return new TransactionXid(FactoryBuilder.factoryOf(UUIDGenerator.class).getInstance().generate());
++        return new TransactionXid(FactoryBuilder.factoryOf(UUIDGenerator.class).getInstance().generateString());
+     }
+ 
+     @Override
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/xid/UUIDGenerator.java
+Patch:
+@@ -1,5 +1,7 @@
+ package org.mengyun.tcctransaction.xid;
+ 
+ public interface UUIDGenerator {
+-    String generate();
++    String generateString();
++
++    Long generateLong();
+ }
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/constants/DashboardConstant.java
+Patch:
+@@ -10,9 +10,6 @@ public interface DashboardConstant {
+     String SECURITY_JWT_PREFIX = "Bearer ";
+     String SECURITY_HEADER_AUTHORIZATION = "Authorization";
+ 
+-    String APPLICATION_NAME = "tcc-transaction-dashboard";
+-
+-
+     String TCC_SERVER_GROUP = "tcc-transaction-server";
+ 
+ 
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/service/impl/tccserver/TccServerFeignClient.java
+Patch:
+@@ -12,9 +12,8 @@
+ /**
+  * @Author huabao.fang
+  * @Date 2022/5/30 10:10
+- * ,url = "http://localhost:9998"
+  **/
+-@FeignClient(value = DashboardConstant.TCC_SERVER_GROUP)
++@FeignClient(value = DashboardConstant.TCC_SERVER_GROUP, path = "${feign.path:/tcc-transaction-server}")
+ public interface TccServerFeignClient {
+ 
+     @RequestMapping("/domain/allDomainKeys")
+
+File: tcc-transaction-spring-boot-starter/src/main/java/org/mengyun/tcctransaction/springboot/starter/TccTransactionAutoConfiguration.java
+Patch:
+@@ -55,6 +55,7 @@ public RecoveryProperties recoveryProperties() {
+     }
+ 
+     @Bean
++    @ConfigurationProperties("spring.tcc")
+     public ClientConfig clientConfig(@Autowired ClientRegistryProperties clientRegistryProperties,
+                                      @Autowired StoreConfig storeConfig,
+                                      @Autowired RecoveryConfig recoveryConfig,
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-http-sample/tcc-transaction-http-order/src/main/java/org/mengyun/tcctransaction/sample/feign/order/service/PaymentServiceImpl.java
+Patch:
+@@ -10,6 +10,7 @@
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
++import java.net.SocketTimeoutException;
+ import java.util.Calendar;
+ 
+ /**
+@@ -26,7 +27,7 @@ public class PaymentServiceImpl {
+     private OrderRepository orderRepository;
+ 
+ 
+-    @Compensable(confirmMethod = "confirmMakePayment", cancelMethod = "cancelMakePayment", asyncConfirm = true)
++    @Compensable(confirmMethod = "confirmMakePayment", cancelMethod = "cancelMakePayment", asyncConfirm = true, delayCancelExceptions = {SocketTimeoutException.class})
+     @Transactional
+     public void makePayment(String orderNo) {
+ 
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/recovery/TransactionStoreRecovery.java
+Patch:
+@@ -269,7 +269,7 @@ private void tryTreatAsFailed(TransactionStore transactionStore, TransactionStat
+         int maxTimeTreatTryingAsFailed = recoveryConfig.getMaxTimeTreatTryingAsFailed();
+         if (maxTimeTreatTryingAsFailed > 0
+                 && (currentTime.getTime() - lastUpdateTime.getTime()) > maxTimeTreatTryingAsFailed * 1000) {
+-            //update the status to cancel, waiting for the recovery task to recover
++            //update the status to cancel or try failed, waiting for the recovery task to recover
+             transactionStore.setVersion(transactionStore.getVersion() + 1);
+             transactionStore.setStatusId(transactionStatus.getId());
+             transactionStorage.update(transactionStore);
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/dashboard/enums/ResponseCodeEnum.java
+Patch:
+@@ -33,7 +33,7 @@ public enum ResponseCodeEnum {
+     ALERT_DING_ERROR(10400, "钉钉告警异常"),
+ 
+     // 事件相关
+-    TRANSACTION_DETAIL_NO_INSTANCES(10500, "server实例列表为空"),
++    TRANSACTION_DETAIL_NO_INSTANCES(10500, "tcc-server实例列表为空"),
+     TRANSACTION_DETAIL_NOT_EXIST(10501, "事件详情不存在"),
+     TRANSACTION_CONTENT_VISUALIZE_ERROR(10502, "事件详情解析异常"),
+     TRANSACTION_CONTENT_VISUALIZE_ERROR_WITH_MESSAGE(10502, "事件详情解析异常:%s"),
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/dashboard/enums/ResponseCodeEnum.java
+Patch:
+@@ -33,7 +33,7 @@ public enum ResponseCodeEnum {
+     ALERT_DING_ERROR(10400, "钉钉告警异常"),
+ 
+     // 事件相关
+-    TRANSACTION_DETAIL_NO_INSTANCES(10500, "server实例列表为空"),
++    TRANSACTION_DETAIL_NO_INSTANCES(10500, "tcc-server实例列表为空"),
+     TRANSACTION_DETAIL_NOT_EXIST(10501, "事件详情不存在"),
+     TRANSACTION_CONTENT_VISUALIZE_ERROR(10502, "事件详情解析异常"),
+     TRANSACTION_CONTENT_VISUALIZE_ERROR_WITH_MESSAGE(10502, "事件详情解析异常:%s"),
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/AbstractRegistryService.java
+Patch:
+@@ -16,7 +16,7 @@ public abstract class AbstractRegistryService implements RegistryService {
+ 
+     private String clusterName;
+ 
+-    private volatile List<InetSocketAddress> serverAddresses = new ArrayList<>();
++    private volatile List<String> serverAddresses = new ArrayList<>();
+ 
+     @Override
+     public void start() {
+@@ -42,7 +42,7 @@ public void subscribe() {
+     }
+ 
+     @Override
+-    public List<InetSocketAddress> lookup() {
++    public List<String> lookup() {
+         return serverAddresses;
+     }
+ 
+@@ -55,7 +55,7 @@ public void close() {
+ 
+     protected abstract void doSubscribe() throws Exception;
+ 
+-    protected void setServerAddresses(List<InetSocketAddress> serverAddresses) {
++    protected void setServerAddresses(List<String> serverAddresses) {
+         Collections.shuffle(serverAddresses, ThreadLocalRandom.current());
+         this.serverAddresses = serverAddresses;
+     }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/RegistryService.java
+Patch:
+@@ -15,7 +15,7 @@ public interface RegistryService {
+ 
+     void subscribe();
+ 
+-    List<InetSocketAddress> lookup();
++    List<String> lookup();
+ 
+     void close();
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/direct/DirectRegistryServiceImpl.java
+Patch:
+@@ -3,7 +3,6 @@
+ import org.apache.commons.lang3.StringUtils;
+ import org.mengyun.tcctransaction.discovery.registry.AbstractRegistryService;
+ import org.mengyun.tcctransaction.discovery.registry.RegistryConfig;
+-import org.mengyun.tcctransaction.utils.NetUtils;
+ 
+ import java.net.InetSocketAddress;
+ import java.util.Arrays;
+@@ -35,7 +34,6 @@ protected void doSubscribe() throws Exception {
+         try {
+             setServerAddresses(Arrays
+                     .stream(serverAddresses.split(","))
+-                    .map(NetUtils::toInetSocketAddress)
+                     .collect(Collectors.toList()));
+         } catch (Exception e) {
+             throw new IllegalArgumentException("Failed to parse serverAddresses:" + serverAddresses);
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/nacos/NacosRegistryServiceImpl.java
+Patch:
+@@ -64,15 +64,15 @@ protected void doRegister(InetSocketAddress address) throws Exception {
+     protected void doSubscribe() throws Exception {
+         setServerAddresses(namingService.selectInstances(properties.getServiceName(), properties.getGroup(), Collections.singletonList(getClusterName()), true)
+                 .stream()
+-                .map(each -> new InetSocketAddress(each.getIp(), each.getPort()))
++                .map(each -> each.getIp() + ":" + each.getPort())
+                 .collect(Collectors.toList())
+         );
+         namingService.subscribe(properties.getServiceName(), properties.getGroup(), Collections.singletonList(getClusterName()), event -> {
+             try {
+                 setServerAddresses(((NamingEvent) event).getInstances()
+                         .stream()
+                         .filter(each -> each.isEnabled() && each.isHealthy())
+-                        .map(each -> new InetSocketAddress(each.getIp(), each.getPort()))
++                        .map(each -> each.getIp() + ":" + each.getPort())
+                         .collect(Collectors.toList())
+                 );
+             } catch (Exception e) {
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/zookeeper/ZookeeperRegistryServiceImpl.java
+Patch:
+@@ -143,10 +143,9 @@ public void close() {
+ 
+     private void updateServiceList() throws Exception {
+         List<String> nodePaths = curator.getChildren().forPath(targetPath);
+-        List<InetSocketAddress> newServerAddresses = new ArrayList<>();
++        List<String> newServerAddresses = new ArrayList<>();
+         for (String nodePath : nodePaths) {
+-            InetSocketAddress inetSocketAddress = NetUtils.toInetSocketAddress(new String(curator.getData().forPath(targetPath + "/" + nodePath), StandardCharsets.UTF_8));
+-            newServerAddresses.add(inetSocketAddress);
++            newServerAddresses.add(new String(curator.getData().forPath(targetPath + "/" + nodePath), StandardCharsets.UTF_8));
+         }
+         setServerAddresses(newServerAddresses);
+     }
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-grpc-sample/tcc-transaction-grpc-capital-api/src/main/java/org/mengyun/tcctransaction/sample/grpc/capital/api/CapitalServiceGrpc.java
+Patch:
+@@ -1,6 +1,7 @@
+ package org.mengyun.tcctransaction.sample.grpc.capital.api;
+ 
+ import static io.grpc.MethodDescriptor.generateFullMethodName;
++import static io.grpc.stub.ClientCalls.asyncUnaryCall;
+ import static io.grpc.stub.ClientCalls.blockingUnaryCall;
+ import static io.grpc.stub.ClientCalls.futureUnaryCall;
+ import static io.grpc.stub.ServerCalls.asyncUnaryCall;
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-grpc-sample/tcc-transaction-grpc-redpacket-api/src/main/java/org/mengyun/tcctransaction/sample/grpc/redpacket/api/RedPacketServiceGrpc.java
+Patch:
+@@ -1,6 +1,7 @@
+ package org.mengyun.tcctransaction.sample.grpc.redpacket.api;
+ 
+ import static io.grpc.MethodDescriptor.generateFullMethodName;
++import static io.grpc.stub.ClientCalls.asyncUnaryCall;
+ import static io.grpc.stub.ClientCalls.blockingUnaryCall;
+ import static io.grpc.stub.ClientCalls.futureUnaryCall;
+ import static io.grpc.stub.ServerCalls.asyncUnaryCall;
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-grpc-sample/tcc-transaction-grpc-capital-api/src/main/java/org/mengyun/tcctransaction/sample/grpc/capital/api/CapitalServiceGrpc.java
+Patch:
+@@ -1,6 +1,7 @@
+ package org.mengyun.tcctransaction.sample.grpc.capital.api;
+ 
+ import static io.grpc.MethodDescriptor.generateFullMethodName;
++import static io.grpc.stub.ClientCalls.asyncUnaryCall;
+ import static io.grpc.stub.ClientCalls.blockingUnaryCall;
+ import static io.grpc.stub.ClientCalls.futureUnaryCall;
+ import static io.grpc.stub.ServerCalls.asyncUnaryCall;
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-grpc-sample/tcc-transaction-grpc-redpacket-api/src/main/java/org/mengyun/tcctransaction/sample/grpc/redpacket/api/RedPacketServiceGrpc.java
+Patch:
+@@ -1,6 +1,7 @@
+ package org.mengyun.tcctransaction.sample.grpc.redpacket.api;
+ 
+ import static io.grpc.MethodDescriptor.generateFullMethodName;
++import static io.grpc.stub.ClientCalls.asyncUnaryCall;
+ import static io.grpc.stub.ClientCalls.blockingUnaryCall;
+ import static io.grpc.stub.ClientCalls.futureUnaryCall;
+ import static io.grpc.stub.ServerCalls.asyncUnaryCall;
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/AbstractRegistryService.java
+Patch:
+@@ -16,7 +16,7 @@ public abstract class AbstractRegistryService implements RegistryService {
+ 
+     private String clusterName;
+ 
+-    private volatile List<InetSocketAddress> serverAddresses = new ArrayList<>();
++    private volatile List<String> serverAddresses = new ArrayList<>();
+ 
+     @Override
+     public void start() {
+@@ -42,7 +42,7 @@ public void subscribe() {
+     }
+ 
+     @Override
+-    public List<InetSocketAddress> lookup() {
++    public List<String> lookup() {
+         return serverAddresses;
+     }
+ 
+@@ -55,7 +55,7 @@ public void close() {
+ 
+     protected abstract void doSubscribe() throws Exception;
+ 
+-    protected void setServerAddresses(List<InetSocketAddress> serverAddresses) {
++    protected void setServerAddresses(List<String> serverAddresses) {
+         Collections.shuffle(serverAddresses, ThreadLocalRandom.current());
+         this.serverAddresses = serverAddresses;
+     }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/RegistryService.java
+Patch:
+@@ -15,7 +15,7 @@ public interface RegistryService {
+ 
+     void subscribe();
+ 
+-    List<InetSocketAddress> lookup();
++    List<String> lookup();
+ 
+     void close();
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/direct/DirectRegistryServiceImpl.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import org.mengyun.tcctransaction.discovery.registry.AbstractRegistryService;
+ import org.mengyun.tcctransaction.discovery.registry.RegistryConfig;
+-import org.mengyun.tcctransaction.utils.NetUtils;
+ import org.mengyun.tcctransaction.utils.StringUtils;
+ 
+ import java.net.InetSocketAddress;
+@@ -35,7 +34,6 @@ protected void doSubscribe() throws Exception {
+         try {
+             setServerAddresses(Arrays
+                     .stream(serverAddresses.split(","))
+-                    .map(NetUtils::toInetSocketAddress)
+                     .collect(Collectors.toList()));
+         } catch (Exception e) {
+             throw new IllegalArgumentException("Failed to parse serverAddresses:" + serverAddresses);
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/nacos/NacosRegistryServiceImpl.java
+Patch:
+@@ -64,15 +64,15 @@ protected void doRegister(InetSocketAddress address) throws Exception {
+     protected void doSubscribe() throws Exception {
+         setServerAddresses(namingService.selectInstances(properties.getServiceName(), properties.getGroup(), Collections.singletonList(getClusterName()), true)
+                 .stream()
+-                .map(each -> new InetSocketAddress(each.getIp(), each.getPort()))
++                .map(each -> each.getIp() + ":" + each.getPort())
+                 .collect(Collectors.toList())
+         );
+         namingService.subscribe(properties.getServiceName(), properties.getGroup(), Collections.singletonList(getClusterName()), event -> {
+             try {
+                 setServerAddresses(((NamingEvent) event).getInstances()
+                         .stream()
+                         .filter(each -> each.isEnabled() && each.isHealthy())
+-                        .map(each -> new InetSocketAddress(each.getIp(), each.getPort()))
++                        .map(each -> each.getIp() + ":" + each.getPort())
+                         .collect(Collectors.toList())
+                 );
+             } catch (Exception e) {
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/discovery/registry/zookeeper/ZookeeperRegistryServiceImpl.java
+Patch:
+@@ -143,10 +143,9 @@ public void close() {
+ 
+     private void updateServiceList() throws Exception {
+         List<String> nodePaths = curator.getChildren().forPath(targetPath);
+-        List<InetSocketAddress> newServerAddresses = new ArrayList<>();
++        List<String> newServerAddresses = new ArrayList<>();
+         for (String nodePath : nodePaths) {
+-            InetSocketAddress inetSocketAddress = NetUtils.toInetSocketAddress(new String(curator.getData().forPath(targetPath + "/" + nodePath), StandardCharsets.UTF_8));
+-            newServerAddresses.add(inetSocketAddress);
++            newServerAddresses.add(new String(curator.getData().forPath(targetPath + "/" + nodePath), StandardCharsets.UTF_8));
+         }
+         setServerAddresses(newServerAddresses);
+     }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/properties/store/StoreProperties.java
+Patch:
+@@ -24,7 +24,7 @@ public class StoreProperties implements StoreConfig {
+     //only used by client
+     private String transactionSerializerClassName;
+     private int kryoPoolSize = 512;
+-    private int maxTransactionSize = 16 * 1024; // 16KB
++    private int maxTransactionSize = 1 * 1024 * 1024; // 1M
+     private int maxAttempts = 2;
+     private String domain = "TCC";
+     private String transactionStorageClass;
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/interceptor/CompensableTransactionInterceptor.java
+Patch:
+@@ -113,7 +113,7 @@ private Object providerMethodProceed(CompensableMethodContext compensableMethodC
+                         transactionManager.commit(asyncConfirm);
+                     } catch (NoExistedTransactionException excepton) {
+                         //the transaction has been commit,ignore it.
+-                        logger.warn("no existed transaction found at CONFIRMING stage, will ignore and confirm automatically. transaction xid:" + transaction.getXid());
++                        logger.warn("no existed transaction found at CONFIRMING stage, will ignore and confirm automatically. transaction xid:" + compensableMethodContext.getTransactionContext().getXid());
+                     }
+                     break;
+                 case CANCELLING:
+@@ -141,7 +141,7 @@ private Object providerMethodProceed(CompensableMethodContext compensableMethodC
+ 
+                     } catch (NoExistedTransactionException exception) {
+                         //the transaction has been rollback,ignore it.
+-                        logger.info("no existed transaction found at CANCELLING stage, will ignore and cancel automatically. transaction xid:" + transaction.getXid());
++                        logger.info("no existed transaction found at CANCELLING stage, will ignore and cancel automatically. transaction xid:" + compensableMethodContext.getTransactionContext().getXid());
+                     }
+                     break;
+             }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/utils/NetUtils.java
+Patch:
+@@ -43,7 +43,7 @@ public static String parseSocketAddress(SocketAddress socketAddress) {
+             int index = addr.lastIndexOf("/");
+             return (index != -1) ? addr.substring(index + 1) : addr;
+         }
+-        return "";
++        return null;
+     }
+ 
+     /**
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/interceptor/CompensableTransactionInterceptor.java
+Patch:
+@@ -141,7 +141,7 @@ private Object providerMethodProceed(CompensableMethodContext compensableMethodC
+ 
+                     } catch (NoExistedTransactionException exception) {
+                         //the transaction has been rollback,ignore it.
+-                        logger.info("no existed transaction found at CANCELLING stage, will ignore and cancel automatically. transaction xid:" + transaction.getXid());
++                        logger.info("no existed transaction found at CANCELLING stage, will ignore and cancel automatically. transaction xid:" + compensableMethodContext.getTransactionContext().getXid());
+                     }
+                     break;
+             }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/utils/NetUtils.java
+Patch:
+@@ -43,7 +43,7 @@ public static String parseSocketAddress(SocketAddress socketAddress) {
+             int index = addr.lastIndexOf("/");
+             return (index != -1) ? addr.substring(index + 1) : addr;
+         }
+-        return "";
++        return null;
+     }
+ 
+     /**
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/interceptor/CompensableTransactionInterceptor.java
+Patch:
+@@ -113,7 +113,7 @@ private Object providerMethodProceed(CompensableMethodContext compensableMethodC
+                         transactionManager.commit(asyncConfirm);
+                     } catch (NoExistedTransactionException excepton) {
+                         //the transaction has been commit,ignore it.
+-                        logger.warn("no existed transaction found at CONFIRMING stage, will ignore and confirm automatically. transaction xid:" + transaction.getXid());
++                        logger.warn("no existed transaction found at CONFIRMING stage, will ignore and confirm automatically. transaction xid:" + compensableMethodContext.getTransactionContext().getXid());
+                     }
+                     break;
+                 case CANCELLING:
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/remoting/netty/NettyRemotingClient.java
+Patch:
+@@ -277,7 +277,7 @@ public void operationComplete(ChannelFuture channelFuture) throws Exception {
+ 
+     private Pair<String, Channel> borrowAvailableChannelFromPool(String address) {
+ 
+-        String selectedAddress = null;
++        String selectedAddress;
+         if (StringUtils.isNotEmpty(address)) {
+             selectedAddress = address;
+         } else {
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/storage/RemotingTransactionStorage.java
+Patch:
+@@ -77,7 +77,7 @@ private int doWrite(int serviceCode, TransactionStore transactionStore) {
+ 
+         RemotingCommand responseCommand = null;
+ 
+-        responseCommand = remotingClient.invokeSync(clusterName, requestCommand, this.storeConfig.getRequestTimeoutMillis());
++        responseCommand = remotingClient.invokeSync(requestCommand, this.storeConfig.getRequestTimeoutMillis());
+ 
+         if (responseCommand.getCode() == RemotingCommandCode.SERVICE_RESP) {
+             return Byte.valueOf(responseCommand.getBody()[0]).intValue();
+@@ -101,7 +101,7 @@ private TransactionStore doRead(int serviceCode, String domain, Xid xid) {
+ 
+         requestCommand.setBody(byteBuffer.array());
+ 
+-        RemotingCommand responseCommand = remotingClient.invokeSync(clusterName, requestCommand, this.storeConfig.getRequestTimeoutMillis());
++        RemotingCommand responseCommand = remotingClient.invokeSync(requestCommand, this.storeConfig.getRequestTimeoutMillis());
+ 
+         if (responseCommand.getCode() == RemotingCommandCode.SERVICE_RESP) {
+             return serializer.deserialize(responseCommand.getBody());
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/remoting/netty/NettyRemotingClient.java
+Patch:
+@@ -277,7 +277,7 @@ public void operationComplete(ChannelFuture channelFuture) throws Exception {
+ 
+     private Pair<String, Channel> borrowAvailableChannelFromPool(String address) {
+ 
+-        String selectedAddress = null;
++        String selectedAddress;
+         if (StringUtils.isNotEmpty(address)) {
+             selectedAddress = address;
+         } else {
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/storage/RemotingTransactionStorage.java
+Patch:
+@@ -77,7 +77,7 @@ private int doWrite(int serviceCode, TransactionStore transactionStore) {
+ 
+         RemotingCommand responseCommand = null;
+ 
+-        responseCommand = remotingClient.invokeSync(clusterName, requestCommand, this.storeConfig.getRequestTimeoutMillis());
++        responseCommand = remotingClient.invokeSync(null, requestCommand, this.storeConfig.getRequestTimeoutMillis());
+ 
+         if (responseCommand.getCode() == RemotingCommandCode.SERVICE_RESP) {
+             return Byte.valueOf(responseCommand.getBody()[0]).intValue();
+@@ -101,7 +101,7 @@ private TransactionStore doRead(int serviceCode, String domain, Xid xid) {
+ 
+         requestCommand.setBody(byteBuffer.array());
+ 
+-        RemotingCommand responseCommand = remotingClient.invokeSync(clusterName, requestCommand, this.storeConfig.getRequestTimeoutMillis());
++        RemotingCommand responseCommand = remotingClient.invokeSync(null, requestCommand, this.storeConfig.getRequestTimeoutMillis());
+ 
+         if (responseCommand.getCode() == RemotingCommandCode.SERVICE_RESP) {
+             return serializer.deserialize(responseCommand.getBody());
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/remoting/netty/NettyPooledFactory.java
+Patch:
+@@ -46,7 +46,7 @@ public PooledObject<Channel> makeObject(String key) throws Exception {
+             if (channelFuture.isSuccess()) {
+                 channel = channelFuture.channel();
+             } else {
+-                throw new RemotingConnectException(NetUtils.parseSocketAddress(socketAddress));
++                throw new RemotingConnectException(NetUtils.parseSocketAddress(socketAddress), channelFuture.cause());
+             }
+         } catch (Exception e) {
+             throw new RemotingConnectException(NetUtils.parseSocketAddress(socketAddress), e);
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/remoting/netty/NettyPooledFactory.java
+Patch:
+@@ -46,7 +46,7 @@ public PooledObject<Channel> makeObject(String key) throws Exception {
+             if (channelFuture.isSuccess()) {
+                 channel = channelFuture.channel();
+             } else {
+-                throw new RemotingConnectException(NetUtils.parseSocketAddress(socketAddress));
++                throw new RemotingConnectException(NetUtils.parseSocketAddress(socketAddress), channelFuture.cause());
+             }
+         } catch (Exception e) {
+             throw new RemotingConnectException(NetUtils.parseSocketAddress(socketAddress), e);
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/AbstractConfig.java
+Patch:
+@@ -315,7 +315,7 @@ protected void setNettyConfig(NettyConfig nettyConfig) {
+         this.nettyConfig = nettyConfig;
+     }
+ 
+-    public void setRegistryConfig(RegistryConfig registryConfig) {
++    protected void setRegistryConfig(RegistryConfig registryConfig) {
+         this.registryConfig = registryConfig;
+     }
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/properties/store/AbstractJedisStoreProperties.java
+Patch:
+@@ -10,7 +10,7 @@ public abstract class AbstractJedisStoreProperties {
+ 
+     private String password;
+ 
+-    private int soTimeout = 300;
++    private int soTimeout = 1000;
+ 
+     private int connectionTimeout = 1000;
+ 
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/properties/store/AbstractJedisStoreProperties.java
+Patch:
+@@ -10,7 +10,7 @@ public abstract class AbstractJedisStoreProperties {
+ 
+     private String password;
+ 
+-    private int soTimeout = 300;
++    private int soTimeout = 1000;
+ 
+     private int connectionTimeout = 1000;
+ 
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/storage/helper/JedisClusterCommands.java
+Patch:
+@@ -41,7 +41,7 @@ public void hdel(byte[] key, byte[] field) {
+ 
+     @Override
+     public void expire(byte[] key, int expireTime) {
+-        this.expire(key, expireTime);
++        this.jedisCluster.expire(key, expireTime);
+     }
+ 
+     @Override
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/dashboard/service/impl/BaseTransactionServiceImpl.java
+Patch:
+@@ -158,8 +158,8 @@ private List<TransactionStoreDto> toTransactionStoreDtoList(List<TransactionStor
+     private TransactionStoreDto toTransactionStoreDto(TransactionStore transactionStore) {
+         TransactionStoreDto transactionStoreDto = new TransactionStoreDto();
+         transactionStoreDto.setDomain(transactionStore.getDomain());
+-        transactionStoreDto.setXid((TransactionXid)transactionStore.getXid());
+-        transactionStoreDto.setRootXid((TransactionXid)transactionStore.getRootXid());
++        transactionStoreDto.setXid(transactionStore.getXid());
++        transactionStoreDto.setRootXid(transactionStore.getRootXid());
+         transactionStoreDto.setRootDomain(transactionStore.getRootDomain());
+         transactionStoreDto.setContent(new String(transactionStore.getContent()));
+         transactionStoreDto.setCreateTime(TccDateFormatUtils.formatDate(transactionStore.getCreateTime()));
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/ClientConfig.java
+Patch:
+@@ -92,5 +92,6 @@ public void setNettyClientConfig(NettyClientConfig nettyClientConfig) {
+ 
+     public void setClientRegistryConfig(ClientRegistryConfig clientRegistryConfig) {
+         this.clientRegistryConfig = clientRegistryConfig;
++        setRegistryConfig(clientRegistryConfig);
+     }
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/ServerConfig.java
+Patch:
+@@ -52,5 +52,6 @@ public void setNettyServerConfig(NettyServerConfig nettyServerConfig) {
+ 
+     public void setServerRegistryConfig(ServerRegistryConfig serverRegistryConfig) {
+         this.serverRegistryConfig = serverRegistryConfig;
++        setRegistryConfig(serverRegistryConfig);
+     }
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/ClientConfig.java
+Patch:
+@@ -92,5 +92,6 @@ public void setNettyClientConfig(NettyClientConfig nettyClientConfig) {
+ 
+     public void setClientRegistryConfig(ClientRegistryConfig clientRegistryConfig) {
+         this.clientRegistryConfig = clientRegistryConfig;
++        setRegistryConfig(clientRegistryConfig);
+     }
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/ServerConfig.java
+Patch:
+@@ -52,5 +52,6 @@ public void setNettyServerConfig(NettyServerConfig nettyServerConfig) {
+ 
+     public void setServerRegistryConfig(ServerRegistryConfig serverRegistryConfig) {
+         this.serverRegistryConfig = serverRegistryConfig;
++        setRegistryConfig(serverRegistryConfig);
+     }
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/dashboard/service/impl/BaseTransactionServiceImpl.java
+Patch:
+@@ -158,8 +158,8 @@ private List<TransactionStoreDto> toTransactionStoreDtoList(List<TransactionStor
+     private TransactionStoreDto toTransactionStoreDto(TransactionStore transactionStore) {
+         TransactionStoreDto transactionStoreDto = new TransactionStoreDto();
+         transactionStoreDto.setDomain(transactionStore.getDomain());
+-        transactionStoreDto.setXid(transactionStore.getXid());
+-        transactionStoreDto.setRootXid(transactionStore.getRootXid());
++        transactionStoreDto.setXid((TransactionXid)transactionStore.getXid());
++        transactionStoreDto.setRootXid((TransactionXid)transactionStore.getRootXid());
+         transactionStoreDto.setRootDomain(transactionStore.getRootDomain());
+         transactionStoreDto.setContent(new String(transactionStore.getContent()));
+         transactionStoreDto.setCreateTime(TccDateFormatUtils.formatDate(transactionStore.getCreateTime()));
+
+File: tcc-transaction-server/src/main/java/org/mengyun/tcctransaction/server/config/ServerEnvironmentPostProcessor.java
+Patch:
+@@ -42,9 +42,6 @@ private PropertySource selectApplicationConfigPropertySource(MutablePropertySour
+ 
+     private void rebuildRegistryProperties(ConfigurableEnvironment environment) {
+         String registryType = environment.getProperty("spring.tcc.registry.registry-type");
+-        if (StringUtils.isBlank(registryType)) {
+-            registryType = environment.getProperty("spring.tcc.registry.registryType");
+-        }
+         if (StringUtils.isBlank(registryType) || RegistryType.direct.name().equals(registryType)) {
+             putIntoTccServerProperties("spring.cloud.nacos.discovery.enabled", "false");
+             putIntoTccServerProperties("spring.cloud.zookeeper.enabled", "false");
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/controller/UserController.java
+Patch:
+@@ -26,7 +26,7 @@ public class UserController {
+ 
+     @PostMapping("/login")
+     @ResponseBody
+-    public ResponseDto login(@RequestBody LoginDto request) {
++    public ResponseDto<Map<String, Object>> login(@RequestBody LoginDto request) {
+         String token = userService.login(request.getUsername(), request.getPassword());
+         Map<String, Object> loginedResult = new HashMap<>();
+         loginedResult.put("token", token);
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/exceptionhandler/ControllerExceptionHandler.java
+Patch:
+@@ -22,13 +22,13 @@ public class ControllerExceptionHandler {
+ 
+     @ResponseBody
+     @ExceptionHandler(TransactionException.class)
+-    public ResponseDto handleTransactionException(TransactionException e) {
++    public ResponseDto<Void> handleTransactionException(TransactionException e) {
+         return ResponseDto.returnFail(e.getErrorCode(), e.getErrorMessage());
+     }
+ 
+     @ResponseBody
+     @ExceptionHandler(Exception.class)
+-    public ResponseDto handleException(Exception e) {
++    public ResponseDto<Void> handleException(Exception e) {
+         if (e.getCause() != null && e.getCause() instanceof TransactionException) {
+             TransactionException transactionException = (TransactionException) e.getCause();
+             return ResponseDto.returnFail(transactionException.getErrorCode(), transactionException.getErrorMessage());
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/service/impl/tccserver/TccServerDomainServiceImpl.java
+Patch:
+@@ -34,17 +34,17 @@ public ResponseDto<List<DomainStoreDto>> getAllDomains() {
+     }
+ 
+     @Override
+-    public ResponseDto create(DomainStoreRequestDto requestDto) {
++    public ResponseDto<Void> create(DomainStoreRequestDto requestDto) {
+         return tccServerFeignClient.createDomain(requestDto);
+     }
+ 
+     @Override
+-    public ResponseDto modify(DomainStoreRequestDto requestDto) {
++    public ResponseDto<Void> modify(DomainStoreRequestDto requestDto) {
+         return tccServerFeignClient.modifyDomain(requestDto);
+     }
+ 
+     @Override
+-    public ResponseDto delete(DomainStoreRequestDto requestDto) {
++    public ResponseDto<Void> delete(DomainStoreRequestDto requestDto) {
+         return tccServerFeignClient.deleteDomain(requestDto);
+     }
+ 
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/controller/UserController.java
+Patch:
+@@ -26,7 +26,7 @@ public class UserController {
+ 
+     @PostMapping("/login")
+     @ResponseBody
+-    public ResponseDto login(@RequestBody LoginDto request) {
++    public ResponseDto<Map<String, Object>> login(@RequestBody LoginDto request) {
+         String token = userService.login(request.getUsername(), request.getPassword());
+         Map<String, Object> loginedResult = new HashMap<>();
+         loginedResult.put("token", token);
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/exceptionhandler/ControllerExceptionHandler.java
+Patch:
+@@ -22,13 +22,13 @@ public class ControllerExceptionHandler {
+ 
+     @ResponseBody
+     @ExceptionHandler(TransactionException.class)
+-    public ResponseDto handleTransactionException(TransactionException e) {
++    public ResponseDto<Void> handleTransactionException(TransactionException e) {
+         return ResponseDto.returnFail(e.getErrorCode(), e.getErrorMessage());
+     }
+ 
+     @ResponseBody
+     @ExceptionHandler(Exception.class)
+-    public ResponseDto handleException(Exception e) {
++    public ResponseDto<Void> handleException(Exception e) {
+         if (e.getCause() != null && e.getCause() instanceof TransactionException) {
+             TransactionException transactionException = (TransactionException) e.getCause();
+             return ResponseDto.returnFail(transactionException.getErrorCode(), transactionException.getErrorMessage());
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/service/impl/tccserver/TccServerDomainServiceImpl.java
+Patch:
+@@ -34,17 +34,17 @@ public ResponseDto<List<DomainStoreDto>> getAllDomains() {
+     }
+ 
+     @Override
+-    public ResponseDto create(DomainStoreRequestDto requestDto) {
++    public ResponseDto<Void> create(DomainStoreRequestDto requestDto) {
+         return tccServerFeignClient.createDomain(requestDto);
+     }
+ 
+     @Override
+-    public ResponseDto modify(DomainStoreRequestDto requestDto) {
++    public ResponseDto<Void> modify(DomainStoreRequestDto requestDto) {
+         return tccServerFeignClient.modifyDomain(requestDto);
+     }
+ 
+     @Override
+-    public ResponseDto delete(DomainStoreRequestDto requestDto) {
++    public ResponseDto<Void> delete(DomainStoreRequestDto requestDto) {
+         return tccServerFeignClient.deleteDomain(requestDto);
+     }
+ 
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/storage/RocksDbTransactionStorage.java
+Patch:
+@@ -181,7 +181,7 @@ Page<byte[]> findKeysFromOneShard(String domain, RocksDB shard, String currentCu
+                     page.getData().add(iterator.key());
+                     count++;
+                 }
+-                if (isMarkDeleted && key.startsWith(RedisHelper.getDeletedKeyPreifx(domain))) {
++                if (isMarkDeleted && key.startsWith(RedisHelper.getDeletedKeyPrefix(domain))) {
+                     page.getData().add(iterator.key());
+                     count++;
+                 }
+@@ -208,7 +208,7 @@ int count(String domain, RocksDB shard, boolean isMarkDeleted) {
+                 if (!isMarkDeleted && key.startsWith(domain)) {
+                     count++;
+                 }
+-                if (isMarkDeleted && key.startsWith(RedisHelper.getDeletedKeyPreifx(domain))) {
++                if (isMarkDeleted && key.startsWith(RedisHelper.getDeletedKeyPrefix(domain))) {
+                     count++;
+                 }
+                 iterator.next();
+@@ -330,7 +330,7 @@ public List<DomainStore> getAllDomains() {
+             iterator.seekToFirst();
+             while (iterator.isValid()) {
+                 String key = new String(iterator.key());
+-                if (key.startsWith(RedisHelper.DOMAIN_KEY_PREIFX)) {
++                if (key.startsWith(RedisHelper.DOMAIN_KEY_PREFIX)) {
+                     list.add(domainStoreSerializer.deserialize(iterator.value()));
+                 }
+                 iterator.next();
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/config/DashboardProperties.java
+Patch:
+@@ -7,8 +7,8 @@
+  * @Date 2022/6/12 00:32
+  **/
+ public class DashboardProperties {
+-    private String userName;
+-    private String password;
++    private String userName = "admin";
++    private String password = "123456";
+     private ConnectionMode connectionMode;
+ 
+     public String getUserName() {
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/storage/RocksDbTransactionStorage.java
+Patch:
+@@ -181,7 +181,7 @@ Page<byte[]> findKeysFromOneShard(String domain, RocksDB shard, String currentCu
+                     page.getData().add(iterator.key());
+                     count++;
+                 }
+-                if (isMarkDeleted && key.startsWith(RedisHelper.getDeletedKeyPreifx(domain))) {
++                if (isMarkDeleted && key.startsWith(RedisHelper.getDeletedKeyPrefix(domain))) {
+                     page.getData().add(iterator.key());
+                     count++;
+                 }
+@@ -208,7 +208,7 @@ int count(String domain, RocksDB shard, boolean isMarkDeleted) {
+                 if (!isMarkDeleted && key.startsWith(domain)) {
+                     count++;
+                 }
+-                if (isMarkDeleted && key.startsWith(RedisHelper.getDeletedKeyPreifx(domain))) {
++                if (isMarkDeleted && key.startsWith(RedisHelper.getDeletedKeyPrefix(domain))) {
+                     count++;
+                 }
+                 iterator.next();
+@@ -330,7 +330,7 @@ public List<DomainStore> getAllDomains() {
+             iterator.seekToFirst();
+             while (iterator.isValid()) {
+                 String key = new String(iterator.key());
+-                if (key.startsWith(RedisHelper.DOMAIN_KEY_PREIFX)) {
++                if (key.startsWith(RedisHelper.DOMAIN_KEY_PREFIX)) {
+                     list.add(domainStoreSerializer.deserialize(iterator.value()));
+                 }
+                 iterator.next();
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/config/DashboardProperties.java
+Patch:
+@@ -7,8 +7,8 @@
+  * @Date 2022/6/12 00:32
+  **/
+ public class DashboardProperties {
+-    private String userName;
+-    private String password;
++    private String userName = "admin";
++    private String password = "123456";
+     private ConnectionMode connectionMode;
+ 
+     public String getUserName() {
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/alert/AlertManager.java
+Patch:
+@@ -25,8 +25,7 @@ public class AlertManager {
+     private static Logger logger = LoggerFactory.getLogger(AlertManager.class);
+ 
+     /**
+-     * 异常事件告警
+-     *
++     * 异常事件堆积告警
+      * @param domain
+      * @param currentErrorTransactionCount
+      * @param transactionStorage
+
+File: tcc-transaction-dashboard/src/main/java/org/mengyun/tcctransaction/dashboard/controller/UserController.java
+Patch:
+@@ -19,8 +19,8 @@ public class UserController {
+     @Autowired
+     private UserService userService;
+ 
+-    @Value("${spring.tcc.dashboard.data-fetch-type:local}")
+-    private String dataFetchType;
++    @Value("${spring.tcc.dashboard.connection-mode:embedded}")
++    private String connectionMode;
+ 
+     @PostMapping("/login")
+     @ResponseBody
+@@ -29,7 +29,7 @@ public ResponseDto login(@RequestBody LoginDto request) {
+         JSONObject loginedResult = new JSONObject();
+         loginedResult.put("token", token);
+         loginedResult.put("username", request.getUsername());
+-        loginedResult.put("dataFetchType", dataFetchType);
++        loginedResult.put("connectionMode", connectionMode);
+         return ResponseDto.returnSuccess(loginedResult);
+     }
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/processor/ServerRequestProcessor.java
+Patch:
+@@ -60,7 +60,7 @@ private RemotingCommand register(ChannelHandlerContext ctx, RemotingCommand requ
+         doRegister(domain, channel);
+ 
+         RemotingCommand remotingCommand = RemotingCommand.createServiceResponseCommand(null);
+-        remotingCommand.setBody(new byte[]{Integer.valueOf(1).byteValue()});
++        remotingCommand.setBody(new byte[]{(byte) 1});
+         return remotingCommand;
+     }
+ 
+@@ -109,7 +109,7 @@ private RemotingCommand writeProcess(ChannelHandlerContext ctx, RemotingCommand
+         }
+ 
+         RemotingCommand remotingCommand = RemotingCommand.createServiceResponseCommand(null);
+-        remotingCommand.setBody(new byte[]{Integer.valueOf(result).byteValue()});
++        remotingCommand.setBody(new byte[]{(byte) result});
+         return remotingCommand;
+     }
+ 
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/storage/JdbcTransactionStorage.java
+Patch:
+@@ -388,7 +388,7 @@ private Page<TransactionStore> pageList(String domain, Date date, String offset,
+         Connection connection = null;
+         PreparedStatement stmt = null;
+ 
+-        int currentOffset = StringUtils.isEmpty(offset) ? 0 : Integer.valueOf(offset);
++        int currentOffset = StringUtils.isEmpty(offset) ? 0 : Integer.parseInt(offset);
+ 
+         try {
+             connection = this.getConnection();
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/storage/RemotingTransactionStorage.java
+Patch:
+@@ -90,7 +90,7 @@ private TransactionStore doRead(int serviceCode, String domain, Xid xid) {
+ 
+         byte[] domainBytes = domain.getBytes(StandardCharsets.UTF_8);
+         byte[] xidBytes = xid.getXid().getBytes(StandardCharsets.UTF_8);
+-        byte domainByteLength = Integer.valueOf(domainBytes.length).byteValue();
++        byte domainByteLength = (byte) domainBytes.length;
+ 
+         ByteBuffer byteBuffer = ByteBuffer.allocate(1 + domainBytes.length + xidBytes.length);
+         byteBuffer.put(domainByteLength);
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/processor/ServerRequestProcessor.java
+Patch:
+@@ -60,7 +60,7 @@ private RemotingCommand register(ChannelHandlerContext ctx, RemotingCommand requ
+         doRegister(domain, channel);
+ 
+         RemotingCommand remotingCommand = RemotingCommand.createServiceResponseCommand(null);
+-        remotingCommand.setBody(new byte[]{Integer.valueOf(1).byteValue()});
++        remotingCommand.setBody(new byte[]{(byte) 1});
+         return remotingCommand;
+     }
+ 
+@@ -109,7 +109,7 @@ private RemotingCommand writeProcess(ChannelHandlerContext ctx, RemotingCommand
+         }
+ 
+         RemotingCommand remotingCommand = RemotingCommand.createServiceResponseCommand(null);
+-        remotingCommand.setBody(new byte[]{Integer.valueOf(result).byteValue()});
++        remotingCommand.setBody(new byte[]{(byte) result});
+         return remotingCommand;
+     }
+ 
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/storage/JdbcTransactionStorage.java
+Patch:
+@@ -388,7 +388,7 @@ private Page<TransactionStore> pageList(String domain, Date date, String offset,
+         Connection connection = null;
+         PreparedStatement stmt = null;
+ 
+-        int currentOffset = StringUtils.isEmpty(offset) ? 0 : Integer.valueOf(offset);
++        int currentOffset = StringUtils.isEmpty(offset) ? 0 : Integer.parseInt(offset);
+ 
+         try {
+             connection = this.getConnection();
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/storage/RemotingTransactionStorage.java
+Patch:
+@@ -90,7 +90,7 @@ private TransactionStore doRead(int serviceCode, String domain, Xid xid) {
+ 
+         byte[] domainBytes = domain.getBytes(StandardCharsets.UTF_8);
+         byte[] xidBytes = xid.getXid().getBytes(StandardCharsets.UTF_8);
+-        byte domainByteLength = Integer.valueOf(domainBytes.length).byteValue();
++        byte domainByteLength = (byte) domainBytes.length;
+ 
+         ByteBuffer byteBuffer = ByteBuffer.allocate(1 + domainBytes.length + xidBytes.length);
+         byteBuffer.put(domainByteLength);
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/properties/RecoveryProperties.java
+Patch:
+@@ -17,7 +17,7 @@ public class RecoveryProperties implements RecoveryConfig {
+     private boolean isRecoveryEnabled = true;
+     private int quartzThreadPoolThreadCount = Runtime.getRuntime().availableProcessors() * 2 + 1;
+     private String quartzDataSourceDriver = "com.mysql.jdbc.Driver";
+-    private String quartzDataSourceUrl = "jdbc:mysql://localhost:3306/TCC_SERVER?useSSL=false&allowPublicKeyRetrieval=true";
++    private String quartzDataSourceUrl = "jdbc:mysql://localhost:3306/TCC_SERVER?useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=1000&socketTimeout=5000";
+     private String quartzDataSourceUser = "root";
+     private String quartzDataSourcePassword = "welcome1";
+     private String quartzDataSourceValidationQuery = "select 1";
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/properties/store/JdbcStoreProperties.java
+Patch:
+@@ -13,7 +13,7 @@ public class JdbcStoreProperties {
+     private String driverClass = "com.mysql.jdbc.Driver";
+     private String username = "root";
+     private String password = "welcome1";
+-    private String jdbcUrl = "jdbc:mysql://127.0.0.1:3306/TCC?useSSL=false";
++    private String jdbcUrl = "jdbc:mysql://127.0.0.1:3306/TCC?useSSL=false&connectTimeout=1000&socketTimeout=5000";
+     private int initialPoolSize = 10;
+     private int minPoolSize = 10;
+     private int maxPoolSize = 50;
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/properties/RecoveryProperties.java
+Patch:
+@@ -17,7 +17,7 @@ public class RecoveryProperties implements RecoveryConfig {
+     private boolean isRecoveryEnabled = true;
+     private int quartzThreadPoolThreadCount = Runtime.getRuntime().availableProcessors() * 2 + 1;
+     private String quartzDataSourceDriver = "com.mysql.jdbc.Driver";
+-    private String quartzDataSourceUrl = "jdbc:mysql://localhost:3306/TCC_SERVER?useSSL=false&allowPublicKeyRetrieval=true";
++    private String quartzDataSourceUrl = "jdbc:mysql://localhost:3306/TCC_SERVER?useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=1000&socketTimeout=5000";
+     private String quartzDataSourceUser = "root";
+     private String quartzDataSourcePassword = "welcome1";
+     private String quartzDataSourceValidationQuery = "select 1";
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/properties/store/JdbcStoreProperties.java
+Patch:
+@@ -13,7 +13,7 @@ public class JdbcStoreProperties {
+     private String driverClass = "com.mysql.jdbc.Driver";
+     private String username = "root";
+     private String password = "welcome1";
+-    private String jdbcUrl = "jdbc:mysql://127.0.0.1:3306/TCC?useSSL=false";
++    private String jdbcUrl = "jdbc:mysql://127.0.0.1:3306/TCC?useSSL=false&connectTimeout=1000&socketTimeout=5000";
+     private int initialPoolSize = 10;
+     private int minPoolSize = 10;
+     private int maxPoolSize = 50;
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/interceptor/TransactionMethodJoinPoint.java
+Patch:
+@@ -11,6 +11,8 @@ public interface TransactionMethodJoinPoint {
+ 
+     Class<? extends TransactionContextEditor> getTransactionContextEditorClass();
+ 
++    Class<?> getDeclaredClass();
++
+     Method getMethod();
+ 
+     Object getTarget();
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/repository/AbstractKVStoreTransactionRepository.java
+Patch:
+@@ -3,7 +3,7 @@
+ import org.mengyun.tcctransaction.Transaction;
+ import org.mengyun.tcctransaction.repository.helper.ShardHolder;
+ import org.mengyun.tcctransaction.repository.helper.ShardOffset;
+-import org.mengyun.tcctransaction.serializer.KryoTransactionSerializer;
++import org.mengyun.tcctransaction.serializer.RegisterableKryoTransactionSerializer;
+ import org.mengyun.tcctransaction.serializer.TransactionSerializer;
+ import org.mengyun.tcctransaction.utils.CollectionUtils;
+ import org.slf4j.Logger;
+@@ -19,7 +19,7 @@ public abstract class AbstractKVStoreTransactionRepository<T> extends AbstractTr
+ 
+     private String rootDomain;
+ 
+-    private TransactionSerializer serializer = new KryoTransactionSerializer();
++    private TransactionSerializer serializer = new RegisterableKryoTransactionSerializer();
+ 
+     @Override
+     public String getDomain() {
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/repository/FileSystemTransactionRepository.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import org.apache.commons.lang3.StringUtils;
+ import org.mengyun.tcctransaction.Transaction;
+-import org.mengyun.tcctransaction.serializer.KryoTransactionSerializer;
++import org.mengyun.tcctransaction.serializer.RegisterableKryoTransactionSerializer;
+ import org.mengyun.tcctransaction.serializer.TransactionSerializer;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+@@ -54,7 +54,7 @@ public void setRootDomain(String rootDomain) {
+         this.rootDomain = rootDomain;
+     }
+ 
+-    private TransactionSerializer serializer = new KryoTransactionSerializer();
++    private TransactionSerializer serializer = new RegisterableKryoTransactionSerializer();
+ 
+     @Override
+     protected int doCreate(Transaction transaction) {
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/repository/JdbcTransactionRepository.java
+Patch:
+@@ -3,7 +3,7 @@
+ import org.apache.commons.lang3.StringUtils;
+ import org.mengyun.tcctransaction.Transaction;
+ import org.mengyun.tcctransaction.api.TransactionStatus;
+-import org.mengyun.tcctransaction.serializer.KryoTransactionSerializer;
++import org.mengyun.tcctransaction.serializer.RegisterableKryoTransactionSerializer;
+ import org.mengyun.tcctransaction.serializer.TransactionSerializer;
+ import org.mengyun.tcctransaction.utils.CollectionUtils;
+ 
+@@ -30,7 +30,7 @@ public class JdbcTransactionRepository extends AbstractTransactionRepository {
+ 
+     private DataSource dataSource;
+ 
+-    private TransactionSerializer serializer = new KryoTransactionSerializer();
++    private TransactionSerializer serializer = new RegisterableKryoTransactionSerializer();
+ 
+     @Override
+     public String getDomain() {
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-capital-api/src/main/java/org/mengyun/tcctransaction/sample/dubbo/capital/api/CapitalTradeOrderService.java
+Patch:
+@@ -1,14 +1,14 @@
+ package org.mengyun.tcctransaction.sample.dubbo.capital.api;
+ 
+-import org.mengyun.tcctransaction.api.Compensable;
++import org.mengyun.tcctransaction.api.EnableTcc;
+ import org.mengyun.tcctransaction.sample.dubbo.capital.api.dto.CapitalTradeOrderDto;
+ 
+ /**
+  * Created by changming.xie on 4/1/16.
+  */
+ public interface CapitalTradeOrderService {
+ 
+-    @Compensable
++    @EnableTcc
+     public String record(CapitalTradeOrderDto tradeOrderDto);
+ 
+ }
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-redpacket-api/src/main/java/org/mengyun/tcctransaction/sample/dubbo/redpacket/api/RedPacketTradeOrderService.java
+Patch:
+@@ -1,13 +1,13 @@
+ package org.mengyun.tcctransaction.sample.dubbo.redpacket.api;
+ 
+-import org.mengyun.tcctransaction.api.Compensable;
++import org.mengyun.tcctransaction.api.EnableTcc;
+ import org.mengyun.tcctransaction.sample.dubbo.redpacket.api.dto.RedPacketTradeOrderDto;
+ 
+ /**
+  * Created by changming.xie on 4/1/16.
+  */
+ public interface RedPacketTradeOrderService {
+ 
+-    @Compensable
++    @EnableTcc
+     public String record(RedPacketTradeOrderDto tradeOrderDto);
+ }
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-http-sample/tcc-transaction-http-redpacket/src/main/java/org/mengyun/tcctransaction/sample/http/redpacket/service/RedPacketTradeOrderServiceImpl.java
+Patch:
+@@ -3,7 +3,6 @@
+ import org.apache.commons.lang3.time.DateFormatUtils;
+ import org.mengyun.tcctransaction.api.Compensable;
+ import org.mengyun.tcctransaction.api.TransactionContext;
+-import org.mengyun.tcctransaction.context.MethodTransactionContextEditor;
+ import org.mengyun.tcctransaction.sample.http.redpacket.api.RedPacketTradeOrderService;
+ import org.mengyun.tcctransaction.sample.http.redpacket.api.dto.RedPacketTradeOrderDto;
+ import org.mengyun.tcctransaction.sample.redpacket.domain.entity.RedPacketAccount;
+
+File: tcc-transaction-api/src/main/java/org/mengyun/tcctransaction/api/Compensable.java
+Patch:
+@@ -22,5 +22,5 @@
+ 
+     public boolean asyncCancel() default false;
+ 
+-    public Class<? extends TransactionContextEditor> transactionContextEditor() default ParameterTransactionContextEditor.class;
++    public Class<? extends TransactionContextEditor> transactionContextEditor() default NullableTransactionContextEditor.class;
+ }
+\ No newline at end of file
+
+File: tcc-transaction-dubbo/src/main/java/org/mengyun/tcctransaction/dubbo/filter/CompensableTransactionFilter.java
+Patch:
+@@ -40,7 +40,7 @@ private Result doInvoke(Invoker<?> invoker, Invocation invocation) {
+             EnableTcc enableTcc = method.getAnnotation(EnableTcc.class);
+ 
+             if (enableTcc != null) {
+-                DubboInvokeProceedingJoinPoint pjp = new DubboInvokeProceedingJoinPoint(invocation, null, DubboTransactionContextEditor.class);
++                DubboInvokeProceedingJoinPoint pjp = new DubboInvokeProceedingJoinPoint(invoker, invocation, null, DubboTransactionContextEditor.class);
+                 return (Result) FactoryBuilder.factoryOf(ResourceCoordinatorAspect.class).getInstance().interceptTransactionContextMethod(pjp);
+             } else {
+                 return invoker.invoke(invocation);
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-capital/src/main/java/org/mengyun/tcctransaction/sample/dubbo/capital/service/CapitalTradeOrderServiceImpl.java
+Patch:
+@@ -29,7 +29,7 @@ public class CapitalTradeOrderServiceImpl implements CapitalTradeOrderService {
+     TradeOrderRepository tradeOrderRepository;
+ 
+     @Override
+-    @Compensable(confirmMethod = "confirmRecord", cancelMethod = "cancelRecord")
++    @Compensable(confirmMethod = "confirmRecord", cancelMethod = "cancelRecord", transactionContextEditor = DubboTransactionContextEditor.class)
+     @Transactional
+     public String record(CapitalTradeOrderDto tradeOrderDto) {
+ 
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-redpacket/src/main/java/org/mengyun/tcctransaction/sample/dubbo/redpacket/service/RedPacketTradeOrderServiceImpl.java
+Patch:
+@@ -29,7 +29,7 @@ public class RedPacketTradeOrderServiceImpl implements RedPacketTradeOrderServic
+     TradeOrderRepository tradeOrderRepository;
+ 
+     @Override
+-    @Compensable(confirmMethod = "confirmRecord", cancelMethod = "cancelRecord")
++    @Compensable(confirmMethod = "confirmRecord", cancelMethod = "cancelRecord", transactionContextEditor = DubboTransactionContextEditor.class)
+     @Transactional
+     public String record(RedPacketTradeOrderDto tradeOrderDto) {
+ 
+
+File: tcc-transaction-ha/tcc-transaction-ha-zookeeper/src/main/java/org/mengyun/tcctransaction/ha/zookeeper/ZookeeperRegistry.java
+Patch:
+@@ -63,7 +63,7 @@ public void register(Registration registration) throws RegistryException {
+                     try {
+                         curator.delete().forPath(path);
+                     } catch (KeeperException.NodeExistsException ignore2) {
+-                        
++
+                     }
+                 }
+             }
+
+File: tcc-transaction-unit-test/src/test/java/org/mengyun/tcctransaction/unittest/TransferServiceTest.java
+Patch:
+@@ -122,7 +122,7 @@ public void testTransferWithTimeoutAndCancelBeforeBranchTransactionStart() {
+         Assert.assertEquals(MessageConstants.ACCOUNT_SERVICE_IMPL_TRANSFER_FROM_CANCEL_CALLED, messages.get(3));
+ 
+         try {
+-            Thread.sleep(10000l);
++            Thread.sleep(15000l);
+         } catch (InterruptedException e) {
+             e.printStackTrace();
+         }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/recovery/TransactionRecovery.java
+Patch:
+@@ -99,7 +99,7 @@ public void startRecover(TransactionRepository transactionRepository) {
+                     }
+                 } while (true);
+ 
+-                logger.info(String.format("total recovery count %d from repository:%s", totalCount, transactionRepository.getClass().getName()));
++                logger.debug(String.format("total recovery count %d from repository:%s", totalCount, transactionRepository.getClass().getName()));
+             } catch (Throwable e) {
+                 logger.error(String.format("recovery failed from repository:%s.", transactionRepository.getClass().getName()), e);
+             } finally {
+@@ -202,7 +202,7 @@ private void recoverErrorTransaction(TransactionRepository transactionRepository
+             if (throwable instanceof TransactionOptimisticLockException
+                     || ExceptionUtils.getRootCause(throwable) instanceof TransactionOptimisticLockException) {
+ 
+-                logger.info(String.format(
++                logger.warn(String.format(
+                         "optimisticLockException happened while recover. txid:%s, status:%d,retried count:%d",
+                         transaction.getXid(),
+                         transaction.getStatus().getId(),
+
+File: tcc-transaction-spring/src/main/java/org/mengyun/tcctransaction/spring/recovery/RecoverConfiguration.java
+Patch:
+@@ -74,6 +74,7 @@ public void init() throws Exception {
+ 
+         recoveryScheduledJob.setTransactionRecovery(transactionRecovery);
+         recoveryScheduledJob.setCronExpression(getRecoverFrequency().getCronExpression());
++        recoveryScheduledJob.setDelayStartSeconds(recoverFrequency.getRecoverDuration());
+ 
+         Properties conf = new Properties();
+         conf.put("org.quartz.threadPool.threadCount", String.valueOf(threadCount));
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-http-sample/tcc-transaction-http-capital/src/main/java/org/mengyun/tcctransaction/sample/http/capital/service/CapitalTradeOrderServiceImpl.java
+Patch:
+@@ -28,7 +28,7 @@ public class CapitalTradeOrderServiceImpl implements CapitalTradeOrderService {
+     TradeOrderRepository tradeOrderRepository;
+ 
+     @Override
+-    @Compensable(confirmMethod = "confirmRecord", cancelMethod = "cancelRecord", transactionContextEditor = MethodTransactionContextEditor.class)
++    @Compensable(confirmMethod = "confirmRecord", cancelMethod = "cancelRecord")
+     @Transactional
+     public String record(TransactionContext transactionContext, CapitalTradeOrderDto tradeOrderDto) {
+ 
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-http-sample/tcc-transaction-http-order/src/main/java/org/mengyun/tcctransaction/sample/http/order/service/PaymentServiceImpl.java
+Patch:
+@@ -28,7 +28,7 @@ public class PaymentServiceImpl {
+ 
+     @Compensable(confirmMethod = "confirmMakePayment", cancelMethod = "cancelMakePayment", asyncConfirm = true)
+     @Transactional
+-    public void makePayment(String orderNo, BigDecimal redPacketPayAmount, BigDecimal capitalPayAmount) {
++    public void makePayment(String orderNo) {
+ 
+         System.out.println("order try make payment called.time seq:" + DateFormatUtils.format(Calendar.getInstance(), "yyyy-MM-dd HH:mm:ss"));
+ 
+@@ -41,7 +41,7 @@ public void makePayment(String orderNo, BigDecimal redPacketPayAmount, BigDecima
+ //        String result2 = tradeOrderServiceProxy.record(null,buildRedPacketTradeOrderDto(order));
+     }
+ 
+-    public void confirmMakePayment(String orderNo, BigDecimal redPacketPayAmount, BigDecimal capitalPayAmount) {
++    public void confirmMakePayment(String orderNo) {
+ 
+         try {
+             Thread.sleep(1000l);
+@@ -60,7 +60,7 @@ public void confirmMakePayment(String orderNo, BigDecimal redPacketPayAmount, Bi
+         }
+     }
+ 
+-    public void cancelMakePayment(String orderNo, BigDecimal redPacketPayAmount, BigDecimal capitalPayAmount) {
++    public void cancelMakePayment(String orderNo) {
+ 
+ 
+         try {
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-http-sample/tcc-transaction-http-order/src/main/java/org/mengyun/tcctransaction/sample/http/order/service/PlaceOrderServiceImpl.java
+Patch:
+@@ -39,7 +39,7 @@ public String placeOrder(long payerUserId, long shopId, List<Pair<Long, Integer>
+         Boolean result = false;
+ 
+         try {
+-            paymentService.makePayment(order.getMerchantOrderNo(), redPacketPayAmount, order.getTotalAmount().subtract(redPacketPayAmount));
++            paymentService.makePayment(order.getMerchantOrderNo());
+ 
+         } catch (ConfirmingException confirmingException) {
+             //exception throws with the tcc transaction status is CONFIRMING,
+
+File: tcc-transaction-unit-test/src/test/java/org/mengyun/tcctransaction/unit/test/AccountServiceTest.java
+Patch:
+@@ -8,6 +8,7 @@
+ import org.mengyun.tcctransaction.unittest.entity.SubAccount;
+ import org.mengyun.tcctransaction.unittest.repository.SubAccountRepository;
+ import org.mengyun.tcctransaction.unittest.service.AccountService;
++import org.mengyun.tcctransaction.unittest.service.AccountServiceImpl;
+ import org.mengyun.tcctransaction.unittest.utils.MessageConstants;
+ import org.mengyun.tcctransaction.unittest.utils.TraceLog;
+ import org.springframework.beans.factory.annotation.Autowired;
+@@ -20,7 +21,7 @@ public class AccountServiceTest extends AbstractTestCase {
+     SubAccountRepository subAccountRepository;
+ 
+     @Autowired
+-    private AccountService accountService;
++    private AccountServiceImpl accountService;
+ 
+     @Test
+     public void testTransferFromWithoutTransactionContext() {
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-order/src/main/java/org/mengyun/tcctransaction/sample/dubbo/order/service/PlaceOrderServiceImpl.java
+Patch:
+@@ -45,7 +45,7 @@ public String placeOrder(long payerUserId, long shopId, List<Pair<Long, Integer>
+ //            Future future1 = executorService.submit(new Runnable() {
+ //                @Override
+ //                public void run() {
+-                    paymentService.makePayment(order.getMerchantOrderNo(), order, redPacketPayAmount, order.getTotalAmount().subtract(redPacketPayAmount));
++                    paymentService.makePayment(order.getMerchantOrderNo(), redPacketPayAmount, order.getTotalAmount().subtract(redPacketPayAmount));
+ //                }
+ //            });
+ 
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-sample-domain/tcc-transaction-sample-order/src/main/java/org/mengyun/tcctransaction/sample/order/domain/entity/Order.java
+Patch:
+@@ -38,7 +38,7 @@ public Order() {
+     public Order(long payerUserId, long payeeUserId) {
+         this.payerUserId = payerUserId;
+         this.payeeUserId = payeeUserId;
+-        this.merchantOrderNo = UUID.randomUUID().toString();
++        this.merchantOrderNo = UUID.randomUUID().toString().replace("-","");
+     }
+ 
+     public long getPayerUserId() {
+
+File: tcc-transaction-unit-test/src/test/java/org/mengyun/tcctransaction/unit/test/ReflectionTest.java
+Patch:
+@@ -5,6 +5,8 @@
+ import org.springframework.beans.factory.annotation.Autowired;
+ 
+ import java.lang.reflect.Method;
++import java.nio.ByteBuffer;
++import java.nio.charset.Charset;
+ import java.util.UUID;
+ 
+ /**
+@@ -24,4 +26,5 @@ public void test1() throws NoSuchMethodException {
+ 
+ 
+     }
++
+ }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/utils/ReflectionUtils.java
+Patch:
+@@ -90,6 +90,8 @@ public static Object getNullValue(Class type) {
+             return 0;
+         } else if (double.class.equals(type)) {
+             return 0;
++        } else if (char.class.equals(type)){
++            return ' ';
+         }
+ 
+         return null;
+
+File: tcc-transaction-api/src/main/java/org/mengyun/tcctransaction/api/TransactionContext.java
+Patch:
+@@ -34,7 +34,9 @@ public TransactionXid getXid() {
+     }
+ 
+     public void setAttachments(Map<String, String> attachments) {
+-        this.attachments = attachments;
++        if (attachments != null && !attachments.isEmpty()) {
++            this.attachments.putAll(attachments);
++        }
+     }
+ 
+     public Map<String, String> getAttachments() {
+
+File: tcc-transaction-api/src/main/java/org/mengyun/tcctransaction/api/TransactionContext.java
+Patch:
+@@ -34,7 +34,9 @@ public TransactionXid getXid() {
+     }
+ 
+     public void setAttachments(Map<String, String> attachments) {
+-        this.attachments = attachments;
++        if (attachments != null && !attachments.isEmpty()) {
++            this.attachments.putAll(attachments);
++        }
+     }
+ 
+     public Map<String, String> getAttachments() {
+
+File: tcc-transaction-server/src/main/java/org/mengyun/tcctransaction/server/dao/JdbcTransactionDao.java
+Patch:
+@@ -120,8 +120,8 @@ public boolean resetRetryCount(String globalTxId, String branchQualifier) {
+                     " SET RETRIED_COUNT=0" +
+                     " WHERE GLOBAL_TX_ID = ? AND BRANCH_QUALIFIER = ?";
+             preparedStatement = connection.prepareStatement(sql);
+-            preparedStatement.setBytes(1, globalTxId.getBytes());
+-            preparedStatement.setBytes(2, branchQualifier.getBytes());
++            preparedStatement.setBytes(1, DatatypeConverter.parseHexBinary(globalTxId));
++            preparedStatement.setBytes(2, DatatypeConverter.parseHexBinary(branchQualifier));
+             int result = preparedStatement.executeUpdate();
+             return result > 0;
+         } catch (Exception e) {
+
+File: tcc-transaction-server/src/main/java/org/mengyun/tcctransaction/server/controller/TransactionController.java
+Patch:
+@@ -53,7 +53,8 @@ public ModelAndView manager(@RequestParam(value = "domain", required = false) St
+         modelAndView.addObject("pageNum", pageNum);
+         modelAndView.addObject("pageSize", DEFAULT_PAGE_SIZE);
+         modelAndView.addObject("pages", pages);
+-        modelAndView.addObject("domain", domain);
++        modelAndView.addObject("currentDomain", domain);
++        modelAndView.addObject("domains", daoRepository.getDomains());
+         modelAndView.addObject("urlWithoutPaging", "management?domain=" + domain);
+         return modelAndView;
+     }
+@@ -71,6 +72,7 @@ public CommonResponse<Void> reset(String domain, String globalTxId, String branc
+ 
+     public ModelAndView manager() {
+         ModelAndView modelAndView = new ModelAndView("manager");
++        modelAndView.addObject("domains", daoRepository.getDomains());
+         return modelAndView;
+     }
+ 
+
+File: tcc-transaction-server/src/main/java/org/mengyun/tcctransaction/server/dao/JdbcTransactionDao.java
+Patch:
+@@ -109,7 +109,7 @@ public Integer countOfFindTransactions() {
+     }
+ 
+     @Override
+-    public boolean resetRetryCount(byte[] globalTxId, byte[] branchQualifier) {
++    public boolean resetRetryCount(String globalTxId, String branchQualifier) {
+ 
+         Connection connection = getConnection();
+         PreparedStatement preparedStatement = null;
+@@ -120,8 +120,8 @@ public boolean resetRetryCount(byte[] globalTxId, byte[] branchQualifier) {
+                     " SET RETRIED_COUNT=0" +
+                     " WHERE GLOBAL_TX_ID = ? AND BRANCH_QUALIFIER = ?";
+             preparedStatement = connection.prepareStatement(sql);
+-            preparedStatement.setBytes(1, globalTxId);
+-            preparedStatement.setBytes(2, branchQualifier);
++            preparedStatement.setBytes(1, globalTxId.getBytes());
++            preparedStatement.setBytes(2, branchQualifier.getBytes());
+             int result = preparedStatement.executeUpdate();
+             return result > 0;
+         } catch (Exception e) {
+
+File: tcc-transaction-server/src/main/java/org/mengyun/tcctransaction/server/dao/TransactionDao.java
+Patch:
+@@ -13,7 +13,7 @@ public interface TransactionDao {
+ 
+     public Integer countOfFindTransactions();
+ 
+-    public boolean resetRetryCount(byte[] globalTxId, byte[] branchQualifier);
++    public boolean resetRetryCount(String  globalTxId, String branchQualifier);
+ 
+     public String getDomain();
+ }
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-http-sample/tcc-transaction-http-order/src/main/java/org/mengyun/tcctransaction/sample/http/order/domain/service/PaymentServiceImpl.java
+Patch:
+@@ -27,7 +27,7 @@ public class PaymentServiceImpl {
+     OrderRepository orderRepository;
+ 
+ 
+-    @Compensable(confirmMethod = "confirmMakePayment", cancelMethod = "cancelMakePayment",asyncConfirm = true)
++    @Compensable(confirmMethod = "confirmMakePayment", cancelMethod = "cancelMakePayment",asyncConfirm = false)
+     @Transactional
+     public void makePayment(Order order, BigDecimal redPacketPayAmount, BigDecimal capitalPayAmount) {
+ 
+
+File: tcc-transaction-spring/src/main/java/org/mengyun/tcctransaction/spring/support/SpringBeanFactory.java
+Patch:
+@@ -1,6 +1,7 @@
+ package org.mengyun.tcctransaction.spring.support;
+ 
+ import org.mengyun.tcctransaction.support.BeanFactory;
++import org.mengyun.tcctransaction.support.FactoryBuilder;
+ import org.springframework.beans.BeansException;
+ import org.springframework.context.ApplicationContext;
+ import org.springframework.context.ApplicationContextAware;
+@@ -17,6 +18,7 @@ public class SpringBeanFactory implements BeanFactory, ApplicationContextAware {
+     @Override
+     public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+         this.applicationContext = applicationContext;
++        FactoryBuilder.registerBeanFactory(this);
+     }
+ 
+     @Override
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/context/MethodTransactionContextEditor.java
+Patch:
+@@ -8,7 +8,9 @@
+ 
+ /**
+  * Created by changming.xie on 1/18/17.
++ * this class is replaced by org.mengyun.tcctransaction.api.Compensable.DefaultTransactionContextEditor
+  */
++@Deprecated
+ public class MethodTransactionContextEditor implements TransactionContextEditor {
+ 
+     @Override
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/interceptor/ResourceCoordinatorInterceptor.java
+Patch:
+@@ -3,6 +3,7 @@
+ import org.aspectj.lang.ProceedingJoinPoint;
+ import org.aspectj.lang.reflect.MethodSignature;
+ import org.mengyun.tcctransaction.*;
++import org.mengyun.tcctransaction.Terminator;
+ import org.mengyun.tcctransaction.api.TransactionContext;
+ import org.mengyun.tcctransaction.api.TransactionStatus;
+ import org.mengyun.tcctransaction.api.TransactionXid;
+@@ -24,7 +25,7 @@ public void setTransactionConfigurator(TransactionConfigurator transactionConfig
+         this.transactionConfigurator = transactionConfigurator;
+     }
+ 
+-    public void interceptTransactionContextMethod(ProceedingJoinPoint pjp) throws Throwable {
++    public Object interceptTransactionContextMethod(ProceedingJoinPoint pjp) throws Throwable {
+ 
+         Transaction transaction = transactionConfigurator.getTransactionManager().getCurrentTransaction();
+ 
+@@ -49,7 +50,7 @@ public void interceptTransactionContextMethod(ProceedingJoinPoint pjp) throws Th
+             }
+         }
+ 
+-        pjp.proceed(pjp.getArgs());
++        return pjp.proceed(pjp.getArgs());
+     }
+ 
+     private Participant generateAndEnlistRootParticipant(ProceedingJoinPoint pjp) {
+
+File: tcc-transaction-spring/src/main/java/org/mengyun/tcctransaction/spring/TccCompensableAspect.java
+Patch:
+@@ -24,9 +24,9 @@ public void compensableService() {
+     }
+ 
+     @Around("compensableService()")
+-    public void interceptCompensableMethod(ProceedingJoinPoint pjp) throws Throwable {
++    public Object interceptCompensableMethod(ProceedingJoinPoint pjp) throws Throwable {
+ 
+-        compensableTransactionInterceptor.interceptCompensableMethod(pjp);
++        return compensableTransactionInterceptor.interceptCompensableMethod(pjp);
+     }
+ 
+     @Override
+
+File: tcc-transaction-spring/src/main/java/org/mengyun/tcctransaction/spring/TccTransactionContextAspect.java
+Patch:
+@@ -24,9 +24,9 @@ public void transactionContextCall() {
+     }
+ 
+     @Around("transactionContextCall()")
+-    public void interceptTransactionContextMethod(ProceedingJoinPoint pjp) throws Throwable {
++    public Object interceptTransactionContextMethod(ProceedingJoinPoint pjp) throws Throwable {
+ 
+-        resourceCoordinatorInterceptor.interceptTransactionContextMethod(pjp);
++        return resourceCoordinatorInterceptor.interceptTransactionContextMethod(pjp);
+     }
+ 
+     @Override
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-capital-api/src/main/java/org/mengyun/tcctransaction/sample/dubbo/capital/api/CapitalTradeOrderService.java
+Patch:
+@@ -8,5 +8,5 @@
+  */
+ public interface CapitalTradeOrderService {
+ 
+-    public void record(TransactionContext transactionContext,CapitalTradeOrderDto tradeOrderDto);
++    public String record(TransactionContext transactionContext,CapitalTradeOrderDto tradeOrderDto);
+ }
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-capital/src/main/java/org/mengyun/tcctransaction/sample/dubbo/capital/service/CapitalTradeOrderServiceImpl.java
+Patch:
+@@ -20,14 +20,15 @@ public class CapitalTradeOrderServiceImpl implements CapitalTradeOrderService {
+ 
+     @Override
+     @Compensable(confirmMethod = "confirmRecord", cancelMethod = "cancelRecord")
+-    public void record(TransactionContext transactionContext, CapitalTradeOrderDto tradeOrderDto) {
++    public String record(TransactionContext transactionContext, CapitalTradeOrderDto tradeOrderDto) {
+         System.out.println("capital try record called");
+ 
+         CapitalAccount transferFromAccount = capitalAccountRepository.findByUserId(tradeOrderDto.getSelfUserId());
+ 
+         transferFromAccount.transferFrom(tradeOrderDto.getAmount());
+ 
+         capitalAccountRepository.save(transferFromAccount);
++        return "success";
+     }
+ 
+     public void confirmRecord(TransactionContext transactionContext, CapitalTradeOrderDto tradeOrderDto) {
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-order/src/main/java/org/mengyun/tcctransaction/sample/dubbo/order/domain/service/PaymentServiceImpl.java
+Patch:
+@@ -27,15 +27,15 @@ public class PaymentServiceImpl {
+     @Autowired
+     OrderRepository orderRepository;
+ 
+-    @Compensable(confirmMethod = "confirmMakePayment",cancelMethod = "cancelMakePayment")
++    @Compensable(confirmMethod = "confirmMakePayment", cancelMethod = "cancelMakePayment")
+     public void makePayment(Order order, BigDecimal redPacketPayAmount, BigDecimal capitalPayAmount) {
+         System.out.println("order try make payment called");
+ 
+         order.pay(redPacketPayAmount, capitalPayAmount);
+         orderRepository.updateOrder(order);
+ 
+-        capitalTradeOrderService.record(null, buildCapitalTradeOrderDto(order));
+-        redPacketTradeOrderService.record(null, buildRedPacketTradeOrderDto(order));
++        String result = capitalTradeOrderService.record(null, buildCapitalTradeOrderDto(order));
++        String result2 = redPacketTradeOrderService.record(null, buildRedPacketTradeOrderDto(order));
+     }
+ 
+     public void confirmMakePayment(Order order, BigDecimal redPacketPayAmount, BigDecimal capitalPayAmount) {
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-redpacket-api/src/main/java/org/mengyun/tcctransaction/sample/dubbo/redpacket/api/RedPacketTradeOrderService.java
+Patch:
+@@ -8,5 +8,5 @@
+  */
+ public interface RedPacketTradeOrderService {
+ 
+-    public void record(TransactionContext transactionContext,RedPacketTradeOrderDto tradeOrderDto);
++    public String record(TransactionContext transactionContext,RedPacketTradeOrderDto tradeOrderDto);
+ }
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-redpacket/src/main/java/org/mengyun/tcctransaction/sample/dubbo/redpacket/service/RedPacketTradeOrderServiceImpl.java
+Patch:
+@@ -20,14 +20,16 @@ public class RedPacketTradeOrderServiceImpl implements RedPacketTradeOrderServic
+ 
+     @Override
+     @Compensable(confirmMethod = "confirmRecord",cancelMethod = "cancelRecord")
+-    public void record(TransactionContext transactionContext, RedPacketTradeOrderDto tradeOrderDto) {
++    public String record(TransactionContext transactionContext, RedPacketTradeOrderDto tradeOrderDto) {
+         System.out.println("red packet try record called");
+ 
+         RedPacketAccount transferFromAccount = redPacketAccountRepository.findByUserId(tradeOrderDto.getSelfUserId());
+ 
+         transferFromAccount.transferFrom(tradeOrderDto.getAmount());
+ 
+         redPacketAccountRepository.save(transferFromAccount);
++
++        return "success";
+     }
+ 
+     public void confirmRecord(TransactionContext transactionContext, RedPacketTradeOrderDto tradeOrderDto) {
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/repository/FileSystemTransactionRepository.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import org.mengyun.tcctransaction.Transaction;
+ import org.mengyun.tcctransaction.common.TransactionType;
+-import org.mengyun.tcctransaction.serializer.KryoTransactionSerializer;
++import org.mengyun.tcctransaction.serializer.JdkSerializationSerializer;
+ import org.mengyun.tcctransaction.serializer.ObjectSerializer;
+ 
+ import javax.transaction.xa.Xid;
+@@ -26,7 +26,7 @@ public class FileSystemTransactionRepository extends CachableTransactionReposito
+ 
+     private volatile boolean initialized;
+ 
+-    private ObjectSerializer serializer = new KryoTransactionSerializer();
++    private ObjectSerializer serializer = new JdkSerializationSerializer();
+ 
+     public void setSerializer(ObjectSerializer serializer) {
+         this.serializer = serializer;
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/repository/JdbcTransactionRepository.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ 
+ import org.mengyun.tcctransaction.Transaction;
+-import org.mengyun.tcctransaction.serializer.KryoTransactionSerializer;
++import org.mengyun.tcctransaction.serializer.JdkSerializationSerializer;
+ import org.mengyun.tcctransaction.serializer.ObjectSerializer;
+ import org.mengyun.tcctransaction.utils.CollectionUtils;
+ 
+@@ -20,7 +20,7 @@ public class JdbcTransactionRepository extends CachableTransactionRepository {
+ 
+     private DataSource dataSource;
+ 
+-    private ObjectSerializer serializer = new KryoTransactionSerializer();
++    private ObjectSerializer serializer = new JdkSerializationSerializer();
+ 
+     public void setSerializer(ObjectSerializer serializer) {
+         this.serializer = serializer;
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/repository/RedisTransactionRepository.java
+Patch:
+@@ -2,6 +2,7 @@
+ 
+ import org.mengyun.tcctransaction.Transaction;
+ import org.mengyun.tcctransaction.common.TransactionType;
++import org.mengyun.tcctransaction.serializer.JdkSerializationSerializer;
+ import org.mengyun.tcctransaction.serializer.KryoTransactionSerializer;
+ import org.mengyun.tcctransaction.serializer.ObjectSerializer;
+ import org.mengyun.tcctransaction.utils.ByteUtils;
+@@ -29,7 +30,7 @@ public void setKeyPrefix(String keyPrefix) {
+         this.keyPrefix = keyPrefix;
+     }
+ 
+-    private ObjectSerializer serializer = new KryoTransactionSerializer();
++    private ObjectSerializer serializer = new JdkSerializationSerializer();
+ 
+     public void setSerializer(ObjectSerializer serializer) {
+         this.serializer = serializer;
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/repository/TransactionIOException.java
+Patch:
+@@ -5,6 +5,8 @@
+  */
+ public class TransactionIOException extends RuntimeException {
+ 
++    private static final long serialVersionUID = 6508064607297986329L;
++
+     public TransactionIOException(String message) {
+         super(message);
+     }
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/repository/ZooKeeperTransactionRepository.java
+Patch:
+@@ -4,7 +4,7 @@
+ import org.apache.zookeeper.data.Stat;
+ import org.mengyun.tcctransaction.Transaction;
+ import org.mengyun.tcctransaction.common.TransactionType;
+-import org.mengyun.tcctransaction.serializer.KryoTransactionSerializer;
++import org.mengyun.tcctransaction.serializer.JdkSerializationSerializer;
+ import org.mengyun.tcctransaction.serializer.ObjectSerializer;
+ 
+ import javax.transaction.xa.Xid;
+@@ -25,7 +25,7 @@ public class ZooKeeperTransactionRepository extends CachableTransactionRepositor
+ 
+     private volatile ZooKeeper zk;
+ 
+-    private ObjectSerializer serializer = new KryoTransactionSerializer();
++    private ObjectSerializer serializer = new JdkSerializationSerializer();
+ 
+     public ZooKeeperTransactionRepository() {
+         super();
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/recover/TransactionRecovery.java
+Patch:
+@@ -50,7 +50,7 @@ private List<Transaction> loadErrorTransactions() {
+             }
+         }
+ 
+-        return transactions;
++        return recoverTransactions;
+     }
+ 
+     private void recoverErrorTransactions(List<Transaction> transactions) {
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-order/src/main/java/org/mengyun/tcctransaction/sample/dubbo/order/domain/entity/Order.java
+Patch:
+@@ -1,5 +1,6 @@
+ package org.mengyun.tcctransaction.sample.dubbo.order.domain.entity;
+ 
++import java.io.Serializable;
+ import java.math.BigDecimal;
+ import java.util.ArrayList;
+ import java.util.Collections;
+@@ -8,8 +9,9 @@
+ /**
+  * Created by changming.xie on 3/25/16.
+  */
+-public class Order {
++public class Order implements Serializable {
+ 
++    private static final long serialVersionUID = -5908730245224893590L;
+     private long id;
+ 
+     private long payerUserId;
+
+File: tcc-transaction-tutorial-sample/tcc-transaction-dubbo-sample/tcc-transaction-dubbo-order/src/main/java/org/mengyun/tcctransaction/sample/dubbo/order/domain/entity/OrderLine.java
+Patch:
+@@ -1,12 +1,14 @@
+ package org.mengyun.tcctransaction.sample.dubbo.order.domain.entity;
+ 
++import java.io.Serializable;
+ import java.math.BigDecimal;
+ 
+ /**
+  * Created by changming.xie on 4/1/16.
+  */
+-public class OrderLine {
++public class OrderLine implements Serializable {
+ 
++    private static final long serialVersionUID = 2300754647209250837L;
+     private long id;
+ 
+     private long productId;
+
+File: tcc-transaction-api/src/main/java/org/mengyun/tcctransaction/api/TransactionContext.java
+Patch:
+@@ -9,6 +9,7 @@
+  */
+ public class TransactionContext implements Serializable {
+ 
++    private static final long serialVersionUID = -8199390103169700387L;
+     private TransactionXid xid;
+ 
+     private int status;
+
+File: tcc-transaction-unit-test/src/main/java/org/mengyun/tcctransaction/unittest/entity/UserShardingId.java
+Patch:
+@@ -8,6 +8,7 @@
+  */
+ public abstract class UserShardingId implements Serializable {
+ 
++    private static final long serialVersionUID = -8923642703284688507L;
+     private Long id;
+ 
+     private Long userId;
+
+File: tcc-transaction-unit-test/src/main/java/org/mengyun/tcctransaction/unittest/thirdservice/AccountRecordServiceImpl.java
+Patch:
+@@ -23,16 +23,13 @@ public void record(TransactionContext transactionContext, long accountId, int am
+ 
+         System.out.println("record");
+ 
+-
+-
+         AccountRecord accountRecord = accountRecordRepository.findById(accountId);
+         accountRecord.setBalanceAmount(amount);
+         accountRecord.setStatusId(AccountStatus.TRANSFERING.getId());
+ 
+         if (UnitTest.TRYING_EXCEPTION) {
+             throw new RuntimeException("record try failed.");
+         }
+-
+     }
+ 
+     public void recordConfirm(TransactionContext transactionContext, long accountId, int amount) {
+
+File: tcc-transaction-api/src/main/java/org/mengyun/tcctransaction/api/TransactionStatus.java
+Patch:
+@@ -1,5 +1,7 @@
+ package org.mengyun.tcctransaction.api;
+ 
++import java.io.Serializable;
++
+ /**
+  * Created by changmingxie on 10/28/15.
+  */
+
+File: tcc-transaction-api/src/main/java/org/mengyun/tcctransaction/api/TransactionXid.java
+Patch:
+@@ -11,6 +11,7 @@
+  */
+ public class TransactionXid implements Xid, Serializable {
+ 
++    private static final long serialVersionUID = -6817267250789142043L;
+     private int formatId = 1;
+ 
+     private byte[] globalTransactionId;
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/InvocationContext.java
+Patch:
+@@ -7,6 +7,7 @@
+  */
+ public class InvocationContext implements Serializable {
+ 
++    private static final long serialVersionUID = -7969140711432461165L;
+     private Class targetClass;
+ 
+     private String methodName;
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/Participant.java
+Patch:
+@@ -9,6 +9,7 @@
+  */
+ public class Participant implements Serializable {
+ 
++    private static final long serialVersionUID = 4127729421281425247L;
+     private TransactionXid xid;
+ 
+     private Terminator terminator;
+
+File: tcc-transaction-core/src/main/java/org/mengyun/tcctransaction/Terminator.java
+Patch:
+@@ -10,6 +10,7 @@
+  */
+ public class Terminator implements Serializable {
+ 
++    private static final long serialVersionUID = -164958655471605778L;
+     private InvocationContext confirmInvocationContext;
+ 
+     private InvocationContext cancelInvocationContext;
+
+File: tcc-transaction-unit-test/src/main/java/org/mengyun/tcctransaction/unittest/client/AccountRecordServiceProxy.java
+Patch:
+@@ -1,7 +1,7 @@
+ package org.mengyun.tcctransaction.unittest.client;
+ 
+ import org.mengyun.tcctransaction.api.TransactionContext;
+-import org.mengyun.tcctransaction.unittest.thirdservice.AccountRecordServiceImpl;
++import org.mengyun.tcctransaction.unittest.thirdservice.AccountRecordService;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+ 
+@@ -15,7 +15,7 @@ public class AccountRecordServiceProxy {
+ 
+ 
+     @Autowired
+-    private AccountRecordServiceImpl accountRecordService;
++    private AccountRecordService accountRecordService;
+ 
+     private ExecutorService executorService = Executors.newFixedThreadPool(100);
+ 
+@@ -47,7 +47,7 @@ private void handleResult(Future<Boolean> future) {
+         } catch (InterruptedException e) {
+             throw new Error(e);
+         } catch (ExecutionException e) {
+-           throw new Error(e);
++            throw new Error(e);
+         }
+     }
+ }
+
+File: tcc-transaction-unit-test/src/main/java/org/mengyun/tcctransaction/unittest/client/AccountServiceProxy.java
+Patch:
+@@ -1,7 +1,7 @@
+ package org.mengyun.tcctransaction.unittest.client;
+ 
+ import org.mengyun.tcctransaction.api.TransactionContext;
+-import org.mengyun.tcctransaction.unittest.service.AccountServiceImpl;
++import org.mengyun.tcctransaction.unittest.service.AccountService;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
+ 
+@@ -14,7 +14,7 @@
+ public class AccountServiceProxy {
+ 
+     @Autowired
+-    AccountServiceImpl accountService;
++    AccountService accountService;
+ 
+     private ExecutorService executorService = Executors.newFixedThreadPool(100);
+ 
+@@ -65,7 +65,7 @@ public void transferTo(final long accountId, final int amount) {
+                 .submit(new Callable<Boolean>() {
+                     @Override
+                     public Boolean call() throws Exception {
+-                        accountService.transferTo(accountId, amount);
++                        accountService.transferToWithNoTransactionContext(accountId, amount);
+                         return true;
+                     }
+                 });
+
+File: tcc-transaction-unit-test/src/main/java/org/mengyun/tcctransaction/unittest/service/AccountServiceImpl.java
+Patch:
+@@ -68,7 +68,7 @@ public void transferToWithMultipleTier(TransactionContext transactionContext, lo
+ 
+     @Override
+     @Compensable(confirmMethod = "transferToConfirmWithNoTransactionContext", cancelMethod = "transferToCancelWithNoTransactionContext")
+-    public void transferTo(long accountId, int amount) {
++    public void transferToWithNoTransactionContext(long accountId, int amount) {
+ 
+         System.out.println("transferToWithNoTransactionContext called");
+         SubAccount subAccount = subAccountRepository.findById(accountId);
+
+File: tcc-transaction-unit-test/src/main/java/org/mengyun/tcctransaction/unittest/thirdservice/AccountRecordServiceImpl.java
+Patch:
+@@ -13,7 +13,7 @@
+  * Created by changmingxie on 10/25/15.
+  */
+ @Service
+-public class AccountRecordServiceImpl {
++public class AccountRecordServiceImpl implements AccountRecordService {
+ 
+     @Autowired
+     AccountRecordRepository accountRecordRepository;
+
+File: tcc-transaction-unit-test/src/test/java/org/mengyun/tcctransaction/unit/test/TransferServiceTest.java
+Patch:
+@@ -168,6 +168,7 @@ public void testRecovery() {
+         Assert.assertTrue(accountRecord.getBalanceAmount() == 0);
+     }
+ 
++
+     private void buildAccount() {
+         SubAccount subAccountFrom = subAccountRepository.findById(1L);
+ 
+

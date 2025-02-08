@@ -1,0 +1,447 @@
+File: library/src/main/java/eightbitlab/com/blurview/BlurController.java
+Patch:
+@@ -2,7 +2,7 @@
+ 
+ import android.graphics.Canvas;
+ 
+-interface BlurController extends BlurViewFacade {
++public interface BlurController extends BlurViewFacade {
+ 
+     float DEFAULT_SCALE_FACTOR = 6f;
+     float DEFAULT_BLUR_RADIUS = 16f;
+
+File: library/src/main/java/eightbitlab/com/blurview/NoOpController.java
+Patch:
+@@ -5,8 +5,8 @@
+ 
+ import androidx.annotation.Nullable;
+ 
+-//Used in edit mode and in case if no BlurController was set
+-class NoOpController implements BlurController {
++// Used in edit mode and in case if no BlurController was set
++public class NoOpController implements BlurController {
+     @Override
+     public boolean draw(Canvas canvas) {
+         return true;
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurAlgorithm.java
+Patch:
+@@ -11,7 +11,7 @@ public interface BlurAlgorithm {
+      * @param blurRadius blur radius
+      * @return blurred bitmap
+      */
+-    Bitmap blur(Bitmap bitmap, float blurRadius);
++    Bitmap blur(@NonNull Bitmap bitmap, @NonNull float blurRadius);
+ 
+     /**
+      * Frees allocated resources
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurViewCanvas.java
+Patch:
+@@ -5,7 +5,7 @@
+ 
+ import androidx.annotation.NonNull;
+ 
+-// Servers purely as a marker of a Canvas used in BlurView
++// Serves purely as a marker of a Canvas used in BlurView
+ // to skip drawing itself and other BlurViews on the View hierarchy snapshot
+ public class BlurViewCanvas extends Canvas {
+     public BlurViewCanvas(@NonNull Bitmap bitmap) {
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurAlgorithm.java
+Patch:
+@@ -1,6 +1,7 @@
+ package eightbitlab.com.blurview;
+ 
+ import android.graphics.Bitmap;
++import android.graphics.Canvas;
+ 
+ import androidx.annotation.NonNull;
+ 
+@@ -37,4 +38,6 @@ public interface BlurAlgorithm {
+     Bitmap.Config getSupportedBitmapConfig();
+ 
+     float scaleFactor();
++
++    void render(@NonNull Canvas canvas, @NonNull Bitmap bitmap);
+ }
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurController.java
+Patch:
+@@ -4,7 +4,7 @@
+ 
+ interface BlurController extends BlurViewFacade {
+ 
+-    float DEFAULT_SCALE_FACTOR = 8f;
++    float DEFAULT_SCALE_FACTOR = 6f;
+     float DEFAULT_BLUR_RADIUS = 16f;
+ 
+     /**
+
+File: library/src/main/java/eightbitlab/com/blurview/RenderEffectBlur.java
+Patch:
+@@ -43,6 +43,9 @@ public void onGlobalLayout() {
+                         ViewGroup.LayoutParams.MATCH_PARENT,
+                         blurView.getMeasuredHeight()
+                 );
++                if (backgroundView.getParent() != null) {
++                    ((ViewGroup)backgroundView.getParent()).removeView(backgroundView);
++                }
+                 blurView.addView(backgroundView, 0, params);
+             }
+         });
+
+File: app/src/main/java/com/eightbitlab/blurview_sample/MainActivity.java
+Patch:
+@@ -14,6 +14,7 @@
+ 
+ import com.google.android.material.tabs.TabLayout;
+ 
++import eightbitlab.com.blurview.BlurAlgorithm;
+ import eightbitlab.com.blurview.BlurView;
+ import eightbitlab.com.blurview.RenderEffectBlur;
+ import eightbitlab.com.blurview.RenderEffectPrecision;
+@@ -60,11 +61,11 @@ private void setupBlurView() {
+         //set background, if your root layout doesn't have one
+         final Drawable windowBackground = getWindow().getDecorView().getBackground();
+ 
+-        RenderEffectBlur algorithm = null;
++        BlurAlgorithm algorithm;
+         if (Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+             algorithm = new RenderEffectBlur(topBlurView, RenderEffectPrecision.EXACT);
+         } else {
+-            new RenderScriptBlur(this);
++            algorithm = new RenderScriptBlur(this);
+         }
+         topBlurView.setupWith(root)
+                 .setFrameClearDrawable(windowBackground)
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurViewFacade.java
+Patch:
+@@ -28,9 +28,11 @@ public interface BlurViewFacade {
+      * If you are not changing these properties (for example, during animation), this behavior can be changed
+      * to calculate them only once during initialization.
+      *
++     * @deprecated It was a confusing API that didn't do much for the performance. Now this method is no-op
+      * @param hasFixedTransformationMatrix indicates if this BlurView has fixed transformation Matrix.
+      * @return {@link BlurViewFacade}
+      */
++    @Deprecated
+     BlurViewFacade setHasFixedTransformationMatrix(boolean hasFixedTransformationMatrix);
+ 
+     /**
+
+File: library/src/main/java/eightbitlab/com/blurview/SizeScaler.java
+Patch:
+@@ -49,6 +49,7 @@ static class Size {
+ 
+         final int width;
+         final int height;
++        // TODO this is probably not needed anymore
+         final float scaleFactor;
+ 
+         Size(int width, int height, float scaleFactor) {
+
+File: library/src/main/java/eightbitlab/com/blurview/SizeScaler.java
+Patch:
+@@ -21,7 +21,8 @@ Size scale(int width, int height) {
+         int scaledWidth = roundSize(nonRoundedScaledWidth);
+         //Only width has to be aligned to ROUNDING_VALUE
+         float roundingScaleFactor = (float) width / scaledWidth;
+-        int scaledHeight = (int) Math.round(height / roundingScaleFactor);
++        //Ceiling because rounding or flooring might leave empty space on the View's bottom
++        int scaledHeight = (int) Math.ceil(height / roundingScaleFactor);
+ 
+         return new Size(scaledWidth, scaledHeight, roundingScaleFactor);
+     }
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurController.java
+Patch:
+@@ -9,8 +9,10 @@ interface BlurController extends BlurViewFacade {
+ 
+     /**
+      * Draws blurred content on given canvas
++     *
++     * @return true if BlurView should proceed with drawing itself and its children
+      */
+-    void draw(Canvas canvas);
++    boolean draw(Canvas canvas);
+ 
+     /**
+      * Must be used to notify Controller when BlurView's size has changed
+
+File: library/src/main/java/eightbitlab/com/blurview/NoOpController.java
+Patch:
+@@ -7,7 +7,8 @@
+ //Used in edit mode and in case if no BlurController was set
+ class NoOpController implements BlurController {
+     @Override
+-    public void draw(Canvas canvas) {
++    public boolean draw(Canvas canvas) {
++        return true;
+     }
+ 
+     @Override
+
+File: library/src/main/java/eightbitlab/com/blurview/BlockingBlurController.java
+Patch:
+@@ -232,6 +232,9 @@ public void draw(Canvas canvas) {
+ 
+     private void blurAndSave() {
+         internalBitmap = blurAlgorithm.blur(internalBitmap, blurRadius);
++        if (!blurAlgorithm.canModifyBitmap()) {
++            internalCanvas.setBitmap(internalBitmap);
++        }
+     }
+ 
+     @Override
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurView.java
+Patch:
+@@ -60,7 +60,7 @@ public void draw(Canvas canvas) {
+                 canvas.drawColor(overlayColor);
+             }
+             super.draw(canvas);
+-        } else if (!isHardwareAccelerated()) {
++        } else {
+             //if view is in a not hardware accelerated window, don't draw blur
+             super.draw(canvas);
+         }
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurView.java
+Patch:
+@@ -60,7 +60,7 @@ public void draw(Canvas canvas) {
+                 canvas.drawColor(overlayColor);
+             }
+             super.draw(canvas);
+-        } else if (!isHardwareAccelerated()) {
++        } else {
+             //if view is in a not hardware accelerated window, don't draw blur
+             super.draw(canvas);
+         }
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurController.java
+Patch:
+@@ -54,4 +54,6 @@ interface BlurController {
+      * Enabled by default.
+      */
+     void setBlurAutoUpdate(boolean enabled);
++
++    void setHasFixedTransformationMatrix(boolean hasFixedTransformationMatrix);
+ }
+
+File: library/src/main/java/eightbitlab/com/blurview/BlockingBlurController.java
+Patch:
+@@ -81,7 +81,7 @@ public void run() {
+     BlockingBlurController(@NonNull View blurView, @NonNull ViewGroup rootView) {
+         this.rootView = rootView;
+         this.blurView = blurView;
+-        this.blurAlgorithm = new RenderScriptBlur(blurView.getContext(), true);
++        this.blurAlgorithm = new NoOpBlurAlgorithm();
+ 
+         int measuredWidth = blurView.getMeasuredWidth();
+         int measuredHeight = blurView.getMeasuredHeight();
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurView.java
+Patch:
+@@ -160,7 +160,7 @@ public ControllerSettings blurRadius(float radius) {
+ 
+         /**
+          * @param algorithm sets the blur algorithm
+-         *                  Default implementation uses {@link StackBlur}
++         *                  Default implementation uses {@link RenderScriptBlur}
+          */
+         public ControllerSettings blurAlgorithm(BlurAlgorithm algorithm) {
+             blurController.setBlurAlgorithm(algorithm);
+
+File: library/src/main/java/eightbitlab/com/blurview/DefaultBlurController.java
+Patch:
+@@ -41,7 +41,7 @@ class DefaultBlurController implements BlurController {
+     private final View blurView;
+     private final View rootView;
+ 
+-    private ViewTreeObserver.OnPreDrawListener drawListener = new ViewTreeObserver.OnPreDrawListener() {
++    private final ViewTreeObserver.OnPreDrawListener drawListener = new ViewTreeObserver.OnPreDrawListener() {
+         @Override
+         public boolean onPreDraw() {
+             if (!isMeDrawingNow && isBlurEnabled) {
+@@ -80,7 +80,7 @@ public void run() {
+     public DefaultBlurController(@NonNull View blurView, @NonNull View rootView) {
+         this.rootView = rootView;
+         this.blurView = blurView;
+-        this.blurAlgorithm = new StackBlur(true);
++        this.blurAlgorithm = new RenderScriptBlur(blurView.getContext(), true);
+ 
+         int measuredWidth = blurView.getMeasuredWidth();
+         int measuredHeight = blurView.getMeasuredHeight();
+
+File: library/src/main/java/eightbitlab/com/blurview/DefaultBlurController.java
+Patch:
+@@ -167,8 +167,8 @@ private void allocateBitmap(int measuredWidth, int measuredHeight) {
+         int scaledWidth = roundSize(nonRoundedScaledWidth);
+         int scaledHeight = roundSize(nonRoundedScaledHeight);
+ 
+-        roundingHeightScaleFactor = (float) scaledHeight / nonRoundedScaledHeight;
+-        roundingWidthScaleFactor = (float) scaledWidth / nonRoundedScaledWidth;
++        roundingHeightScaleFactor = (float) nonRoundedScaledHeight / scaledHeight;
++        roundingWidthScaleFactor = (float) nonRoundedScaledWidth  / scaledWidth;
+ 
+         internalBitmap = Bitmap.createBitmap(scaledWidth, scaledHeight, blurAlgorithm.getSupportedBitmapConfig());
+     }
+
+File: library/src/main/java/eightbitlab/com/blurview/BlurController.java
+Patch:
+@@ -6,7 +6,7 @@
+ 
+ interface BlurController {
+     float DEFAULT_SCALE_FACTOR = 8f;
+-    float DEFAULT_BLUR_RADIUS = 8f;
++    float DEFAULT_BLUR_RADIUS = 16f;
+ 
+     /**
+      * Used to distinct BlurController's Canvas from System Canvas.
+
+File: library/src/main/java/eightbitlab/com/blurview/DefaultBlurController.java
+Patch:
+@@ -24,8 +24,8 @@
+ public class DefaultBlurController implements BlurController {
+     private static final String TAG = DefaultBlurController.class.getSimpleName();
+ 
+-    public static final float DEFAULT_SCALE_FACTOR = 10f;
+-    public static final int DEFAULT_BLUR_RADIUS = 6;
++    public static final float DEFAULT_SCALE_FACTOR = 8f;
++    public static final int DEFAULT_BLUR_RADIUS = 8;
+ 
+     protected final float scaleFactor;
+     protected int blurRadius = DEFAULT_BLUR_RADIUS;
+
+File: app/src/main/java/com/eightbitlab/blurview_sample/MainActivity.java
+Patch:
+@@ -13,6 +13,7 @@
+ import butterknife.ButterKnife;
+ import eightbitlab.com.blurview.BlurView;
+ import eightbitlab.com.blurview.DefaultBlurController;
++import eightbitlab.com.blurview.RenderScriptBlur;
+ 
+ public class MainActivity extends AppCompatActivity {
+     @BindView(R.id.viewPager) ViewPager viewPager;
+@@ -42,6 +43,8 @@ private void setupBlurView() {
+         float scaleFactor = DefaultBlurController.DEFAULT_SCALE_FACTOR;
+         DefaultBlurController blurController = new DefaultBlurController(blurView, rootView, scaleFactor);
+         blurController.setWindowBackground(windowBackground);
++        blurController.setBlurAlgorithm(new RenderScriptBlur(this, true));
++        blurController.setBlurRadius(16);
+ 
+         blurView.setBlurController(blurController);
+     }
+
+File: library/src/main/java/eightbitlab/com/blurview/DefaultBlurController.java
+Patch:
+@@ -16,7 +16,7 @@ public class DefaultBlurController implements BlurController {
+     private static final String TAG = DefaultBlurController.class.getSimpleName();
+ 
+     public static final float DEFAULT_SCALE_FACTOR = 10f;
+-    public static final int DEFAULT_BLUR_RADIUS = 16;
++    public static final int DEFAULT_BLUR_RADIUS = 6;
+ 
+     protected final float scaleFactor;
+     protected int blurRadius = DEFAULT_BLUR_RADIUS;
+@@ -80,7 +80,7 @@ public DefaultBlurController(@NonNull View blurView, @NonNull View rootView, flo
+         this.scaleFactor = scaleFactor;
+         this.rootView = rootView;
+         this.blurView = blurView;
+-        this.blurAlgorithm = new RenderScriptBlur(blurView.getContext(), true);
++        this.blurAlgorithm = new StackBlur(true);
+ 
+         int measuredWidth = blurView.getMeasuredWidth();
+         int measuredHeight = blurView.getMeasuredHeight();
+@@ -240,7 +240,7 @@ public void setBlurRadius(int radius) {
+ 
+     /**
+      * @param algorithm sets the blur algorithm
+-     *                  Default implementation uses {@link RenderScriptBlur}
++     *                  Default implementation uses {@link StackBlur}
+      */
+     public void setBlurAlgorithm(BlurAlgorithm algorithm) {
+         this.blurAlgorithm = algorithm;
+
+File: app/src/main/java/com/eightbitlab/blurview_sample/MainActivity.java
+Patch:
+@@ -13,7 +13,6 @@
+ import butterknife.ButterKnife;
+ import eightbitlab.com.blurview.BlurView;
+ import eightbitlab.com.blurview.DefaultBlurController;
+-import eightbitlab.com.blurview.RenderScriptBlur;
+ 
+ public class MainActivity extends AppCompatActivity {
+     @BindView(R.id.viewPager) ViewPager viewPager;
+@@ -43,8 +42,6 @@ private void setupBlurView() {
+         float scaleFactor = DefaultBlurController.DEFAULT_SCALE_FACTOR;
+         DefaultBlurController blurController = new DefaultBlurController(blurView, rootView, scaleFactor);
+         blurController.setWindowBackground(windowBackground);
+-        blurController.setBlurAlgorithm(new RenderScriptBlur(this, true));
+-        blurController.setBlurRadius(16);
+ 
+         blurView.setBlurController(blurController);
+     }
+
+File: library/src/main/java/eightbitlab/com/blurview/DefaultBlurController.java
+Patch:
+@@ -16,7 +16,7 @@ public class DefaultBlurController implements BlurController {
+     private static final String TAG = DefaultBlurController.class.getSimpleName();
+ 
+     public static final float DEFAULT_SCALE_FACTOR = 10f;
+-    public static final int DEFAULT_BLUR_RADIUS = 6;
++    public static final int DEFAULT_BLUR_RADIUS = 16;
+ 
+     protected final float scaleFactor;
+     protected int blurRadius = DEFAULT_BLUR_RADIUS;
+@@ -80,7 +80,7 @@ public DefaultBlurController(@NonNull View blurView, @NonNull View rootView, flo
+         this.scaleFactor = scaleFactor;
+         this.rootView = rootView;
+         this.blurView = blurView;
+-        this.blurAlgorithm = new StackBlur(true);
++        this.blurAlgorithm = new RenderScriptBlur(blurView.getContext(), true);
+ 
+         int measuredWidth = blurView.getMeasuredWidth();
+         int measuredHeight = blurView.getMeasuredHeight();
+@@ -240,7 +240,7 @@ public void setBlurRadius(int radius) {
+ 
+     /**
+      * @param algorithm sets the blur algorithm
+-     *                  Default implementation uses {@link StackBlur}
++     *                  Default implementation uses {@link RenderScriptBlur}
+      */
+     public void setBlurAlgorithm(BlurAlgorithm algorithm) {
+         this.blurAlgorithm = algorithm;
+
+File: app/src/main/java/com/eightbitlab/blurview/BlurView.java
+Patch:
+@@ -93,12 +93,11 @@ public void draw(Canvas canvas) {
+             super.draw(canvas);
+             return;
+         }
+-        if (blurHelper.isInternalCanvas(canvas)) {
+-            super.draw(canvas);
+-        } else {
++        if (!blurHelper.isInternalCanvas(canvas)) {
+             canvas.scale(1 * BlurHelper.SCALE_FACTOR, 1 * BlurHelper.SCALE_FACTOR);
+             canvas.drawBitmap(blurHelper.blur(blurHelper.getInternalBitmap(), this), getMatrix(), bitmapPaint);
+             canvas.scale(1 / BlurHelper.SCALE_FACTOR, 1 / BlurHelper.SCALE_FACTOR);
++            canvas.drawColor(getContext().getResources().getColor(R.color.colorOverlay));
+             super.draw(canvas);
+         }
+     }
+
+File: app/src/main/java/com/eightbitlab/blurview/BlurHelper.java
+Patch:
+@@ -29,7 +29,7 @@ public BlurHelper(Context context, BlurView blurView) {
+         renderScript = RenderScript.create(context);
+         //downscale bitmap
+         overlay = Bitmap.createBitmap((int) (blurView.getMeasuredWidth() / SCALE_FACTOR),
+-                (int) (blurView.getMeasuredHeight() / SCALE_FACTOR), Bitmap.Config.RGB_565);
++                (int) (blurView.getMeasuredHeight() / SCALE_FACTOR), Bitmap.Config.ARGB_8888);
+ 
+         blurScript = ScriptIntrinsicBlur.create(renderScript, Element.U8_4(renderScript));
+         blurScript.setRadius(RADIUS);
+

@@ -1,0 +1,382 @@
+File: src/main/java/org/wltea/analyzer/lucene/IKTokenizer.java
+Patch:
+@@ -117,13 +117,14 @@ public void reset() throws IOException {
+ 		super.reset();
+ 		_IKImplement.reset(input);
+         skippedPositions = 0;
++		endPosition = 0;
+ 	}	
+ 	
+ 	@Override
+ 	public final void end() throws IOException {
+         super.end();
+ 	    // set final offset
+-		int finalOffset = correctOffset(this.endPosition);
++		int finalOffset = correctOffset(this.endPosition+ _IKImplement.getLastUselessCharNum());
+ 		offsetAtt.setOffset(finalOffset, finalOffset);
+         posIncrAtt.setPositionIncrement(posIncrAtt.getPositionIncrement() + skippedPositions);
+ 	}
+
+File: src/main/java/org/wltea/analyzer/dic/Dictionary.java
+Patch:
+@@ -469,7 +469,7 @@ private static List<String> getRemoteWordsUnprivileged(String location) {
+ 						}
+ 					}
+ 
+-					if (entity.getContentLength() > 0) {
++					if (entity.getContentLength() > 0 || entity.isChunked()) {
+ 						in = new BufferedReader(new InputStreamReader(entity.getContent(), charset));
+ 						String line;
+ 						while ((line = in.readLine()) != null) {
+
+File: src/main/java/org/wltea/analyzer/dic/Dictionary.java
+Patch:
+@@ -80,7 +80,7 @@ public class Dictionary {
+ 	 */
+ 	private Configuration configuration;
+ 
+-	private static final Logger logger = ESPluginLoggerFactory.getLogger(Monitor.class.getName());
++	private static final Logger logger = ESPluginLoggerFactory.getLogger(Dictionary.class.getName());
+ 
+ 	private static ScheduledExecutorService pool = Executors.newScheduledThreadPool(1);
+ 
+
+File: src/main/java/org/wltea/analyzer/dic/Monitor.java
+Patch:
+@@ -68,8 +68,8 @@ public void run() {
+ 			//返回200 才做操作
+ 			if(response.getStatusLine().getStatusCode()==200){
+ 
+-				if (!response.getLastHeader("Last-Modified").getValue().equalsIgnoreCase(last_modified)
+-						||!response.getLastHeader("ETag").getValue().equalsIgnoreCase(eTags)) {
++				if (((response.getLastHeader("Last-Modified")!=null) && !response.getLastHeader("Last-Modified").getValue().equalsIgnoreCase(last_modified))
++						||((response.getLastHeader("ETag")!=null) && !response.getLastHeader("ETag").getValue().equalsIgnoreCase(eTags))) {
+ 
+ 					// 远程词库有更新,需要重新加载词典，并修改last_modified,eTags
+ 					Dictionary.getSingleton().reLoadMainDict();
+
+File: src/main/java/org/elasticsearch/plugin/analysis/ik/AnalysisIkPlugin.java
+Patch:
+@@ -37,5 +37,8 @@ public class AnalysisIkPlugin extends Plugin {
+     public Collection<Module> nodeModules() {
+         return Collections.<Module>singletonList(new IKIndicesAnalysisModule());
+     }
++    public void onModule(AnalysisModule module) {
++        module.addProcessor(new IkAnalysisBinderProcessor());
++    }
+ 
+ }
+
+File: src/main/java/org/wltea/analyzer/help/Sleep.java
+Patch:
+@@ -15,13 +15,13 @@ public static void sleep(Type type,int num){
+ 					Thread.sleep(num);
+ 					return;
+ 				case SEC:
+-					Thread.sleep(num*1000);
++					Thread.sleep(num*1000L);
+ 					return;
+ 				case MIN:
+-					Thread.sleep(num*60*1000);
++					Thread.sleep(num*60*1000L);
+ 					return;
+ 				case HOUR:
+-					Thread.sleep(num*60*60*1000);
++					Thread.sleep(num*60*60*1000L);
+ 					return;
+ 				default:
+                     logger.error("输入类型错误，应为MSEC,SEC,MIN,HOUR之一");
+
+File: src/main/java/org/wltea/analyzer/dic/Dictionary.java
+Patch:
+@@ -79,7 +79,7 @@ public class Dictionary {
+ 	 * 配置对象
+ 	 */
+ 	private Configuration configuration;
+-    public static ESLogger logger=Loggers.getLogger("ik-analyzer");
++    public static final ESLogger logger=Loggers.getLogger("ik-analyzer");
+     
+     private static ScheduledExecutorService pool = Executors.newScheduledThreadPool(1);
+     
+
+File: src/main/java/org/wltea/analyzer/help/Sleep.java
+Patch:
+@@ -5,7 +5,7 @@
+ 
+ public class Sleep {
+ 
+-    public static ESLogger logger= Loggers.getLogger("ik-analyzer");
++    public static final ESLogger logger= Loggers.getLogger("ik-analyzer");
+     
+ 	public enum Type{MSEC,SEC,MIN,HOUR};
+ 	public static void sleep(Type type,int num){
+
+File: src/main/java/org/wltea/analyzer/query/IKQueryExpressionParser.java
+Patch:
+@@ -47,7 +47,7 @@
+  */
+ public class IKQueryExpressionParser {
+ 
+-    public static ESLogger logger= Loggers.getLogger("ik-analyzer");
++    public static final ESLogger logger= Loggers.getLogger("ik-analyzer");
+     
+ 	//public static final String LUCENE_SPECIAL_CHAR = "&&||-()':={}[],";
+ 	
+
+File: src/main/java/org/wltea/analyzer/sample/IKAnalzyerDemo.java
+Patch:
+@@ -44,7 +44,7 @@
+  */
+ public class IKAnalzyerDemo {
+ 
+-    public static ESLogger logger= Loggers.getLogger("ik-analyzer");
++    public static final ESLogger logger= Loggers.getLogger("ik-analyzer");
+     
+ 	public static void main(String[] args){
+ 		//构建IK分词器，使用smart分词模式
+
+File: src/main/java/org/wltea/analyzer/sample/LuceneIndexAndSearchDemo.java
+Patch:
+@@ -64,7 +64,7 @@
+  */
+ public class LuceneIndexAndSearchDemo {
+ 
+-    public static ESLogger logger= Loggers.getLogger("ik-analyzer");
++    public static final ESLogger logger= Loggers.getLogger("ik-analyzer");
+ 	
+ 	/**
+ 	 * 模拟：
+
+File: src/main/java/org/elasticsearch/index/analysis/IkAnalysisBinderProcessor.java
+Patch:
+@@ -18,6 +18,6 @@ public void processAnalyzers(AnalyzersBindings analyzersBindings) {
+ 
+     @Override
+     public void processTokenizers(TokenizersBindings tokenizersBindings) {
+-        tokenizersBindings.processTokenizer("ik_tokenizer", IkTokenizerFactory.class);
++        tokenizersBindings.processTokenizer("ik", IkTokenizerFactory.class);
+     }
+ }
+
+File: src/main/java/org/wltea/analyzer/lucene/IKAnalyzer.java
+Patch:
+@@ -28,6 +28,7 @@
+ 
+ import org.apache.lucene.analysis.Analyzer;
+ import org.apache.lucene.analysis.Tokenizer;
++import org.elasticsearch.common.settings.ImmutableSettings;
+ import org.elasticsearch.common.settings.Settings;
+ import org.elasticsearch.env.Environment;
+ 
+@@ -66,8 +67,8 @@ public IKAnalyzer(boolean useSmart){
+ 		this.useSmart = useSmart;
+ 	}
+ 
+-    Settings settings;
+-    Environment environment;
++    Settings settings=ImmutableSettings.EMPTY;
++    Environment environment=new Environment();
+ 
+     public IKAnalyzer(Settings indexSetting,Settings settings, Environment environment) {
+         super();
+
+File: src/main/java/org/wltea/analyzer/sample/IKAnalzyerDemo.java
+Patch:
+@@ -49,7 +49,8 @@ public static void main(String[] args){
+ 		//获取Lucene的TokenStream对象
+ 	    TokenStream ts = null;
+ 		try {
+-			ts = analyzer.tokenStream("myfield", new StringReader("这是一个中文分词的例子，你可以直接运行它！IKAnalyer can analysis english text too"));
++			ts = analyzer.tokenStream("myfield", new StringReader("WORLD ,.. html DATA</html>HELLO"));
++//			ts = analyzer.tokenStream("myfield", new StringReader("这是一个中文分词的例子，你可以直接运行它！IKAnalyer can analysis english text too"));
+ 			//获取词元位置属性
+ 		    OffsetAttribute  offset = ts.addAttribute(OffsetAttribute.class); 
+ 		    //获取词元文本属性
+
+File: src/main/java/org/wltea/analyzer/core/CJKSegmenter.java
+Patch:
+@@ -58,7 +58,7 @@ public void analyze(AnalyzeContext context) {
+ 				//处理词段队列
+ 				Hit[] tmpArray = this.tmpHits.toArray(new Hit[this.tmpHits.size()]);
+ 				for(Hit hit : tmpArray){
+-					hit = Dictionary.getSingleton().matchWithHit(String.valueOf(context.getSegmentBuff()).toLowerCase().toCharArray(), context.getCursor() , hit);
++					hit = Dictionary.getSingleton().matchWithHit(context.getSegmentBuff(), context.getCursor() , hit);
+ 					if(hit.isMatch()){
+ 						//输出当前的词
+ 						Lexeme newLexeme = new Lexeme(context.getBufferOffset() , hit.getBegin() , context.getCursor() - hit.getBegin() + 1 , Lexeme.TYPE_CNWORD);
+@@ -77,7 +77,7 @@ public void analyze(AnalyzeContext context) {
+ 			
+ 			//*********************************
+ 			//再对当前指针位置的字符进行单字匹配
+-			Hit singleCharHit = Dictionary.getSingleton().matchInMainDict(String.valueOf(context.getSegmentBuff()).toLowerCase().toCharArray(), context.getCursor(), 1);
++			Hit singleCharHit = Dictionary.getSingleton().matchInMainDict(context.getSegmentBuff(), context.getCursor(), 1);
+ 			if(singleCharHit.isMatch()){//首字成词
+ 				//输出当前的词
+ 				Lexeme newLexeme = new Lexeme(context.getBufferOffset() , context.getCursor() , 1 , Lexeme.TYPE_CNWORD);
+
+File: src/main/java/org/wltea/analyzer/lucene/IKTokenizer.java
+Patch:
+@@ -80,7 +80,7 @@ public boolean incrementToken() throws IOException {
+ 		if(nextLexeme != null){
+ 			//将Lexeme转成Attributes
+ 			//设置词元文本
+-			termAtt.append(nextLexeme.getLexemeText().toLowerCase());
++			termAtt.append(nextLexeme.getLexemeText());
+ 			//设置词元长度
+ 			termAtt.setLength(nextLexeme.getLength());
+ 			//设置词元位移
+
+File: src/main/java/org/wltea/analyzer/core/IKSegmenter.java
+Patch:
+@@ -59,7 +59,7 @@ public final class IKSegmenter {
+ 	public IKSegmenter(Reader input , Settings settings, Environment environment){
+ 		this.input = input;
+ 		this.cfg = new Configuration(environment);
+-        this.useSmart = settings.get("use_smart", "true").equals("true");
++        this.useSmart = settings.get("use_smart", "false").equals("true");
+         this.init();
+ 	}
+ 	
+
+File: src/main/java/org/wltea/analyzer/dic/DictSegment.java
+Patch:
+@@ -114,8 +114,8 @@ Hit match(char[] charArray , int begin , int length , Hit searchHit){
+ 		}
+ 		//设置hit的当前处理位置
+ 		searchHit.setEnd(begin);
+-		
+-		Character keyChar = new Character(charArray[begin]);
++
++        Character keyChar = new Character(charArray[begin]);
+ 		DictSegment ds = null;
+ 		
+ 		//引用实例变量为本地变量，避免查询时遇到更新的同步问题
+
+File: src/main/java/org/wltea/analyzer/dic/Dictionary.java
+Patch:
+@@ -152,15 +152,15 @@ public Hit matchInMainDict(char[] charArray){
+ 	 * @return Hit 匹配结果描述
+ 	 */
+ 	public Hit matchInMainDict(char[] charArray , int begin, int length){
+-        return singleton._MainDict.match(String.valueOf(charArray).trim().toLowerCase().toCharArray(), begin, length);
++        return singleton._MainDict.match(String.valueOf(charArray).toLowerCase().toCharArray(), begin, length);
+ 	}
+ 	
+ 	/**
+ 	 * 检索匹配量词词典
+ 	 * @return Hit 匹配结果描述
+ 	 */
+ 	public Hit matchInQuantifierDict(char[] charArray , int begin, int length){
+-		return singleton._QuantifierDict.match(String.valueOf(charArray).trim().toLowerCase().toCharArray(), begin, length);
++		return singleton._QuantifierDict.match(String.valueOf(charArray).toLowerCase().toCharArray(), begin, length);
+ 	}
+ 	
+ 	
+@@ -179,7 +179,7 @@ public Hit matchWithHit(char[] charArray , int currentIndex , Hit matchedHit){
+ 	 * @return boolean
+ 	 */
+ 	public boolean isStopWord(char[] charArray , int begin, int length){			
+-		return singleton._StopWords.match(String.valueOf(charArray).trim().toLowerCase().toCharArray(), begin, length).isMatch();
++		return singleton._StopWords.match(String.valueOf(charArray).toLowerCase().toCharArray(), begin, length).isMatch();
+ 	}	
+ 	
+ 	/**
+
+File: src/main/java/org/wltea/analyzer/cfg/Configuration.java
+Patch:
+@@ -37,7 +37,7 @@ public  Configuration(Settings settings){
+         try {
+             input = new FileInputStream(fileConfig);
+         } catch (FileNotFoundException e) {
+-            e.printStackTrace();
++            logger.error("ik-analyzer",e);
+         }
+         if(input != null){
+ 			try {
+
+File: src/main/java/org/wltea/analyzer/dic/DictSegment.java
+Patch:
+@@ -26,16 +26,16 @@
+ package org.wltea.analyzer.dic;
+ 
+ import java.util.Arrays;
+-import java.util.HashMap;
+ import java.util.Map;
++import java.util.concurrent.ConcurrentHashMap;
+ 
+ /**
+  * 词典树分段，表示词典树的一个分枝
+  */
+ class DictSegment implements Comparable<DictSegment>{
+ 	
+ 	//公用字典表，存储汉字
+-	private static final Map<Character , Character> charMap = new HashMap<Character , Character>(16 , 0.95f);
++	private static final Map<Character , Character> charMap = new ConcurrentHashMap<Character , Character>(16 , 0.95f);
+ 	//数组大小上限
+ 	private static final int ARRAY_LENGTH_LIMIT = 3;
+ 
+@@ -298,7 +298,7 @@ private DictSegment[] getChildrenArray(){
+ 		if(this.childrenMap == null){
+ 			synchronized(this){
+ 				if(this.childrenMap == null){
+-					this.childrenMap = new HashMap<Character , DictSegment>(ARRAY_LENGTH_LIMIT * 2,0.8f);
++					this.childrenMap = new ConcurrentHashMap<Character, DictSegment>(ARRAY_LENGTH_LIMIT * 2,0.8f);
+ 				}
+ 			}
+ 		}
+
+File: src/main/java/org/elasticsearch/index/analysis/IkAnalyzerProvider.java
+Patch:
+@@ -2,7 +2,6 @@
+ 
+ import org.elasticsearch.common.inject.Inject;
+ import org.elasticsearch.common.inject.assistedinject.Assisted;
+-import org.elasticsearch.common.logging.ESLogger;
+ import org.elasticsearch.common.settings.Settings;
+ import org.elasticsearch.env.Environment;
+ import org.elasticsearch.index.Index;
+@@ -11,7 +10,6 @@
+ 
+ public class IkAnalyzerProvider extends AbstractIndexAnalyzerProvider<IKAnalyzer> {
+     private final IKAnalyzer analyzer;
+-    private ESLogger logger=null;
+     @Inject
+     public IkAnalyzerProvider(Index index, @IndexSettings Settings indexSettings, Environment env, @Assisted String name, @Assisted Settings settings) {
+         super(index, indexSettings, name, settings);
+
+File: src/main/java/org/wltea/analyzer/core/IKSegmenter.java
+Patch:
+@@ -129,8 +129,6 @@ public synchronized Lexeme next()throws IOException{
+ 				}
+ 			}
+ 			//对分词进行歧义处理
+-            logger.error("useSmart:"+String.valueOf(useSmart));
+-
+ 			this.arbitrator.process(context, useSmart);
+ 			//将分词结果输出到结果集，并处理未切分的单个CJK字符
+ 			context.outputToResult();
+
+File: src/main/java/org/wltea/analyzer/lucene/IKAnalyzer.java
+Patch:
+@@ -25,6 +25,8 @@ public IKAnalyzer(boolean isMaxWordLength){
+ 	}
+ 
+     public IKAnalyzer(Settings settings) {
++
++
+        Dictionary.getInstance().Init(settings);
+     }
+ 
+
+File: src/main/java/org/wltea/analyzer/cfg/Configuration.java
+Patch:
+@@ -27,7 +27,7 @@
+ 
+ public class Configuration {
+ 
+-	private static String FILE_NAME = "ik/IkAnalyzer.cfg.xml";
++	private static String FILE_NAME = "ik/IKAnalyzer.cfg.xml";
+ 	private static final String EXT_DICT = "ext_dict";
+ 	private static final String EXT_STOP = "ext_stopwords";
+     private static ESLogger logger = null;
+

@@ -1,0 +1,180 @@
+File: flink-learning-libraries/flink-learning-libraries-cep/src/main/java/com/zhisheng/libraries/cep/CEPMain.java
+Patch:
+@@ -5,6 +5,7 @@
+ import com.zhisheng.common.utils.StringUtil;
+ import com.zhisheng.libraries.cep.model.Event;
+ import lombok.extern.slf4j.Slf4j;
++import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+ import org.apache.flink.api.common.functions.FlatMapFunction;
+ import org.apache.flink.api.java.utils.ParameterTool;
+ import org.apache.flink.cep.CEP;
+@@ -16,6 +17,8 @@
+ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+ import org.apache.flink.util.Collector;
+ 
++import java.time.Duration;
++import java.util.Date;
+ import java.util.List;
+ import java.util.Map;
+ 
+
+File: flink-learning-sql/flink-learning-sql-ago/src/main/java/com/zhisheng/sql/ago/model/WC.java
+Patch:
+@@ -22,5 +22,5 @@ public class WC {
+     /**
+      * 出现的次数
+      */
+-    public long count;
++    public long c;
+ }
+
+File: flink-learning-sql/flink-learning-sql-ago/src/main/java/com/zhisheng/sql/ago/sql/WordCountSQL.java
+Patch:
+@@ -24,10 +24,10 @@ public static void main(String[] args) throws Exception {
+                 new WC("zhisheng", 1),
+                 new WC("Hello", 1));
+ 
+-        tEnv.registerDataSet("WordCount", input, "word, count");
++        tEnv.registerDataSet("WordCount", input, "word, c");
+ 
+         Table table = tEnv.sqlQuery(
+-                "SELECT word, SUM(count) as count FROM WordCount GROUP BY word");
++                "SELECT word, SUM(c) as c FROM WordCount GROUP BY word");   //注意，之前 WC 定义的是 count，但在 1.9 中 count 是关键字，所以会抛异常，改成 c ok
+ 
+         DataSet<WC> result = tEnv.toDataSet(table, WC.class);
+ 
+
+File: flink-learning-sql/flink-learning-sql-ago/src/main/java/com/zhisheng/sql/ago/table/WordCountTable.java
+Patch:
+@@ -20,15 +20,15 @@ public static void main(String[] args) throws Exception {
+ 
+         DataSet<WC> input = env.fromElements(
+                 new WC("Hello", 1),
+-                new WC("zhisheng", 1),
++                new WC("zhisheng", 2),
+                 new WC("Hello", 1));
+ 
+         Table table = tEnv.fromDataSet(input);
+ 
+         Table filtered = table
+                 .groupBy("word")
+-                .select("word, count.sum as count")
+-                .filter("count = 2");
++                .select("word, c.sum as c")
++                .filter("c = 2");
+ 
+         DataSet<WC> result = tEnv.toDataSet(filtered, WC.class);
+ 
+
+File: flink-learning-sql/flink-learning-sql-ago/src/test/java/test/TableEnvironmentExample1.java
+Patch:
+@@ -5,9 +5,7 @@
+ import org.apache.flink.table.api.java.BatchTableEnvironment;
+ import org.apache.flink.table.api.java.StreamTableEnvironment;
+ import org.apache.flink.table.catalog.Catalog;
+-import org.apache.flink.table.catalog.ExternalCatalog;
+ import org.apache.flink.table.catalog.GenericInMemoryCatalog;
+-import org.apache.flink.table.catalog.InMemoryExternalCatalog;
+ 
+ /**
+  * Desc: flink old planner TableEnvironment
+@@ -22,7 +20,6 @@ public static void main(String[] args) {
+ 
+         Catalog catalog = new GenericInMemoryCatalog("zhisheng");
+         sEnv.registerCatalog("InMemCatalog", catalog);
+-        ExternalCatalog catalog1 = new InMemoryExternalCatalog("zhisheng");
+ 
+ 
+         //批作业
+
+File: flink-learning-sql/flink-learning-sql-blink/src/main/java/com/zhisheng/sql/blink/stream/catalog/CatalogTypes.java
+Patch:
+@@ -27,7 +27,7 @@ public static void main(String[] args) {
+ 
+ 
+         //HiveCatalog，这个需要添加 Hive connector 和 Hive 的依赖
+-        blinkStreamTableEnv.registerCatalog("zhisheng", new HiveCatalog("zhisheng", "zhisheng", "~/zhisheng/hive/conf", "2.3.4"));
++//        blinkStreamTableEnv.registerCatalog("zhisheng", new HiveCatalog("zhisheng", "zhisheng", "~/zhisheng/hive/conf", "2.3.4"));
+ 
+ 
+         //User-Defined Catalog，自定义的 catalog
+
+File: flink-learning-examples/src/main/java/com/zhisheng/examples/streaming/wordcount/Main.java
+Patch:
+@@ -34,7 +34,7 @@ public void flatMap(String value, Collector<Tuple2<String, Integer>> out) throws
+                 .reduce(new ReduceFunction<Tuple2<String, Integer>>() {
+                     @Override
+                     public Tuple2<String, Integer> reduce(Tuple2<String, Integer> value1, Tuple2<String, Integer> value2) throws Exception {
+-                        return new Tuple2<>(value1.f0, value1.f1 + value1.f1);
++                        return new Tuple2<>(value1.f0, value1.f1 + value2.f1);
+                     }
+                 })
+                 .print();
+
+File: flink-learning-examples/src/main/java/com/zhisheng/examples/batch/wordcount/Main.java
+Patch:
+@@ -35,7 +35,7 @@ public void flatMap(String value, Collector<Tuple2<String, Integer>> out) throws
+                 .reduce(new ReduceFunction<Tuple2<String, Integer>>() {
+                     @Override
+                     public Tuple2<String, Integer> reduce(Tuple2<String, Integer> value1, Tuple2<String, Integer> value2) throws Exception {
+-                        return new Tuple2<>(value1.f0, value1.f1 + value1.f1);
++                        return new Tuple2<>(value1.f0, value1.f1 + value2.f1);
+                     }
+                 })
+                 .print();
+
+File: flink-learning-connectors/flink-learning-connectors-hbase/src/main/java/com/zhisheng/connectors/hbase/Main.java
+Patch:
+@@ -23,6 +23,7 @@
+ import java.util.Date;
+ import java.util.Properties;
+ 
++import static com.zhisheng.common.constant.PropertiesConstants.METRICS_TOPIC;
+ import static com.zhisheng.connectors.hbase.constant.HBaseConstant.*;
+ 
+ /**
+@@ -40,7 +41,7 @@ public static void main(String[] args) throws Exception {
+         Properties props = KafkaConfigUtil.buildKafkaProps(parameterTool);
+ 
+         DataStreamSource<String> data = env.addSource(new FlinkKafkaConsumer011<>(
+-                "zhisheng",   //这个 kafka topic 需要和上面的工具类的 topic 一致
++                parameterTool.get(METRICS_TOPIC),   //这个 kafka topic 需要和上面的工具类的 topic 一致
+                 new SimpleStringSchema(),
+                 props));
+ 
+
+File: flink-learning-connectors/flink-learning-connectors-mysql/src/main/java/com/zhisheng/connectors/mysql/Main.java
+Patch:
+@@ -53,6 +53,6 @@ public void apply(TimeWindow window, Iterable<Student> values, Collector<List<St
+             }
+         }).addSink(new SinkToMySQL()).setParallelism(parameterTool.getInt(STREAM_SINK_PARALLELISM, 1));
+ 
+-        env.execute("flink learning connectors kafka");
++        env.execute("flink learning connectors mysql");
+     }
+ }
+
+File: flink-learning-connectors/flink-learning-connectors-hdfs/src/main/java/com/zhisheng/connectors/hdfs/Main.java
+Patch:
+@@ -21,6 +21,6 @@ public static void main(String[] args) throws Exception {
+         DataStreamSource<Metrics> data = KafkaConfigUtil.buildSource(env);
+ 
+ 
+-        env.execute("flink learning connectors es6");
++        env.execute("flink learning connectors hdfs");
+     }
+ }
+
+File: flink-learning-connectors/flink-learning-connectors-rabbitmq/src/main/java/com/zhisheng/connectors/rabbitmq/Main1.java
+Patch:
+@@ -32,7 +32,8 @@ public static void main(String[] args) throws Exception {
+                 .setPort(5672).setUserName("admin").setPassword("admin")
+                 .build();
+ 
+-        data.addSink(new RMQSink<>(connectionConfig, "zhisheng", new MetricSchema()));
++        //注意，换一个新的 queue，否则也会报错
++        data.addSink(new RMQSink<>(connectionConfig, "zhisheng001", new MetricSchema()));
+         env.execute("flink learning connectors rabbitmq");
+     }
+ }
+

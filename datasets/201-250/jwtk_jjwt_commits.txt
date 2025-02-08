@@ -1,0 +1,3332 @@
+File: impl/src/main/java/io/jsonwebtoken/impl/security/EcPrivateJwkFactory.java
+Patch:
+@@ -35,7 +35,8 @@
+ 
+ class EcPrivateJwkFactory extends AbstractEcJwkFactory<ECPrivateKey, EcPrivateJwk> {
+ 
+-    private static final String ECPUBKEY_ERR_MSG = "JwkContext publicKey must be an " + ECPublicKey.class.getName() + " instance.";
++    private static final String ECPUBKEY_ERR_MSG = "JwkContext publicKey must be an " + ECPublicKey.class.getName() +
++            " instance.";
+ 
+     private static final EcPublicJwkFactory PUB_FACTORY = EcPublicJwkFactory.INSTANCE;
+ 
+@@ -96,8 +97,7 @@ protected EcPrivateJwk createJwkFromKey(JwkContext<ECPrivateKey> ctx) {
+             ctx.setId(pubJwk.getId());
+         }
+ 
+-        int fieldSize = key.getParams().getCurve().getField().getFieldSize();
+-        String d = toOctetString(fieldSize, key.getS());
++        String d = toOctetString(key.getParams().getCurve(), key.getS());
+         ctx.put(DefaultEcPrivateJwk.D.getId(), d);
+ 
+         return new DefaultEcPrivateJwk(ctx, pubJwk);
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/EcPublicJwkFactory.java
+Patch:
+@@ -81,11 +81,10 @@ protected EcPublicJwk createJwkFromKey(JwkContext<ECPublicKey> ctx) {
+ 
+         ctx.put(DefaultEcPublicJwk.CRV.getId(), curveId);
+ 
+-        int fieldSize = curve.getField().getFieldSize();
+-        String x = toOctetString(fieldSize, point.getAffineX());
++        String x = toOctetString(curve, point.getAffineX());
+         ctx.put(DefaultEcPublicJwk.X.getId(), x);
+ 
+-        String y = toOctetString(fieldSize, point.getAffineY());
++        String y = toOctetString(curve, point.getAffineY());
+         ctx.put(DefaultEcPublicJwk.Y.getId(), y);
+ 
+         return new DefaultEcPublicJwk(ctx);
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultJwtBuilder.java
+Patch:
+@@ -508,7 +508,7 @@ public String compact() {
+ 
+         if (this.serializer == null) { // try to find one based on the services available
+             //noinspection unchecked
+-            json(Services.loadFirst(Serializer.class));
++            json(Services.get(Serializer.class));
+         }
+ 
+         if (!Collections.isEmpty(claims)) { // normalize so we have one object to deal with:
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultJwtParserBuilder.java
+Patch:
+@@ -370,7 +370,7 @@ public JwtParser build() {
+ 
+         if (this.deserializer == null) {
+             //noinspection unchecked
+-            json(Services.loadFirst(Deserializer.class));
++            json(Services.get(Deserializer.class));
+         }
+         if (this.signingKeyResolver != null && this.signatureVerificationKey != null) {
+             String msg = "Both a 'signingKeyResolver and a 'verifyWith' key cannot be configured. " +
+
+File: impl/src/main/java/io/jsonwebtoken/impl/io/AbstractParserBuilder.java
+Patch:
+@@ -50,7 +50,7 @@ public B json(Deserializer<Map<String, ?>> reader) {
+     public final Parser<T> build() {
+         if (this.deserializer == null) {
+             //noinspection unchecked
+-            this.deserializer = Services.loadFirst(Deserializer.class);
++            this.deserializer = Services.get(Deserializer.class);
+         }
+         return doBuild();
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/JwksBridge.java
+Patch:
+@@ -32,7 +32,7 @@ private JwksBridge() {
+ 
+     @SuppressWarnings({"unchecked", "unused"}) // used via reflection by io.jsonwebtoken.security.Jwks
+     public static String UNSAFE_JSON(Jwk<?> jwk) {
+-        Serializer<Map<String, ?>> serializer = Services.loadFirst(Serializer.class);
++        Serializer<Map<String, ?>> serializer = Services.get(Serializer.class);
+         Assert.stateNotNull(serializer, "Serializer lookup failed. Ensure JSON impl .jar is in the runtime classpath.");
+         NamedSerializer ser = new NamedSerializer("JWK", serializer);
+         ByteArrayOutputStream out = new ByteArrayOutputStream(512);
+
+File: api/src/main/java/io/jsonwebtoken/io/Base64Decoder.java
+Patch:
+@@ -23,7 +23,7 @@
+  *
+  * @since 0.10.0
+  */
+-class Base64Decoder extends Base64Support implements Decoder<String, byte[]> {
++class Base64Decoder extends Base64Support implements Decoder<CharSequence, byte[]> {
+ 
+     Base64Decoder() {
+         super(Base64.DEFAULT);
+@@ -34,8 +34,8 @@ class Base64Decoder extends Base64Support implements Decoder<String, byte[]> {
+     }
+ 
+     @Override
+-    public byte[] decode(String s) throws DecodingException {
++    public byte[] decode(CharSequence s) throws DecodingException {
+         Assert.notNull(s, "String argument cannot be null");
+-        return this.base64.decodeFast(s.toCharArray());
++        return this.base64.decodeFast(s);
+     }
+ }
+\ No newline at end of file
+
+File: api/src/main/java/io/jsonwebtoken/io/Base64Encoder.java
+Patch:
+@@ -26,7 +26,7 @@
+ class Base64Encoder extends Base64Support implements Encoder<byte[], String> {
+ 
+     Base64Encoder() {
+-        super(Base64.DEFAULT);
++        this(Base64.DEFAULT);
+     }
+ 
+     Base64Encoder(Base64 base64) {
+
+File: api/src/main/java/io/jsonwebtoken/io/Decoders.java
+Patch:
+@@ -28,13 +28,13 @@ public final class Decoders {
+      * Very fast <a href="https://datatracker.ietf.org/doc/html/rfc4648#section-4">Base64</a> decoder guaranteed to
+      * work in all &gt;= Java 7 JDK and Android environments.
+      */
+-    public static final Decoder<String, byte[]> BASE64 = new ExceptionPropagatingDecoder<>(new Base64Decoder());
++    public static final Decoder<CharSequence, byte[]> BASE64 = new ExceptionPropagatingDecoder<>(new Base64Decoder());
+ 
+     /**
+      * Very fast <a href="https://datatracker.ietf.org/doc/html/rfc4648#section-5">Base64Url</a> decoder guaranteed to
+      * work in all &gt;= Java 7 JDK and Android environments.
+      */
+-    public static final Decoder<String, byte[]> BASE64URL = new ExceptionPropagatingDecoder<>(new Base64UrlDecoder());
++    public static final Decoder<CharSequence, byte[]> BASE64URL = new ExceptionPropagatingDecoder<>(new Base64UrlDecoder());
+ 
+     private Decoders() { //prevent instantiation
+     }
+
+File: api/src/main/java/io/jsonwebtoken/security/AeadRequest.java
+Patch:
+@@ -16,6 +16,7 @@
+ package io.jsonwebtoken.security;
+ 
+ import javax.crypto.SecretKey;
++import java.io.InputStream;
+ 
+ /**
+  * A request to an {@link AeadAlgorithm} to perform authenticated encryption with a supplied symmetric
+@@ -25,5 +26,5 @@
+  * @see AssociatedDataSupplier
+  * @since JJWT_RELEASE_VERSION
+  */
+-public interface AeadRequest extends SecureRequest<byte[], SecretKey>, AssociatedDataSupplier {
++public interface AeadRequest extends SecureRequest<InputStream, SecretKey>, AssociatedDataSupplier {
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/AssociatedDataSupplier.java
+Patch:
+@@ -15,6 +15,8 @@
+  */
+ package io.jsonwebtoken.security;
+ 
++import java.io.InputStream;
++
+ /**
+  * Provides any &quot;associated data&quot; that must be integrity protected (but not encrypted) when performing
+  * <a href="https://en.wikipedia.org/wiki/Authenticated_encryption">AEAD encryption or decryption</a>.
+@@ -33,5 +35,5 @@ public interface AssociatedDataSupplier {
+      * <a href="https://en.wikipedia.org/wiki/Authenticated_encryption">AEAD encryption or decryption</a>, or
+      * {@code null} if no additional data must be integrity protected.
+      */
+-    byte[] getAssociatedData();
++    InputStream getAssociatedData();
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/DecryptAeadRequest.java
+Patch:
+@@ -19,10 +19,10 @@
+ 
+ /**
+  * A request to an {@link AeadAlgorithm} to decrypt ciphertext and perform integrity-protection with a supplied
+- * decryption {@link SecretKey}. Extends both {@link InitializationVectorSupplier} and {@link DigestSupplier} to
++ * decryption {@link SecretKey}. Extends both {@link IvSupplier} and {@link DigestSupplier} to
+  * ensure the respective required IV and AAD tag returned from an {@link AeadResult} are available for decryption.
+  *
+  * @since JJWT_RELEASE_VERSION
+  */
+-public interface DecryptAeadRequest extends AeadRequest, InitializationVectorSupplier, DigestSupplier {
++public interface DecryptAeadRequest extends AeadRequest, IvSupplier, DigestSupplier {
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/DigestAlgorithm.java
+Patch:
+@@ -19,6 +19,7 @@
+ import io.jsonwebtoken.lang.Registry;
+ 
+ import javax.crypto.SecretKey;
++import java.io.InputStream;
+ import java.security.PrivateKey;
+ import java.security.PublicKey;
+ 
+@@ -75,7 +76,7 @@
+  * @see io.jsonwebtoken.Jwts.SIG Jwts.SIG
+  * @since JJWT_RELEASE_VERSION
+  */
+-public interface DigestAlgorithm<R extends Request<byte[]>, V extends VerifyDigestRequest> extends Identifiable {
++public interface DigestAlgorithm<R extends Request<InputStream>, V extends VerifyDigestRequest> extends Identifiable {
+ 
+     /**
+      * Returns a cryptographic digest of the request {@link Request#getPayload() payload}.
+
+File: api/src/main/java/io/jsonwebtoken/security/HashAlgorithm.java
+Patch:
+@@ -17,6 +17,8 @@
+ 
+ import io.jsonwebtoken.Identifiable;
+ 
++import java.io.InputStream;
++
+ /**
+  * A {@link DigestAlgorithm} that computes and verifies digests without the use of a cryptographic key, such as for
+  * thumbprints and <a href="https://en.wikipedia.org/wiki/Fingerprint_(computing)">digital fingerprint</a>s.
+@@ -39,5 +41,5 @@
+  * @see Jwks.HASH
+  * @since JJWT_RELEASE_VERSION
+  */
+-public interface HashAlgorithm extends DigestAlgorithm<Request<byte[]>, VerifyDigestRequest> {
++public interface HashAlgorithm extends DigestAlgorithm<Request<InputStream>, VerifyDigestRequest> {
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/IvSupplier.java
+Patch:
+@@ -16,14 +16,14 @@
+ package io.jsonwebtoken.security;
+ 
+ /**
+- * An {@code InitializationVectorSupplier} provides access to the secure-random Initialization Vector used during
++ * An {@code IvSupplier} provides access to the secure-random Initialization Vector used during
+  * encryption, which must in turn be presented for use during decryption.  To maintain the security integrity of cryptographic
+  * algorithms, a <em>new</em> secure-random Initialization Vector <em>MUST</em> be generated for every individual
+  * encryption attempt.
+  *
+  * @since JJWT_RELEASE_VERSION
+  */
+-public interface InitializationVectorSupplier {
++public interface IvSupplier {
+ 
+     /**
+      * Returns the secure-random Initialization Vector used during encryption, which must in turn be presented for
+@@ -32,5 +32,5 @@ public interface InitializationVectorSupplier {
+      * @return the secure-random Initialization Vector used during encryption, which must in turn be presented for
+      * use during decryption.
+      */
+-    byte[] getInitializationVector();
++    byte[] getIv();
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/SecureDigestAlgorithm.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import io.jsonwebtoken.Identifiable;
+ 
++import java.io.InputStream;
+ import java.security.Key;
+ 
+ /**
+@@ -50,5 +51,5 @@
+  * @since JJWT_RELEASE_VERSION
+  */
+ public interface SecureDigestAlgorithm<S extends Key, V extends Key>
+-        extends DigestAlgorithm<SecureRequest<byte[], S>, VerifySecureDigestRequest<V>> {
++        extends DigestAlgorithm<SecureRequest<InputStream, S>, VerifySecureDigestRequest<V>> {
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/VerifyDigestRequest.java
+Patch:
+@@ -15,6 +15,8 @@
+  */
+ package io.jsonwebtoken.security;
+ 
++import java.io.InputStream;
++
+ /**
+  * A request to verify a previously-computed cryptographic digest (available via {@link #getDigest()}) against the
+  * digest to be computed for the specified {@link #getPayload() payload}.
+@@ -27,5 +29,5 @@
+  * @see VerifySecureDigestRequest
+  * @since JJWT_RELEASE_VERSION
+  */
+-public interface VerifyDigestRequest extends Request<byte[]>, DigestSupplier {
++public interface VerifyDigestRequest extends Request<InputStream>, DigestSupplier {
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/VerifySecureDigestRequest.java
+Patch:
+@@ -15,6 +15,7 @@
+  */
+ package io.jsonwebtoken.security;
+ 
++import java.io.InputStream;
+ import java.security.Key;
+ 
+ /**
+@@ -29,5 +30,5 @@
+  * @param <K> the type of {@link Key} used to verify a digital signature or message authentication code
+  * @since JJWT_RELEASE_VERSION
+  */
+-public interface VerifySecureDigestRequest<K extends Key> extends SecureRequest<byte[], K>, VerifyDigestRequest {
++public interface VerifySecureDigestRequest<K extends Key> extends SecureRequest<InputStream, K>, VerifyDigestRequest {
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultClaims.java
+Patch:
+@@ -62,7 +62,7 @@ public DefaultClaims(Map<String, ?> map) {
+ 
+     @Override
+     public String getName() {
+-        return "JWT Claim";
++        return "JWT Claims";
+     }
+ 
+     @Override
+
+File: impl/src/main/java/io/jsonwebtoken/impl/TokenizedJwe.java
+Patch:
+@@ -17,7 +17,7 @@
+ 
+ public interface TokenizedJwe extends TokenizedJwt {
+ 
+-    String getEncryptedKey();
++    CharSequence getEncryptedKey();
+ 
+-    String getIv();
++    CharSequence getIv();
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/TokenizedJwt.java
+Patch:
+@@ -26,21 +26,21 @@ public interface TokenizedJwt {
+      *
+      * @return protected header.
+      */
+-    String getProtected();
++    CharSequence getProtected();
+ 
+     /**
+      * Returns the Payload for a JWS or Ciphertext for a JWE.
+      *
+      * @return the Payload for a JWS or Ciphertext for a JWE.
+      */
+-    String getPayload();
++    CharSequence getPayload();
+ 
+     /**
+      * Returns the Signature for JWS or AAD Tag for JWE.
+      *
+      * @return the Signature for JWS or AAD Tag for JWE.
+      */
+-    String getDigest();
++    CharSequence getDigest();
+ 
+     /**
+      * Returns a new {@link Header} instance with the specified map state.
+
+File: impl/src/main/java/io/jsonwebtoken/impl/io/AbstractParserBuilder.java
+Patch:
+@@ -41,15 +41,14 @@ public B provider(Provider provider) {
+     }
+ 
+     @Override
+-    public B deserializer(Deserializer<Map<String, ?>> deserializer) {
+-        this.deserializer = deserializer;
++    public B json(Deserializer<Map<String, ?>> reader) {
++        this.deserializer = reader;
+         return self();
+     }
+ 
+     @Override
+     public final Parser<T> build() {
+         if (this.deserializer == null) {
+-            // try to find one based on the services available:
+             //noinspection unchecked
+             this.deserializer = Services.loadFirst(Deserializer.class);
+         }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/lang/Converters.java
+Patch:
+@@ -31,11 +31,11 @@ public final class Converters {
+     public static final Converter<byte[], Object> BASE64URL_BYTES = Converters.forEncoded(byte[].class, Codec.BASE64URL);
+ 
+     public static final Converter<X509Certificate, Object> X509_CERTIFICATE =
+-        Converters.forEncoded(X509Certificate.class, JwtX509StringConverter.INSTANCE);
++            Converters.forEncoded(X509Certificate.class, JwtX509StringConverter.INSTANCE);
+ 
+     public static final Converter<BigInteger, byte[]> BIGINT_UBYTES = new BigIntegerUBytesConverter();
+     public static final Converter<BigInteger, Object> BIGINT = Converters.forEncoded(BigInteger.class,
+-        compound(BIGINT_UBYTES, Codec.BASE64URL));
++            compound(BIGINT_UBYTES, Codec.BASE64URL));
+ 
+     //prevent instantiation
+     private Converters() {
+@@ -53,7 +53,7 @@ public static <T> Converter<List<T>, Object> forList(Converter<T, Object> elemen
+         return CollectionConverter.forList(elementConverter);
+     }
+ 
+-    public static <T> Converter<T, Object> forEncoded(Class<T> elementType, Converter<T, String> elementConverter) {
++    public static <T> Converter<T, Object> forEncoded(Class<T> elementType, Converter<T, CharSequence> elementConverter) {
+         return new EncodedObjectConverter<>(elementType, elementConverter);
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/lang/UriStringConverter.java
+Patch:
+@@ -19,7 +19,7 @@
+ 
+ import java.net.URI;
+ 
+-public class UriStringConverter implements Converter<URI, String> {
++public class UriStringConverter implements Converter<URI, CharSequence> {
+ 
+     @Override
+     public String applyTo(URI uri) {
+@@ -28,10 +28,10 @@ public String applyTo(URI uri) {
+     }
+ 
+     @Override
+-    public URI applyFrom(String s) {
++    public URI applyFrom(CharSequence s) {
+         Assert.hasText(s, "URI string cannot be null or empty.");
+         try {
+-            return URI.create(s);
++            return URI.create(s.toString());
+         } catch (Exception e) {
+             String msg = "Unable to convert String value '" + s + "' to URI instance: " + e.getMessage();
+             throw new IllegalArgumentException(msg, e);
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultVerifyDigestRequest.java
+Patch:
+@@ -18,14 +18,15 @@
+ import io.jsonwebtoken.lang.Assert;
+ import io.jsonwebtoken.security.VerifyDigestRequest;
+ 
++import java.io.InputStream;
+ import java.security.Provider;
+ import java.security.SecureRandom;
+ 
+-public class DefaultVerifyDigestRequest extends DefaultRequest<byte[]> implements VerifyDigestRequest {
++public class DefaultVerifyDigestRequest extends DefaultRequest<InputStream> implements VerifyDigestRequest {
+ 
+     private final byte[] digest;
+ 
+-    public DefaultVerifyDigestRequest(byte[] payload, Provider provider, SecureRandom secureRandom, byte[] digest) {
++    public DefaultVerifyDigestRequest(InputStream payload, Provider provider, SecureRandom secureRandom, byte[] digest) {
+         super(payload, provider, secureRandom);
+         this.digest = Assert.notEmpty(digest, "Digest byte array cannot be null or empty.");
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultVerifySecureDigestRequest.java
+Patch:
+@@ -18,15 +18,16 @@
+ import io.jsonwebtoken.lang.Assert;
+ import io.jsonwebtoken.security.VerifySecureDigestRequest;
+ 
++import java.io.InputStream;
+ import java.security.Key;
+ import java.security.Provider;
+ import java.security.SecureRandom;
+ 
+-public class DefaultVerifySecureDigestRequest<K extends Key> extends DefaultSecureRequest<byte[], K> implements VerifySecureDigestRequest<K> {
++public class DefaultVerifySecureDigestRequest<K extends Key> extends DefaultSecureRequest<InputStream, K> implements VerifySecureDigestRequest<K> {
+ 
+     private final byte[] digest;
+ 
+-    public DefaultVerifySecureDigestRequest(byte[] payload, Provider provider, SecureRandom secureRandom, K key, byte[] digest) {
++    public DefaultVerifySecureDigestRequest(InputStream payload, Provider provider, SecureRandom secureRandom, K key, byte[] digest) {
+         super(payload, provider, secureRandom, key);
+         this.digest = Assert.notEmpty(digest, "Digest byte array cannot be null or empty.");
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/JwtX509StringConverter.java
+Patch:
+@@ -25,7 +25,7 @@
+ import java.security.cert.CertificateEncodingException;
+ import java.security.cert.X509Certificate;
+ 
+-public class JwtX509StringConverter implements Converter<X509Certificate, String> {
++public class JwtX509StringConverter implements Converter<X509Certificate, CharSequence> {
+ 
+     public static final JwtX509StringConverter INSTANCE = new JwtX509StringConverter();
+ 
+@@ -57,7 +57,7 @@ protected X509Certificate toCert(final byte[] der) throws SecurityException {
+     }
+ 
+     @Override
+-    public X509Certificate applyFrom(String s) {
++    public X509Certificate applyFrom(CharSequence s) {
+         Assert.hasText(s, "X.509 Certificate encoded string cannot be null or empty.");
+         try {
+             byte[] der = Decoders.BASE64.decode(s); //RFC requires Base64, not Base64Url
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/NoneSignatureAlgorithm.java
+Patch:
+@@ -21,6 +21,7 @@
+ import io.jsonwebtoken.security.SignatureException;
+ import io.jsonwebtoken.security.VerifySecureDigestRequest;
+ 
++import java.io.InputStream;
+ import java.security.Key;
+ 
+ final class NoneSignatureAlgorithm implements SecureDigestAlgorithm<Key, Key> {
+@@ -38,7 +39,7 @@ public String getId() {
+     }
+ 
+     @Override
+-    public byte[] digest(SecureRequest<byte[], Key> request) throws SecurityException {
++    public byte[] digest(SecureRequest<InputStream, Key> request) throws SecurityException {
+         throw new SignatureException("The 'none' algorithm cannot be used to create signatures.");
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/lang/UnavailableImplementationException.java
+Patch:
+@@ -24,7 +24,8 @@ public final class UnavailableImplementationException extends RuntimeException {
+ 
+     private static final String DEFAULT_NOT_FOUND_MESSAGE = "Unable to find an implementation for %s using " +
+             "java.util.ServiceLoader. Ensure you include a backing implementation .jar in the classpath, " +
+-            "for example jjwt-impl.jar, or your own .jar for custom implementations.";
++            "for example jjwt-jackson.jar, jjwt-gson.jar or jjwt-orgjson.jar, or your own .jar for " +
++            "custom implementations.";
+ 
+     UnavailableImplementationException(final Class<?> klass) {
+         super(String.format(DEFAULT_NOT_FOUND_MESSAGE, klass));
+
+File: api/src/main/java/io/jsonwebtoken/ProtectedHeader.java
+Patch:
+@@ -73,10 +73,10 @@ public interface ProtectedHeader extends Header, X509Accessor {
+     String getKeyId();
+ 
+     /**
+-     * Returns the header parameter names that use extensions to the JWT or JWA specification that <em>MUST</em>
++     * Returns the header parameter names that use extensions to the JWT or JWA specification(s) that <em>MUST</em>
+      * be understood and supported by the JWT recipient, or {@code null} if not present.
+      *
+-     * @return the header parameter names that use extensions to the JWT or JWA specification that <em>MUST</em>
++     * @return the header parameter names that use extensions to the JWT or JWA specification(s) that <em>MUST</em>
+      * be understood and supported by the JWT recipient, or {@code null} if not present.
+      * @see <a href="https://www.rfc-editor.org/rfc/rfc7515.html#section-4.1.11">JWS {@code crit} (Critical) Header Parameter</a>
+      * @see <a href="https://www.rfc-editor.org/rfc/rfc7516.html#section-4.1.13">JWS {@code crit} (Critical) Header Parameter</a>
+
+File: impl/src/main/java/io/jsonwebtoken/impl/lang/RequiredParameterReader.java
+Patch:
+@@ -28,7 +28,7 @@ public class RequiredParameterReader implements ParameterReadable {
+     private final ParameterReadable src;
+ 
+     public RequiredParameterReader(Header header) {
+-        this(Assert.isInstanceOf(ParameterReadable.class, header, "Header implementations must implement ParameterReadable."));
++        this(Assert.isInstanceOf(ParameterReadable.class, header, "Header implementations must implement ParameterReadable: "));
+     }
+ 
+     public RequiredParameterReader(ParameterReadable src) {
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultMacAlgorithm.java
+Patch:
+@@ -53,7 +53,7 @@ final class DefaultMacAlgorithm extends AbstractSecureDigestAlgorithm<SecretKey,
+     static final DefaultMacAlgorithm HS384 = new DefaultMacAlgorithm(384);
+     static final DefaultMacAlgorithm HS512 = new DefaultMacAlgorithm(512);
+ 
+-    private static final Map<String, MacAlgorithm> JCA_NAME_MAP;
++    private static final Map<String, DefaultMacAlgorithm> JCA_NAME_MAP;
+ 
+     static {
+         JCA_NAME_MAP = new LinkedHashMap<>(6);
+@@ -96,15 +96,15 @@ private static boolean isJwaStandardJcaName(String jcaName) {
+         return JCA_NAME_MAP.containsKey(key);
+     }
+ 
+-    static MacAlgorithm findByKey(Key key) {
++    static DefaultMacAlgorithm findByKey(Key key) {
+ 
+         String alg = KeysBridge.findAlgorithm(key);
+         if (!Strings.hasText(alg)) {
+             return null;
+         }
+ 
+         String upper = alg.toUpperCase(Locale.ENGLISH);
+-        MacAlgorithm mac = JCA_NAME_MAP.get(upper);
++        DefaultMacAlgorithm mac = JCA_NAME_MAP.get(upper);
+         if (mac == null) {
+             return null;
+         }
+
+File: api/src/main/java/io/jsonwebtoken/JwtParserBuilder.java
+Patch:
+@@ -131,7 +131,7 @@ public interface JwtParserBuilder extends Builder<JwtParser> {
+ 
+     /**
+      * Ensures that the specified {@code aud} exists in the parsed JWT.  If missing or if the parsed
+-     * value does not equal the specified value, an exception will be thrown indicating that the
++     * value does not contain the specified value, an exception will be thrown indicating that the
+      * JWT is invalid and may not be used.
+      *
+      * @param audience the required value of the {@code aud} header parameter.
+@@ -328,7 +328,7 @@ public interface JwtParserBuilder extends Builder<JwtParser> {
+      * {@link #verifyWith(SecretKey)} for type safety, to reflect accurate naming of the concept, and for name
+      * congruence with the {@link #decryptWith(SecretKey)} method.</p>
+      *
+-     * <p>This method merely delegates directly to {@link #verifyWith(SecretKey) or {@link #verifyWith(PublicKey)}}.</p>
++     * <p>This method merely delegates directly to {@link #verifyWith(SecretKey)} or {@link #verifyWith(PublicKey)}}.</p>
+      *
+      * @param key the algorithm-specific signature verification key to use to verify all encountered JWS digital
+      *            signatures.
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultJweHeaderMutator.java
+Patch:
+@@ -52,7 +52,7 @@ public DefaultJweHeaderMutator(DefaultJweHeaderMutator<?> src) {
+     // MapMutator methods
+     // =============================================================
+ 
+-    private T put(Field<?> field, Object value) {
++    private <F> T put(Field<F> field, F value) {
+         this.DELEGATE.put(field, value);
+         return self();
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultJwtParserBuilder.java
+Patch:
+@@ -155,7 +155,7 @@ public JwtParserBuilder requireIssuer(String issuer) {
+ 
+     @Override
+     public JwtParserBuilder requireAudience(String audience) {
+-        expectedClaims.setAudience(audience);
++        expectedClaims.audience(audience);
+         return this;
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/RsaSignatureAlgorithm.java
+Patch:
+@@ -156,6 +156,7 @@ static boolean isPss(Key key) {
+         return PSS_ALG_NAMES.contains(alg);
+     }
+ 
++    @SuppressWarnings("BooleanMethodIsAlwaysInverted")
+     static boolean isRsaAlgorithmName(Key key) {
+         String alg = KeysBridge.findAlgorithm(key);
+         return KEY_ALG_NAMES.contains(alg);
+
+File: impl/src/main/java/io/jsonwebtoken/impl/lang/BigIntegerUBytesConverter.java
+Patch:
+@@ -34,8 +34,9 @@ public byte[] applyTo(BigInteger bigInt) {
+ 
+         final int bitLen = bigInt.bitLength();
+         final byte[] bytes = bigInt.toByteArray();
+-        // round bitLen. This gives the minimal number of bytes necessary to represent an unsigned byte array:
+-        final int unsignedByteLen = Math.max(1, (bitLen + 7) / Byte.SIZE);
++        // Determine minimal number of bytes necessary to represent an unsigned byte array.
++        // It must be 1 or more because zero still requires one byte
++        final int unsignedByteLen = Math.max(1, Bytes.length(bitLen)); // always need at least one byte
+ 
+         if (bytes.length == unsignedByteLen) { // already in the form we need
+             return bytes;
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/AesGcmKeyAlgorithm.java
+Patch:
+@@ -51,7 +51,7 @@ public KeyResult getEncryptionKey(final KeyRequest<SecretKey> request) throws Se
+         Assert.notNull(request, "request cannot be null.");
+         final JweHeader header = Assert.notNull(request.getHeader(), "Request JweHeader cannot be null.");
+         final SecretKey kek = assertKey(request.getPayload());
+-        final SecretKey cek = generateKey(request);
++        final SecretKey cek = generateCek(request);
+         final byte[] iv = ensureInitializationVector(request);
+         final AlgorithmParameterSpec ivSpec = getIvSpec(iv);
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/AesWrapKeyAlgorithm.java
+Patch:
+@@ -42,7 +42,7 @@ public AesWrapKeyAlgorithm(int keyLen) {
+     public KeyResult getEncryptionKey(final KeyRequest<SecretKey> request) throws SecurityException {
+         Assert.notNull(request, "request cannot be null.");
+         final SecretKey kek = assertKey(request.getPayload());
+-        final SecretKey cek = generateKey(request);
++        final SecretKey cek = generateCek(request);
+ 
+         byte[] ciphertext = jca(request).withCipher(new CheckedFunction<Cipher, byte[]>() {
+             @Override
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultRsaKeyAlgorithm.java
+Patch:
+@@ -89,7 +89,7 @@ public KeyResult getEncryptionKey(final KeyRequest<PublicKey> request) throws Se
+         Assert.notNull(request, "Request cannot be null.");
+         final PublicKey kek = Assert.notNull(request.getPayload(), "RSA PublicKey encryption key cannot be null.");
+         validate(kek, true);
+-        final SecretKey cek = generateKey(request);
++        final SecretKey cek = generateCek(request);
+ 
+         byte[] ciphertext = jca(request).withCipher(new CheckedFunction<Cipher, byte[]>() {
+             @Override
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/JwtX509StringConverter.java
+Patch:
+@@ -53,7 +53,7 @@ public String applyTo(X509Certificate cert) {
+ 
+     // visible for testing
+     protected X509Certificate toCert(final byte[] der) throws SecurityException {
+-        return new JcaTemplate("X.509", null).generateX509Certificate(der);
++        return new JcaTemplate("X.509").generateX509Certificate(der);
+     }
+ 
+     @Override
+
+File: api/src/main/java/io/jsonwebtoken/JwtParserBuilder.java
+Patch:
+@@ -328,7 +328,7 @@ public interface JwtParserBuilder extends Builder<JwtParser> {
+      * {@link #verifyWith(SecretKey)} for type safety, to reflect accurate naming of the concept, and for name
+      * congruence with the {@link #decryptWith(SecretKey)} method.</p>
+      *
+-     * <p>This method merely delegates directly to {@link #verifyWith(SecretKey)}.</p>
++     * <p>This method merely delegates directly to {@link #verifyWith(SecretKey) or {@link #verifyWith(PublicKey)}}.</p>
+      *
+      * @param key the algorithm-specific signature verification key to use to verify all encountered JWS digital
+      *            signatures.
+
+File: impl/src/main/java/io/jsonwebtoken/impl/lang/Conditions.java
+Patch:
+@@ -82,7 +82,7 @@ public boolean test() {
+             Object value = null;
+             try {
+                 value = supplier.get();
+-            } catch (Exception ignored) {
++            } catch (Throwable ignored) {
+             }
+             return value != null;
+         }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/AbstractEcJwkFactory.java
+Patch:
+@@ -19,6 +19,7 @@
+ import io.jsonwebtoken.impl.lang.Converters;
+ import io.jsonwebtoken.impl.lang.Field;
+ import io.jsonwebtoken.io.Encoders;
++import io.jsonwebtoken.security.Curve;
+ import io.jsonwebtoken.security.Jwk;
+ import io.jsonwebtoken.security.UnsupportedKeyException;
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/AbstractSecureDigestAlgorithm.java
+Patch:
+@@ -41,7 +41,7 @@ protected static String keyType(boolean signing) {
+     @Override
+     public final byte[] digest(SecureRequest<byte[], S> request) throws SecurityException {
+         Assert.notNull(request, "Request cannot be null.");
+-        final S key = Assert.notNull(request.getKey(), "Request key cannot be null.");
++        final S key = Assert.notNull(request.getKey(), "Signing key cannot be null.");
+         Assert.notEmpty(request.getPayload(), "Request content cannot be null or empty.");
+         try {
+             validateKey(key, true);
+@@ -60,7 +60,7 @@ public final byte[] digest(SecureRequest<byte[], S> request) throws SecurityExce
+     @Override
+     public final boolean verify(VerifySecureDigestRequest<V> request) throws SecurityException {
+         Assert.notNull(request, "Request cannot be null.");
+-        final V key = Assert.notNull(request.getKey(), "Request key cannot be null.");
++        final V key = Assert.notNull(request.getKey(), "Verification key cannot be null.");
+         Assert.notEmpty(request.getPayload(), "Request content cannot be null or empty.");
+         Assert.notEmpty(request.getDigest(), "Request signature byte array cannot be null or empty.");
+         try {
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/AbstractSignatureAlgorithm.java
+Patch:
+@@ -33,7 +33,7 @@ abstract class AbstractSignatureAlgorithm extends AbstractSecureDigestAlgorithm<
+     private static final String KEY_TYPE_MSG_PATTERN =
+             "{0} {1} keys must be {2}s (implement {3}). Provided key type: {4}.";
+ 
+-    protected AbstractSignatureAlgorithm(String id, String jcaName) {
++    AbstractSignatureAlgorithm(String id, String jcaName) {
+         super(id, jcaName);
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/Curves.java
+Patch:
+@@ -21,6 +21,7 @@
+ import io.jsonwebtoken.lang.Assert;
+ import io.jsonwebtoken.lang.Collections;
+ import io.jsonwebtoken.lang.Registry;
++import io.jsonwebtoken.security.Curve;
+ 
+ import java.security.spec.EllipticCurve;
+ import java.util.Collection;
+@@ -33,7 +34,7 @@ public final class Curves {
+ 
+     private static final Collection<ECCurve> EC_CURVES = Collections.setOf((ECCurve) P_256, (ECCurve) P_384, (ECCurve) P_521);
+ 
+-    private static final Collection<Curve> VALUES = new LinkedHashSet<>();
++    static final Collection<Curve> VALUES = new LinkedHashSet<>();
+ 
+     static {
+         VALUES.addAll(EC_CURVES);
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultCurve.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import io.jsonwebtoken.lang.Assert;
+ import io.jsonwebtoken.lang.Strings;
++import io.jsonwebtoken.security.Curve;
+ import io.jsonwebtoken.security.KeyPairBuilder;
+ 
+ import java.security.Provider;
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/RsaPrivateJwkFactory.java
+Patch:
+@@ -196,7 +196,7 @@ protected RsaPrivateJwk createJwkFromValues(JwkContext<RSAPrivateKey> ctx) {
+             if (ctx.containsKey(DefaultRsaPrivateJwk.OTHER_PRIMES_INFO.getId())) {
+                 List<RSAOtherPrimeInfo> otherPrimes = reader.get(DefaultRsaPrivateJwk.OTHER_PRIMES_INFO);
+                 RSAOtherPrimeInfo[] arr = new RSAOtherPrimeInfo[Collections.size(otherPrimes)];
+-                otherPrimes.toArray(arr);
++                arr = otherPrimes.toArray(arr);
+                 spec = new RSAMultiPrimePrivateCrtKeySpec(modulus, publicExponent, privateExponent, firstPrime,
+                         secondPrime, firstCrtExponent, secondCrtExponent, firstCrtCoefficient, arr);
+             } else {
+
+File: tdjar/src/test/java/io/jsonwebtoken/all/JavaReadmeTest.java
+Patch:
+@@ -352,7 +352,7 @@ public void testExampleEcPrivateJwk() {
+     @SuppressWarnings({"unchecked", "rawtypes"})
+     @Test
+     public void testExampleEdEcPublicJwk() {
+-        PublicKey key = Jwts.SIG.Ed25519.keyPair().build().getPublic();
++        PublicKey key = Jwks.CRV.Ed25519.keyPair().build().getPublic();
+         OctetPublicJwk<PublicKey> jwk = builder().octetKey(key).idFromThumbprint().build();
+ 
+         assert jwk.getId().equals(jwk.thumbprint().toString());
+@@ -369,7 +369,7 @@ public void testExampleEdEcPublicJwk() {
+     @SuppressWarnings({"unchecked", "rawtypes"})
+     @Test
+     public void testExampleEdEcPrivateJwk() {
+-        KeyPair pair = Jwts.SIG.Ed448.keyPair().build();
++        KeyPair pair = Jwks.CRV.Ed448.keyPair().build();
+         PublicKey pubKey = pair.getPublic();
+         PrivateKey privKey = pair.getPrivate();
+ 
+
+File: api/src/main/java/io/jsonwebtoken/SigningKeyResolver.java
+Patch:
+@@ -44,7 +44,7 @@
+  * the {@link io.jsonwebtoken.SigningKeyResolverAdapter} and overriding only the method you need to support instead of
+  * implementing this interface directly.</p>
+  *
+- * @see io.jsonwebtoken.JwtParserBuilder#setKeyLocator(Locator)
++ * @see io.jsonwebtoken.JwtParserBuilder#keyLocator(Locator)
+  * @since 0.4
+  * @deprecated since JJWT_RELEASE_VERSION. Implement {@link Locator} instead.
+  */
+
+File: api/src/main/java/io/jsonwebtoken/SigningKeyResolverAdapter.java
+Patch:
+@@ -25,7 +25,7 @@
+  *
+  * <p>As of JJWT JJWT_RELEASE_VERSION, various Resolver concepts (including the {@code SigningKeyResolver}) have been
+  * unified into a single {@link Locator} interface.  For key location, (for both signing and encryption keys),
+- * use the {@link JwtParserBuilder#setKeyLocator(Locator)} to configure a parser with your desired Key locator instead
++ * use the {@link JwtParserBuilder#keyLocator(Locator)} to configure a parser with your desired Key locator instead
+  * of using a {@code SigningKeyResolver}. Also see {@link LocatorAdapter} for the Adapter pattern parallel of this
+  * class. <b>This {@code SigningKeyResolverAdapter} class will be removed before the 1.0 release.</b></p>
+  *
+@@ -46,11 +46,11 @@
+  * are not overridden, one (or both) of the *KeyBytes variants must be overridden depending on your expected
+  * use case.  You do not have to override any method that does not represent an expected condition.</p>
+  *
+- * @see io.jsonwebtoken.JwtParserBuilder#setKeyLocator(Locator)
++ * @see io.jsonwebtoken.JwtParserBuilder#keyLocator(Locator)
+  * @see LocatorAdapter
+  * @since 0.4
+  * @deprecated since JJWT_RELEASE_VERSION. Use {@link LocatorAdapter LocatorAdapter} with
+- * {@link JwtParserBuilder#setKeyLocator(Locator)}
++ * {@link JwtParserBuilder#keyLocator(Locator)}
+  */
+ @SuppressWarnings("DeprecatedIsStillUsed")
+ @Deprecated
+
+File: api/src/main/java/io/jsonwebtoken/security/AeadAlgorithm.java
+Patch:
+@@ -51,7 +51,7 @@
+  * and algorithm parameters required by that algorithm.  For example:</p>
+  *
+  * <pre><code>
+- *     SecretKey key = aeadAlgorithm.keyBuilder().build();
++ *     SecretKey key = aeadAlgorithm.key().build();
+  * </code></pre>
+  *
+  * <p>The resulting {@code key} is guaranteed to have the correct algorithm parameters and strength/length necessary for
+
+File: api/src/main/java/io/jsonwebtoken/security/AsymmetricJwkBuilder.java
+Patch:
+@@ -69,7 +69,7 @@ public interface AsymmetricJwkBuilder<K extends Key, J extends AsymmetricJwk<K>,
+      *
+      * <p>Per
+      * <a href="https://www.rfc-editor.org/rfc/rfc7517.html#section-4.3">JWK RFC 7517, Section 4.3, last paragraph</a>,
+-     * the {@code use} (Public Key Use) and {@link #setOperations(Set) key_ops (Key Operations)} members
++     * the {@code use} (Public Key Use) and {@link #operations(Set) key_ops (Key Operations)} members
+      * <em>SHOULD NOT</em> be used together; however, if both are used, the information they convey <em>MUST</em> be
+      * consistent. Applications should specify which of these members they use, if either is to be used by the
+      * application.</p>
+@@ -78,5 +78,5 @@ public interface AsymmetricJwkBuilder<K extends Key, J extends AsymmetricJwk<K>,
+      * @return the builder for method chaining.
+      * @throws IllegalArgumentException if the {@code use} value is {@code null} or empty.
+      */
+-    T setPublicKeyUse(String use) throws IllegalArgumentException;
++    T publicKeyUse(String use) throws IllegalArgumentException;
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/JwkParserBuilder.java
+Patch:
+@@ -25,7 +25,7 @@
+  * A builder to construct a {@link JwkParser}.  Example usage:
+  * <blockquote><pre>
+  * Jwk&lt;?&gt; jwk = Jwks.parser()
+- *         .setProvider(aJcaProvider)         // optional
++ *         .provider(aJcaProvider)            // optional
+  *         .deserializeJsonWith(deserializer) // optional
+  *         .build()
+  *         .parse(jwkString);</pre></blockquote>
+@@ -42,7 +42,7 @@ public interface JwkParserBuilder extends Builder<JwkParser> {
+      *                 if the JCA subsystem preferred provider should be used.
+      * @return the builder for method chaining.
+      */
+-    JwkParserBuilder setProvider(Provider provider);
++    JwkParserBuilder provider(Provider provider);
+ 
+     /**
+      * Uses the specified deserializer to convert JSON Strings (UTF-8 byte arrays) into Java Map objects.  The
+
+File: api/src/main/java/io/jsonwebtoken/security/Jwks.java
+Patch:
+@@ -40,7 +40,7 @@ public final class Jwks {
+     private Jwks() {
+     } //prevent instantiation
+ 
+-    private static final String BUILDER_CLASSNAME = "io.jsonwebtoken.impl.security.DefaultProtoJwkBuilder";
++    private static final String BUILDER_CLASSNAME = "io.jsonwebtoken.impl.security.DefaultDynamicJwkBuilder";
+ 
+     private static final String PARSERBUILDER_CLASSNAME = "io.jsonwebtoken.impl.security.DefaultJwkParserBuilder";
+ 
+@@ -54,7 +54,7 @@ private Jwks() {
+      * <blockquote><pre>
+      * Jwks.{@link Jwks#builder}()
+      *     // ... etc ...
+-     *     .{@link JwkBuilder#setIdFromThumbprint(HashAlgorithm) setIdFromThumbprint}(Jwts.HASH.{@link Jwks.HASH#SHA256 SHA256}) // &lt;---
++     *     .{@link JwkBuilder#idFromThumbprint(HashAlgorithm) idFromThumbprint}(Jwts.HASH.{@link Jwks.HASH#SHA256 SHA256}) // &lt;---
+      *     .build()</pre></blockquote>
+      * <p>or</p>
+      * <blockquote><pre>
+@@ -152,7 +152,7 @@ private HASH() {
+      *
+      * @return a new JWK builder instance, allowing for type-safe JWK builder coercion based on a provided key or key pair.
+      */
+-    public static ProtoJwkBuilder<?, ?> builder() {
++    public static DynamicJwkBuilder<?, ?> builder() {
+         return Classes.newInstance(BUILDER_CLASSNAME);
+     }
+ 
+
+File: api/src/main/java/io/jsonwebtoken/security/KeyBuilderSupplier.java
+Patch:
+@@ -22,8 +22,8 @@
+  * their associated cryptographic algorithm implementation.
+  *
+  * @param <K> type of {@link Key} created by the builder
+- * @param <B> type of builder to create each time {@link #keyBuilder()} is called.
+- * @see #keyBuilder()
++ * @param <B> type of builder to create each time {@link #key()} is called.
++ * @see #key()
+  * @see KeyBuilder
+  * @since JJWT_RELEASE_VERSION
+  */
+@@ -36,5 +36,5 @@ public interface KeyBuilderSupplier<K extends Key, B extends KeyBuilder<K, B>> {
+      * @return a new {@link KeyBuilder} instance that will produce new secure-random keys with a length sufficient
+      * to be used by the component's associated cryptographic algorithm.
+      */
+-    B keyBuilder();
++    B key();
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/KeyPairBuilderSupplier.java
+Patch:
+@@ -21,7 +21,7 @@
+  * Interface implemented by components that support building/creating new {@link KeyPair}s suitable for use with their
+  * associated cryptographic algorithm implementation.
+  *
+- * @see #keyPairBuilder()
++ * @see #keyPair()
+  * @see KeyPairBuilder
+  * @since JJWT_RELEASE_VERSION
+  */
+@@ -34,5 +34,5 @@ public interface KeyPairBuilderSupplier {
+      * @return a new {@link KeyPairBuilder} that will create new secure-random {@link KeyPair}s with a length and
+      * parameters sufficient for use with the component's associated cryptographic algorithm.
+      */
+-    KeyPairBuilder keyPairBuilder();
++    KeyPairBuilder keyPair();
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/KeyRequest.java
+Patch:
+@@ -49,8 +49,7 @@ public interface KeyRequest<T> extends Request<T> {
+      * {@code KeyRequest}.  {@link KeyAlgorithm} implementations that generate an ephemeral {@code SecretKey} to use
+      * as what the <a href="https://www.rfc-editor.org/rfc/rfc7516.html#section-2">JWE specification calls</a> a
+      * &quot;Content Encryption Key (CEK)&quot; should call the {@code AeadAlgorithm}'s
+-     * {@link AeadAlgorithm#keyBuilder() keyBuilder()} to obtain a builder that will create a key suitable for that
+-     * exact {@code AeadAlgorithm}.
++     * {@link AeadAlgorithm#key() key()} builder to create a key suitable for that exact {@code AeadAlgorithm}.
+      *
+      * @return the {@link AeadAlgorithm} that will be called for encryption or decryption after processing the
+      * {@code KeyRequest}.
+
+File: api/src/main/java/io/jsonwebtoken/security/MacAlgorithm.java
+Patch:
+@@ -47,7 +47,7 @@
+  * have a sufficient length and any algorithm parameters required by that algorithm. For example:</p>
+  *
+  * <blockquote><pre>
+- * SecretKey key = macAlgorithm.keyBuilder().build();</pre></blockquote>
++ * SecretKey key = macAlgorithm.key().build();</pre></blockquote>
+  *
+  * <p>The resulting {@code key} is guaranteed to have the correct algorithm parameters and strength/length necessary for
+  * that exact {@code MacAlgorithm} instance.</p>
+
+File: api/src/main/java/io/jsonwebtoken/security/PrivateJwkBuilder.java
+Patch:
+@@ -26,7 +26,7 @@
+  * @param <M> the type of {@link PrivateJwk} created
+  * @param <J> the type of {@link PublicJwk} paired with the created private JWK.
+  * @param <T> the type of the builder, for subtype method chaining
+- * @see #setPublicKey(PublicKey)
++ * @see #publicKey(PublicKey)
+  * @since JJWT_RELEASE_VERSION
+  */
+ public interface PrivateJwkBuilder<K extends PrivateKey, L extends PublicKey,
+@@ -40,7 +40,7 @@ public interface PrivateJwkBuilder<K extends PrivateKey, L extends PublicKey,
+      *
+      * <p>As discussed in the {@link PrivateJwk} documentation, the JWK and JWA specifications require private JWKs to
+      * contain <em>both</em> private key <em>and</em> public key data.  If a public key is not provided via this
+-     * {@code setPublicKey} method, the builder implementation must go through the work to derive the
++     * {@code publicKey} method, the builder implementation must go through the work to derive the
+      * {@code PublicKey} instance based on the {@code PrivateKey} to obtain the necessary public key information.</p>
+      *
+      * <p>Calling this method with the {@code PrivateKey}'s matching {@code PublicKey} instance eliminates the need
+@@ -49,5 +49,5 @@ public interface PrivateJwkBuilder<K extends PrivateKey, L extends PublicKey,
+      * @param publicKey the {@link PublicKey} that matches the builder's existing {@link PrivateKey}.
+      * @return the builder for method chaining.
+      */
+-    T setPublicKey(L publicKey);
++    T publicKey(L publicKey);
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/PublicJwkBuilder.java
+Patch:
+@@ -27,7 +27,7 @@
+  * @param <M> the type of {@link PrivateJwk} that matches the created {@link PublicJwk}
+  * @param <P> the type of {@link PrivateJwkBuilder} that matches this builder if a {@link PrivateJwk} is desired.
+  * @param <T> the type of the builder, for subtype method chaining
+- * @see #setPrivateKey(PrivateKey)
++ * @see #privateKey(PrivateKey)
+  * @since JJWT_RELEASE_VERSION
+  */
+ public interface PublicJwkBuilder<K extends PublicKey, L extends PrivateKey,
+@@ -43,5 +43,5 @@ public interface PublicJwkBuilder<K extends PublicKey, L extends PrivateKey,
+      * @param privateKey the {@link PrivateKey} that pairs with the builder's existing {@link PublicKey}
+      * @return the builder coerced as a {@link PrivateJwkBuilder} which will produce a corresponding {@link PrivateJwk}.
+      */
+-    P setPrivateKey(L privateKey);
++    P privateKey(L privateKey);
+ }
+
+File: api/src/main/java/io/jsonwebtoken/security/SignatureAlgorithm.java
+Patch:
+@@ -38,7 +38,7 @@
+  * required by that algorithm.  For example:</p>
+  *
+  * <blockquote><pre>
+- * KeyPair pair = signatureAlgorithm.keyPairBuilder().build();</pre></blockquote>
++ * KeyPair pair = signatureAlgorithm.keyPair().build();</pre></blockquote>
+  *
+  * <p>The resulting {@code pair} is guaranteed to have the correct algorithm parameters and length/strength necessary
+  * for that exact {@code signatureAlgorithm} instance.</p>
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultJwe.java
+Patch:
+@@ -29,8 +29,8 @@ public class DefaultJwe<P> extends DefaultProtectedJwt<JweHeader, P> implements
+ 
+     private final byte[] iv;
+ 
+-    public DefaultJwe(JweHeader header, P body, byte[] iv, byte[] aadTag) {
+-        super(header, body, aadTag, DIGEST_NAME);
++    public DefaultJwe(JweHeader header, P payload, byte[] iv, byte[] aadTag) {
++        super(header, payload, aadTag, DIGEST_NAME);
+         this.iv = Assert.notEmpty(iv, "Initialization vector cannot be null or empty.");
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultJws.java
+Patch:
+@@ -25,8 +25,8 @@ public class DefaultJws<P> extends DefaultProtectedJwt<JwsHeader, P> implements
+ 
+     private final String signature;
+ 
+-    public DefaultJws(JwsHeader header, P body, String signature) {
+-        super(header, body, Decoders.BASE64URL.decode(signature), DIGEST_NAME);
++    public DefaultJws(JwsHeader header, P payload, String signature) {
++        super(header, payload, Decoders.BASE64URL.decode(signature), DIGEST_NAME);
+         this.signature = signature;
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/TokenizedJwt.java
+Patch:
+@@ -33,7 +33,7 @@ public interface TokenizedJwt {
+      *
+      * @return the Payload for a JWS or Ciphertext for a JWE.
+      */
+-    String getBody();
++    String getPayload();
+ 
+     /**
+      * Returns the Signature for JWS or AAD Tag for JWE.
+
+File: impl/src/main/java/io/jsonwebtoken/impl/lang/DelegatingMapMutator.java
+Patch:
+@@ -41,13 +41,13 @@ public T empty() {
+     }
+ 
+     @Override
+-    public T set(K key, V value) {
++    public T add(K key, V value) {
+         put(key, value);
+         return self();
+     }
+ 
+     @Override
+-    public T set(Map<? extends K, ? extends V> m) {
++    public T add(Map<? extends K, ? extends V> m) {
+         putAll(m);
+         return self();
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/AesAlgorithm.java
+Patch:
+@@ -81,7 +81,7 @@ public int getKeyBitLength() {
+     }
+ 
+     @Override
+-    public SecretKeyBuilder keyBuilder() {
++    public SecretKeyBuilder key() {
+         return new DefaultSecretKeyBuilder(KEY_ALG_NAME, getKeyBitLength());
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/CryptoAlgorithm.java
+Patch:
+@@ -92,8 +92,8 @@ protected Provider getProvider(Request<?> request) {
+ 
+     protected SecretKey generateKey(KeyRequest<?> request) {
+         AeadAlgorithm enc = Assert.notNull(request.getEncryptionAlgorithm(), "Request encryptionAlgorithm cannot be null.");
+-        SecretKeyBuilder builder = Assert.notNull(enc.keyBuilder(), "Request encryptionAlgorithm keyBuilder cannot be null.");
+-        SecretKey key = builder.setProvider(getProvider(request)).setRandom(request.getSecureRandom()).build();
++        SecretKeyBuilder builder = Assert.notNull(enc.key(), "Request encryptionAlgorithm KeyBuilder cannot be null.");
++        SecretKey key = builder.provider(getProvider(request)).random(request.getSecureRandom()).build();
+         return Assert.notNull(key, "Request encryptionAlgorithm SecretKeyBuilder cannot produce null keys.");
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultCurve.java
+Patch:
+@@ -74,7 +74,7 @@ public String toString() {
+         return ID;
+     }
+ 
+-    public KeyPairBuilder keyPairBuilder() {
+-        return new DefaultKeyPairBuilder(this.JCA_NAME).setProvider(this.PROVIDER);
++    public KeyPairBuilder keyPair() {
++        return new DefaultKeyPairBuilder(this.JCA_NAME).provider(this.PROVIDER);
+     }
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultJwkParser.java
+Patch:
+@@ -59,9 +59,9 @@ public Jwk<?> parse(String json) throws KeyException {
+         JwkBuilder<?, ?, ?> builder = Jwks.builder();
+ 
+         if (this.provider != null) {
+-            builder.setProvider(this.provider);
++            builder.provider(this.provider);
+         }
+ 
+-        return builder.set(data).build();
++        return builder.add(data).build();
+     }
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultJwkParserBuilder.java
+Patch:
+@@ -31,7 +31,7 @@ public class DefaultJwkParserBuilder implements JwkParserBuilder {
+     private Deserializer<Map<String,?>> deserializer;
+ 
+     @Override
+-    public JwkParserBuilder setProvider(Provider provider) {
++    public JwkParserBuilder provider(Provider provider) {
+         this.provider = provider;
+         return this;
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultKeyPairBuilder.java
+Patch:
+@@ -50,13 +50,13 @@ public DefaultKeyPairBuilder(String jcaName, AlgorithmParameterSpec params) {
+     }
+ 
+     @Override
+-    public KeyPairBuilder setProvider(Provider provider) {
++    public KeyPairBuilder provider(Provider provider) {
+         this.provider = provider;
+         return this;
+     }
+ 
+     @Override
+-    public KeyPairBuilder setRandom(SecureRandom random) {
++    public KeyPairBuilder random(SecureRandom random) {
+         this.random = random;
+         return this;
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultMacAlgorithm.java
+Patch:
+@@ -81,7 +81,7 @@ private boolean isJwaStandardJcaName(String jcaName) {
+     }
+ 
+     @Override
+-    public SecretKeyBuilder keyBuilder() {
++    public SecretKeyBuilder key() {
+         return new DefaultSecretKeyBuilder(getJcaName(), getKeyBitLength());
+     }
+ 
+@@ -142,8 +142,8 @@ protected void validateKey(Key k, boolean signing) {
+                 msg += " The JWT " +
+                         "JWA Specification (RFC 7518, Section 3.2) states that keys used with " + id + " MUST have a " +
+                         "size >= " + minKeyBitLength + " bits (the key size must be greater than or equal to the hash " +
+-                        "output size). Consider using the Jwts.SIG." + id + ".keyBuilder() " +
+-                        "method to create a key guaranteed to be secure enough for " + id + ".  See " +
++                        "output size). Consider using the Jwts.SIG." + id + ".key() " +
++                        "builder to create a key guaranteed to be secure enough for " + id + ".  See " +
+                         "https://tools.ietf.org/html/rfc7518#section-3.2 for more information.";
+             } else { //custom algorithm - just indicate required key length:
+                 msg += " The " + id + " algorithm requires keys to have a size >= " + minKeyBitLength + " bits.";
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultSecretKeyBuilder.java
+Patch:
+@@ -39,17 +39,17 @@ public DefaultSecretKeyBuilder(String jcaName, int bitLength) {
+             throw new IllegalArgumentException(msg);
+         }
+         this.BIT_LENGTH = Assert.gt(bitLength, 0, "bitLength must be > 0");
+-        setRandom(Randoms.secureRandom());
++        random(Randoms.secureRandom());
+     }
+ 
+     @Override
+-    public SecretKeyBuilder setProvider(Provider provider) {
++    public SecretKeyBuilder provider(Provider provider) {
+         this.provider = provider;
+         return this;
+     }
+ 
+     @Override
+-    public SecretKeyBuilder setRandom(SecureRandom random) {
++    public SecretKeyBuilder random(SecureRandom random) {
+         this.random = random != null ? random : Randoms.secureRandom();
+         return this;
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/ECCurve.java
+Patch:
+@@ -61,7 +61,7 @@ public boolean contains(ECPoint point) {
+     }
+ 
+     @Override
+-    public KeyPairBuilder keyPairBuilder() {
++    public KeyPairBuilder keyPair() {
+         return new DefaultKeyPairBuilder(KEY_PAIR_GENERATOR_JCA_NAME, toParameterSpec());
+     }
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/EcSignatureAlgorithm.java
+Patch:
+@@ -100,10 +100,10 @@ public EcSignatureAlgorithm(int orderBitLength) {
+     }
+ 
+     @Override
+-    public KeyPairBuilder keyPairBuilder() {
++    public KeyPairBuilder keyPair() {
+         return new DefaultKeyPairBuilder(ECCurve.KEY_PAIR_GENERATOR_JCA_NAME, this.KEY_PAIR_GEN_PARAMS)
+-                .setProvider(getProvider())
+-                .setRandom(Randoms.secureRandom());
++                .provider(getProvider())
++                .random(Randoms.secureRandom());
+     }
+ 
+     @Override
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/EdSignatureAlgorithm.java
+Patch:
+@@ -64,8 +64,8 @@ protected String getJcaName(Request<?> request) {
+     }
+ 
+     @Override
+-    public KeyPairBuilder keyPairBuilder() {
+-        return this.preferredCurve.keyPairBuilder();
++    public KeyPairBuilder keyPair() {
++        return this.preferredCurve.keyPair();
+     }
+ 
+     @Override
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/EdwardsCurve.java
+Patch:
+@@ -357,8 +357,8 @@ public boolean isSignatureCurve() {
+     }
+ 
+     @Override
+-    public KeyPairBuilder keyPairBuilder() {
+-        return new DefaultKeyPairBuilder(getJcaName(), KEY_PAIR_GENERATOR_BIT_LENGTH).setProvider(getProvider());
++    public KeyPairBuilder keyPair() {
++        return new DefaultKeyPairBuilder(getJcaName(), KEY_PAIR_GENERATOR_BIT_LENGTH).provider(getProvider());
+     }
+ 
+     public static boolean isEdwards(Key key) {
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/EdwardsPublicKeyDeriver.java
+Patch:
+@@ -51,7 +51,7 @@ public PublicKey apply(PrivateKey privateKey) {
+         // Since we already have a private key, we provide a RNG that 'generates' the existing private key
+         // instead of a random one, and the corresponding public key will be computed for us automatically.
+         SecureRandom random = new ConstantRandom(pkBytes);
+-        KeyPair pair = curve.keyPairBuilder().setRandom(random).build();
++        KeyPair pair = curve.keyPair().random(random).build();
+         Assert.stateNotNull(pair, "Edwards curve generated keypair cannot be null.");
+         return Assert.stateNotNull(pair.getPublic(), "Edwards curve KeyPair must have a PublicKey");
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/HmacAesAeadAlgorithm.java
+Patch:
+@@ -66,7 +66,7 @@ public int getKeyBitLength() {
+     }
+ 
+     @Override
+-    public SecretKeyBuilder keyBuilder() {
++    public SecretKeyBuilder key() {
+         // The Sun JCE KeyGenerator throws an exception if bitLengths are not standard AES 128, 192 or 256 values.
+         // Since the JWA HmacAes algorithms require double that, we use secure-random keys instead:
+         return new RandomSecretKeyBuilder(KEY_ALG_NAME, getKeyBitLength());
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/JwkConverter.java
+Patch:
+@@ -121,7 +121,7 @@ public T applyFrom(Object o) {
+                 throw new IllegalArgumentException(msg);
+             }
+             String skey = (String) key;
+-            builder.set(skey, entry.getValue());
++            builder.add(skey, entry.getValue());
+         }
+ 
+         Jwk<?> jwk = builder.build();
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/KeysBridge.java
+Patch:
+@@ -30,7 +30,7 @@ public final class KeysBridge {
+     private KeysBridge() {
+     }
+ 
+-    public static Password forPassword(char[] password) {
++    public static Password password(char[] password) {
+         return new PasswordSpec(password);
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/RsaSignatureAlgorithm.java
+Patch:
+@@ -78,10 +78,10 @@ public Signature get() throws Exception {
+     }
+ 
+     @Override
+-    public KeyPairBuilder keyPairBuilder() {
++    public KeyPairBuilder keyPair() {
+         return new DefaultKeyPairBuilder("RSA", this.preferredKeyBitLength)
+-                .setProvider(getProvider())
+-                .setRandom(Randoms.secureRandom());
++                .provider(getProvider())
++                .random(Randoms.secureRandom());
+     }
+ 
+     @Override
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/StandardKeyAlgorithms.java
+Patch:
+@@ -144,8 +144,8 @@ public static int estimateIterations(KeyAlgorithm<Password, Password> alg, long
+         for (int i = 0; points.size() < NUM_SAMPLES; i++) {
+ 
+             char[] password = randomChars(PASSWORD_LENGTH);
+-            Password key = Keys.forPassword(password);
+-            HEADER.setPbes2Count(workFactor);
++            Password key = Keys.password(password);
++            HEADER.pbes2Count(workFactor);
+             KeyRequest<Password> request = new DefaultKeyRequest<>(null, null, key, HEADER, ENC_ALG);
+ 
+             long start = System.currentTimeMillis();
+
+File: api/src/main/java/io/jsonwebtoken/CompressionCodecResolver.java
+Patch:
+@@ -28,7 +28,7 @@
+  * <p>However, if you want to use a compression algorithm other than {@code DEF} or {@code GZIP}, you can implement
+  * your own {@link CompressionCodecResolver} and specify that when
+  * {@link io.jsonwebtoken.JwtBuilder#compressWith(io.jsonwebtoken.io.CompressionAlgorithm) building} and
+- * {@link io.jsonwebtoken.JwtParser#setCompressionCodecResolver(CompressionCodecResolver) parsing} JWTs.</p>
++ * {@link io.jsonwebtoken.JwtParserBuilder#setCompressionCodecResolver(CompressionCodecResolver) parsing} JWTs.</p>
+  *
+  * @see JwtParserBuilder#setCompressionCodecResolver(CompressionCodecResolver)
+  * @see JwtParserBuilder#addCompressionAlgorithms(Collection)
+
+File: api/src/main/java/io/jsonwebtoken/Identifiable.java
+Patch:
+@@ -40,7 +40,7 @@
+  * parameter value.</td>
+  * </tr>
+  * <tr>
+- * <td>{@link io.jsonwebtoken.CompressionCodec CompressionCodec}</td>
++ * <td>{@link io.jsonwebtoken.io.CompressionAlgorithm CompressionAlgorithm}</td>
+  * <td>JWE protected header's
+  * <a href="https://www.rfc-editor.org/rfc/rfc7516.html#section-4.1.3">{@code zip} (Compression Algorithm)</a>
+  * parameter value.</td>
+
+File: api/src/main/java/io/jsonwebtoken/SigningKeyResolver.java
+Patch:
+@@ -33,7 +33,7 @@
+  *             //inspect the header or claims, lookup and return the signing key
+  *             return getSigningKeyBytes(header, claims); //implement me
+  *         }})
+- *     .parseClaimsJws(compact);
++ *     .build().parseClaimsJws(compact);
+  * </pre>
+  *
+  * <p>A {@code SigningKeyResolver} is invoked once during parsing before the signature is verified.</p>
+
+File: api/src/main/java/io/jsonwebtoken/ExpiredJwtException.java
+Patch:
+@@ -29,7 +29,7 @@ public class ExpiredJwtException extends ClaimJwtException {
+      * @param claims  jwt claims (body)
+      * @param message the message explaining why the exception is thrown.
+      */
+-    public ExpiredJwtException(Header<?> header, Claims claims, String message) {
++    public ExpiredJwtException(Header header, Claims claims, String message) {
+         super(header, claims, message);
+     }
+ 
+@@ -42,7 +42,7 @@ public ExpiredJwtException(Header<?> header, Claims claims, String message) {
+      * @param claims  jwt claims (body)
+      * @since 0.5
+      */
+-    public ExpiredJwtException(Header<?> header, Claims claims, String message, Throwable cause) {
++    public ExpiredJwtException(Header header, Claims claims, String message, Throwable cause) {
+         super(header, claims, message, cause);
+     }
+ }
+
+File: api/src/main/java/io/jsonwebtoken/HeaderMutator.java
+Patch:
+@@ -15,13 +15,15 @@
+  */
+ package io.jsonwebtoken;
+ 
++import io.jsonwebtoken.lang.MapMutator;
++
+ /**
+  * Mutation (modifications) to a {@link Header Header} instance.
+  *
+  * @param <T> the mutator subtype, for method chaining
+  * @since JJWT_RELEASE_VERSION
+  */
+-public interface HeaderMutator<T extends HeaderMutator<T>> {
++public interface HeaderMutator<T extends HeaderMutator<T>> extends MapMutator<String, Object, T> {
+ 
+     /**
+      * Sets the JWT <a href="https://www.rfc-editor.org/rfc/rfc7519.html#section-5.1">
+
+File: api/src/main/java/io/jsonwebtoken/IncorrectClaimException.java
+Patch:
+@@ -32,7 +32,7 @@ public class IncorrectClaimException extends InvalidClaimException {
+      * @param claimValue the value of the claim that could not be validated
+      * @param message    the exception message
+      */
+-    public IncorrectClaimException(Header<?> header, Claims claims, String claimName, Object claimValue, String message) {
++    public IncorrectClaimException(Header header, Claims claims, String claimName, Object claimValue, String message) {
+         super(header, claims, claimName, claimValue, message);
+     }
+ 
+@@ -46,7 +46,7 @@ public IncorrectClaimException(Header<?> header, Claims claims, String claimName
+      * @param message    the exception message
+      * @param cause      the underlying cause that resulted in this exception being thrown
+      */
+-    public IncorrectClaimException(Header<?> header, Claims claims, String claimName, Object claimValue, String message, Throwable cause) {
++    public IncorrectClaimException(Header header, Claims claims, String claimName, Object claimValue, String message, Throwable cause) {
+         super(header, claims, claimName, claimValue, message, cause);
+     }
+ }
+
+File: api/src/main/java/io/jsonwebtoken/InvalidClaimException.java
+Patch:
+@@ -44,7 +44,7 @@ public class InvalidClaimException extends ClaimJwtException {
+      * @param claimValue the value of the claim that could not be validated
+      * @param message    the exception message
+      */
+-    protected InvalidClaimException(Header<?> header, Claims claims, String claimName, Object claimValue, String message) {
++    protected InvalidClaimException(Header header, Claims claims, String claimName, Object claimValue, String message) {
+         super(header, claims, message);
+         this.claimName = claimName;
+         this.claimValue = claimValue;
+@@ -60,7 +60,7 @@ protected InvalidClaimException(Header<?> header, Claims claims, String claimNam
+      * @param message    the exception message
+      * @param cause      the underlying cause that resulted in this exception being thrown
+      */
+-    protected InvalidClaimException(Header<?> header, Claims claims, String claimName, Object claimValue, String message, Throwable cause) {
++    protected InvalidClaimException(Header header, Claims claims, String claimName, Object claimValue, String message, Throwable cause) {
+         super(header, claims, message, cause);
+         this.claimName = claimName;
+         this.claimValue = claimValue;
+
+File: api/src/main/java/io/jsonwebtoken/Jws.java
+Patch:
+@@ -21,12 +21,14 @@
+  * @param <B> the type of the JWS body contents, either a String or a {@link Claims} instance.
+  * @since 0.1
+  */
+-public interface Jws<B> extends Jwt<JwsHeader, B> {
++public interface Jws<B> extends ProtectedJwt<JwsHeader, B> {
+ 
+     /**
+      * Returns the verified JWS signature as a Base64Url string.
+      *
+      * @return the verified JWS signature as a Base64Url string.
++     * @deprecated since JJWT_RELEASE_VERSION in favor of {@link #getDigest() getDigest()}.
+      */
++    @Deprecated
+     String getSignature(); //TODO for 1.0: return a byte[]
+ }
+
+File: api/src/main/java/io/jsonwebtoken/JwsHeader.java
+Patch:
+@@ -20,7 +20,7 @@
+  *
+  * @since 0.1
+  */
+-public interface JwsHeader extends ProtectedHeader<JwsHeader> {
++public interface JwsHeader extends ProtectedHeader {
+ 
+     /**
+      * JWS <a href="https://tools.ietf.org/html/rfc7515#section-4.1.1">Algorithm Header</a> name: the string literal <b><code>alg</code></b>
+
+File: api/src/main/java/io/jsonwebtoken/Jwt.java
+Patch:
+@@ -18,10 +18,11 @@
+ /**
+  * An expanded (not compact/serialized) JSON Web Token.
+  *
+- * @param <P> the type of the JWT payload, either a byte array or a {@link Claims} instance.
++ * @param <H> the type of the JWT header
++ * @param <P> the type of the JWT payload, either a content byte array or a {@link Claims} instance.
+  * @since 0.1
+  */
+-public interface Jwt<H extends Header<H>, P> {
++public interface Jwt<H extends Header, P> {
+ 
+     /**
+      * Returns the JWT {@link Header} or {@code null} if not present.
+
+File: api/src/main/java/io/jsonwebtoken/JwtHandler.java
+Patch:
+@@ -26,15 +26,15 @@ public interface JwtHandler<T> {
+ 
+     /**
+      * This method is invoked when a {@link io.jsonwebtoken.JwtParser JwtParser} determines that the parsed JWT is
+-     * an Unprotected content JWT.  An Unprotected content JWT has a byte array payload that is not
++     * an unprotected content JWT.  An unprotected content JWT has a byte array payload that is not
+      * cryptographically signed or encrypted.  If the JWT creator set the (optional)
+      * {@link Header#getContentType() contentType} header value, the application may inspect that value to determine
+      * how to convert the byte array to the final content type as desired.
+      *
+      * @param jwt the parsed Unprotected content JWT
+      * @return any object to be used after inspecting the JWT, or {@code null} if no return value is necessary.
+      */
+-    T onContentJwt(Jwt<UnprotectedHeader, byte[]> jwt);
++    T onContentJwt(Jwt<Header, byte[]> jwt);
+ 
+     /**
+      * This method is invoked when a {@link io.jsonwebtoken.JwtParser JwtParser} determines that the parsed JWT is
+@@ -43,7 +43,7 @@ public interface JwtHandler<T> {
+      * @param jwt the parsed claims JWT
+      * @return any object to be used after inspecting the JWT, or {@code null} if no return value is necessary.
+      */
+-    T onClaimsJwt(Jwt<UnprotectedHeader, Claims> jwt);
++    T onClaimsJwt(Jwt<Header, Claims> jwt);
+ 
+     /**
+      * This method is invoked when a {@link io.jsonwebtoken.JwtParser JwtParser} determines that the parsed JWT is
+
+File: api/src/main/java/io/jsonwebtoken/JwtHandlerAdapter.java
+Patch:
+@@ -31,12 +31,12 @@
+ public abstract class JwtHandlerAdapter<T> implements JwtHandler<T> {
+ 
+     @Override
+-    public T onContentJwt(Jwt<UnprotectedHeader, byte[]> jwt) {
++    public T onContentJwt(Jwt<Header, byte[]> jwt) {
+         throw new UnsupportedJwtException("Unprotected content JWTs are not supported.");
+     }
+ 
+     @Override
+-    public T onClaimsJwt(Jwt<UnprotectedHeader, Claims> jwt) {
++    public T onClaimsJwt(Jwt<Header, Claims> jwt) {
+         throw new UnsupportedJwtException("Unprotected Claims JWTs are not supported.");
+     }
+ 
+
+File: api/src/main/java/io/jsonwebtoken/Locator.java
+Patch:
+@@ -37,5 +37,5 @@ public interface Locator<T> {
+      *               {@link JweHeader} depending on if the respective JWT is an unprotected JWT, JWS or JWE.
+      * @return an object referenced in the specified {@code header}, or {@code null} if the object couldn't be found.
+      */
+-    T locate(Header<?> header);
++    T locate(Header header);
+ }
+
+File: api/src/main/java/io/jsonwebtoken/ProtectedHeader.java
+Patch:
+@@ -24,12 +24,11 @@
+ /**
+  * A JWT header that is integrity protected, either by JWS digital signature or JWE AEAD encryption.
+  *
+- * @param <T> The exact header subtype returned during mutation (setter) operations.
+  * @see JwsHeader
+  * @see JweHeader
+  * @since JJWT_RELEASE_VERSION
+  */
+-public interface ProtectedHeader<T extends ProtectedHeader<T>> extends Header<T>, ProtectedHeaderMutator<T>, X509Accessor {
++public interface ProtectedHeader extends Header, X509Accessor {
+ 
+     /**
+      * Returns the {@code jku} (JWK Set URL) value that refers to a
+
+File: api/src/main/java/io/jsonwebtoken/SignatureAlgorithm.java
+Patch:
+@@ -18,7 +18,6 @@
+ import io.jsonwebtoken.security.InvalidKeyException;
+ import io.jsonwebtoken.security.Keys;
+ import io.jsonwebtoken.security.SignatureException;
+-import io.jsonwebtoken.security.StandardSecureDigestAlgorithms;
+ import io.jsonwebtoken.security.WeakKeyException;
+ 
+ import javax.crypto.SecretKey;
+@@ -35,7 +34,7 @@
+  * <a href="https://tools.ietf.org/html/draft-ietf-jose-json-web-algorithms-31">JSON Web Algorithms</a> specification.
+  *
+  * @since 0.1
+- * @deprecated since JJWT_RELEASE_VERSION; use {@link StandardSecureDigestAlgorithms} instead.
++ * @deprecated since JJWT_RELEASE_VERSION; use {@link Jwts.SIG} instead.
+  */
+ @Deprecated
+ public enum SignatureAlgorithm {
+
+File: api/src/main/java/io/jsonwebtoken/lang/Assert.java
+Patch:
+@@ -495,6 +495,8 @@ public static void state(boolean expression) {
+      *
+      * @param value value to assert is not null
+      * @param msg   exception message to use if {@code value} is null
++     * @param <T> value type
++     * @return the non-null value
+      * @throws IllegalStateException with the specified {@code msg} if {@code value} is null.
+      * @since JJWT_RELEASE_VERSION
+      */
+
+File: api/src/main/java/io/jsonwebtoken/lang/Builder.java
+Patch:
+@@ -18,7 +18,7 @@
+ /**
+  * Type-safe interface that reflects the <a href="https://en.wikipedia.org/wiki/Builder_pattern">Builder pattern</a>.
+  *
+- * @param <T> The type of object that will be created each time {@link #build()} is invoked.
++ * @param <T> The type of object that will be created when {@link #build()} is invoked.
+  * @since JJWT_RELEASE_VERSION
+  */
+ public interface Builder<T> {
+
+File: api/src/main/java/io/jsonwebtoken/security/AeadAlgorithm.java
+Patch:
+@@ -26,7 +26,7 @@
+  * Per <a href="https://www.rfc-editor.org/rfc/rfc7516.html#section-4.1.2">JWE RFC 7516, Section 4.1.2</a>, all JWEs
+  * <em>MUST</em> use an AEAD algorithm to encrypt or decrypt the JWE payload/content.  Consequently, all
+  * <a href="https://www.rfc-editor.org/rfc/rfc7518.html#section-5.1">JWA &quot;enc&quot; algorithms</a> are AEAD
+- * algorithms, and they are accessible as concrete instances via {@link Jwts#ENC}.
++ * algorithms, and they are accessible as concrete instances via {@link Jwts.ENC}.
+  *
+  * <p><b>&quot;enc&quot; identifier</b></p>
+  *
+@@ -57,7 +57,7 @@
+  * <p>The resulting {@code key} is guaranteed to have the correct algorithm parameters and strength/length necessary for
+  * that exact {@code aeadAlgorithm} instance.</p>
+  *
+- * @see Jwts#ENC
++ * @see Jwts.ENC
+  * @see Identifiable#getId()
+  * @see KeyLengthSupplier
+  * @see KeyBuilderSupplier
+
+File: api/src/main/java/io/jsonwebtoken/security/HashAlgorithm.java
+Patch:
+@@ -34,9 +34,9 @@
+  *
+  * <p>Constant definitions and utility methods for common (<em>but not all</em>)
+  * <a href="https://www.iana.org/assignments/named-information/named-information.xhtml#hash-alg">IANA Hash
+- * Algorithms</a> are available via the {@link StandardHashAlgorithms} singleton.</p>
++ * Algorithms</a> are available via {@link Jwks.HASH}.</p>
+  *
+- * @see StandardHashAlgorithms
++ * @see Jwks.HASH
+  * @since JJWT_RELEASE_VERSION
+  */
+ public interface HashAlgorithm extends DigestAlgorithm<Request<byte[]>, VerifyDigestRequest> {
+
+File: api/src/main/java/io/jsonwebtoken/security/JwkBuilder.java
+Patch:
+@@ -82,10 +82,10 @@ public interface JwkBuilder<K extends Key, J extends Jwk<K>, T extends JwkBuilde
+     /**
+      * Sets the JWK's {@link #setId(String) kid} value to be the Base64URL-encoding of its {@code SHA-256}
+      * {@link Jwk#thumbprint(HashAlgorithm) thumbprint}.  That is, the constructed JWK's {@code kid} value will equal
+-     * <code>jwk.{@link Jwk#thumbprint(HashAlgorithm) thumbprint}({@link Jwks#HASH}.{@link StandardHashAlgorithms#SHA256 SHA256}).{@link JwkThumbprint#toString() toString()}</code>.
++     * <code>jwk.{@link Jwk#thumbprint(HashAlgorithm) thumbprint}({@link Jwks.HASH}.{@link Jwks.HASH#SHA256 SHA256}).{@link JwkThumbprint#toString() toString()}</code>.
+      *
+      * <p>This is a convenience method that delegates to {@link #setIdFromThumbprint(HashAlgorithm)} using
+-     * {@link Jwks#HASH}{@code .}{@link StandardHashAlgorithms#SHA256 SHA256}.</p>
++     * {@link Jwks.HASH}{@code .}{@link Jwks.HASH#SHA256 SHA256}.</p>
+      *
+      * @return the builder for method chaining.
+      */
+@@ -99,7 +99,7 @@ public interface JwkBuilder<K extends Key, J extends Jwk<K>, T extends JwkBuilde
+      *
+      * @param alg the hash algorithm to use to compute the thumbprint.
+      * @return the builder for method chaining.
+-     * @see StandardHashAlgorithms
++     * @see Jwks.HASH
+      */
+     T setIdFromThumbprint(HashAlgorithm alg);
+ 
+
+File: api/src/main/java/io/jsonwebtoken/security/KeyAlgorithm.java
+Patch:
+@@ -30,7 +30,7 @@
+  *
+  * <p>All standard Key Algorithms are defined in
+  * <a href="https://www.rfc-editor.org/rfc/rfc7518.html#section-4.1">JWA (RFC 7518), Section 4.1</a>,
+- * and they are all available as concrete instances via {@link Jwts#KEY}.</p>
++ * and they are all available as concrete instances via {@link Jwts.KEY}.</p>
+  *
+  * <p><b>&quot;alg&quot; identifier</b></p>
+  *
+@@ -40,7 +40,7 @@
+  *
+  * @param <E> The type of key to use to obtain the AEAD encryption key
+  * @param <D> The type of key to use to obtain the AEAD decryption key
+- * @see Jwts#KEY
++ * @see Jwts.KEY
+  * @see <a href="https://tools.ietf.org/html/rfc7516#section-2">RFC 7561, Section 2: JWE Key (Management) Algorithms</a>
+  * @since JJWT_RELEASE_VERSION
+  */
+
+File: api/src/main/java/io/jsonwebtoken/security/MacAlgorithm.java
+Patch:
+@@ -55,9 +55,9 @@
+  * <p><b>JWA Standard Implementations</b></p>
+  *
+  * <p>Constant definitions and utility methods for all JWA (RFC 7518) standard MAC algorithms are
+- * available via the {@link StandardSecureDigestAlgorithms} registry singleton.</p>
++ * available via {@link io.jsonwebtoken.Jwts.SIG Jwts.SIG}.</p>
+  *
+- * @see StandardSecureDigestAlgorithms
++ * @see io.jsonwebtoken.Jwts.SIG Jwts.SIG
+  * @since JJWT_RELEASE_VERSION
+  */
+ public interface MacAlgorithm extends SecureDigestAlgorithm<SecretKey, SecretKey>,
+
+File: api/src/main/java/io/jsonwebtoken/security/PrivateJwk.java
+Patch:
+@@ -24,7 +24,7 @@
+  * <p><b>JWK Private Key vs Java {@code PrivateKey} differences</b></p>
+  *
+  * <p>Unlike the Java cryptography APIs, the JWK specification requires all public key <em>and</em> private key
+- * properties to be contained within every private JWK. As such, a {@code PrivateJwk} of course represents
++ * properties to be contained within every private JWK. As such, a {@code PrivateJwk} indeed represents
+  * private key fields as its name implies, but it is probably more similar to the Java JCA concept of a
+  * {@link java.security.KeyPair} since it contains everything for both keys.</p>
+  *
+
+File: api/src/main/java/io/jsonwebtoken/security/SecureDigestAlgorithm.java
+Patch:
+@@ -36,7 +36,7 @@
+  *
+  * <p>Constant definitions and utility methods for all JWA (RFC 7518) standard
+  * <a href="https://www.rfc-editor.org/rfc/rfc7518.html#section-3">Cryptographic Algorithms for Digital Signatures and
+- * MACs</a> are available via the {@link StandardSecureDigestAlgorithms} utility class.</p>
++ * MACs</a> are available via {@link io.jsonwebtoken.Jwts.SIG Jwts.SIG}.</p>
+  *
+  * <p><b>&quot;alg&quot; identifier</b></p>
+  *
+
+File: api/src/main/java/io/jsonwebtoken/security/SignatureAlgorithm.java
+Patch:
+@@ -46,9 +46,9 @@
+  * <p><b>JWA Standard Implementations</b></p>
+  *
+  * <p>Constant definitions and utility methods for all JWA (RFC 7518) standard signature algorithms are
+- * available via the {@link StandardSecureDigestAlgorithms} registry singleton.</p>
++ * available via {@link io.jsonwebtoken.Jwts.SIG Jwts.SIG}.</p>
+  *
+- * @see StandardSecureDigestAlgorithms
++ * @see io.jsonwebtoken.Jwts.SIG Jwts.SIG
+  * @since JJWT_RELEASE_VERSION
+  */
+ public interface SignatureAlgorithm extends SecureDigestAlgorithm<PrivateKey, PublicKey>, KeyPairBuilderSupplier {
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultJwt.java
+Patch:
+@@ -21,7 +21,7 @@
+ import io.jsonwebtoken.lang.Assert;
+ import io.jsonwebtoken.lang.Objects;
+ 
+-public class DefaultJwt<H extends Header<H>, P> implements Jwt<H, P> {
++public class DefaultJwt<H extends Header, P> implements Jwt<H, P> {
+ 
+     private final H header;
+     private final P payload;
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultTokenizedJwe.java
+Patch:
+@@ -41,7 +41,7 @@ public String getIv() {
+     }
+ 
+     @Override
+-    public Header<?> createHeader(Map<String, ?> m) {
++    public Header createHeader(Map<String, ?> m) {
+         return new DefaultJweHeader(m);
+     }
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultTokenizedJwt.java
+Patch:
+@@ -49,10 +49,10 @@ public String getDigest() {
+     }
+ 
+     @Override
+-    public Header<?> createHeader(Map<String, ?> m) {
++    public Header createHeader(Map<String, ?> m) {
+         if (Strings.hasText(getDigest())) {
+             return new DefaultJwsHeader(m);
+         }
+-        return new DefaultUnprotectedHeader(m);
++        return new DefaultHeader(m);
+     }
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/TokenizedJwt.java
+Patch:
+@@ -48,5 +48,5 @@ public interface TokenizedJwt {
+      * @param m the header state
+      * @return a new header instance.
+      */
+-    Header<?> createHeader(Map<String, ?> m);
++    Header createHeader(Map<String, ?> m);
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/compression/AbstractCompressionAlgorithm.java
+Patch:
+@@ -17,6 +17,7 @@
+ 
+ import io.jsonwebtoken.CompressionCodec;
+ import io.jsonwebtoken.CompressionException;
++import io.jsonwebtoken.io.CompressionAlgorithm;
+ import io.jsonwebtoken.lang.Assert;
+ import io.jsonwebtoken.lang.Objects;
+ import io.jsonwebtoken.lang.Strings;
+@@ -31,11 +32,11 @@
+  *
+  * @since 0.6.0
+  */
+-public abstract class AbstractCompressionCodec implements CompressionCodec {
++public abstract class AbstractCompressionAlgorithm implements CompressionAlgorithm, CompressionCodec {
+ 
+     private final String id;
+ 
+-    protected AbstractCompressionCodec(String id) {
++    protected AbstractCompressionAlgorithm(String id) {
+         this.id = Assert.hasText(Strings.clean(id), "id argument cannot be null or empty.");
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/lang/LocatorFunction.java
+Patch:
+@@ -19,7 +19,7 @@
+ import io.jsonwebtoken.Locator;
+ import io.jsonwebtoken.lang.Assert;
+ 
+-public class LocatorFunction<T> implements Function<Header<?>, T> {
++public class LocatorFunction<T> implements Function<Header, T> {
+ 
+     private final Locator<T> locator;
+ 
+@@ -28,7 +28,7 @@ public LocatorFunction(Locator<T> locator) {
+     }
+ 
+     @Override
+-    public T apply(Header<?> h) {
++    public T apply(Header h) {
+         return this.locator.locate(h);
+     }
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/lang/RequiredFieldReader.java
+Patch:
+@@ -27,7 +27,7 @@ public class RequiredFieldReader implements FieldReadable {
+ 
+     private final FieldReadable src;
+ 
+-    public RequiredFieldReader(Header<?> header) {
++    public RequiredFieldReader(Header header) {
+         this(Assert.isInstanceOf(FieldReadable.class, header, "Header implementations must implement FieldReadable."));
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/AesWrapKeyAlgorithm.java
+Patch:
+@@ -39,7 +39,7 @@ public AesWrapKeyAlgorithm(int keyLen) {
+     }
+ 
+     @Override
+-    public KeyResult getEncryptionKey(KeyRequest<SecretKey> request) throws SecurityException {
++    public KeyResult getEncryptionKey(final KeyRequest<SecretKey> request) throws SecurityException {
+         Assert.notNull(request, "request cannot be null.");
+         final SecretKey kek = assertKey(request.getPayload());
+         final SecretKey cek = generateKey(request);
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/ConstantKeyLocator.java
+Patch:
+@@ -26,7 +26,7 @@
+ import java.security.Key;
+ 
+ @SuppressWarnings("deprecation")
+-public class ConstantKeyLocator extends LocatorAdapter<Key> implements SigningKeyResolver, Function<Header<?>, Key> {
++public class ConstantKeyLocator extends LocatorAdapter<Key> implements SigningKeyResolver, Function<Header, Key> {
+ 
+     private final Key jwsKey;
+     private final Key jweKey;
+@@ -57,7 +57,7 @@ protected Key locate(JweHeader header) {
+     }
+ 
+     @Override
+-    public Key apply(Header<?> header) {
++    public Key apply(Header header) {
+         return locate(header);
+     }
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/Curves.java
+Patch:
+@@ -63,16 +63,16 @@ private Curves() {
+ 
+     public static Curve findById(String jwaId) {
+         Assert.hasText(jwaId, "jwaId cannot be null or empty.");
+-        return CURVES_BY_ID.find(jwaId);
++        return CURVES_BY_ID.get(jwaId);
+     }
+ 
+     public static Curve findByJcaName(String jcaName) {
+         Assert.hasText(jcaName, "jcaName cannot be null or empty.");
+-        return CURVES_BY_JCA_NAME.find(jcaName);
++        return CURVES_BY_JCA_NAME.get(jcaName);
+     }
+ 
+     public static ECCurve findBy(EllipticCurve curve) {
+         Assert.notNull(curve, "EllipticCurve argument cannot be null.");
+-        return CURVES_BY_JCA_CURVE.find(curve);
++        return CURVES_BY_JCA_CURVE.get(curve);
+     }
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultDecryptionKeyRequest.java
+Patch:
+@@ -28,7 +28,8 @@ public class DefaultDecryptionKeyRequest<K extends Key> extends DefaultKeyReques
+ 
+     private final K decryptionKey;
+ 
+-    public DefaultDecryptionKeyRequest(byte[] encryptedCek, Provider provider, SecureRandom secureRandom, JweHeader header, AeadAlgorithm encryptionAlgorithm, K decryptionKey) {
++    public DefaultDecryptionKeyRequest(byte[] encryptedCek, Provider provider, SecureRandom secureRandom,
++                                       JweHeader header, AeadAlgorithm encryptionAlgorithm, K decryptionKey) {
+         super(encryptedCek, provider, secureRandom, header, encryptionAlgorithm);
+         this.decryptionKey = Assert.notNull(decryptionKey, "decryption key cannot be null.");
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultJwkParser.java
+Patch:
+@@ -62,6 +62,6 @@ public Jwk<?> parse(String json) throws KeyException {
+             builder.setProvider(this.provider);
+         }
+ 
+-        return builder.putAll(data).build();
++        return builder.set(data).build();
+     }
+ }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultKeyRequest.java
+Patch:
+@@ -30,7 +30,7 @@ public class DefaultKeyRequest<T> extends DefaultRequest<T> implements KeyReques
+ 
+     public DefaultKeyRequest(T payload, Provider provider, SecureRandom secureRandom, JweHeader header, AeadAlgorithm encryptionAlgorithm) {
+         super(payload, provider, secureRandom);
+-        this.header = Assert.notNull(header, "JweHeader cannot be null.");
++        this.header = Assert.notNull(header, "JweHeader/Builder cannot be null.");
+         this.encryptionAlgorithm = Assert.notNull(encryptionAlgorithm, "AeadAlgorithm argument cannot be null.");
+     }
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultMacAlgorithm.java
+Patch:
+@@ -142,7 +142,7 @@ protected void validateKey(Key k, boolean signing) {
+                 msg += " The JWT " +
+                         "JWA Specification (RFC 7518, Section 3.2) states that keys used with " + id + " MUST have a " +
+                         "size >= " + minKeyBitLength + " bits (the key size must be greater than or equal to the hash " +
+-                        "output size). Consider using the StandardSecureDigestAlgorithms." + id + ".keyBuilder() " +
++                        "output size). Consider using the Jwts.SIG." + id + ".keyBuilder() " +
+                         "method to create a key guaranteed to be secure enough for " + id + ".  See " +
+                         "https://tools.ietf.org/html/rfc7518#section-3.2 for more information.";
+             } else { //custom algorithm - just indicate required key length:
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultProtoJwkBuilder.java
+Patch:
+@@ -198,11 +198,11 @@ public EcPrivateJwkBuilder forEcKeyPair(KeyPair pair) {
+ 
+     @Override
+     public J build() {
+-        if (Strings.hasText(this.jwkContext.get(AbstractJwk.KTY))) {
++        if (Strings.hasText(this.DELEGATE.get(AbstractJwk.KTY))) {
+             // Ensure we have a context that represents the configured kty value.  Converting the existing context to
+             // the type-specific context will also perform any necessary field value type conversion / error checking
+             // this will also perform any necessary field value type conversions / error checking
+-            setContext(this.jwkFactory.newContext(this.jwkContext, this.jwkContext.getKey()));
++            setDelegate(this.jwkFactory.newContext(this.DELEGATE, this.DELEGATE.getKey()));
+         }
+         return super.build();
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DefaultRsaKeyAlgorithm.java
+Patch:
+@@ -77,6 +77,7 @@ protected void validate(Key key, boolean encryption) { // true = encryption, fal
+ 
+     @Override
+     public KeyResult getEncryptionKey(final KeyRequest<PublicKey> request) throws SecurityException {
++
+         Assert.notNull(request, "Request cannot be null.");
+         final PublicKey kek = Assert.notNull(request.getPayload(), "RSA PublicKey encryption key cannot be null.");
+         validate(kek, true);
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/DirectKeyAlgorithm.java
+Patch:
+@@ -37,7 +37,7 @@ public String getId() {
+     }
+ 
+     @Override
+-    public KeyResult getEncryptionKey(KeyRequest<SecretKey> request) throws SecurityException {
++    public KeyResult getEncryptionKey(final KeyRequest<SecretKey> request) throws SecurityException {
+         Assert.notNull(request, "request cannot be null.");
+         SecretKey key = Assert.notNull(request.getPayload(), "Encryption key cannot be null.");
+         return new DefaultKeyResult(key);
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/JcaTemplate.java
+Patch:
+@@ -86,7 +86,7 @@ public Class<?> apply(InstanceFactory<?> factory) {
+     }
+ 
+     private <T, R> R execute(Class<T> clazz, CheckedFunction<T, R> fn) throws SecurityException {
+-        InstanceFactory<?> factory = REGISTRY.find(clazz);
++        InstanceFactory<?> factory = REGISTRY.get(clazz);
+         Assert.notNull(factory, "Unsupported JCA instance class.");
+         return execute(factory, clazz, fn);
+     }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/JwkConverter.java
+Patch:
+@@ -121,7 +121,7 @@ public T applyFrom(Object o) {
+                 throw new IllegalArgumentException(msg);
+             }
+             String skey = (String) key;
+-            builder.put(skey, entry.getValue());
++            builder.set(skey, entry.getValue());
+         }
+ 
+         Jwk<?> jwk = builder.build();
+
+File: impl/src/main/java/io/jsonwebtoken/impl/security/SecretJwkFactory.java
+Patch:
+@@ -100,7 +100,7 @@ protected SecretJwk createJwkFromValues(JwkContext<SecretKey> ctx) {
+ 
+         String id = ctx.getAlgorithm();
+         if (Strings.hasText(id)) {
+-            SecureDigestAlgorithm<?, ?> alg = Jwts.SIG.find(id);
++            SecureDigestAlgorithm<?, ?> alg = Jwts.SIG.get().get(id);
+             if (alg instanceof MacAlgorithm) {
+                 jcaName = ((CryptoAlgorithm) alg).getJcaName(); // valid for all JJWT alg implementations
+                 Assert.hasText(jcaName, "Algorithm jcaName cannot be null or empty.");
+
+File: tdjar/src/test/java/io/jsonwebtoken/all/JavaReadmeTest.java
+Patch:
+@@ -241,7 +241,7 @@ public void testExampleJwePassword() {
+         // Create the compact JWE:
+         String jwe = Jwts.builder().setIssuer("me")
+                 // Optional work factor is specified in the header:
+-                //.setHeader(Jwts.headerBuilder().setPbes2Count(pbkdf2Iterations))
++                //.header().setPbes2Count(pbkdf2Iterations)).and()
+                 .encryptWith(password, alg, enc)
+                 .compact();
+ 
+
+File: api/src/main/java/io/jsonwebtoken/security/Keys.java
+Patch:
+@@ -205,19 +205,19 @@ public static SecretKey secretKeyFor(io.jsonwebtoken.SignatureAlgorithm alg) thr
+      * <th><a href="https://tools.ietf.org/html/rfc5480#section-2.1.1.1">ASN1 OID Curve Name</a></th>
+      * </tr>
+      * <tr>
+-     * <td>EC256</td>
++     * <td>ES256</td>
+      * <td>256 bits</td>
+      * <td>{@code P-256}</td>
+      * <td>{@code secp256r1}</td>
+      * </tr>
+      * <tr>
+-     * <td>EC384</td>
++     * <td>ES384</td>
+      * <td>384 bits</td>
+      * <td>{@code P-384}</td>
+      * <td>{@code secp384r1}</td>
+      * </tr>
+      * <tr>
+-     * <td>EC512</td>
++     * <td>ES512</td>
+      * <td><b>521</b> bits</td>
+      * <td>{@code P-521}</td>
+      * <td>{@code secp521r1}</td>
+
+File: api/src/main/java/io/jsonwebtoken/ClaimsMutator.java
+Patch:
+@@ -25,7 +25,7 @@
+  * @see io.jsonwebtoken.Claims
+  * @since 0.2
+  */
+-public interface ClaimsMutator<T extends ClaimsMutator> {
++public interface ClaimsMutator<T extends ClaimsMutator<T>> {
+ 
+     /**
+      * Sets the JWT <a href="https://tools.ietf.org/html/draft-ietf-oauth-json-web-token-25#section-4.1.1">
+
+File: api/src/main/java/io/jsonwebtoken/io/Base64Decoder.java
+Patch:
+@@ -18,6 +18,9 @@
+ import io.jsonwebtoken.lang.Assert;
+ 
+ /**
++ * Very fast <a href="https://datatracker.ietf.org/doc/html/rfc4648#section-4">Base64</a> decoder guaranteed to
++ * work in all &gt;= Java 7 JDK and Android environments.
++ *
+  * @since 0.10.0
+  */
+ class Base64Decoder extends Base64Support implements Decoder<String, byte[]> {
+
+File: api/src/main/java/io/jsonwebtoken/io/Base64Encoder.java
+Patch:
+@@ -18,6 +18,9 @@
+ import io.jsonwebtoken.lang.Assert;
+ 
+ /**
++ * Very fast <a href="https://datatracker.ietf.org/doc/html/rfc4648#section-4">Base64</a> encoder guaranteed to
++ * work in all &gt;= Java 7 JDK and Android environments.
++ *
+  * @since 0.10.0
+  */
+ class Base64Encoder extends Base64Support implements Encoder<byte[], String> {
+
+File: api/src/main/java/io/jsonwebtoken/io/Base64Support.java
+Patch:
+@@ -18,6 +18,8 @@
+ import io.jsonwebtoken.lang.Assert;
+ 
+ /**
++ * Parent class for Base64 encoders and decoders.
++ *
+  * @since 0.10.0
+  */
+ class Base64Support {
+
+File: api/src/main/java/io/jsonwebtoken/io/Base64UrlDecoder.java
+Patch:
+@@ -16,6 +16,9 @@
+ package io.jsonwebtoken.io;
+ 
+ /**
++ * Very fast <a href="https://datatracker.ietf.org/doc/html/rfc4648#section-5">Base64Url</a> decoder guaranteed to
++ * work in all &gt;= Java 7 JDK and Android environments.
++ *
+  * @since 0.10.0
+  */
+ class Base64UrlDecoder extends Base64Decoder {
+
+File: api/src/main/java/io/jsonwebtoken/io/Base64UrlEncoder.java
+Patch:
+@@ -16,6 +16,9 @@
+ package io.jsonwebtoken.io;
+ 
+ /**
++ * Very fast <a href="https://datatracker.ietf.org/doc/html/rfc4648#section-5">Base64Url</a> encoder guaranteed to
++ * work in all &gt;= Java 7 JDK and Android environments.
++ *
+  * @since 0.10.0
+  */
+ class Base64UrlEncoder extends Base64Encoder {
+
+File: extensions/orgjson/src/main/java/io/jsonwebtoken/orgjson/io/OrgJsonDeserializer.java
+Patch:
+@@ -35,7 +35,6 @@
+  */
+ public class OrgJsonDeserializer implements Deserializer<Object> {
+ 
+-    @SuppressWarnings("unchecked")
+     @Override
+     public Object deserialize(byte[] bytes) throws DeserializationException {
+ 
+@@ -91,7 +90,7 @@ private List<Object> toList(JSONArray a) {
+         int length = a.length();
+         List<Object> list = new ArrayList<>(length);
+         // https://github.com/jwtk/jjwt/issues/380: use a.get(i) and *not* a.toList() for Android compatibility:
+-        for( int i = 0; i < length; i++) {
++        for (int i = 0; i < length; i++) {
+             Object value = a.get(i);
+             value = convertIfNecessary(value);
+             list.add(value);
+
+File: impl/src/main/java/io/jsonwebtoken/impl/JwtMap.java
+Patch:
+@@ -164,8 +164,9 @@ public void putAll(Map<? extends String, ?> m) {
+         if (m == null) {
+             return;
+         }
+-        for (String s : m.keySet()) {
+-            put(s, m.get(s));
++        for (Map.Entry <? extends String, ?>entry : m.entrySet()) {
++            String s = entry.getKey();
++            put(s, entry.getValue());
+         }
+     }
+ 
+
+File: api/src/main/java/io/jsonwebtoken/Claims.java
+Patch:
+@@ -31,7 +31,7 @@
+  * claims.{@link Map#put(Object, Object) put}("someKey", "someValue");
+  * </pre>
+  *
+- * <h3>Creation</h3>
++ * <h2>Creation</h2>
+  *
+  * <p>It is easiest to create a {@code Claims} instance by calling one of the
+  * {@link Jwts#claims() JWTs.claims()} factory methods.</p>
+@@ -177,7 +177,7 @@ public interface Claims extends Map<String, Object>, ClaimsMutator<Claims> {
+      * complex is expected to be already converted to your desired type by the JSON
+      * {@link io.jsonwebtoken.io.Deserializer Deserializer} implementation. You may specify a custom Deserializer for a
+      * JwtParser with the desired conversion configuration via the {@link JwtParserBuilder#deserializeJsonWith} method.
+-     * See <a href="https://github.com/jwtk/jjwt#custom-json-processor">custom JSON processor</a></a> for more
++     * See <a href="https://github.com/jwtk/jjwt#custom-json-processor">custom JSON processor</a> for more
+      * information. If using Jackson, you can specify custom claim POJO types as described in
+      * <a href="https://github.com/jwtk/jjwt#json-jackson-custom-types">custom claim types</a>.
+      *
+
+File: api/src/main/java/io/jsonwebtoken/Header.java
+Patch:
+@@ -30,7 +30,7 @@
+  * header.{@link Map#put(Object, Object) put}("headerParamName", "headerParamValue");
+  * </pre>
+  *
+- * <h3>Creation</h3>
++ * <h2>Creation</h2>
+  *
+  * <p>It is easiest to create a {@code Header} instance by calling one of the
+  * {@link Jwts#header() JWTs.header()} factory methods.</p>
+
+File: api/src/main/java/io/jsonwebtoken/SignatureAlgorithm.java
+Patch:
+@@ -531,7 +531,7 @@ private void assertValid(Key key, boolean signing) throws InvalidKeyException {
+      * Section 3.3)</a> mandates that RSA signing key lengths <em>MUST</em> be 2048 bits or greater.
+      * {@code RSAKey}s with key lengths less than 2048 bits will be rejected with a
+      * {@link WeakKeyException}.</li>
+-     * <li>Technically any RSA key of length >= 2048 bits may be used with the {@link #RS256}, {@link #RS384}, and
++     * <li>Technically any RSA key of length &gt;= 2048 bits may be used with the {@link #RS256}, {@link #RS384}, and
+      * {@link #RS512} algorithms, so we assume an RSA signature algorithm based on the key length to
+      * parallel similar decisions in the JWT specification for HMAC and ECDSA signature algorithms.
+      * This is not required - just a convenience.</li>
+@@ -545,7 +545,6 @@ private void assertValid(Key key, boolean signing) throws InvalidKeyException {
+      * <li>The {@link #RS256}, {@link #RS384}, and {@link #RS512} algorithms are available in the JDK by default
+      * while the {@code PS}* variants require an additional JCA Provider (like BouncyCastle).</li>
+      * </ul>
+-     * </p>
+      *
+      * <p>Finally, this method will throw an {@link InvalidKeyException} for any key that does not match the
+      * heuristics and requirements documented above, since that inevitably means the Key is either insufficient or
+
+File: api/src/main/java/io/jsonwebtoken/SigningKeyResolver.java
+Patch:
+@@ -38,7 +38,7 @@
+  *
+  * <p>A {@code SigningKeyResolver} is invoked once during parsing before the signature is verified.</p>
+  *
+- * <h3>SigningKeyResolverAdapter</h3>
++ * <h2>Using an Adapter</h2>
+  *
+  * <p>If you only need to resolve a signing key for a particular JWS (either a plaintext or Claims JWS), consider using
+  * the {@link io.jsonwebtoken.SigningKeyResolverAdapter} and overriding only the method you need to support instead of
+
+File: api/src/main/java/io/jsonwebtoken/lang/Maps.java
+Patch:
+@@ -39,7 +39,7 @@ private Maps() {} //prevent instantiation
+      * @param value the value of map entry to be added
+      * @param <K> the maps key type
+      * @param <V> the maps value type
+-     * Creates a new map builder with a single entry.
++     * @return a new map builder with a single entry.
+      */
+     public static <K, V> MapBuilder<K, V> of(K key, V value) {
+         return new HashMapBuilder<K, V>().and(key, value);
+
+File: api/src/main/java/io/jsonwebtoken/security/Keys.java
+Patch:
+@@ -104,6 +104,7 @@ public static SecretKey hmacShaKeyFor(byte[] bytes) throws WeakKeyException {
+      * secure-random generated SecretKey that adheres to the required minimum key length.  The lengths are:</p>
+      *
+      * <table>
++     *     <caption>JWA HMAC-SHA Key Length Requirements</caption>
+      * <tr>
+      * <th>Algorithm</th>
+      * <th>Key Length</th>
+@@ -146,6 +147,7 @@ public static SecretKey secretKeyFor(SignatureAlgorithm alg) throws IllegalArgum
+      * <p>If the {@code alg} argument is an RSA algorithm, a KeyPair is generated based on the following:</p>
+      *
+      * <table>
++     *     <caption>Generated RSA Key Sizes</caption>
+      * <tr>
+      * <th>JWA Algorithm</th>
+      * <th>Key Size</th>
+@@ -179,6 +181,7 @@ public static SecretKey secretKeyFor(SignatureAlgorithm alg) throws IllegalArgum
+      * <p>If the {@code alg} argument is an Elliptic Curve algorithm, a KeyPair is generated based on the following:</p>
+      *
+      * <table>
++     *     <caption>Generated Elliptic Curve Key Parameters</caption>
+      * <tr>
+      * <th>JWA Algorithm</th>
+      * <th>Key Size</th>
+
+File: impl/src/main/java/io/jsonwebtoken/impl/lang/LegacyServices.java
+Patch:
+@@ -15,6 +15,9 @@ public final class LegacyServices {
+      * Wraps {@code Services.loadFirst} and throws a {@link UnknownClassException} instead of a
+      * {@link UnavailableImplementationException} to retain the previous behavior. This method should be used when
+      * to retain the previous behavior of methods that throw an unchecked UnknownClassException.
++     * @param <T> the type of object to return
++     * @param spi the class for which to find the first instance
++     * @return the first instance of type {@code T} found from a call to {@link Services#loadFirst(Class)}
+      */
+     public static <T> T loadFirst(Class<T> spi) {
+         try {
+
+File: api/src/main/java/io/jsonwebtoken/Header.java
+Patch:
+@@ -105,6 +105,7 @@ public interface Header<T extends Header<T>> extends Map<String,Object> {
+      * an example of a Nested JWT.</p>
+      *
+      * @param cty the JWT JOSE {@code cty} header value or {@code null} to remove the property from the JSON map.
++     * @return the {@code Header} instance for method chaining.
+      */
+     T setContentType(String cty);
+ 
+@@ -119,12 +120,13 @@ public interface Header<T extends Header<T>> extends Map<String,Object> {
+     /**
+      * Sets the JWT <code>zip</code> (Compression Algorithm) header parameter value. A {@code null} value will remove
+      * the property from the JSON map.
+-     * <p>
++     *
+      * <p>The compression algorithm is NOT part of the <a href="https://tools.ietf.org/html/draft-ietf-oauth-json-web-token-25">JWT specification</a>
+      * and must be used carefully since, is not expected that other libraries (including previous versions of this one)
+      * be able to deserialize a compressed JTW body correctly. </p>
+      *
+      * @param zip the JWT compression algorithm {@code zip} value or {@code null} to remove the property from the JSON map.
++     * @return the {@code Header} instance for method chaining.
+      * @since 0.6.0
+      */
+     T setCompressionAlgorithm(String zip);
+
+File: api/src/main/java/io/jsonwebtoken/JwtBuilder.java
+Patch:
+@@ -480,7 +480,7 @@ public interface JwtBuilder extends ClaimsMutator<JwtBuilder> {
+      * <p>The JWT family of specifications defines compression only for JWE (Json Web Encryption)
+      * tokens.  Even so, JJWT will also support compression for JWS tokens as well if you choose to use it.
+      * However, be aware that <b>if you use compression when creating a JWS token, other libraries may not be able to
+-     * parse that JWS token</b>.  When using compression for JWS tokens, be sure that that all parties accessing the
++     * parse that JWS token</b>.  When using compression for JWS tokens, be sure that all parties accessing the
+      * JWS token support compression for JWS.</p>
+      *
+      * <p>Compression when creating JWE tokens however should be universally accepted for any
+
+File: impl/src/main/java/io/jsonwebtoken/impl/JwtMap.java
+Patch:
+@@ -83,13 +83,13 @@ protected static Date toSpecDate(Object v, String name) {
+         } else if (v instanceof Number) {
+             // https://github.com/jwtk/jjwt/issues/122:
+             // The JWT RFC *mandates* NumericDate values are represented as seconds.
+-            // Because Because java.util.Date requires milliseconds, we need to multiply by 1000:
++            // Because java.util.Date requires milliseconds, we need to multiply by 1000:
+             long seconds = ((Number) v).longValue();
+             v = seconds * 1000;
+         } else if (v instanceof String) {
+             // https://github.com/jwtk/jjwt/issues/122
+             // The JWT RFC *mandates* NumericDate values are represented as seconds.
+-            // Because Because java.util.Date requires milliseconds, we need to multiply by 1000:
++            // Because java.util.Date requires milliseconds, we need to multiply by 1000:
+             try {
+                 long seconds = Long.parseLong((String) v);
+                 v = seconds * 1000;
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultJwtParserBuilder.java
+Patch:
+@@ -204,7 +204,7 @@ public JwtParser build() {
+                                      allowedClockSkewMillis,
+                                      expectedClaims,
+                                      base64UrlDecoder,
+-                                     deserializer,
++                                     new JwtDeserializer<>(deserializer),
+                                      compressionCodecResolver));
+     }
+ }
+
+File: api/src/main/java/io/jsonwebtoken/io/Base64.java
+Patch:
+@@ -111,7 +111,7 @@ private char[] encodeToChar(byte[] sArr, boolean lineSep) {
+         // Encode even 24-bits
+         for (int s = 0, d = 0, cc = 0; s < eLen; ) {
+ 
+-            // Copy next three bytes into lower 24 bits of int, paying attension to sign.
++            // Copy next three bytes into lower 24 bits of int, paying attention to sign.
+             int i = (sArr[s++] & 0xff) << 16 | (sArr[s++] & 0xff) << 8 | (sArr[s++] & 0xff);
+ 
+             // Encode the int into four chars
+@@ -339,7 +339,7 @@ public final byte[] encodeToByte(byte[] sArr, int sOff, int sLen, boolean lineSe
+         // Encode even 24-bits
+         for (int s = sOff, d = 0, cc = 0; s < sOff + eLen; ) {
+ 
+-            // Copy next three bytes into lower 24 bits of int, paying attension to sign.
++            // Copy next three bytes into lower 24 bits of int, paying attention to sign.
+             int i = (sArr[s++] & 0xff) << 16 | (sArr[s++] & 0xff) << 8 | (sArr[s++] & 0xff);
+ 
+             // Encode the int into four chars
+
+File: impl/src/main/java/io/jsonwebtoken/impl/DefaultJwtBuilder.java
+Patch:
+@@ -301,7 +301,7 @@ public String compact() {
+         }
+ 
+         if (payload == null && Collections.isEmpty(claims)) {
+-            throw new IllegalStateException("Either 'payload' or 'claims' must be specified.");
++            payload = "";
+         }
+ 
+         if (payload != null && !Collections.isEmpty(claims)) {
+
+File: extensions/gson/src/main/java/io/jsonwebtoken/gson/io/GsonDeserializer.java
+Patch:
+@@ -19,6 +19,8 @@
+ import io.jsonwebtoken.io.DeserializationException;
+ import io.jsonwebtoken.io.Deserializer;
+ import io.jsonwebtoken.lang.Assert;
++import io.jsonwebtoken.lang.Strings;
++
+ import java.io.IOException;
+ 
+ public class GsonDeserializer<T> implements Deserializer<T> {
+@@ -54,6 +56,6 @@ public T deserialize(byte[] bytes) throws DeserializationException {
+     }
+ 
+     protected T readValue(byte[] bytes) throws IOException {
+-        return gson.fromJson(new String(bytes), returnType);
++        return gson.fromJson(new String(bytes, Strings.UTF_8), returnType);
+     }
+ }
+
+File: api/src/main/java/io/jsonwebtoken/lang/Maps.java
+Patch:
+@@ -63,7 +63,7 @@ public interface MapBuilder<K, V> {
+          * @param value the value of map entry to be added
+          * @return the current MapBuilder to allow for method chaining.
+          */
+-        MapBuilder and(K key, V value);
++        MapBuilder<K, V> and(K key, V value);
+ 
+         /**
+          * Returns a the resulting Map object from this MapBuilder.
+@@ -76,7 +76,7 @@ private static class HashMapBuilder<K, V> implements MapBuilder<K, V> {
+ 
+         private final Map<K, V> data = new HashMap<>();
+ 
+-        public MapBuilder and(K key, V value) {
++        public MapBuilder<K, V> and(K key, V value) {
+             data.put(key, value);
+             return this;
+         }
+
+File: api/src/main/java/io/jsonwebtoken/Claims.java
+Patch:
+@@ -141,7 +141,7 @@ public interface Claims extends Map<String, Object>, ClaimsMutator<Claims> {
+      *
+      * <p>If present, this value is the timestamp when the JWT was created.</p>
+      *
+-     * @return the JWT {@code nbf} value or {@code null} if not present.
++     * @return the JWT {@code iat} value or {@code null} if not present.
+      */
+     Date getIssuedAt();
+ 
+
+File: api/src/main/java/io/jsonwebtoken/lang/Classes.java
+Patch:
+@@ -85,8 +85,8 @@ public static <T> Class<T> forName(String fqcn) throws UnknownClassException {
+             String msg = "Unable to load class named [" + fqcn + "] from the thread context, current, or " +
+                     "system/application ClassLoaders.  All heuristics have been exhausted.  Class could not be found.";
+ 
+-            if (fqcn != null && fqcn.startsWith("com.stormpath.sdk.impl")) {
+-                msg += "  Have you remembered to include the stormpath-sdk-impl .jar in your runtime classpath?";
++            if (fqcn != null && fqcn.startsWith("io.jsonwebtoken.impl")) {
++                msg += "  Have you remembered to include the jjwt-impl.jar in your runtime classpath?";
+             }
+ 
+             throw new UnknownClassException(msg);
+
+File: api/src/main/java/io/jsonwebtoken/JwtParserBuilder.java
+Patch:
+@@ -298,8 +298,8 @@ public interface JwtParserBuilder {
+     JwtParserBuilder deserializeJsonWith(Deserializer<Map<String,?>> deserializer);
+ 
+     /**
+-     * Returns a {@link JwtParser} created from the configuration from this JwtParserBuilder.
+-     * @return a JwtParser created from the configuration from this JwtParserBuilder.
++     * Returns an immutable/thread-safe {@link JwtParser} created from the configuration from this JwtParserBuilder.
++     * @return an immutable/thread-safe JwtParser created from the configuration from this JwtParserBuilder.
+      */
+     JwtParser build();
+ }
+
+File: api/src/main/java/io/jsonwebtoken/Jwts.java
+Patch:
+@@ -122,9 +122,9 @@ public static JwtParser parser() {
+     }
+ 
+     /**
+-     * Returns a new {@link JwtParserBuilder} instance that can be configured and then used to parse JWT strings.
++     * Returns a new {@link JwtParserBuilder} instance that can be configured to create an immutable/thread-safe {@link JwtParser).
+      *
+-     * @return a new {@link JwtParser} instance that can be configured and then used to parse JWT strings.
++     * @return a new {@link JwtParser} instance that can be configured create an immutable/thread-safe {@link JwtParser).
+      */
+     public static JwtParserBuilder parserBuilder() {
+         return Classes.newInstance("io.jsonwebtoken.impl.DefaultJwtParserBuilder");
+
+File: api/src/main/java/io/jsonwebtoken/lang/UnknownClassException.java
+Patch:
+@@ -48,16 +48,17 @@ public UnknownClassException(String message) {
+     public UnknownClassException(Throwable cause) {
+         super(cause);
+     }
++    */
+ 
+     /**
+      * Constructs a new UnknownClassException.
+      *
+      * @param message the reason for the exception
+      * @param cause   the underlying Throwable that caused this exception to be thrown.
+-     *
++     */
+     public UnknownClassException(String message, Throwable cause) {
++        // TODO: remove in v1.0, this constructor is only exposed to allow for backward compatible behavior
+         super(message, cause);
+     }
+-    */
+ 
+ }
+\ No newline at end of file
+
+File: api/src/main/java/io/jsonwebtoken/lang/UnknownClassException.java
+Patch:
+@@ -48,16 +48,17 @@ public UnknownClassException(String message) {
+     public UnknownClassException(Throwable cause) {
+         super(cause);
+     }
++    */
+ 
+     /**
+      * Constructs a new UnknownClassException.
+      *
+      * @param message the reason for the exception
+      * @param cause   the underlying Throwable that caused this exception to be thrown.
+-     *
++     */
+     public UnknownClassException(String message, Throwable cause) {
++        // TODO: remove in v1.0, this constructor is only exposed to allow for backward compatible behavior
+         super(message, cause);
+     }
+-    */
+ 
+ }
+\ No newline at end of file
+
+File: impl/src/main/java/io/jsonwebtoken/impl/crypto/RsaProvider.java
+Patch:
+@@ -132,6 +132,7 @@ public static KeyPair generateKeyPair(int keySizeInBits) {
+      * @see #generateKeyPair(String, int, SecureRandom)
+      * @since 0.10.0
+      */
++    @SuppressWarnings("unused") //used by io.jsonwebtoken.security.Keys
+     public static KeyPair generateKeyPair(SignatureAlgorithm alg) {
+         Assert.isTrue(alg.isRsa(), "Only RSA algorithms are supported by this method.");
+         int keySizeInBits = 4096;
+
+File: extensions/jackson/src/main/java/io/jsonwebtoken/jackson/io/JacksonDeserializer.java
+Patch:
+@@ -63,7 +63,7 @@ public JacksonDeserializer() {
+      * <p>
+      * If you would like to use your own {@code ObjectMapper} instance that also supports custom types for
+      * JWT {@code Claims}, you will need to first customize your {@code ObjectMapper} instance by registering
+-     * your custom types and then use the {@link JacksonDeserializer(ObjectMapper)} constructor instead.
++     * your custom types and then use the {@link #JacksonDeserializer(ObjectMapper)} constructor instead.
+      * 
+      * @param claimTypeMap The claim name-to-class map used to deserialize claims into the given type
+      */
+
+File: extensions/jackson/src/main/java/io/jsonwebtoken/jackson/io/JacksonDeserializer.java
+Patch:
+@@ -13,9 +13,11 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package io.jsonwebtoken.io;
++package io.jsonwebtoken.jackson.io;
+ 
+ import com.fasterxml.jackson.databind.ObjectMapper;
++import io.jsonwebtoken.io.DeserializationException;
++import io.jsonwebtoken.io.Deserializer;
+ import io.jsonwebtoken.lang.Assert;
+ 
+ import java.io.IOException;
+
+File: extensions/jackson/src/main/java/io/jsonwebtoken/jackson/io/JacksonSerializer.java
+Patch:
+@@ -13,10 +13,12 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package io.jsonwebtoken.io;
++package io.jsonwebtoken.jackson.io;
+ 
+ import com.fasterxml.jackson.core.JsonProcessingException;
+ import com.fasterxml.jackson.databind.ObjectMapper;
++import io.jsonwebtoken.io.SerializationException;
++import io.jsonwebtoken.io.Serializer;
+ import io.jsonwebtoken.lang.Assert;
+ 
+ /**
+
+File: extensions/orgjson/src/main/java/io/jsonwebtoken/orgjson/io/OrgJsonDeserializer.java
+Patch:
+@@ -13,8 +13,10 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-package io.jsonwebtoken.io;
++package io.jsonwebtoken.orgjson.io;
+ 
++import io.jsonwebtoken.io.DeserializationException;
++import io.jsonwebtoken.io.Deserializer;
+ import io.jsonwebtoken.lang.Assert;
+ import io.jsonwebtoken.lang.Strings;
+ import org.json.JSONArray;
+
+File: extensions/gson/src/main/java/io/jsonwebtoken/gson/io/GsonDeserializer.java
+Patch:
+@@ -1,6 +1,8 @@
+-package io.jsonwebtoken.io;
++package io.jsonwebtoken.gson.io;
+ 
+ import com.google.gson.Gson;
++import io.jsonwebtoken.io.DeserializationException;
++import io.jsonwebtoken.io.Deserializer;
+ import io.jsonwebtoken.lang.Assert;
+ import java.io.IOException;
+ 
+
+File: impl/src/main/java/io/jsonwebtoken/impl/io/RuntimeClasspathDeserializerLocator.java
+Patch:
+@@ -34,8 +34,8 @@ protected Deserializer<T> locate() {
+             return Classes.newInstance("io.jsonwebtoken.io.JacksonDeserializer");
+         } else if (isAvailable("io.jsonwebtoken.io.OrgJsonDeserializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.OrgJsonDeserializer");
+-        } else if (isAvailable("io.jsonwebtoken.io.GsonDeserializer")) {
+-            return Classes.newInstance("io.jsonwebtoken.io.GsonDeserializer");
++        } else if (isAvailable("io.jsonwebtoken.gson.io.GsonDeserializer")) {
++            return Classes.newInstance("io.jsonwebtoken.gson.io.GsonDeserializer");
+         } else {
+             throw new IllegalStateException("Unable to discover any JSON Deserializer implementations on the classpath.");
+         }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/io/RuntimeClasspathSerializerLocator.java
+Patch:
+@@ -34,8 +34,8 @@ protected Serializer<Object> locate() {
+             return Classes.newInstance("io.jsonwebtoken.io.JacksonSerializer");
+         } else if (isAvailable("io.jsonwebtoken.io.OrgJsonSerializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.OrgJsonSerializer");
+-        } else if (isAvailable("io.jsonwebtoken.io.GsonSerializer")) {
+-            return Classes.newInstance("io.jsonwebtoken.io.GsonSerializer");
++        } else if (isAvailable("io.jsonwebtoken.gson.io.GsonSerializer")) {
++            return Classes.newInstance("io.jsonwebtoken.gson.io.GsonSerializer");
+         } else {
+             throw new IllegalStateException("Unable to discover any JSON Serializer implementations on the classpath.");
+         }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/io/RuntimeClasspathDeserializerLocator.java
+Patch:
+@@ -34,8 +34,8 @@ protected Deserializer<T> locate() {
+             return Classes.newInstance("io.jsonwebtoken.io.JacksonDeserializer");
+         } else if (isAvailable("io.jsonwebtoken.io.OrgJsonDeserializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.OrgJsonDeserializer");
+-        } else if (isAvailable("io.jsonwebtoken.io.GsonDeSerializer")) {
+-            return Classes.newInstance("io.jsonwebtoken.io.GsonDeSerializer");
++        } else if (isAvailable("io.jsonwebtoken.io.GsonDeserializer")) {
++            return Classes.newInstance("io.jsonwebtoken.io.GsonDeserializer");
+         } else {
+             throw new IllegalStateException("Unable to discover any JSON Deserializer implementations on the classpath.");
+         }
+
+File: impl/src/main/java/io/jsonwebtoken/impl/io/RuntimeClasspathDeserializerLocator.java
+Patch:
+@@ -34,7 +34,7 @@ protected Deserializer<T> locate() {
+             return Classes.newInstance("io.jsonwebtoken.io.JacksonDeserializer");
+         } else if (isAvailable("io.jsonwebtoken.io.OrgJsonDeserializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.OrgJsonDeserializer");
+-        } else if (isAvailable("com.google.gson.GsonBuilder")) {
++        } else if (isAvailable("io.jsonwebtoken.io.GsonDeSerializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.GsonDeSerializer");
+         } else {
+             throw new IllegalStateException("Unable to discover any JSON Deserializer implementations on the classpath.");
+
+File: impl/src/main/java/io/jsonwebtoken/impl/io/RuntimeClasspathSerializerLocator.java
+Patch:
+@@ -34,7 +34,7 @@ protected Serializer<Object> locate() {
+             return Classes.newInstance("io.jsonwebtoken.io.JacksonSerializer");
+         } else if (isAvailable("io.jsonwebtoken.io.OrgJsonSerializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.OrgJsonSerializer");
+-        } else if (isAvailable("com.google.gson.GsonBuilder")) {
++        } else if (isAvailable("io.jsonwebtoken.io.GsonSerializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.GsonSerializer");
+         } else {
+             throw new IllegalStateException("Unable to discover any JSON Serializer implementations on the classpath.");
+
+File: impl/src/main/java/io/jsonwebtoken/impl/io/RuntimeClasspathDeserializerLocator.java
+Patch:
+@@ -30,9 +30,9 @@ public Deserializer<T> getInstance() {
+ 
+     @SuppressWarnings("WeakerAccess") //to allow testing override
+     protected Deserializer<T> locate() {
+-        if (isAvailable("com.fasterxml.jackson.databind.ObjectMapper")) {
++        if (isAvailable("io.jsonwebtoken.io.JacksonDeserializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.JacksonDeserializer");
+-        } else if (isAvailable("org.json.JSONObject")) {
++        } else if (isAvailable("io.jsonwebtoken.io.OrgJsonDeserializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.OrgJsonDeserializer");
+         } else {
+             throw new IllegalStateException("Unable to discover any JSON Deserializer implementations on the classpath.");
+
+File: impl/src/main/java/io/jsonwebtoken/impl/io/RuntimeClasspathSerializerLocator.java
+Patch:
+@@ -30,9 +30,9 @@ public Serializer<Object> getInstance() {
+ 
+     @SuppressWarnings("WeakerAccess") //to allow testing override
+     protected Serializer<Object> locate() {
+-        if (isAvailable("com.fasterxml.jackson.databind.ObjectMapper")) {
++        if (isAvailable("io.jsonwebtoken.io.JacksonSerializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.JacksonSerializer");
+-        } else if (isAvailable("org.json.JSONObject")) {
++        } else if (isAvailable("io.jsonwebtoken.io.OrgJsonSerializer")) {
+             return Classes.newInstance("io.jsonwebtoken.io.OrgJsonSerializer");
+         } else {
+             throw new IllegalStateException("Unable to discover any JSON Serializer implementations on the classpath.");
+
+File: api/src/main/java/io/jsonwebtoken/JwtBuilder.java
+Patch:
+@@ -188,7 +188,7 @@ public interface JwtBuilder extends ClaimsMutator<JwtBuilder> {
+      *
+      * <p>instead of this:</p>
+      * <pre>
+-     * Claims claims = Jwts.claims().setSubject("You");
++     * Claims claims = Jwts.claims().setAudience("You");
+      * String jwt = Jwts.builder().setClaims(claims).compact();
+      * </pre>
+      * <p>if desired.</p>
+@@ -306,7 +306,7 @@ public interface JwtBuilder extends ClaimsMutator<JwtBuilder> {
+      *
+      * <p>instead of this:</p>
+      * <pre>
+-     * Claims claims = Jwts.claims().setIssuedAt(UUID.randomUUID().toString());
++     * Claims claims = Jwts.claims().setId(UUID.randomUUID().toString());
+      * String jwt = Jwts.builder().setClaims(claims).compact();
+      * </pre>
+      * <p>if desired.</p>
+
+File: api/src/main/java/io/jsonwebtoken/JwtBuilder.java
+Patch:
+@@ -188,7 +188,7 @@ public interface JwtBuilder extends ClaimsMutator<JwtBuilder> {
+      *
+      * <p>instead of this:</p>
+      * <pre>
+-     * Claims claims = Jwts.claims().setSubject("You");
++     * Claims claims = Jwts.claims().setAudience("You");
+      * String jwt = Jwts.builder().setClaims(claims).compact();
+      * </pre>
+      * <p>if desired.</p>
+@@ -306,7 +306,7 @@ public interface JwtBuilder extends ClaimsMutator<JwtBuilder> {
+      *
+      * <p>instead of this:</p>
+      * <pre>
+-     * Claims claims = Jwts.claims().setIssuedAt(UUID.randomUUID().toString());
++     * Claims claims = Jwts.claims().setId(UUID.randomUUID().toString());
+      * String jwt = Jwts.builder().setClaims(claims).compact();
+      * </pre>
+      * <p>if desired.</p>
+
+File: src/main/java/io/jsonwebtoken/CompressionCodec.java
+Patch:
+@@ -25,9 +25,9 @@
+ public interface CompressionCodec {
+ 
+     /**
+-     * The algorithm name to use as the JWT's {@code calg} header value.
++     * The algorithm name to use as the JWT's {@code zip} header value.
+      *
+-     * @return the algorithm name to use as the JWT's {@code calg} header value.
++     * @return the algorithm name to use as the JWT's {@code zip} header value.
+      */
+     String getAlgorithmName();
+ 
+
+File: src/main/java/io/jsonwebtoken/Claims.java
+Patch:
+@@ -31,7 +31,7 @@
+  * claims.{@link Map#put(Object, Object) put}("someKey", "someValue");
+  * </pre>
+  *
+- * <h4>Creation</h4>
++ * <h3>Creation</h3>
+  *
+  * <p>It is easiest to create a {@code Claims} instance by calling one of the
+  * {@link Jwts#claims() JWTs.claims()} factory methods.</p>
+
+File: src/main/java/io/jsonwebtoken/CompressionCodecs.java
+Patch:
+@@ -24,7 +24,7 @@ private CompressionCodecs() {} //prevent external instantiation
+ 
+     /**
+      * Codec implementing the <a href="https://en.wikipedia.org/wiki/Gzip">gzip</a> compression algorithm.
+-     * <h5>Compatibility Warning</h5>
++     * <h3>Compatibility Warning</h3>
+      * <p><b>This is not a standard JWA compression algorithm</b>.  Be sure to use this only when you are confident
+      * that all parties accessing the token support the gzip algorithm.</p>
+      * <p>If you're concerned about compatibility, the {@link #DEFLATE DEFLATE} code is JWA standards-compliant.</p>
+
+File: src/main/java/io/jsonwebtoken/Header.java
+Patch:
+@@ -30,7 +30,7 @@
+  * header.{@link Map#put(Object, Object) put}("headerParamName", "headerParamValue");
+  * </pre>
+  *
+- * <h4>Creation</h4>
++ * <h3>Creation</h3>
+  *
+  * <p>It is easiest to create a {@code Header} instance by calling one of the
+  * {@link Jwts#header() JWTs.header()} factory methods.</p>
+@@ -120,7 +120,7 @@ public interface Header<T extends Header<T>> extends Map<String,Object> {
+      * Sets the JWT <code>calg</code> (Compression Algorithm) header parameter value. A {@code null} value will remove
+      * the property from the JSON map.
+      * <p>
+-     * <p>The compression algorithm is NOT part of the <a href="https://tools.ietf.org/html/draft-ietf-oauth-json-web-token-25>JWT specification</a>
++     * <p>The compression algorithm is NOT part of the <a href="https://tools.ietf.org/html/draft-ietf-oauth-json-web-token-25">JWT specification</a>
+      * and must be used carefully since, is not expected that other libraries (including previous versions of this one)
+      * be able to deserialize a compressed JTW body correctly. </p>
+      *
+
+File: src/main/java/io/jsonwebtoken/JwtBuilder.java
+Patch:
+@@ -368,7 +368,7 @@ public interface JwtBuilder extends ClaimsMutator<JwtBuilder> {
+      * can be useful.  For example, when embedding JWTs  in URLs, some browsers may not support URLs longer than a
+      * certain length.  Using compression can help ensure the compact JWT fits within that length.  However, NOTE:</p>
+      *
+-     * <h5>Compatibility Warning</h5>
++     * <h3>Compatibility Warning</h3>
+      *
+      * <p>The JWT family of specifications defines compression only for JWE (Json Web Encryption)
+      * tokens.  Even so, JJWT will also support compression for JWS tokens as well if you choose to use it.
+
+File: src/main/java/io/jsonwebtoken/JwtParser.java
+Patch:
+@@ -228,10 +228,10 @@ public interface JwtParser {
+      * Sets the {@link CompressionCodecResolver} used to acquire the {@link CompressionCodec} that should be used to
+      * decompress the JWT body. If the parsed JWT is not compressed, this resolver is not used.
+      * <p><b>NOTE:</b> Compression is not defined by the JWT Specification, and it is not expected that other libraries
+-     * (including JJWT versions < 0.6.0) are able to consume a compressed JWT body correctly.  This method is only
+-     * useful if the compact JWT was compressed with JJWT >= 0.6.0 or another library that you know implements
++     * (including JJWT versions &lt; 0.6.0) are able to consume a compressed JWT body correctly.  This method is only
++     * useful if the compact JWT was compressed with JJWT &gt;= 0.6.0 or another library that you know implements
+      * the same behavior.</p>
+-     * <h5>Default Support</h5>
++     * <h3>Default Support</h3>
+      * <p>JJWT's default {@link JwtParser} implementation supports both the
+      * {@link io.jsonwebtoken.impl.compression.DeflateCompressionCodec DEFLATE}
+      * and {@link io.jsonwebtoken.impl.compression.GzipCompressionCodec GZIP} algorithms by default - you do not need to
+
+File: src/main/java/io/jsonwebtoken/SignatureAlgorithm.java
+Patch:
+@@ -130,6 +130,7 @@ public String getDescription() {
+      * following table:
+      *
+      * <table>
++     *     <caption>Crypto Family</caption>
+      *     <thead>
+      *         <tr>
+      *             <th>SignatureAlgorithm</th>
+
+File: src/main/java/io/jsonwebtoken/SigningKeyResolver.java
+Patch:
+@@ -38,7 +38,7 @@
+  *
+  * <p>A {@code SigningKeyResolver} is invoked once during parsing before the signature is verified.</p>
+  *
+- * <h4>SigningKeyResolverAdapter</h4>
++ * <h3>SigningKeyResolverAdapter</h3>
+  *
+  * <p>If you only need to resolve a signing key for a particular JWS (either a plaintext or Claims JWS), consider using
+  * the {@link io.jsonwebtoken.SigningKeyResolverAdapter} and overriding only the method you need to support instead of
+
+File: src/main/java/io/jsonwebtoken/impl/crypto/MacProvider.java
+Patch:
+@@ -67,7 +67,7 @@ public static SecretKey generateKey(SignatureAlgorithm alg) {
+      * according to the specified {@code SignatureAlgorithm} using the specified SecureRandom number generator.  This
+      * implementation returns secure-random key sizes as follows:
+      *
+-     * <table> <thead> <tr> <th>Signature Algorithm</th> <th>Generated Key Size</th> </tr> </thead> <tbody> <tr>
++     * <table> <caption>Key Sizes</caption> <thead> <tr> <th>Signature Algorithm</th> <th>Generated Key Size</th> </tr> </thead> <tbody> <tr>
+      * <td>HS256</td> <td>256 bits (32 bytes)</td> </tr> <tr> <td>HS384</td> <td>384 bits (48 bytes)</td> </tr> <tr>
+      * <td>HS512</td> <td>512 bits (64 bytes)</td> </tr> </tbody> </table>
+      *
+
+File: src/main/java/io/jsonwebtoken/JwtParser.java
+Patch:
+@@ -187,9 +187,6 @@ public interface JwtParser {
+      * (as the {@code alg} header parameter).</p>
+      * <p>
+      * <p>This method overwrites any previously set key.</p>
+-     * <p>
+-     * <p>This is a convenience method: the string argument is first BASE64-decoded to a byte array and this resulting
+-     * byte array is used to invoke {@link #setSigningKey(byte[])}.</p>
+      *
+      * @param key the algorithm-specific signature verification key to use to validate any discovered JWS digital
+      *            signature.
+
+File: src/main/java/io/jsonwebtoken/JwtParser.java
+Patch:
+@@ -187,9 +187,6 @@ public interface JwtParser {
+      * (as the {@code alg} header parameter).</p>
+      * <p>
+      * <p>This method overwrites any previously set key.</p>
+-     * <p>
+-     * <p>This is a convenience method: the string argument is first BASE64-decoded to a byte array and this resulting
+-     * byte array is used to invoke {@link #setSigningKey(byte[])}.</p>
+      *
+      * @param key the algorithm-specific signature verification key to use to validate any discovered JWS digital
+      *            signature.
+
+File: src/main/java/io/jsonwebtoken/impl/DefaultClaims.java
+Patch:
+@@ -23,8 +23,6 @@
+ 
+ public class DefaultClaims extends JwtMap implements Claims {
+ 
+-    private static final DefaultClaims INSTANCE = new DefaultClaims();
+-
+     public DefaultClaims() {
+         super();
+     }
+
+File: src/main/java/io/jsonwebtoken/impl/DefaultClaims.java
+Patch:
+@@ -23,6 +23,8 @@
+ 
+ public class DefaultClaims extends JwtMap implements Claims {
+ 
++    private static final DefaultClaims INSTANCE = new DefaultClaims();
++
+     public DefaultClaims() {
+         super();
+     }
+
+File: src/main/java/io/jsonwebtoken/impl/DefaultJwtParser.java
+Patch:
+@@ -70,7 +70,7 @@ public class DefaultJwtParser implements JwtParser {
+ 
+     Claims expectedClaims = new DefaultClaims();
+ 
+-    private Clock clock = Clock.DEFAULT;
++    private Clock clock = DefaultClock.INSTANCE;
+ 
+     @Override
+     public JwtParser requireIssuedAt(Date issuedAt) {
+
+File: src/main/java/io/jsonwebtoken/lang/Strings.java
+Patch:
+@@ -15,6 +15,7 @@
+  */
+ package io.jsonwebtoken.lang;
+ 
++import java.nio.charset.Charset;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+@@ -40,6 +41,8 @@ public abstract class Strings {
+ 
+     private static final char EXTENSION_SEPARATOR = '.';
+ 
++    public static final Charset UTF_8 = Charset.forName("UTF-8");
++
+     //---------------------------------------------------------------------
+     // General convenience methods for working with Strings
+     //---------------------------------------------------------------------
+
+File: src/main/java/io/jsonwebtoken/CompressionCodec.java
+Patch:
+@@ -19,6 +19,8 @@
+  * Defines how to compress and decompress byte arrays.
+  *
+  * @since 0.5.2
++ * @see io.jsonwebtoken.impl.compression.DeflateCompressionCodec
++ * @see io.jsonwebtoken.impl.compression.GzipCompressionCodec
+  */
+ public interface CompressionCodec {
+ 
+
+File: src/main/java/io/jsonwebtoken/JwtParser.java
+Patch:
+@@ -206,8 +206,10 @@ public interface JwtParser {
+     JwtParser setSigningKeyResolver(SigningKeyResolver signingKeyResolver);
+ 
+     /**
++     * Sets the {@link CompressionCodecResolver} used to acquire the {@link CompressionCodec} that should be used to verify
++     * a decompress the JWT body. If the parsed JWT is not compressed, this resolver si not used.
+      *
+-     * @param compressionCodecResolver
++     * @param compressionCodecResolver  the compression codec resolver used to decompress the JWT body.
+      * @return the parser for method chaining.
+      * @since 0.5.2
+      */
+
+File: src/main/java/io/jsonwebtoken/ClaimJwtException.java
+Patch:
+@@ -22,6 +22,9 @@
+  */
+ public abstract class ClaimJwtException extends JwtException {
+ 
++    public static final String INCORRECT_EXPECTED_CLAIM_MESSAGE_TEMPLATE = "Expected %s claim to be: %s, but was: %s.";
++    public static final String MISSING_EXPECTED_CLAIM_MESSAGE_TEMPLATE = "Expected %s claim to be: %s, but was not present in the JWT claims.";
++
+     private final Header header;
+ 
+     private final Claims claims;
+
+File: src/main/java/io/jsonwebtoken/Claims.java
+Patch:
+@@ -170,4 +170,5 @@ public interface Claims extends Map<String, Object>, ClaimsMutator<Claims> {
+     @Override //only for better/targeted JavaDoc
+     Claims setId(String jti);
+ 
++    <T> T get(String claimName, Class<T> requiredType);
+ }
+
+File: src/main/java/io/jsonwebtoken/impl/compression/DefaultCompressionCodecResolver.java
+Patch:
+@@ -48,7 +48,7 @@ public CompressionCodec resolveCompressionCodec(Header header) {
+         throw new CompressionException("Unsupported compression algorithm '" + cmpAlg + "'");
+     }
+ 
+-    protected final String getAlgorithmFromHeader(Header header) {
++    private String getAlgorithmFromHeader(Header header) {
+         Assert.notNull(header, "header cannot be null.");
+ 
+         return header.getCompressionAlgorithm();
+
+File: src/main/java/io/jsonwebtoken/ClaimJwtException.java
+Patch:
+@@ -22,6 +22,9 @@
+  */
+ public abstract class ClaimJwtException extends JwtException {
+ 
++    public static final String INCORRECT_EXPECTED_CLAIM_MESSAGE_TEMPLATE = "Expected %s claim to be: %s, but was: %s.";
++    public static final String MISSING_EXPECTED_CLAIM_MESSAGE_TEMPLATE = "Expected %s claim to be: %s, but was not present in the JWT claims.";
++
+     private final Header header;
+ 
+     private final Claims claims;
+
+File: src/main/java/io/jsonwebtoken/Claims.java
+Patch:
+@@ -170,4 +170,5 @@ public interface Claims extends Map<String, Object>, ClaimsMutator<Claims> {
+     @Override //only for better/targeted JavaDoc
+     Claims setId(String jti);
+ 
++    <T> T get(String claimName, Class<T> requiredType);
+ }
+
+File: src/main/java/io/jsonwebtoken/lang/Strings.java
+Patch:
+@@ -15,6 +15,7 @@
+  */
+ package io.jsonwebtoken.lang;
+ 
++import java.nio.charset.Charset;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+@@ -40,6 +41,8 @@ public abstract class Strings {
+ 
+     private static final char EXTENSION_SEPARATOR = '.';
+ 
++    public static final Charset UTF_8 = Charset.forName("UTF-8");
++
+     //---------------------------------------------------------------------
+     // General convenience methods for working with Strings
+     //---------------------------------------------------------------------
+
+File: src/main/java/io/jsonwebtoken/Claims.java
+Patch:
+@@ -170,4 +170,5 @@ public interface Claims extends Map<String, Object>, ClaimsMutator<Claims> {
+     @Override //only for better/targeted JavaDoc
+     Claims setId(String jti);
+ 
++    <T> T get(String claimName, Class<T> requiredType);
+ }
+
+File: src/main/java/io/jsonwebtoken/impl/crypto/MacValidator.java
+Patch:
+@@ -18,6 +18,7 @@
+ import io.jsonwebtoken.SignatureAlgorithm;
+ 
+ import java.security.Key;
++import java.security.MessageDigest;
+ import java.util.Arrays;
+ 
+ public class MacValidator implements SignatureValidator {
+@@ -31,6 +32,6 @@ public MacValidator(SignatureAlgorithm alg, Key key) {
+     @Override
+     public boolean isValid(byte[] data, byte[] signature) {
+         byte[] computed = this.signer.sign(data);
+-        return Arrays.equals(computed, signature);
++        return MessageDigest.isEqual(computed, signature);
+     }
+ }
+
+File: src/main/java/io/jsonwebtoken/impl/crypto/MacValidator.java
+Patch:
+@@ -18,6 +18,7 @@
+ import io.jsonwebtoken.SignatureAlgorithm;
+ 
+ import java.security.Key;
++import java.security.MessageDigest;
+ import java.util.Arrays;
+ 
+ public class MacValidator implements SignatureValidator {
+@@ -31,6 +32,6 @@ public MacValidator(SignatureAlgorithm alg, Key key) {
+     @Override
+     public boolean isValid(byte[] data, byte[] signature) {
+         byte[] computed = this.signer.sign(data);
+-        return Arrays.equals(computed, signature);
++        return MessageDigest.isEqual(computed, signature);
+     }
+ }
+
+File: src/main/java/io/jsonwebtoken/impl/DefaultJws.java
+Patch:
+@@ -18,7 +18,7 @@
+ import io.jsonwebtoken.Jws;
+ import io.jsonwebtoken.JwsHeader;
+ 
+-public class DefaultJws<B> implements Jws {
++public class DefaultJws<B> implements Jws<B> {
+ 
+     private final JwsHeader header;
+     private final B body;
+
+File: src/main/java/io/jsonwebtoken/impl/DefaultJws.java
+Patch:
+@@ -18,7 +18,7 @@
+ import io.jsonwebtoken.Jws;
+ import io.jsonwebtoken.JwsHeader;
+ 
+-public class DefaultJws<B> implements Jws {
++public class DefaultJws<B> implements Jws<B> {
+ 
+     private final JwsHeader header;
+     private final B body;
+
+File: src/main/java/io/jsonwebtoken/SigningKeyResolverAdapter.java
+Patch:
+@@ -32,7 +32,7 @@
+  * calling code in known situations, and it is expected that you override the implementation in those known situations;
+  * non-overridden *KeyBytes methods indicates that the JWS input was unexpected.</p>
+  *
+- * <p>If either {@link #resolveSigningKey(JwsHeader, String)} or {@link #resolveSigningKey(JwsHeader, String)}
++ * <p>If either {@link #resolveSigningKey(JwsHeader, String)} or {@link #resolveSigningKey(JwsHeader, Claims)}
+  * are not overridden, one (or both) of the *KeyBytes variants must be overridden depending on your expected
+  * use case.  You do not have to override any method that does not represent an expected condition.</p>
+  *
+
+File: src/main/java/io/jsonwebtoken/JwtParser.java
+Patch:
+@@ -78,7 +78,7 @@ public interface JwtParser {
+     JwtParser setSigningKey(Key key);
+ 
+     /**
+-     * Sets the {@link JwsSigningKeyResolver} used to resolve the <code>signing key</code> using the parsed {@link JwsHeader}
++     * Sets the {@link SigningKeyResolver} used to resolve the <code>signing key</code> using the parsed {@link JwsHeader}
+      * and/or the {@link Claims}.  If the specified JWT string is not a JWS (no signature), this resolver is not used.
+      * <p/>
+      * <p>This method will set the signing key resolver to be used in case a signing key is not provided by any of the other methods.</p>
+@@ -87,10 +87,10 @@ public interface JwtParser {
+      * {@link JwsHeader} or the {@link Claims} embedded in the {@link Jws} can be used to resolve the signing key.
+      * </p>
+      *
+-     * @param jwsSigningKeyResolver the signing key resolver used to retrieve the signing key.
++     * @param signingKeyResolver the signing key resolver used to retrieve the signing key.
+      * @return the parser for method chaining.
+      */
+-    JwtParser setJwsSigningKeyResolver(JwsSigningKeyResolver jwsSigningKeyResolver);
++    JwtParser setSigningKeyResolver(SigningKeyResolver signingKeyResolver);
+ 
+     /**
+      * Returns {@code true} if the specified JWT compact string represents a signed JWT (aka a 'JWS'), {@code false}
+
+File: src/main/java/io/jsonwebtoken/impl/DefaultJwtParser.java
+Patch:
+@@ -26,6 +26,7 @@
+ import io.jsonwebtoken.JwtHandlerAdapter;
+ import io.jsonwebtoken.JwtParser;
+ import io.jsonwebtoken.MalformedJwtException;
++import io.jsonwebtoken.PrematureJwtException;
+ import io.jsonwebtoken.SignatureAlgorithm;
+ import io.jsonwebtoken.SignatureException;
+ import io.jsonwebtoken.UnsupportedJwtException;
+@@ -190,7 +191,6 @@ public Jwt parse(String jwt) throws ExpiredJwtException, MalformedJwtException,
+                 }
+             }
+ 
+-            /*
+             //https://tools.ietf.org/html/draft-ietf-oauth-json-web-token-30#section-4.1.5
+             //token MUST NOT be accepted before any specified nbf time:
+             Date nbf = claims.getNotBefore();
+@@ -209,7 +209,6 @@ public Jwt parse(String jwt) throws ExpiredJwtException, MalformedJwtException,
+                     throw new PrematureJwtException(msg);
+                 }
+             }
+-            */
+         }
+ 
+         // =============== Signature =================
+
+File: src/main/java/io/jsonwebtoken/ExpiredJwtException.java
+Patch:
+@@ -16,7 +16,7 @@
+ package io.jsonwebtoken;
+ 
+ /**
+- * Exception indicating that a JWT was referenced after it expired and should be rejected.
++ * Exception indicating that a JWT was accepted after it expired and must be rejected.
+  *
+  * @since 0.3
+  */
+
+File: src/main/java/io/jsonwebtoken/Jwts.java
+Patch:
+@@ -91,9 +91,6 @@ public static Claims claims() {
+      * @return a new {@link Claims} instance populated with the specified name/value pairs.
+      */
+     public static Claims claims(Map<String, Object> claims) {
+-        if (claims == null) {
+-            return claims();
+-        }
+         return new DefaultClaims(claims);
+     }
+ 
+
